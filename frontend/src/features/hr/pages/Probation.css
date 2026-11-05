@@ -378,3 +378,46 @@
 }
 .prob-star.active { border-color: #7c5cf0; background: #ede9fe; }
 .prob-star:hover  { border-color: #7c5cf0; }
+
+/* Probation with no stored end date — a data gap, shown rather than guessed. */
+.prob-status-undated { background: #f1f5f9; color: #475569; }
+
+/* Company probation policy strip */
+.prob-policy {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px;
+  margin: 12px 0; padding: 10px 14px;
+  border: 1px solid #e9e4ff; border-radius: 10px; background: #faf9ff;
+  font-size: 13px; color: #374151;
+}
+.prob-policy label { display: inline-flex; align-items: center; gap: 6px; }
+.prob-policy input[type="number"] { width: 64px; padding: 4px 6px; border: 1px solid #d1d5db; border-radius: 6px; }
+
+/* Department Heads panel (DepartmentHeadsPanel.jsx) */
+.prob-dh { margin: 12px 0; border: 1px solid #e9e4ff; border-radius: 10px; background: #fff; }
+.prob-dh-toggle {
+  display: flex; align-items: center; gap: 8px; width: 100%; padding: 10px 14px;
+  background: none; border: 0; font-size: 13px; font-weight: 700; color: #4c1d95; cursor: pointer; text-align: left;
+}
+.prob-dh-body { padding: 0 14px 12px; overflow-x: auto; }
+.prob-dh-help { margin: 0 0 8px; font-size: 12px; color: #6b7280; }
+.prob-dh-msg { margin: 0 0 8px; padding: 6px 10px; border-radius: 6px; font-size: 12px; }
+.prob-dh-msg.is-error { background: #fef2f2; color: #b91c1c; }
+.prob-dh-msg.is-success { background: #f0fdf4; color: #15803d; }
+.prob-dh-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.prob-dh-table th { text-align: left; font-size: 11px; color: #6b7280; font-weight: 600; padding: 6px 8px; border-bottom: 1px solid #f1f5f9; }
+.prob-dh-table td { padding: 6px 8px; border-bottom: 1px solid #f8fafc; vertical-align: middle; }
+.prob-dh-muted { color: #9ca3af; font-size: 12px; }
+.prob-dh-flag { margin-left: 6px; padding: 1px 6px; border-radius: 999px; background: #fef3c7; color: #92400e; font-size: 11px; }
+.prob-dh-actions { white-space: nowrap; text-align: right; }
+.prob-dh-actions .prob-hist-action-btn { margin-left: 6px; }
+.prob-dh-edit td, .prob-dh-history td { background: #faf9ff; }
+.prob-dh-edit label { display: inline-flex; align-items: center; gap: 6px; margin-right: 12px; font-size: 12px; }
+.prob-dh-edit select, .prob-dh-edit input { padding: 4px 6px; border: 1px solid #d1d5db; border-radius: 6px; max-width: 260px; }
+.prob-dh-edit button { margin-right: 6px; }
+.prob-dh-history ul { margin: 0; padding-left: 18px; font-size: 12px; color: #374151; }
+
+/* Probation Reviews panel (ProbationReviewsPanel.jsx) — reuses the prob-dh- styles */
+.prob-rv-stale { margin-top: 4px; display: grid; gap: 2px; }
+.prob-rv-stale .prob-dh-flag { margin-left: 0; justify-self: start; }
+.prob-rv-edit { display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.prob-rv-edit input { padding: 4px 6px; border: 1px solid #d1d5db; border-radius: 6px; min-width: 180px; }

@@ -186,3 +186,170 @@
   text-transform: uppercase;
   letter-spacing: .04em;
 }
+
+/* ── Grouped tab strip (§172) ──────────────────────────────────────────────
+   Master Data Setup went from 8 tabs to 21 when the module vocabularies moved
+   behind one registry. A single flat row of 21 is a wall; these group them by
+   owning module, and `.ms-tabs` is allowed to wrap. Prefix everything with the
+   page class — page CSS here is global, and an unprefixed `.group` would style
+   half the app. */
+.ms-tabs { flex-wrap: wrap; }
+
+.ms-tabgroup {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+.ms-tabgroup-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: #9ca3af;
+}
+.ms-tabgroup .ms-tabs { margin-bottom: 0; }
+.ms-tabgroup .ms-tab { padding: 6px 14px; font-size: 13px; }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Master-data governance — 2026-09-29
+   Search, retired values, usage counts and row provenance.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Search + filters ─────────────────────────────────────────────────────── */
+.ms-filter-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.ms-search { position: relative; flex: 1 1 220px; min-width: 0; }
+.ms-search-icon {
+  position: absolute; left: 10px; top: 50%; transform: translateY(-50%);
+  color: #9ca3af; pointer-events: none;
+}
+.ms-search-input { width: 100%; padding-left: 30px !important; }
+/* The native clear "x" on type=search collides with the list's own controls
+   on Windows Chrome; the field is short enough to clear by hand. */
+.ms-search-input::-webkit-search-cancel-button { appearance: none; }
+
+.ms-toggle {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; color: #6b7280; cursor: pointer; white-space: nowrap;
+}
+.ms-toggle input { width: 14px; height: 14px; accent-color: #5B35D5; cursor: pointer; }
+.ms-count { font-size: 12px; color: #9ca3af; white-space: nowrap; margin-left: auto; }
+
+/* ── Row layout ───────────────────────────────────────────────────────────
+   .ms-item-name is a flex column now: the name and its badges on one line,
+   the provenance line beneath. It was a plain inline block, so appending a
+   second line would have pushed the Rename/Delete buttons out of alignment. */
+.ms-item-name {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ms-item-meta {
+  font-size: 11px;
+  color: #9ca3af;
+  font-weight: 400;
+  line-height: 1.4;
+}
+
+/* ── Badges ───────────────────────────────────────────────────────────────
+   "unused" is the signal that Delete is a real delete; anything with a count
+   deactivates instead. Both are legible on their own, not by colour alone. */
+.ms-badge-usage,
+.ms-badge-unused,
+.ms-badge-retired {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  vertical-align: middle;
+}
+.ms-badge-usage   { background: #eef2ff; color: #4338ca; border: 1px solid #c7d2fe; }
+.ms-badge-unused  { background: #f9fafb; color: #9ca3af; border: 1px solid #e5e7eb; font-weight: 500; }
+.ms-badge-retired { background: #fef3c7; color: #92400e; border: 1px solid #fde68a; }
+
+/* A retired row reads as switched off without being unreadable — the name
+   still has to be legible enough to decide whether to bring it back. */
+.ms-item-retired > :first-child { color: #6b7280; }
+.ms-item:has(.ms-badge-retired) { background: #fcfcfd; border-style: dashed; }
+
+/* A whole-table shared master (departments / designations / zones). Amber
+   rather than the purple info tone: this is a "read before you rename" notice,
+   not a tip. */
+.ms-note-shared {
+  border-color: #fde68a !important;
+  background: #fffbeb !important;
+  color: #92400e !important;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Row status + explicit action set — 2026-09-29
+   "Engineering / Active · Used by 8 employees / Edit | Delete | Deactivate"
+   ══════════════════════════════════════════════════════════════════════════ */
+
+.ms-item-title { font-size: 14px; font-weight: 600; color: #1f2937; }
+
+.ms-status {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 11px; font-weight: 500;
+}
+.ms-status-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.ms-status-active   { background: #10b981; }
+.ms-status-inactive { background: #f59e0b; }
+.ms-status-word     { color: #047857; font-weight: 700; }
+.ms-status-word.is-inactive { color: #92400e; }
+.ms-status-sep      { color: #d1d5db; }
+.ms-status-used     { color: #4338ca; }
+.ms-status-unused   { color: #9ca3af; }
+
+/* Deactivate — amber, clearly not the destructive one. */
+.ms-btn-deactivate, .ms-btn-reactivate {
+  padding: 5px 14px; border-radius: 6px; font-size: 13px; font-weight: 500;
+  cursor: pointer; border: 1px solid transparent; transition: all .15s;
+}
+.ms-btn-deactivate { background: #fffbeb; color: #92400e; border-color: #fde68a; }
+.ms-btn-deactivate:hover { background: #fef3c7; }
+.ms-btn-reactivate { background: #ecfdf5; color: #047857; border-color: #a7f3d0; }
+.ms-btn-reactivate:hover { background: #d1fae5; }
+
+/* A Delete that is disabled because the value is in use.
+   ⚠ Disabled, NOT hidden. Hiding it leaves the user wondering whether deletion
+   exists at all; disabled + the title attribute says why it is unavailable. */
+.ms-btn-delete:disabled {
+  background: #f9fafb; color: #d1d5db; border-color: #f3f4f6;
+  cursor: not-allowed;
+}
+.ms-btn-delete:disabled:hover { background: #f9fafb; }
+
+/* The row is a 3-action layout now, so the name column takes the slack. */
+.ms-item { gap: 8px; flex-wrap: wrap; }
+.ms-item-name { flex: 1 1 260px; min-width: 0; }
+
+/* ── Built-in / system values ──────────────────────────────────────────────
+   Shipped with Pulse, owned by no company, and not renameable or removable by
+   a company admin. No actions are possible, so the row is a compact single
+   line rather than a full card with an empty action area — which reads as
+   "editable, but the buttons are missing". */
+.ms-item-compact { padding: 6px 14px; background: #fcfcfd; border-style: dashed; }
+.ms-item-builtin { flex-direction: row; align-items: center; gap: 8px; }
+.ms-item-builtin .ms-item-title { font-size: 13px; font-weight: 500; color: #6b7280; }
+.ms-badge-builtin {
+  padding: 1px 8px; border-radius: 999px; font-size: 10px; font-weight: 700;
+  letter-spacing: .04em; text-transform: uppercase;
+  background: #f3f4f6; color: #6b7280; border: 1px solid #e5e7eb;
+}
+.ms-note-builtin { border-color: #e5e7eb !important; background: #fafafa !important; color: #4b5563 !important; }
+
+/* ── Pointer to the other entry point ─────────────────────────────────────── */
+.ms-note-elsewhere { border-color: #E8E1FC !important; background: #faf8ff !important; color: #5b21b6 !important; }
+.ms-link {
+  border: none; background: none; padding: 0; font: inherit; font-weight: 700;
+  color: #5B35D5; cursor: pointer; text-decoration: underline; text-underline-offset: 2px;
+}

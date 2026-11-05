@@ -84,6 +84,9 @@ export default function Policies() {
   const [effectiveDate, setEffectiveDate]     = useState("");
   const [reviewDate, setReviewDate]           = useState("");
   const [requiresAck, setRequiresAck]         = useState(false);
+  // 'all' = company-wide, shown to every employee and on Home;
+  // 'internal' = HR/admin SOP, visible only inside this module.
+  const [audience, setAudience]               = useState("all");
   const [saving, setSaving]                   = useState(false);
 
   // Modal / dialog state
@@ -95,11 +98,6 @@ export default function Policies() {
   const [reminderState, setReminderState]     = useState({});
 
   const abortRef = useRef(null);
-
-  const user = useMemo(() => {
-    try { return JSON.parse(localStorage.getItem("user") || "{}"); } catch (_e) { return {}; }
-  }, []);
-  const userId = user?.id || user?.employee_id || null;
 
   // ── Fetchers (stable refs via useCallback) ─────────────────────────────────
 
@@ -224,6 +222,7 @@ export default function Policies() {
   const resetForm = useCallback(() => {
     setPolicyName(""); setPolicyVersion(""); setPolicyFileUrl(""); setCustomCategory("");
     setChangelog(""); setEffectiveDate(""); setReviewDate(""); setRequiresAck(false);
+    setAudience("all");
     setShowFormFor("");
   }, []);
 
@@ -262,6 +261,7 @@ export default function Policies() {
         effective_date: effectiveDate || null,
         review_date: reviewDate || null,
         requires_acknowledgement: requiresAck,
+        applicable_to: audience,
       });
       notifyPolicyUpdate({ title: policyName, version: policyVersion, category: cat, changelog, effectiveDate });
       resetForm();
@@ -282,6 +282,7 @@ export default function Policies() {
     setPolicyVersion(nextVersion(versions));
     setCustomCategory(policy.category || "");
     setPolicyFileUrl(policy.fileUrl || "");
+    setAudience(policy.applicable_to === "all" ? "all" : "internal");
     setShowFormFor(policy.category || "General");
     setDialog({ type: "info", title: "New Version", message: "Update the URL and changelog, then save as the next version.", autoClose: 2000 });
   };
@@ -299,14 +300,30 @@ export default function Policies() {
     }
   };
 
+  // Retire keeps the row (and its acknowledgement history) but takes it off
+  // Home and out of the employee view; Restore puts it back.
+  const handleToggleActive = async (policy) => {
+    const next = policy.is_active === false;
+    try {
+      await api.put(`/hr/policies/${policy.id}`, { is_active: next });
+      await fetchPolicies();
+      setDialog({ type: "success", title: next ? "Restored" : "Retired",
+        message: next ? "Policy is active again." : "Policy retired — no longer shown to employees.", autoClose: 1800 });
+    } catch (_err) {
+      setDialog({ type: "error", title: "Failed", message: "Could not update the policy." });
+    }
+  };
+
   const handleAcknowledge = async (policyId) => {
     try {
-      await api.post(`/hr/policies/${policyId}/acknowledge`, { employee_id: userId });
+      // No identity in the body: the server records the signed-in person's own
+      // employee record and ignores anything sent here (containment C5).
+      await api.post(`/hr/policies/${policyId}/acknowledge`);
       setAcknowledgements((prev) => new Set([...prev, policyId]));
       setDialog({ type: "success", title: "Acknowledged", message: "Acknowledgement recorded.", autoClose: 1400 });
       fetchAckCounts(); // refresh counts in background
-    } catch (_err) {
-      setDialog({ type: "error", title: "Failed", message: "Could not record acknowledgement." });
+    } catch (err) {
+      setDialog({ type: "error", title: "Failed", message: err?.response?.data?.error || "Could not record acknowledgement." });
     }
   };
 
@@ -430,6 +447,13 @@ export default function Policies() {
                   onChange={(e) => setReviewDate(e.target.value)}
                 />
               </div>
+              <div>
+                <label>Audience *</label>
+                <select value={audience} onChange={(e) => setAudience(e.target.value)}>
+                  <option value="all">All employees — company-wide (shown on Home)</option>
+                  <option value="internal">Internal — HR &amp; admin only</option>
+                </select>
+              </div>
               <div className="full">
                 <label>Google Drive URL or File URL *</label>
                 <input
@@ -438,8 +462,10 @@ export default function Policies() {
                   placeholder="https://drive.google.com/file/d/… or https://example.com/policy.pdf"
                 />
                 <div className="pol-url-hint">
-                  Paste a Google Drive file sharing link or any direct file URL.
-                  For Drive: open the file → Share → Copy link.
+                  Paste the Google Drive link to the approved file in the HR policy folder
+                  (right-click the file → Share → Copy link). Employees download it from
+                  Home with one click. To replace the file but keep the same link, use
+                  Drive&apos;s Manage versions → Upload new version.
                 </div>
               </div>
               <div className="full">
@@ -515,6 +541,12 @@ export default function Policies() {
                         {policy.requires_acknowledgement && (
                           <span className="pol-ack-required-badge">Ack required</span>
                         )}
+                        {canManage && policy.applicable_to !== "all" && (
+                          <span className="pol-ack-required-badge" title="Visible only inside HR — not on Home">Internal</span>
+                        )}
+                        {canManage && policy.is_active === false && (
+                          <span className="pol-ack-required-badge" title="Hidden from employees and Home">Retired</span>
+                        )}
                       </td>
                       <td>{policy.displayVersion}</td>
                       <td>{policy.effectiveDate ? toYMD(policy.effectiveDate) : "—"}</td>
@@ -583,6 +615,14 @@ export default function Policies() {
                                 onClick={() => handleSendReminder(policy)}
                               >
                                 <Send size={13} /> {isSending ? "…" : "Remind"}
+                              </button>
+                              <button
+                                type="button"
+                                className="pol-action-btn"
+                                title={policy.is_active === false ? "Make active again" : "Hide from employees and Home, keep history"}
+                                onClick={() => handleToggleActive(policy)}
+                              >
+                                {policy.is_active === false ? "Restore" : "Retire"}
                               </button>
                               <button
                                 type="button"

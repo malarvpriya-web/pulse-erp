@@ -1,537 +1,568 @@
-/* EmployeeDashboard.css — all classes prefixed with ed- */
+/* EmployeesDashboard.css — Employees ▸ Dashboard
+ *
+ * ⚠ This file previously held a 537-line copy of the *self-service*
+ * EmployeeDashboard stylesheet (.ed-greeting, .ed-status-badge, …) and had
+ * ZERO importers — an orphan left behind by an earlier hero refactor. Its
+ * `.ed-` prefix is also the prefix of the LIVE EmployeesData.css
+ * (.ed-kpi-card, .ed-filter-bar, .ed-btn-view), so importing it would have
+ * restyled the All Employees page from a file nobody thought was in play.
+ *
+ * Everything here is prefixed `empdash-`, which nothing else in the app uses.
+ *
+ * ── Density ────────────────────────────────────────────────────────────────
+ * The page is tuned so the filter bar, the KPI band, the action strip and the
+ * workforce analytics all land inside one 900px-tall desktop viewport. That
+ * budget is asserted by 21-employees-dashboard.spec.ts, so if you add a row
+ * here something else has to give.
+ *
+ * Density comes from GEOMETRY, not from shrinking type: nothing here is
+ * smaller than the 10.5px the page already used for secondary text. What
+ * changed is padding, chart heights, dropping the per-card name previews, and
+ * a grid that packs three charts into a row that used to hold two.
+ */
 
-.ed-root {
-  padding: 0;
-  margin: -20px;
-  background: #f8f9fc;
-  min-height: calc(100vh - 64px);
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+.empdash-page { max-width: 100%; }
+
+/* ── Toolbar ──────────────────────────────────────────────────────────────── */
+
+.empdash-caption {
+  margin: 6px 0 8px;
+  font-size: 11px;
+  color: #9ca3af;
+  line-height: 1.45;
 }
+.empdash-caption strong { color: #4b5563; font-weight: 600; }
 
-/* ── Hero Header ─────────────────────────────────────────────────────────── */
-.ed-header {
-  background: linear-gradient(135deg, #5B35D5 0%, #5B35D5 60%, #7B3FE4 100%);
-  padding: 28px 32px;
-  display: flex;
-  justify-content: space-between;
+/* A department filter narrows every number on the page and survives a
+   reload, so it gets a visible marker rather than living only in a dropdown
+   the reader has to think to check. */
+.empdash-scopechip {
+  display: inline-flex;
   align-items: center;
-  position: relative;
-  overflow: hidden;
-}
-.ed-header::before {
-  content: '';
-  position: absolute; top: -50px; right: -50px;
-  width: 200px; height: 200px; border-radius: 50%;
-  background: rgba(255,255,255,.06); pointer-events: none;
-}
-
-.ed-greeting {
-  font-size: 22px;
-  font-weight: 800;
-  color: #fff;
-  margin: 0 0 4px 0;
-  letter-spacing: -.2px;
-}
-
-.ed-date {
-  font-size: 12px;
-  color: rgba(255,255,255,.65);
-  margin: 0;
-}
-
-/* ── Status Badges ────────────────────────────────────────────────────────── */
-.ed-status-badge {
-  padding: 6px 16px;
+  gap: 4px;
+  margin-left: 6px;
+  padding: 1px 8px;
   border-radius: 20px;
-  font-size: 12px;
-  font-weight: 700;
+  background: #f5f3ff;
+  border: 1px solid #ddd4fb;
+  color: #5b21b6;
+  font-size: 10.5px;
   white-space: nowrap;
-  border: 1px solid rgba(255,255,255,.3);
-  background: rgba(255,255,255,.15);
-  color: #fff;
 }
+.empdash-scopechip strong { color: #5b21b6; font-weight: 700; }
 
-.ed-status-present {
-  background: rgba(16,185,129,.25);
-  color: #fff;
-  border-color: rgba(16,185,129,.4);
-}
+/* ── Card shell ───────────────────────────────────────────────────────────── */
 
-.ed-status-absent {
-  background: rgba(239,68,68,.25);
-  color: #fff;
-  border-color: rgba(239,68,68,.4);
-}
-
-.ed-status-late {
-  background: rgba(245,158,11,.25);
-  color: #fff;
-  border-color: rgba(245,158,11,.4);
-}
-
-/* ── Page Body ───────────────────────────────────────────────────────────── */
-.ed-body {
-  padding: 24px 28px 32px;
-}
-
-/* ── KPI Grid ────────────────────────────────────────────────────────────── */
-.ed-kpis {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 14px;
-  margin-bottom: 20px;
-}
-
-.ed-kpi {
+.empdash-card {
   background: #fff;
-  border-radius: 14px;
-  border: 1px solid #ebebf0;
-  padding: 18px 20px;
+  border: 1px solid #e9e4ff;
+  border-radius: 10px;
+  padding: 8px 11px 9px;
+  min-width: 0;
   display: flex;
-  align-items: flex-start;
-  gap: 14px;
-  box-shadow: 0 1px 4px rgba(0,0,0,.04);
-  transition: box-shadow .18s, transform .18s;
-}
-.ed-kpi:hover {
-  box-shadow: 0 6px 20px rgba(107,63,219,.12);
-  transform: translateY(-2px);
+  flex-direction: column;
 }
 
-.ed-kpi-icon {
-  width: 44px;
-  height: 44px;
-  border-radius: 12px;
+.empdash-card-hd {
   display: flex;
   align-items: center;
-  justify-content: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 5px;
+  min-height: 19px;
+}
+
+.empdash-card-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #374151;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.empdash-card-sub {
+  font-size: 10px;
+  font-weight: 400;
+  color: #9ca3af;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.empdash-card-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+
+/* ── Grids ────────────────────────────────────────────────────────────────── */
+
+.empdash-kpis {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.empdash-actions {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.empdash-row {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 9px;
+  margin-bottom: 9px;
+}
+.empdash-row:last-child { margin-bottom: 0; }
+
+/* Re-flow the columns; never shrink the type. */
+/* ⚠ These thresholds are measured against the CONTENT box, not the window.
+   The app's sidebar and page padding take ~110px, so a 1440px browser gives
+   this grid ~1330px. A 1600px breakpoint therefore fired on the most common
+   desktop size and wrapped the 7 KPI tiles onto a second row, costing ~70px
+   of vertical budget on exactly the machine the page is tuned for. */
+@media (max-width: 1240px) { .empdash-kpis    { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+@media (max-width: 1180px) { .empdash-actions { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 1150px) { .empdash-row > * { grid-column: span 12 !important; } }
+@media (max-width: 760px)  {
+  .empdash-kpis,
+  .empdash-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+/* ── KPI tile ─────────────────────────────────────────────────────────────── */
+
+.empdash-kpi {
+  position: relative;
+  background: #fff;
+  border: 1px solid #e9e4ff;
+  border-radius: 10px;
+  padding: 7px 10px 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  text-align: left;
+  width: 100%;
+  font: inherit;
+}
+
+.empdash-kpi-ico {
+  width: 28px; height: 28px;
+  border-radius: 8px;
+  background: #f5f3ff;
+  display: flex; align-items: center; justify-content: center;
   flex-shrink: 0;
 }
 
-.ed-kpi-label {
-  font-size: 11px;
+/* The tile's lines are <span>s (a <button> may not contain <div>), so they
+   need an explicit block display — left inline they ran together as
+   "Current Headcount3330 active · 2 probation". */
+.empdash-kpi-body { min-width: 0; flex: 1; display: block; }
+.empdash-kpi-body > span { display: block; }
+
+/* Wraps rather than clips. At 1280 "Current Headcount" and "Upcoming
+   Joinees" no longer fit one line in a seventh of the row, and a tile
+   labelled "Upcoming Joine…" has lost the only thing identifying it. */
+.empdash-kpi-label {
+  font-size: 10.5px;
   color: #9ca3af;
-  margin: 0 0 5px 0;
-  text-transform: uppercase;
-  letter-spacing: .05em;
-  font-weight: 600;
+  line-height: 1.25;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
-.ed-kpi-val {
+.empdash-kpi-value {
   font-size: 18px;
   font-weight: 700;
   color: #111827;
-  margin: 0 0 3px 0;
   line-height: 1.2;
 }
 
-.ed-kpi-sub {
-  font-size: 11px;
-  color: #6b7280;
-  margin: 0;
-}
-
-.ed-clock-time {
-  font-size: 11px;
-  color: #6b7280;
-  margin-top: 2px;
-  display: flex;
-  align-items: center;
-  gap: 3px;
-}
-
-/* ── Middle Row ──────────────────────────────────────────────────────────── */
-.ed-mid-row {
-  display: grid;
-  grid-template-columns: 3fr 2fr;
-  gap: 16px;
-  margin-bottom: 20px;
-}
-
-/* ── Card ─────────────────────────────────────────────────────────────────── */
-.ed-card {
-  background: #fff;
-  border-radius: 14px;
-  border: 1px solid #ebebf0;
-  overflow: hidden;
-  box-shadow: 0 1px 4px rgba(0,0,0,.04);
-}
-
-.ed-card-hd {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 14px 18px;
-  border-bottom: 1px solid #f4f4f8;
-}
-
-.ed-card-title {
-  font-size: 13px;
-  font-weight: 700;
-  color: #111827;
-  display: flex;
-  align-items: center;
-  gap: 7px;
-}
-
-.ed-card-body {
-  padding: 8px 0;
-}
-
-/* ── Announcement rows ────────────────────────────────────────────────────── */
-.ed-ann-row {
-  display: flex;
-  gap: 12px;
-  padding: 10px 18px;
-  border-bottom: 1px solid #f7f7fa;
-  transition: background .1s;
-}
-.ed-ann-row:hover { background: #fafafa; }
-
-.ed-ann-icon {
-  width: 30px;
-  height: 30px;
-  border-radius: 8px;
-  background: #E8E1FC;
-  color: #6B3FDB;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  margin-top: 1px;
-}
-
-.ed-ann-title {
-  font-size: 12px;
-  font-weight: 600;
-  color: #111827;
-}
-
-.ed-ann-date {
+/* Seven tiles across 1330px leaves ~180px each, which truncated
+   "31 Active · 1 Probation · 1 Notice" to "31 Active · 1 Probati…".
+   The headcount composition is the one sub-line that must be readable in
+   full (it is the point of item 9), so this wraps to at most two lines
+   instead of clipping. Two lines cost ~12px of page height; a clipped
+   composition costs the information. */
+.empdash-kpi-sub {
   font-size: 10px;
-  color: #9ca3af;
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-
-.ed-ann-desc {
-  font-size: 11px;
   color: #6b7280;
-  margin-top: 2px;
-  margin-bottom: 0;
+  line-height: 1.3;
   display: -webkit-box;
   -webkit-line-clamp: 2;
+  line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
-  line-height: 1.4;
 }
 
-/* ── Holiday rows ────────────────────────────────────────────────────────── */
-.ed-hol-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 18px;
-  border-bottom: 1px solid #f7f7fa;
-  transition: background .1s;
-}
-.ed-hol-row:hover { background: #fafafa; }
-
-.ed-hol-icon {
-  width: 30px;
-  height: 30px;
-  border-radius: 8px;
-  background: #f5f3ff;
-  color: #7c5cf0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
+/* The window a metric covers, ON the metric, so no number on this page is
+   ambiguous about its time scope. */
+.empdash-scope {
+  font-size: 9px;
+  letter-spacing: .02em;
+  text-transform: uppercase;
+  color: #b8b0d4;
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.ed-hol-name {
-  font-size: 12px;
-  font-weight: 600;
-  color: #111827;
-  margin: 0 0 2px 0;
-}
+/* ── Clickable affordance ─────────────────────────────────────────────────── */
+/* The arrow is the signal that survives greyscale and colour-blindness; the
+   hover lift only reinforces it. */
 
-.ed-hol-date {
-  font-size: 11px;
-  color: #9ca3af;
-  margin: 0;
-}
-
-/* ── Quick Actions ────────────────────────────────────────────────────────── */
-.ed-quick-actions {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 14px;
-}
-
-.ed-qa-card {
-  background: #fff;
-  border-radius: 14px;
-  border: 1px solid #ebebf0;
-  padding: 22px 16px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 10px;
+.empdash-clickable {
   cursor: pointer;
-  transition: all .18s;
-  text-align: center;
-  box-shadow: 0 1px 4px rgba(0,0,0,.04);
+  border-color: #ddd4fb;
+  transition: box-shadow .14s ease, transform .14s ease, border-color .14s ease;
 }
-
-.ed-qa-card:hover {
-  box-shadow: 0 8px 24px rgba(107,63,219,.15);
-  transform: translateY(-3px);
-  border-color: #BAA8F8;
+.empdash-clickable:hover,
+.empdash-clickable:focus-visible {
+  border-color: #6B3FDB;
+  box-shadow: 0 4px 13px rgba(107, 63, 219, .13);
+  transform: translateY(-1px);
+  outline: none;
 }
+.empdash-clickable:focus-visible { outline: 2px solid #6B3FDB; outline-offset: 2px; }
 
-.ed-qa-icon {
-  width: 48px;
-  height: 48px;
-  border-radius: 14px;
+.empdash-go {
+  position: absolute;
+  top: 6px; right: 7px;
+  color: #cdc2f5;
   display: flex;
-  align-items: center;
-  justify-content: center;
+  transition: color .14s ease, transform .14s ease;
 }
+.empdash-clickable:hover .empdash-go,
+.empdash-clickable:focus-visible .empdash-go { color: #6B3FDB; transform: translate(1px, -1px); }
 
-.ed-qa-label {
-  font-size: 12px;
+.empdash-static { cursor: default; }
+
+/* ── Headcount tile ───────────────────────────────────────────────────────── */
+/* Its own shape because the composition segments are individually clickable:
+   a card that is one big <button> cannot legally contain more buttons. */
+
+.empdash-kpi--headcount { cursor: default; }
+
+.empdash-headline {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  font-size: 18px;
   font-weight: 700;
   color: #111827;
+  line-height: 1.2;
+  cursor: pointer;
 }
+.empdash-headline svg { color: #cdc2f5; transition: color .14s ease; }
+.empdash-headline:hover { color: #6B3FDB; }
+.empdash-headline:hover svg { color: #6B3FDB; }
 
-.ed-qa-sub {
-  font-size: 11px;
-  color: #9ca3af;
-  margin-top: -4px;
+.empdash-parts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 6px;
   line-height: 1.3;
 }
 
-/* ── Drawer overlay ──────────────────────────────────────────────────────── */
-.ed-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.35);
-  z-index: 100;
-  animation: ed-fade-in 0.2s ease;
-  -webkit-backdrop-filter: blur(2px);
-  backdrop-filter: blur(2px);
+/* Each segment of "31 Active · 1 Probation · 1 Notice" is its own target.
+   Notice period previously had no action anywhere on the page — it was a
+   word inside a subtitle. */
+.empdash-part {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  font-size: 10px;
+  color: #6b7280;
+  cursor: pointer;
+  white-space: nowrap;
+  border-bottom: 1px dotted #d6cdf5;
 }
+.empdash-part b { color: var(--part, #374151); font-weight: 700; }
+.empdash-part-sep { color: #d1d5db; font-size: 10px; line-height: 1.3; }
+.empdash-part:hover { color: var(--part, #6B3FDB); border-bottom-color: var(--part, #6B3FDB); }
+.empdash-part:focus-visible { outline: 2px solid #6B3FDB; outline-offset: 2px; border-radius: 3px; }
 
-@keyframes ed-fade-in {
-  from { opacity: 0; }
-  to   { opacity: 1; }
-}
+/* ── HR actions bar ───────────────────────────────────────────────────────── */
+/* ONE area rather than six free-floating boxes, at the same height: a single
+   border, one heading, and the six items inline inside it. */
 
-/* ── Drawer ──────────────────────────────────────────────────────────────── */
-.ed-drawer {
-  position: fixed;
-  right: 0;
-  top: 0;
-  height: 100%;
-  width: 420px;
+.empdash-actionbar {
+  border: 1px solid #e9e4ff;
+  border-radius: 10px;
   background: #fff;
-  z-index: 101;
+  padding: 6px 9px 8px;
+  margin-bottom: 9px;
+}
+
+.empdash-actionbar-hd {
   display: flex;
-  flex-direction: column;
-  box-shadow: -8px 0 32px rgba(0,0,0,.12);
-  animation: ed-slide-in 0.25s ease;
+  align-items: center;
+  gap: 5px;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: #b45309;
+  margin-bottom: 5px;
 }
 
-@keyframes ed-slide-in {
-  from { transform: translateX(100%); }
-  to   { transform: translateX(0); }
+.empdash-actionbar-scope {
+  font-weight: 400;
+  color: #b8b0d4;
+  font-size: 9.5px;
+  letter-spacing: .02em;
+  text-transform: uppercase;
 }
 
-.ed-drawer-hd {
+/* ── Action tile (inside the bar) ─────────────────────────────────────────── */
+/* Count-first tiles. These used to be cards carrying a four-name preview
+   each, which cost ~150px of page height and left two of them almost
+   entirely blank whenever there were no birthdays that month. */
+
+.empdash-action {
+  position: relative;
+  background: #faf9ff;
+  border: 1px solid #f0ecff;
+  border-radius: 8px;
+  padding: 5px 8px 6px;
+  min-width: 0;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.empdash-action-ico {
+  width: 24px; height: 24px;
+  border-radius: 7px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px;
+  flex-shrink: 0;
+}
+
+.empdash-action-body { min-width: 0; flex: 1; display: block; }
+.empdash-action-body > span { display: block; }
+
+.empdash-action-label {
+  font-size: 10.5px;
+  color: #9ca3af;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.empdash-action-counts {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  line-height: 1.2;
+}
+
+.empdash-action-main { font-size: 16px; font-weight: 700; color: #111827; }
+.empdash-action-main.is-zero { color: #cbd5e1; }
+
+/* When the main count and the overdue badge lead to DIFFERENT lists they are
+   separate buttons, so each needs its own affordance — the tile is no longer
+   one hoverable target. */
+.empdash-action-main.is-target,
+.empdash-overdue-badge.is-target {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+}
+.empdash-action-main.is-target { text-decoration: underline dotted #d6cdf5; text-underline-offset: 3px; }
+.empdash-action-main.is-target:hover { color: #6B3FDB; text-decoration-color: #6B3FDB; }
+.empdash-overdue-badge.is-target {
+  padding: 1px 5px;
+  background: #fee2e2;
+  color: #b91c1c;
+}
+.empdash-overdue-badge.is-target.is-warn { background: #fef3c7; color: #92400e; }
+.empdash-overdue-badge.is-target:hover { filter: brightness(.94); }
+.empdash-action-main.is-target:focus-visible,
+.empdash-overdue-badge.is-target:focus-visible { outline: 2px solid #6B3FDB; outline-offset: 2px; border-radius: 4px; }
+
+/* Overdue is a DIFFERENT number, not a shade of the same one. Its own badge
+   so it can never be read as part of the upcoming count — and it stays on
+   screen once its date has passed, which is the entire point. */
+.empdash-overdue-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 20px;
+  background: #fee2e2;
+  color: #b91c1c;
+  white-space: nowrap;
+}
+.empdash-overdue-badge.is-warn { background: #fef3c7; color: #92400e; }
+
+.empdash-action-sub {
+  font-size: 9.5px;
+  color: #b8b0d4;
+  letter-spacing: .02em;
+  text-transform: uppercase;
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── Workforce movement ───────────────────────────────────────────────────── */
+/* Opening → hires → exits → closing, read left to right as a ledger. */
+
+.empdash-movement {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.empdash-mv {
+  flex: 1 1 0;
+  min-width: 58px;
+  border-radius: 8px;
+  padding: 5px 7px 6px;
+  background: #faf9ff;
+  border: 1px solid #f0ecff;
+  text-align: left;
+  font: inherit;
+  display: block;
+}
+.empdash-mv.is-link { cursor: pointer; }
+.empdash-mv.is-link:hover { border-color: #6B3FDB; background: #f5f3ff; }
+
+.empdash-mv-label {
+  display: block;
+  font-size: 9.5px;
+  color: #9ca3af;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.empdash-mv-value { display: block; font-size: 16px; font-weight: 700; line-height: 1.25; }
+.empdash-mv-note  { display: block; font-size: 9px; color: #b8b0d4; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.empdash-mv-op { align-self: center; color: #cbd5e1; font-size: 13px; font-weight: 700; }
+
+.empdash-mv-foot {
+  margin-top: 6px;
+  font-size: 10px;
+  color: #9ca3af;
   display: flex;
   justify-content: space-between;
-  align-items: center;
-  padding: 20px 24px;
-  border-bottom: 1px solid #f0f0f4;
-  flex-shrink: 0;
-  background: linear-gradient(135deg, #F2EFFE, #E8E1FC);
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
-.ed-drawer-body {
-  flex: 1;
-  overflow-y: auto;
-  padding: 24px;
-}
+/* ── Lists ────────────────────────────────────────────────────────────────── */
 
-.ed-drawer-footer {
+.empdash-emp-row {
   display: flex;
-  justify-content: flex-end;
-  gap: 10px;
-  padding: 16px 24px;
-  border-top: 1px solid #f0f0f4;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  border-bottom: 1px solid #f5f5f7;
+  width: 100%;
+  background: none;
+  border-left: 0; border-right: 0; border-top: 0;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+  border-radius: 6px;
+}
+.empdash-emp-row:hover { background: #faf8ff; }
+.empdash-emp-row:last-child { border-bottom: 0; }
+
+.empdash-avatar {
+  width: 26px; height: 26px;
+  border-radius: 7px;
+  background: #f5f3ff;
+  color: #6B3FDB;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 10px; font-weight: 700;
   flex-shrink: 0;
 }
 
-/* ── Form elements ────────────────────────────────────────────────────────── */
-.ed-form-group { margin-bottom: 16px; }
+.empdash-emp-name { font-size: 12px; font-weight: 600; color: #111827; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.empdash-emp-meta { font-size: 10px; color: #9ca3af; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-.ed-label {
-  font-size: 12px;
-  font-weight: 600;
-  color: #374151;
-  display: block;
-  margin-bottom: 6px;
-  text-transform: uppercase;
-  letter-spacing: .04em;
+.empdash-tag {
+  font-size: 9px;
+  background: #f5f3ff;
+  color: #6B3FDB;
+  padding: 1px 6px;
+  border-radius: 20px;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
+.empdash-tag.is-soon { background: #fef3c7; color: #92400e; }
+.empdash-tag.is-late { background: #fee2e2; color: #b91c1c; }
 
-.ed-select,
-.ed-input,
-.ed-textarea {
-  width: 100%;
-  padding: 9px 12px;
-  border: 1.5px solid #e5e7eb;
-  border-radius: 8px;
-  font-size: 13px;
-  font-family: inherit;
-  box-sizing: border-box;
-  background: #fff;
-  color: #111827;
-  outline: none;
-  transition: border-color 0.15s, box-shadow 0.15s;
-}
-
-.ed-select:focus,
-.ed-input:focus,
-.ed-textarea:focus {
-  border-color: #7B3FE4;
-  box-shadow: 0 0 0 3px rgba(123,63,228,.1);
-}
-
-.ed-textarea {
-  resize: vertical;
-  min-height: 96px;
-}
-
-.ed-days-calc {
-  margin-top: 6px;
-  font-size: 12px;
-  color: #7B3FE4;
-  font-weight: 600;
-  padding: 4px 10px;
-  background: #F2EFFE;
-  border-radius: 6px;
-  display: inline-block;
-}
-
-/* ── Buttons ──────────────────────────────────────────────────────────────── */
-.ed-btn-primary {
-  padding: 9px 20px;
-  background: linear-gradient(135deg, #6B3FDB, #5B35D5);
-  color: #fff;
-  border: none;
-  border-radius: 8px;
-  font-size: 13px;
-  cursor: pointer;
-  font-weight: 600;
-  font-family: inherit;
-  transition: opacity .15s;
-  box-shadow: 0 2px 8px rgba(107,63,219,.3);
-}
-.ed-btn-primary:hover { opacity: .88; }
-
-.ed-btn-ghost {
-  padding: 9px 18px;
-  background: #fff;
-  color: #374151;
-  border: 1.5px solid #e5e7eb;
-  border-radius: 8px;
-  font-size: 13px;
-  cursor: pointer;
-  font-family: inherit;
-  transition: background 0.15s;
-}
-.ed-btn-ghost:hover { background: #f9fafb; }
-
-.ed-icon-btn {
-  width: 32px; height: 32px;
-  border-radius: 6px;
-  background: rgba(255,255,255,.2);
-  border: none;
-  cursor: pointer;
-  display: flex; align-items: center; justify-content: center;
-  color: #fff;
-  transition: background 0.15s;
-  padding: 0;
-}
-.ed-icon-btn:hover { background: rgba(255,255,255,.3); }
-
-.ed-text-btn {
+.empdash-linkbtn {
   font-size: 11px;
   color: #6B3FDB;
   background: none;
   border: none;
   cursor: pointer;
-  display: flex; align-items: center; gap: 3px;
   padding: 0;
-  font-family: inherit;
-  font-weight: 600;
-  transition: color 0.15s;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-weight: 500;
+  white-space: nowrap;
 }
-.ed-text-btn:hover { color: #5B35D5; }
+.empdash-linkbtn:hover { text-decoration: underline; }
 
-/* ── Toast ────────────────────────────────────────────────────────────────── */
-.ed-toast {
-  position: fixed;
-  top: 20px; right: 24px;
-  z-index: 200;
-  display: flex; align-items: center; gap: 10px;
-  padding: 12px 18px;
-  border-radius: 10px;
-  background: #fff;
-  box-shadow: 0 8px 28px rgba(0,0,0,.14);
-  font-size: 13px;
-  font-family: inherit;
-  animation: ed-toast-in 0.25s ease;
-  max-width: 340px;
+.empdash-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #cbd5e1;
+  font-size: 11px;
+  text-align: center;
+  padding: 0 12px;
+  flex: 1;
 }
 
-@keyframes ed-toast-in {
-  from { opacity: 0; transform: translateY(-12px); }
-  to   { opacity: 1; transform: translateY(0); }
+.empdash-skel { background: #f3f4f6; border-radius: 4px; }
+
+.empdash-hint {
+  font-size: 9.5px;
+  color: #9ca3af;
+  margin-top: 3px;
+  line-height: 1.35;
 }
 
-.ed-toast-success { border-left: 4px solid #10b981; color: #065f46; }
-.ed-toast-error   { border-left: 4px solid #ef4444; color: #991b1b; }
-
-/* ── Empty & Error states ─────────────────────────────────────────────────── */
-.ed-empty-state {
-  font-size: 12px; color: #9ca3af;
-  text-align: center; padding: 24px 0; margin: 0;
+/* Recent hires across two columns: four names cost two rows of height at
+   span 6 instead of four at span 3. */
+.empdash-hirelist {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 14px;
 }
+@media (max-width: 900px) { .empdash-hirelist { grid-template-columns: minmax(0, 1fr); } }
 
-.ed-error-state {
-  font-size: 12px; color: #ef4444;
-  text-align: center; padding: 24px 0; margin: 0;
-}
+/* recharts puts a focus ring on every bar/slice; affordance is handled above
+   and the outline lands in odd places inside an SVG. */
+.empdash-card .recharts-wrapper:focus,
+.empdash-card .recharts-surface:focus { outline: none; }
 
-/* ── Responsive ───────────────────────────────────────────────────────────── */
-@media (max-width: 1100px) {
-  .ed-kpis { grid-template-columns: repeat(2, 1fr); }
-  .ed-quick-actions { grid-template-columns: repeat(2, 1fr); }
-}
-
-@media (max-width: 768px) {
-  .ed-header { padding: 20px; }
-  .ed-body { padding: 16px; }
-  .ed-kpis { grid-template-columns: 1fr 1fr; }
-  .ed-mid-row { grid-template-columns: 1fr; }
-  .ed-quick-actions { grid-template-columns: repeat(2, 1fr); }
-  .ed-drawer { width: 100%; }
-}
-
-@media (max-width: 480px) {
-  .ed-kpis { grid-template-columns: 1fr; }
-  .ed-quick-actions { grid-template-columns: 1fr; }
-}
+.empdash-card .recharts-bar-rectangle,
+.empdash-card .recharts-pie-sector { cursor: pointer; }

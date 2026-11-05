@@ -9,6 +9,7 @@ import { Router } from 'express';
 import pool from '../../config/db.js';
 import { resolveRange } from '../../shared/dashboardFilters.js';
 import { companyOf } from '../../shared/scope.js';
+import { toCsv } from '../../shared/csv.js';
 
 const router = Router();
 
@@ -410,10 +411,13 @@ router.get('/export', async (req, res) => {
       r.overall_result, r.test_date,
       r.thd_i ?? '', r.thd_v ?? '', r.pf ?? '',
       r.p_out ?? '', r.q_out ?? '',
-    ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(','));
+    ]);
 
     const dateTag = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).replace(/\//g, '-');
-    const csv = [...metaHeaders, headers.join(','), ...csvRows].join('\n');
+    // Run, serial and station names are operator-entered, so the export goes
+    // through the shared writer, which also neutralises a leading = + - @.
+    // See shared/csv.js.
+    const csv = [...metaHeaders, toCsv(headers, csvRows)].join('\r\n');
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', `attachment; filename="pq-report-${dateTag}.csv"`);
     res.send(csv);

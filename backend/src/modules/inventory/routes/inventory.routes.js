@@ -1,6 +1,7 @@
 import express from 'express';
 import pool from '../../shared/db.js';
-import itemRepo from '../repositories/inventoryItem.repository.js';
+import itemRepo, { ItemValidationError } from '../repositories/inventoryItem.repository.js';
+import { respondError } from '../../../shared/pgErrors.js';
 import stockLedgerRepo from '../repositories/stockLedger.repository.js';
 import rmIssueService from '../services/rmIssue.service.js';
 import { requirePermission } from '../../../middlewares/auth.middleware.js';
@@ -19,6 +20,8 @@ import scmOpsRouter from './scmOperations.routes.js';
 import { postStock } from '../../production/subcontracting.routes.js';
 import { captureBefore } from '../../../middlewares/captureBefore.js';
 import { authorizeIssue } from '../services/stockAvailability.service.js';
+import { suggestedOrderQuantity, getAbcClassification, recomputePlanningParameters } from '../services/inventoryPlanning.service.js';
+import { demandQtySql, demandValueSql, demandRowSql, issueRowSql } from '../services/ledgerSemantics.js';
 
 const router = express.Router();
 
@@ -30,13 +33,13 @@ router.post('/items', requirePermission('inventory', 'add'), async (req, res) =>
     const { valid, errors } = await validate('inventory', req.body, { partial: false });
     if (!valid) return res.status(422).json({ error: 'Validation failed', code: 'VALIDATION_ERROR', module: 'inventory', errors });
     const itemCode = await itemRepo.getNextCode();
-    const item = await itemRepo.create({ ...req.body, item_code: itemCode, company_id: req.scope?.company_id ?? null });
+    const item = await itemRepo.create({ ...req.body, item_code: itemCode, company_id: companyOf(req) });
     logAudit({ userId: req.user?.userId, module: 'inventory', recordId: item.id, recordType: 'inventory_item', action: 'create', newData: item, req });
     const ruleResults = await evaluateRules('inventory', item).catch(() => []);
     const ruleAlerts = ruleResults.filter(r => r.triggered);
     res.status(201).json({ ...item, ...(ruleAlerts.length ? { rule_alerts: ruleAlerts } : {}) });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    itemWriteError(res, error);
   }
 });
 
@@ -61,23 +64,37 @@ router.get('/items/:id', requirePermission('inventory', 'view'), async (req, res
   }
 });
 
+// A PARTIAL update — only the supplied fields are written (see
+// inventoryItem.repository update()). Inventory Intelligence's "Save Rule"
+// sends three fields; Item Master sends its whole form. Both now work, and an
+// invalid or unknown field is a 422 naming the field instead of a 500.
 router.put('/items/:id', requirePermission('inventory', 'edit'), async (req, res) => {
   try {
-    const company_id = req.scope?.company_id ?? null;
+    const company_id = companyOf(req);
     const { valid, errors } = await validate('inventory', req.body, { partial: true });
     if (!valid) return res.status(422).json({ error: 'Validation failed', code: 'VALIDATION_ERROR', module: 'inventory', errors });
     const oldItem = await itemRepo.findById(req.params.id, company_id);
     if (!oldItem) return res.status(404).json({ error: 'Item not found' });
-    const item = await itemRepo.update(req.params.id, req.body, company_id);
+    const item = await itemRepo.update(req.params.id, req.body, company_id, oldItem);
     if (!item) return res.status(404).json({ error: 'Item not found or access denied' });
-    logAudit({ userId: req.user?.userId, module: 'inventory', recordId: req.params.id, recordType: 'inventory_item', action: 'update', oldData: oldItem, newData: item, req });
+    logAudit({ userId: req.user?.userId, module: 'inventory', recordId: req.params.id, recordType: 'inventory_item', action: 'update', oldData: oldItem, newData: item, req, company_id: oldItem.company_id });
     const ruleResults = await evaluateRules('inventory', item).catch(() => []);
     const ruleAlerts = ruleResults.filter(r => r.triggered);
     res.json({ ...item, ...(ruleAlerts.length ? { rule_alerts: ruleAlerts } : {}) });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    itemWriteError(res, error);
   }
 });
+
+/** Field validation -> 422 with field errors (the validate() shape); a database
+ *  constraint -> its 4xx (pgErrors); anything else -> 500. */
+function itemWriteError(res, error) {
+  if (error instanceof ItemValidationError) {
+    return res.status(422).json({ error: 'Validation failed', code: 'VALIDATION_ERROR', module: 'inventory',
+                                  message: error.message, errors: error.errors });
+  }
+  return respondError(res, error);
+}
 
 router.delete('/items/:id', requirePermission('inventory', 'delete'), async (req, res) => {
   try {
@@ -246,8 +263,22 @@ router.get('/stock/low-stock', requirePermission('inventory', 'view'), async (re
   }
 });
 
+// Company scope for routes that post or read stock on a caller's behalf (stock
+// movement, RM issues). A caller with no company may proceed only when
+// verifyToken marked the scope explicitly global (a super admin), and then a new
+// posting takes its warehouse's company. Anyone else with no company is refused
+// here, because null would mean "every tenant" in the repositories' predicates.
+const companyScope = (req, res, next) => {
+  const companyId = companyOf(req);
+  if (companyId == null && req.scope?.isGlobal !== true) {
+    return res.status(403).json({ error: 'No company is assigned to this login.', code: 'NO_COMPANY_SCOPE' });
+  }
+  req.scopeCompanyId = companyId;
+  next();
+};
+
 // Stock Add / Remove — single-item transactional stock movement
-router.post('/stock/movement', requirePermission('inventory', 'add'), async (req, res) => {
+router.post('/stock/movement', requirePermission('inventory', 'add'), companyScope, async (req, res) => {
   const { item_id, warehouse_id, movement_type, quantity, rate = 0, reference, notes, reservation_id = null } = req.body;
   if (!item_id || !warehouse_id || !movement_type || !quantity) {
     return res.status(422).json({ error: 'item_id, warehouse_id, movement_type, and quantity are required' });
@@ -260,6 +291,21 @@ router.post('/stock/movement', requirePermission('inventory', 'add'), async (req
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+
+    // The item and the warehouse must belong to one company — the caller's, or
+    // for a super admin the warehouse's — and that is the company the ledger
+    // row is filed under. Checked for IN as well as OUT: a receipt into another
+    // company's warehouse inflates its stock and value just as surely as an
+    // issue drains it. A company_id in the body is never read.
+    let companyId;
+    try {
+      companyId = await stockLedgerRepo.resolveStockOwnership(client, {
+        warehouseId: warehouse_id, itemIds: [item_id], companyId: req.scopeCompanyId,
+      });
+    } catch (err) {
+      await client.query('ROLLBACK');
+      return res.status(err.status || 500).json({ error: err.message });
+    }
 
     if (!isIN) {
       // Free stock only, unless the caller names the reservation they are
@@ -285,6 +331,7 @@ router.post('/stock/movement', requirePermission('inventory', 'add'), async (req
       transaction_date: new Date().toISOString().split('T')[0],
       remarks: reference || notes || '',
       created_by: req.user?.employee_id ?? null,
+      company_id: companyId,
     });
 
     await client.query('COMMIT');
@@ -338,32 +385,32 @@ router.get('/stock/valuation', requirePermission('inventory', 'view'), async (re
 // =====================================================
 // RM ISSUES
 // =====================================================
-router.post('/rm-issues', requirePermission('inventory', 'add'), async (req, res) => {
+router.post('/rm-issues', requirePermission('inventory', 'add'), companyScope, async (req, res) => {
   try {
     const { valid, errors } = await validate('inventory', req.body, { partial: false });
     if (!valid) return res.status(422).json({ error: 'Validation failed', code: 'VALIDATION_ERROR', module: 'inventory', errors });
-    const issue = await rmIssueService.createIssue(req.body, req.user?.employee_id ?? null);
+    const issue = await rmIssueService.createIssue(req.body, req.user?.employee_id ?? null, req.scopeCompanyId);
     logAudit({ userId: req.user?.userId, module: 'inventory', recordId: issue.id, recordType: 'rm_issue', action: 'create', newData: issue, req });
     const ruleResults = await evaluateRules('inventory', issue).catch(() => []);
     const ruleAlerts = ruleResults.filter(r => r.triggered);
     res.status(201).json({ ...issue, ...(ruleAlerts.length ? { rule_alerts: ruleAlerts } : {}) });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(error.status || 500).json({ error: error.message });
   }
 });
 
-router.get('/rm-issues', requirePermission('inventory', 'view'), async (req, res) => {
+router.get('/rm-issues', requirePermission('inventory', 'view'), companyScope, async (req, res) => {
   try {
-    const issues = await rmIssueService.getIssues(req.query);
+    const issues = await rmIssueService.getIssues(req.query, req.scopeCompanyId);
     res.json(issues);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-router.get('/rm-issues/:id', requirePermission('inventory', 'view'), async (req, res) => {
+router.get('/rm-issues/:id', requirePermission('inventory', 'view'), companyScope, async (req, res) => {
   try {
-    const issue = await rmIssueService.getIssueById(req.params.id);
+    const issue = await rmIssueService.getIssueById(req.params.id, req.scopeCompanyId);
     if (!issue) {
       return res.status(404).json({ error: 'RM Issue not found' });
     }
@@ -598,10 +645,10 @@ router.post('/stock-adjustments/:id/reject', requirePermission('inventory', 'app
 // =====================================================
 // ANALYTICS
 // =====================================================
-router.get('/analytics/consumption-trends', requirePermission('inventory', 'view'), async (req, res) => {
+router.get('/analytics/consumption-trends', requirePermission('inventory', 'view'), companyScope, async (req, res) => {
   try {
     const { start_date, end_date } = req.query;
-    const trends = await rmIssueService.getConsumptionTrends(start_date, end_date);
+    const trends = await rmIssueService.getConsumptionTrends(start_date, end_date, req.scopeCompanyId);
     res.json(trends);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -734,12 +781,37 @@ router.get('/reorder-alerts', requirePermission('inventory', 'view'), async (req
         w.id                                                                          AS warehouse_id,
         w.warehouse_name,
         COALESCE(SUM(sl.quantity_in - sl.quantity_out), 0)                            AS current_stock,
-        ii.reorder_level - COALESCE(SUM(sl.quantity_in - sl.quantity_out), 0)         AS shortfall,
-        GREATEST(
-          ii.reorder_level * 2 - COALESCE(SUM(sl.quantity_in - sl.quantity_out), 0),
-          ii.reorder_level
-        )                                                                             AS reorder_qty
+        COALESCE(inc.qty, 0)                                                          AS incoming_qty,
+        COALESCE(rsv.qty, 0)                                                           AS reserved_qty,
+        -- The requirement's formula, in full:
+        --   available + incoming - reserved  vs  the effective reorder point.
+        -- Only on-hand was tested before, so an item already on order alerted
+        -- again every night (and the cron raised a second requisition for it),
+        -- while stock already promised to a work order still counted as cover.
+        COALESCE(SUM(sl.quantity_in - sl.quantity_out), 0)
+          + COALESCE(inc.qty, 0) - COALESCE(rsv.qty, 0)                                AS available_position,
+        ii.reorder_level
+          - (COALESCE(SUM(sl.quantity_in - sl.quantity_out), 0)
+             + COALESCE(inc.qty, 0) - COALESCE(rsv.qty, 0))                            AS shortfall,
+        ii.eoq, ii.min_order_qty, ii.max_order_qty, ii.lot_size_qty,
+        ii.safety_stock_source, ii.reorder_point_source, ii.abc_class
       FROM inventory_items ii
+      -- Incoming: ordered and not yet received, on a PO that is still live.
+      LEFT JOIN LATERAL (
+        SELECT SUM(GREATEST(COALESCE(poi.quantity,0) - COALESCE(poi.received_quantity,0), 0)) AS qty
+          FROM purchase_order_items poi
+          JOIN purchase_orders po ON po.id = poi.po_id
+         WHERE poi.item_id = ii.id
+           AND po.deleted_at IS NULL
+           AND LOWER(COALESCE(po.status,'')) NOT IN ('cancelled','closed','rejected','draft')
+      ) inc ON TRUE
+      -- Reserved: promised to a requirement and not yet consumed.
+      LEFT JOIN LATERAL (
+        SELECT SUM(COALESCE(r.quantity_remaining, r.quantity_reserved, 0)) AS qty
+          FROM inventory_reservations r
+         WHERE r.item_id = ii.id
+           AND LOWER(COALESCE(r.status,'')) IN ('active','partially_consumed')
+      ) rsv ON TRUE
       -- Was CROSS JOIN warehouses: every item was tested against every store, so
       -- a store that has never carried an item read 0, which is "below reorder
       -- point", and alerted. With five stores that is four false alerts per item.
@@ -759,11 +831,28 @@ router.get('/reorder-alerts', requirePermission('inventory', 'view'), async (req
         AND ($1::INTEGER IS NULL OR w.company_id = $1)
       GROUP BY ii.id, ii.item_code, ii.item_name, ii.unit_of_measure,
                ii.reorder_level, ii.safety_stock, ii.lead_time_days,
-               ii.preferred_vendor_id, v.vendor_name, w.id, w.warehouse_name
-      HAVING COALESCE(SUM(sl.quantity_in - sl.quantity_out), 0) <= ii.reorder_level
+               ii.preferred_vendor_id, v.vendor_name, w.id, w.warehouse_name,
+               inc.qty, rsv.qty, ii.eoq, ii.min_order_qty, ii.max_order_qty,
+               ii.lot_size_qty, ii.safety_stock_source, ii.reorder_point_source, ii.abc_class
+      HAVING COALESCE(SUM(sl.quantity_in - sl.quantity_out), 0)
+             + COALESCE(inc.qty, 0) - COALESCE(rsv.qty, 0) <= ii.reorder_level
       ORDER BY shortfall DESC
     `, [companyId]);
-    res.json(result.rows.map(r => ({ ...r, auto_create_po: autoCreatePo })));
+
+    // The order quantity now comes from EOQ via the single planning service,
+    // instead of the `reorder_level * 2` this endpoint used to invent for
+    // itself. `reorder_basis` travels with it so the screen can say WHY, and a
+    // planner overruling the number knows what they are overruling.
+    res.json(result.rows.map(r => {
+      const sized = suggestedOrderQuantity(r, r.current_stock, r.incoming_qty);
+      return {
+        ...r,
+        reorder_qty: sized.quantity,
+        reorder_basis: sized.basis,
+        reorder_capped: sized.capped,
+        auto_create_po: autoCreatePo,
+      };
+    }));
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -879,78 +968,73 @@ router.post('/reorder-alerts/generate-pos', requirePermission('inventory', 'add'
 // =====================================================
 // ABC ANALYSIS  (InventoryIntelligence tab 2)
 // =====================================================
+//
+// This used to be a SECOND ABC engine: its own SQL Pareto over 12 months of
+// quantity_out x ledger rate, hard-coded 70/90, banding on the cumulative AFTER
+// the item (so a part holding 80% of value came out B), counting transfers and
+// seed-vocabulary rows as consumption, ignoring manual overrides and the
+// company's thresholds — and caching the result as JSON in abc_analysis_cache,
+// which then went on being served as "the" ABC analysis however stale it was.
+//
+// Both endpoints now read the classification the planning service computed and
+// persisted (getAbcClassification) and shape it into this screen's existing
+// contract: { last_computed, stats: {A|B|C: {count, value}}, items: [{ item_id,
+// item_code, item_name, annual_consumption_value, cumulative_pct, category }] }.
+// `category` is the OPERATIVE class, so a planner's manual override shows here
+// exactly as it does everywhere else. Unclassified items (insufficient history,
+// never evaluated) are not banded; they are counted in `unclassified_count`.
+//
+// abc_analysis_cache is no longer read or written. Its rows are left in place
+// (historical data is not deleted here), and nothing can present them again.
+function abcAnalysisPayload(rows) {
+  const stats = { A: { count: 0, value: 0 }, B: { count: 0, value: 0 }, C: { count: 0, value: 0 } };
+  const items = [];
+  let unclassified = 0;
+  let lastComputed = null;
+  for (const r of rows) {
+    if (r.classified_at && (!lastComputed || new Date(r.classified_at) > new Date(lastComputed))) lastComputed = r.classified_at;
+    const cls = r.abc_class ? String(r.abc_class).trim() : null;
+    if (!stats[cls]) { unclassified++; continue; }
+    const value = r.annual_consumption_value == null ? null : parseFloat(r.annual_consumption_value);
+    stats[cls].count++;
+    stats[cls].value += value || 0;
+    items.push({
+      item_id: r.item_id, item_code: r.item_code, item_name: r.item_name,
+      annual_consumption_value: value,
+      cumulative_pct: r.abc_cumulative_pct == null ? null : parseFloat(r.abc_cumulative_pct),
+      category: cls,
+      abc_class_source: r.abc_class_source,
+      classification_status: r.classification_status,
+    });
+  }
+  if (!items.length) return null;     // same "nothing computed yet" answer as before
+  for (const k of Object.keys(stats)) stats[k].value = Math.round(stats[k].value * 100) / 100;
+  return { last_computed: lastComputed, stats, items, unclassified_count: unclassified, source: 'planning_classification' };
+}
+
 router.get('/abc-analysis', requirePermission('inventory', 'view'), async (req, res) => {
   try {
-    // abc_analysis_cache carries a company_id; this read ignored it and handed
-    // whichever tenant computed last to whoever asked.
-    const cached = await pool.query(
-      `SELECT * FROM abc_analysis_cache
-        WHERE ($1::INTEGER IS NULL OR company_id = $1)
-        ORDER BY computed_at DESC LIMIT 1`,
-      [companyOf(req)]);
-    if (cached.rows.length === 0) return res.json(null);
-    const row = cached.rows[0];
-    res.json({ last_computed: row.computed_at, stats: row.stats, items: row.items });
+    res.json(abcAnalysisPayload(await getAbcClassification(companyOf(req))));
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-router.post('/abc-analysis/run', requirePermission('inventory', 'view'), async (req, res) => {
+// "Run Analysis" now runs THE analysis — the planning recompute — so the button
+// and the nightly job can never disagree. That recompute writes EOQ, safety
+// stock and reorder points as well as classes, so it takes the same permission
+// as POST /planning/recompute (inventory:edit). The old endpoint asked only for
+// inventory:view because all it wrote was its own cache. `apply` follows the
+// company's auto_apply policy, exactly as the nightly job does.
+router.post('/abc-analysis/run', requirePermission('inventory', 'edit'), async (req, res) => {
   try {
-    const abcCompanyId = companyOf(req);
-    const result = await pool.query(`
-      WITH item_values AS (
-        SELECT
-          ii.id          AS item_id,
-          ii.item_code,
-          ii.item_name,
-          COALESCE(SUM(sl.quantity_out * sl.rate), 0) AS annual_consumption_value
-        FROM inventory_items ii
-        LEFT JOIN stock_ledger sl
-          ON ii.id = sl.item_id
-          AND sl.transaction_date >= CURRENT_DATE - INTERVAL '12 months'
-          AND sl.quantity_out > 0
-        WHERE ii.deleted_at IS NULL
-          AND ($1::INTEGER IS NULL OR ii.company_id = $1)
-        GROUP BY ii.id, ii.item_code, ii.item_name
-      ),
-      total AS (SELECT NULLIF(SUM(annual_consumption_value), 0) AS grand_total FROM item_values),
-      ranked AS (
-        SELECT
-          iv.*,
-          ROUND(
-            100.0 * SUM(iv.annual_consumption_value) OVER (ORDER BY iv.annual_consumption_value DESC)
-            / t.grand_total,
-          2) AS cumulative_pct
-        FROM item_values iv, total t
-        WHERE t.grand_total IS NOT NULL
-      )
-      SELECT
-        item_id, item_code, item_name, annual_consumption_value, cumulative_pct,
-        CASE
-          WHEN cumulative_pct <= 70 THEN 'A'
-          WHEN cumulative_pct <= 90 THEN 'B'
-          ELSE 'C'
-        END AS category
-      FROM ranked
-      ORDER BY annual_consumption_value DESC
-    `, [abcCompanyId]);
-
-    const items = result.rows;
-    const stats = { A: { count: 0, value: 0 }, B: { count: 0, value: 0 }, C: { count: 0, value: 0 } };
-    items.forEach(r => {
-      stats[r.category].count++;
-      stats[r.category].value += parseFloat(r.annual_consumption_value);
+    const cid = companyOf(req);
+    const { run } = await recomputePlanningParameters({
+      companyId: cid, apply: null,
+      actor: { id: req.user?.id ?? null, name: req.user?.name || req.user?.username || 'System' },
     });
-
-    await pool.query(`INSERT INTO abc_analysis_cache (stats, items, company_id) VALUES ($1, $2, $3)`, [
-      JSON.stringify(stats),
-      JSON.stringify(items),
-      abcCompanyId,
-    ]);
-
-    res.json({ last_computed: new Date(), stats, items });
+    const payload = abcAnalysisPayload(await getAbcClassification(cid));
+    res.json(payload ? { ...payload, run_no: run?.run_no ?? null } : null);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -982,7 +1066,9 @@ router.get('/slow-movers', requirePermission('inventory', 'view'), async (req, r
         COALESCE(AVG(NULLIF(sl.rate, 0)), 0)                    AS unit_cost,
         COALESCE(SUM(sl.quantity_in - sl.quantity_out), 0)
           * COALESCE(AVG(NULLIF(sl.rate, 0)), 0)                AS stock_value,
-        MAX(CASE WHEN sl.quantity_out > 0 THEN sl.transaction_date END) AS last_movement_date
+        -- Last genuine ISSUE (ledgerSemantics): a bin move, transfer, vendor
+        -- return or count adjustment does not make a part "moving".
+        MAX(CASE WHEN ${issueRowSql('sl')} THEN sl.transaction_date END) AS last_movement_date
       FROM inventory_items ii
       LEFT JOIN stock_ledger sl ON ii.id = sl.item_id
       WHERE ii.deleted_at IS NULL AND ii.is_active = true
@@ -991,8 +1077,8 @@ router.get('/slow-movers', requirePermission('inventory', 'view'), async (req, r
       HAVING
         COALESCE(SUM(sl.quantity_in - sl.quantity_out), 0) > 0
         AND (
-          MAX(CASE WHEN sl.quantity_out > 0 THEN sl.transaction_date END) IS NULL
-          OR MAX(CASE WHEN sl.quantity_out > 0 THEN sl.transaction_date END) < CURRENT_DATE - ($1 || ' days')::INTERVAL
+          MAX(CASE WHEN ${issueRowSql('sl')} THEN sl.transaction_date END) IS NULL
+          OR MAX(CASE WHEN ${issueRowSql('sl')} THEN sl.transaction_date END) < CURRENT_DATE - ($1 || ' days')::INTERVAL
         )
       ORDER BY stock_value DESC
     `, [slowMoverDays, companyId]);
@@ -1153,8 +1239,19 @@ router.put('/warehouse-transfers/:id/receive', requirePermission('inventory', 'e
 // =====================================================
 // LANDED COSTS  (InventoryIntelligence tab 3)
 // =====================================================
+/**
+ * `landed_costs` has no company_id of its own, so its tenant is whoever owns the
+ * purchase order it is attached to — and this route was not reading that at
+ * all. Every caller got every company's freight, duty and insurance, with the
+ * PO number and vendor name joined on. Scoping runs through the PO.
+ *
+ * A row with no po_id has no tenant to derive, so it is visible only to an
+ * unscoped caller (superadmin). That is the conservative reading: an
+ * unattributable cost is shown to nobody who might mistake it for their own.
+ */
 router.get('/landed-costs', requirePermission('inventory', 'view'), async (req, res) => {
   try {
+    const companyId = req.scope?.company_id ?? null;
     const result = await pool.query(`
       SELECT lc.*,
              po.po_number,
@@ -1162,34 +1259,102 @@ router.get('/landed-costs', requirePermission('inventory', 'view'), async (req, 
       FROM landed_costs lc
       LEFT JOIN purchase_orders po ON lc.po_id = po.id
       LEFT JOIN vendors         v  ON po.supplier_id = v.id
+      WHERE $1::int IS NULL OR po.company_id = $1
       ORDER BY lc.created_at DESC
-    `);
+    `, [companyId]);
     res.json(result.rows);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
+/**
+ * A landed cost must attach to a purchase order the caller can actually see.
+ *
+ * This route used to write `po_id || null` straight through. Nothing checked
+ * that the PO existed, and nothing checked whose it was, so the column could
+ * hold an id pointing at nothing — which is exactly the state the database was
+ * found in: five rows carrying ₹125,000-₹275,000 of freight against po_id
+ * 1-5, none of which exist. The TCO engine's observed-freight join
+ * (tco.service.loadVendorPerformance) never matched one of them, so every
+ * vendor on every comparison silently fell back to the assumed company freight
+ * rate. 20260917000002 deleted the orphans and added the missing FK; this is
+ * the other half — the FK turns a bad id into a 23503 at the database, and
+ * this check turns it into an honest 422 before it gets there, with the tenant
+ * boundary enforced on the way.
+ */
 router.post('/landed-costs', requirePermission('inventory', 'add'), async (req, res) => {
   try {
     const { po_id, freight_cost = 0, customs_duty = 0, insurance = 0, other_charges = 0, allocation_method = 'value' } = req.body;
-    const total = parseFloat(freight_cost) + parseFloat(customs_duty) + parseFloat(insurance) + parseFloat(other_charges);
+
+    // parseFloat('abc') is NaN, and NaN propagates silently through the sum
+    // into total_landed_cost, where it becomes the amount allocated across
+    // every line of the PO.
+    const amounts = { freight_cost, customs_duty, insurance, other_charges };
+    const parsed = {};
+    for (const [field, raw] of Object.entries(amounts)) {
+      const n = raw === '' || raw == null ? 0 : parseFloat(raw);
+      if (!Number.isFinite(n) || n < 0) {
+        return res.status(422).json({ error: `${field.replace(/_/g, ' ')} must be a number of zero or more.` });
+      }
+      parsed[field] = n;
+    }
+
+    if (!['value', 'qty', 'weight'].includes(allocation_method)) {
+      return res.status(422).json({ error: 'Allocation method must be one of: value, qty, weight.' });
+    }
+
+    // companyOf-equivalent: req.scope is the only scope that does not fail open
+    // across tenants (project_company_of_scope_helper). NULL = superadmin.
+    const companyId = req.scope?.company_id ?? null;
+    const poId = po_id ? Number(po_id) : null;
+    if (po_id && !Number.isInteger(poId)) {
+      return res.status(422).json({ error: 'Invalid purchase order id.' });
+    }
+    if (poId != null) {
+      const { rows } = await pool.query(
+        `SELECT id FROM purchase_orders
+          WHERE id = $1 AND deleted_at IS NULL
+            AND ($2::int IS NULL OR company_id = $2)`,
+        [poId, companyId]
+      );
+      // Same 404 whether the PO is missing or belongs to another tenant —
+      // distinguishing them confirms the existence of other companies' orders.
+      if (!rows.length) {
+        return res.status(404).json({ error: 'Purchase order not found.' });
+      }
+    }
+
+    const total = parsed.freight_cost + parsed.customs_duty + parsed.insurance + parsed.other_charges;
     const result = await pool.query(
       `INSERT INTO landed_costs
          (po_id, freight_cost, customs_duty, insurance, other_charges, total_landed_cost, allocation_method, created_by)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
-      [po_id || null, freight_cost, customs_duty, insurance, other_charges, total, allocation_method,
-       req.user.userId ?? req.user.id]
+      [poId, parsed.freight_cost, parsed.customs_duty, parsed.insurance, parsed.other_charges,
+       total, allocation_method, req.user.userId ?? req.user.id]
     );
     res.status(201).json(result.rows[0]);
   } catch (error) {
+    // The FK added in 20260917000002 is the backstop if the check above is ever
+    // bypassed; report it as the client error it is rather than a 500.
+    if (error.code === '23503') {
+      return res.status(422).json({ error: 'That purchase order no longer exists.' });
+    }
     res.status(500).json({ error: error.message });
   }
 });
 
 router.post('/landed-costs/:id/allocate', requirePermission('inventory', 'edit'), async (req, res) => {
   try {
-    const lcRes = await pool.query(`SELECT * FROM landed_costs WHERE id = $1`, [req.params.id]);
+    // Scoped through the PO like the list above — without this, any tenant
+    // could allocate another tenant's landed cost across their PO lines.
+    const companyId = req.scope?.company_id ?? null;
+    const lcRes = await pool.query(
+      `SELECT lc.* FROM landed_costs lc
+         LEFT JOIN purchase_orders po ON po.id = lc.po_id
+        WHERE lc.id = $1 AND ($2::int IS NULL OR po.company_id = $2)`,
+      [req.params.id, companyId]
+    );
     if (!lcRes.rows[0]) return res.status(404).json({ error: 'Landed cost record not found' });
     const lc = lcRes.rows[0];
 
@@ -1340,13 +1505,20 @@ router.get('/advanced-dashboard', requirePermission('inventory', 'view'), async 
       `, p),
 
       // 5. Issues value last 12 months (numerator for turnover)
+      // Demand value per ledgerSemantics (issues less returns, per item, floored
+      // at zero) — not every outward row: transfers, bin moves, vendor returns
+      // and count losses are not consumption and used to inflate turnover.
       pool.query(`
-        SELECT COALESCE(SUM(sl.quantity_out * sl.rate), 0)::numeric AS issues_value
-        FROM stock_ledger sl
-        JOIN inventory_items ii ON sl.item_id = ii.id
-        WHERE ii.deleted_at IS NULL ${iif}
-          AND sl.transaction_date >= NOW() - INTERVAL '12 months'
-          AND sl.quantity_out > 0
+        SELECT COALESCE(SUM(GREATEST(iv.v, 0)), 0)::numeric AS issues_value
+        FROM (
+          SELECT sl.item_id, SUM(${demandValueSql('sl')}) AS v
+          FROM stock_ledger sl
+          JOIN inventory_items ii ON sl.item_id = ii.id
+          WHERE ii.deleted_at IS NULL ${iif}
+            AND sl.transaction_date >= NOW() - INTERVAL '12 months'
+            AND ${demandRowSql('sl')}
+          GROUP BY sl.item_id
+        ) iv
       `, p),
 
       // 6. Current inventory value (denominator for turnover)
@@ -1362,15 +1534,21 @@ router.get('/advanced-dashboard', requirePermission('inventory', 'view'), async 
 
       // 7. Turnover by category
       pool.query(`
+        -- Issues are aggregated per item BEFORE the join. Joining raw ledger
+        -- rows multiplied every item's current_value by its number of ledger
+        -- rows in the window (a fan-out), so the denominator was inflated too.
         SELECT
           COALESCE(ii.item_type, 'Other') AS category,
-          COALESCE(SUM(sl.quantity_out * sl.rate), 0)::numeric AS issues_value,
+          COALESCE(SUM(GREATEST(COALESCE(iv.v, 0), 0)), 0)::numeric AS issues_value,
           COALESCE(SUM(COALESCE(sq.qty, 0) * COALESCE(ii.standard_cost, 0)), 0)::numeric AS current_value
         FROM inventory_items ii
-        LEFT JOIN stock_ledger sl
-          ON sl.item_id = ii.id
-          AND sl.transaction_date >= NOW() - INTERVAL '12 months'
-          AND sl.quantity_out > 0
+        LEFT JOIN (
+          SELECT sl.item_id, SUM(${demandValueSql('sl')}) AS v
+          FROM stock_ledger sl
+          WHERE sl.transaction_date >= NOW() - INTERVAL '12 months'
+            AND ${demandRowSql('sl')}
+          GROUP BY sl.item_id
+        ) iv ON iv.item_id = ii.id
         LEFT JOIN (
           SELECT item_id, COALESCE(SUM(quantity_in - quantity_out), 0) AS qty
           FROM stock_ledger GROUP BY item_id
@@ -1562,9 +1740,9 @@ router.get('/advanced-dashboard', requirePermission('inventory', 'view'), async 
 // =====================================================
 
 // GET /consumption/by-project — grouped by project_id
-router.get('/consumption/by-project', requirePermission('inventory', 'view'), async (req, res) => {
+router.get('/consumption/by-project', requirePermission('inventory', 'view'), companyScope, async (req, res) => {
   try {
-    const companyId = req.scope?.company_id ?? null;
+    const companyId = req.scopeCompanyId;
     const params = [];
     const cond = companyId != null ? (params.push(companyId), `AND ii.company_id = $${params.length}`) : '';
 
@@ -1579,11 +1757,12 @@ router.get('/consumption/by-project', requirePermission('inventory', 'view'), as
         SUM(ia.quantity)              AS total_consumed,
         COALESCE(AVG(NULLIF(ia.rate,0)), 0) AS avg_rate,
         SUM(ia.quantity * ia.rate)    AS total_value,
-        COUNT(*)                      AS transaction_count
+        COUNT(*)                      AS transaction_count,
+        COUNT(*) FILTER (WHERE ia.allocation_source IS NULL)::int AS legacy_transaction_count
       FROM inventory_allocations ia
       JOIN inventory_items ii ON ia.item_id = ii.id
       LEFT JOIN projects p ON ia.project_id = p.id
-      WHERE ia.project_id IS NOT NULL ${cond}
+      WHERE ia.project_id IS NOT NULL AND (ia.allocation_source = 'consumption' OR ia.allocation_source IS NULL) ${cond}
       GROUP BY ia.project_id, p.project_name, p.project_code,
                ii.item_code, ii.item_name, ii.unit_of_measure
       ORDER BY total_value DESC
@@ -1594,10 +1773,15 @@ router.get('/consumption/by-project', requirePermission('inventory', 'view'), as
   }
 });
 
+// The three consumption reads list physical consumption only:
+// allocation_source 'consumption', plus rows from before that column existed
+// (NULL: historical, unclassified, labelled as such on the page). Order-promise
+// and Advanced Inventory allocations are commitments, not consumption.
+
 // GET /consumption/by-type — grouped by reference_type
-router.get('/consumption/by-type', requirePermission('inventory', 'view'), async (req, res) => {
+router.get('/consumption/by-type', requirePermission('inventory', 'view'), companyScope, async (req, res) => {
   try {
-    const companyId = req.scope?.company_id ?? null;
+    const companyId = req.scopeCompanyId;
     const params = [];
     const cond = companyId != null ? (params.push(companyId), `AND ii.company_id = $${params.length}`) : '';
 
@@ -1613,11 +1797,12 @@ router.get('/consumption/by-type', requirePermission('inventory', 'view'), async
         ia.rate,
         ia.quantity * ia.rate AS value,
         ia.allocation_date,
-        ia.purpose
+        ia.purpose,
+        ia.allocation_source
       FROM inventory_allocations ia
       JOIN inventory_items ii ON ia.item_id = ii.id
       JOIN warehouses w ON ia.warehouse_id = w.id
-      WHERE 1=1 ${cond}
+      WHERE (ia.allocation_source = 'consumption' OR ia.allocation_source IS NULL) ${cond}
       ORDER BY ia.reference_type, ia.allocation_date DESC
     `, params);
     res.json(result.rows);
@@ -1627,9 +1812,9 @@ router.get('/consumption/by-type', requirePermission('inventory', 'view'), async
 });
 
 // GET /consumption — full list with optional date filter
-router.get('/consumption', requirePermission('inventory', 'view'), async (req, res) => {
+router.get('/consumption', requirePermission('inventory', 'view'), companyScope, async (req, res) => {
   try {
-    const companyId = req.scope?.company_id ?? null;
+    const companyId = req.scopeCompanyId;
     const { start_date, end_date, item_id } = req.query;
     const params = [];
     let cond = '';
@@ -1664,7 +1849,7 @@ router.get('/consumption', requirePermission('inventory', 'view'), async (req, r
       JOIN inventory_items ii ON ia.item_id = ii.id
       JOIN warehouses w ON ia.warehouse_id = w.id
       LEFT JOIN projects p ON ia.project_id = p.id
-      WHERE 1=1 ${cond}
+      WHERE (ia.allocation_source = 'consumption' OR ia.allocation_source IS NULL) ${cond}
       ORDER BY ia.allocation_date DESC
       LIMIT 500
     `, params);
@@ -1675,8 +1860,45 @@ router.get('/consumption', requirePermission('inventory', 'view'), async (req, r
 });
 
 // POST /consumption — log a consumption entry, deduct from stock
-router.post('/consumption', requirePermission('inventory', 'add'), async (req, res) => {
-  const { item_id, warehouse_id, quantity, reference_type = 'manual', reference_id, project_id, notes } = req.body;
+// What a consumption may reference. Only two kinds are allowed:
+//   manual   no reference_id; an optional project_id tags it to a project
+//   project  project_id required; reference_id absent or equal to it (stored as it)
+// sales_order, production_order and maintenance are refused. A sales_order
+// stock issue counts as fulfilment evidence in /orders/fulfilment-reconciliation,
+// and since Phase 3G only a dispatched pick list ships stock; production and
+// maintenance issues have their own workflows (execution.routes production_issue,
+// maintenance.routes maintenance_issue). Pure: checked before any database work.
+const CONSUMPTION_REFERENCE_TYPES = ['manual', 'project'];
+function consumptionReference(body) {
+  const bad = (message) => Object.assign(new Error(message), { status: 422 });
+  const positiveId = (v, field) => {
+    if (v === undefined || v === null || v === '') return null;
+    const t = String(v).trim();
+    if (typeof v === 'boolean' || !/^\d+$/.test(t) || Number(t) < 1 || Number(t) > 2147483647) {
+      throw bad(`${field} must be a positive whole number`);
+    }
+    return Number(t);
+  };
+  const raw = body.reference_type;
+  if (raw !== undefined && raw !== null && typeof raw !== 'string') throw bad('reference_type must be text');
+  const referenceType = (raw ?? '').trim().toLowerCase() || 'manual';
+  if (!CONSUMPTION_REFERENCE_TYPES.includes(referenceType)) {
+    throw bad(`reference_type must be one of: ${CONSUMPTION_REFERENCE_TYPES.join(', ')}`);
+  }
+  const referenceId = positiveId(body.reference_id, 'reference_id');
+  const projectId = positiveId(body.project_id, 'project_id');
+  if (referenceType === 'manual') {
+    if (referenceId !== null) throw bad('reference_id is not used for manual consumption');
+    return { referenceType, referenceId: null, projectId };
+  }
+  if (projectId === null) throw bad('project_id is required for project consumption');
+  if (referenceId !== null && referenceId !== projectId) throw bad('reference_id must match project_id for project consumption');
+  return { referenceType, referenceId: projectId, projectId };
+}
+
+router.post('/consumption', requirePermission('inventory', 'add'), companyScope, async (req, res) => {
+  // company_id and reference_type are deliberately not taken from the body as-is.
+  const { item_id, warehouse_id, quantity, notes } = req.body;
   if (!item_id || !warehouse_id || !quantity) {
     return res.status(422).json({ error: 'item_id, warehouse_id, and quantity are required' });
   }
@@ -1684,10 +1906,33 @@ router.post('/consumption', requirePermission('inventory', 'add'), async (req, r
   if (!Number.isFinite(qty) || qty <= 0) {
     return res.status(422).json({ error: 'quantity must be a positive number' });
   }
+  let ref;
+  try { ref = consumptionReference(req.body); }
+  catch (err) { return res.status(err.status || 422).json({ error: err.message }); }
 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+
+    // Ownership before any write: item and warehouse in one company (the
+    // caller's, or for a super admin the warehouse's), and the project, when
+    // given, in that same company and not deleted. A foreign or missing row is
+    // the same 404.
+    let companyId;
+    try {
+      companyId = await stockLedgerRepo.resolveStockOwnership(client, {
+        warehouseId: warehouse_id, itemIds: [item_id], companyId: req.scopeCompanyId,
+      });
+      if (ref.projectId !== null) {
+        const { rows } = await client.query(
+          `SELECT 1 FROM projects WHERE id = $1 AND deleted_at IS NULL AND company_id = $2`,
+          [ref.projectId, companyId]);
+        if (!rows[0]) throw Object.assign(new Error(`Project ${ref.projectId} not found`), { status: 404 });
+      }
+    } catch (err) {
+      await client.query('ROLLBACK');
+      return res.status(err.status || 500).json({ error: err.message });
+    }
 
     // Guard: sufficient UNRESERVED stock, or an explicit reservation to spend.
     try {
@@ -1715,23 +1960,26 @@ router.post('/consumption', requirePermission('inventory', 'add'), async (req, r
       quantity_in: 0,
       quantity_out: qty,
       rate,
-      reference_type: reference_type || 'manual',
-      reference_id: reference_id || null,
+      reference_type: ref.referenceType,
+      reference_id: ref.referenceId,
       transaction_date: new Date().toISOString().split('T')[0],
       remarks: notes || 'Material consumption',
       created_by: req.user?.employee_id ?? null,
+      company_id: companyId,
     });
 
-    // Allocation record
+    // Allocation record — the consumption log the three consumption reads list.
+    // allocation_source 'consumption': the stock already left on the ledger row
+    // above, so MRP and order promising must not count it again as committed.
     const alloc = await client.query(
       `INSERT INTO inventory_allocations
-         (item_id, warehouse_id, allocation_type, reference_type, reference_id, quantity, rate, allocation_date, allocated_by, purpose, project_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, CURRENT_DATE, $8, $9, $10)
+         (item_id, warehouse_id, allocation_type, reference_type, reference_id, quantity, rate, allocation_date, allocated_by, purpose, project_id, allocation_source)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, CURRENT_DATE, $8, $9, $10, 'consumption')
        RETURNING *`,
-      [item_id, warehouse_id, reference_type || 'manual', reference_type || 'manual',
-       reference_id || null, qty, rate,
+      [item_id, warehouse_id, ref.referenceType, ref.referenceType,
+       ref.referenceId, qty, rate,
        req.user?.userId ?? req.user?.id,
-       notes || null, project_id || null]
+       notes || null, ref.projectId]
     );
 
     await client.query('COMMIT');
@@ -1801,35 +2049,20 @@ router.get('/inventory-report', requirePermission('inventory', 'view'), async (r
       rows = result.rows;
 
     } else if (type === 'abc_analysis') {
-      const params = [];
-      const companyId = req.scope?.company_id ?? null;
-      const cond = companyId != null ? (params.push(companyId), `AND ii.company_id = $${params.length}`) : '';
-      const result = await pool.query(`
-        WITH item_values AS (
-          SELECT
-            ii.id AS item_id, ii.item_code, ii.item_name, ii.unit_of_measure,
-            COALESCE(SUM(sl.quantity_out * sl.rate), 0) AS annual_value
-          FROM inventory_items ii
-          LEFT JOIN stock_ledger sl
-            ON ii.id = sl.item_id
-            AND sl.transaction_date >= CURRENT_DATE - INTERVAL '12 months'
-            AND sl.quantity_out > 0
-          WHERE ii.deleted_at IS NULL ${cond}
-          GROUP BY ii.id, ii.item_code, ii.item_name, ii.unit_of_measure
-        ),
-        total AS (SELECT NULLIF(SUM(annual_value), 0) AS grand_total FROM item_values),
-        ranked AS (
-          SELECT iv.*,
-            ROUND(100.0 * SUM(iv.annual_value) OVER (ORDER BY iv.annual_value DESC) / t.grand_total, 2) AS cumulative_pct
-          FROM item_values iv, total t WHERE t.grand_total IS NOT NULL
-        )
-        SELECT item_code, item_name, unit_of_measure,
-          annual_value::numeric,
-          cumulative_pct::numeric,
-          CASE WHEN cumulative_pct <= 70 THEN 'A' WHEN cumulative_pct <= 90 THEN 'B' ELSE 'C' END AS abc_class
-        FROM ranked ORDER BY annual_value DESC
-      `, params);
-      rows = result.rows;
+      // Served from the planning classification (getAbcClassification), not a
+      // third Pareto of its own: that one hard-coded 70/90, banded on the
+      // cumulative after the item, counted transfers as consumption and ignored
+      // manual overrides. Row shape unchanged; abc_class is the operative class,
+      // and unclassified items are not banded into C.
+      const classified = (await getAbcClassification(companyOf(req)))
+        .filter(r => r.abc_class);
+      rows = classified.map(r => ({
+        item_code: r.item_code, item_name: r.item_name, unit_of_measure: r.unit_of_measure,
+        annual_value: r.annual_consumption_value,
+        cumulative_pct: r.abc_cumulative_pct,
+        abc_class: String(r.abc_class).trim(),
+        abc_class_source: r.abc_class_source,
+      }));
 
     } else if (type === 'aging') {
       const params = [];
@@ -2029,18 +2262,60 @@ router.get('/inventory-report/monthwise', requirePermission('inventory', 'view')
              COALESCE(ii.item_type, 'Other')                                              AS category,
              ii.reorder_level::numeric                                                    AS reorder_level,
              COALESCE(SUM(sl.quantity_in - sl.quantity_out), 0)::numeric                  AS current_stock,
-             GREATEST(ii.reorder_level - COALESCE(SUM(sl.quantity_in - sl.quantity_out), 0), 0)::numeric AS shortfall,
-             GREATEST(ii.reorder_level * 2 - COALESCE(SUM(sl.quantity_in - sl.quantity_out), 0), ii.reorder_level)::numeric AS suggested_qty,
+             COALESCE(inc.qty, 0)::numeric                                                AS incoming_qty,
+             COALESCE(rsv.qty, 0)::numeric                                                AS reserved_qty,
+             (COALESCE(SUM(sl.quantity_in - sl.quantity_out), 0)
+               + COALESCE(inc.qty, 0) - COALESCE(rsv.qty, 0))::numeric                    AS available_position,
+             GREATEST(ii.reorder_level
+               - (COALESCE(SUM(sl.quantity_in - sl.quantity_out), 0)
+                  + COALESCE(inc.qty, 0) - COALESCE(rsv.qty, 0)), 0)::numeric             AS shortfall,
+             ii.eoq, ii.min_order_qty, ii.max_order_qty, ii.lot_size_qty, ii.abc_class,
              v.vendor_name                                                                AS preferred_vendor
       FROM inventory_items ii
+      -- Incoming: ordered and not yet received, on a PO that is still live.
+      LEFT JOIN LATERAL (
+        SELECT SUM(GREATEST(COALESCE(poi.quantity,0) - COALESCE(poi.received_quantity,0), 0)) AS qty
+          FROM purchase_order_items poi
+          JOIN purchase_orders po ON po.id = poi.po_id
+         WHERE poi.item_id = ii.id
+           AND po.deleted_at IS NULL
+           AND LOWER(COALESCE(po.status,'')) NOT IN ('cancelled','closed','rejected','draft')
+      ) inc ON TRUE
+      -- Reserved: promised to a requirement and not yet consumed.
+      LEFT JOIN LATERAL (
+        SELECT SUM(COALESCE(r.quantity_remaining, r.quantity_reserved, 0)) AS qty
+          FROM inventory_reservations r
+         WHERE r.item_id = ii.id
+           AND LOWER(COALESCE(r.status,'')) IN ('active','partially_consumed')
+      ) rsv ON TRUE
       LEFT JOIN stock_ledger sl ON sl.item_id = ii.id${poWhScope}
       LEFT JOIN vendors v ON v.id = ii.preferred_vendor_id
       WHERE ii.deleted_at IS NULL AND ii.is_active = true AND ii.reorder_level > 0${poIiScope}
       GROUP BY ii.id, ii.item_code, ii.item_name, ii.unit_of_measure, ii.item_type,
-               ii.reorder_level, v.vendor_name
-      HAVING COALESCE(SUM(sl.quantity_in - sl.quantity_out), 0) <= ii.reorder_level
+               ii.reorder_level, v.vendor_name, inc.qty, rsv.qty,
+               ii.eoq, ii.min_order_qty, ii.max_order_qty, ii.lot_size_qty, ii.abc_class
+      HAVING COALESCE(SUM(sl.quantity_in - sl.quantity_out), 0)
+             + COALESCE(inc.qty, 0) - COALESCE(rsv.qty, 0) <= ii.reorder_level
       ORDER BY shortfall DESC
     `, poParams);
+
+    // This was the third and last place that reinvented `reorder_level * 2` as
+    // an order quantity (the audit named all three: this screen, the reorder
+    // alerts endpoint and the purchase-suggestions service). It now sizes from
+    // EOQ through the one planning service, and reports the basis so a planner
+    // overruling the figure can see what they are overruling.
+    //
+    // The breach test was also on-hand only, so this screen asked a store to
+    // reorder a part whose replacement was already on a live purchase order.
+    const placeOrder = poRes.rows.map((r) => {
+      const sized = suggestedOrderQuantity(r, r.current_stock, r.incoming_qty);
+      return {
+        ...r,
+        suggested_qty: sized.quantity,
+        suggested_basis: sized.basis,
+        suggested_capped: sized.capped,
+      };
+    });
 
     res.json({
       fy: { start_year: fyStartYear, start: fyStart, end: fyEnd, label: fyLabel },
@@ -2048,7 +2323,7 @@ router.get('/inventory-report/monthwise', requirePermission('inventory', 'view')
       month_labels: FY_MONTH_LABELS,
       categories,
       days,
-      place_order: poRes.rows,
+      place_order: placeOrder,
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -2201,21 +2476,23 @@ function computeEoqMetrics(annualDemand, unitCost, orderingCost, holdingRate, le
   };
 }
 
-// Rank items by annual consumption value and assign A (≤70%), B (≤90%), C classes
-function assignAbc(items) {
+// The ABC class shown per store is the item's COMPANY class from the planning
+// classification — the same class Item Master, MRP and every other screen show,
+// manual overrides included. This used to run its own Pareto per store
+// (hard-coded 70/90, banded on the cumulative after the item), so one part
+// could be A in the Production Store, C in the R&D Store and something else
+// again on the Planning screen. A class is a company-level policy decision
+// about a part; a store's consumption decides the store's EOQ, not the class.
+// Items are still ordered by THIS store's consumption value. cumulative_pct is
+// the company-level Pareto cumulative the class was decided on. Unclassified
+// items (insufficient history) carry abc_category null, not a default C.
+function assignAbc(items, classOf) {
   const sorted = [...items].sort((a, b) => b.annual_consumption_value - a.annual_consumption_value);
-  const grandTotal = sorted.reduce((s, it) => s + it.annual_consumption_value, 0);
-  let running = 0;
   for (const it of sorted) {
-    if (grandTotal > 0 && it.annual_consumption_value > 0) {
-      running += it.annual_consumption_value;
-      const cumPct = (100 * running) / grandTotal;
-      it.cumulative_pct = parseFloat(cumPct.toFixed(2));
-      it.abc_category = cumPct <= 70 ? 'A' : cumPct <= 90 ? 'B' : 'C';
-    } else {
-      it.cumulative_pct = null;
-      it.abc_category = 'C';
-    }
+    const c = classOf.get(it.item_id);
+    it.abc_category = c?.abc_class ? String(c.abc_class).trim() : null;
+    it.cumulative_pct = c?.abc_cumulative_pct == null ? null : parseFloat(c.abc_cumulative_pct);
+    it.abc_class_source = c?.abc_class_source ?? null;
   }
   return sorted;
 }
@@ -2229,7 +2506,7 @@ function summarize(items) {
     annual_setup_cost: 0,
     annual_purchase_cost: 0,
     total_annual_inventory_cost: 0,
-    abc: { A: { count: 0, value: 0 }, B: { count: 0, value: 0 }, C: { count: 0, value: 0 } },
+    abc: { A: { count: 0, value: 0 }, B: { count: 0, value: 0 }, C: { count: 0, value: 0 }, Unclassified: { count: 0, value: 0 } },
   };
   for (const it of items) {
     totals.stock_value += it.stock_value;
@@ -2238,13 +2515,14 @@ function summarize(items) {
     totals.annual_setup_cost += it.annual_setup_cost;
     totals.annual_purchase_cost += it.annual_purchase_cost;
     totals.total_annual_inventory_cost += it.total_annual_inventory_cost;
-    totals.abc[it.abc_category].count++;
-    totals.abc[it.abc_category].value += it.annual_consumption_value;
+    const band = totals.abc[it.abc_category] ? it.abc_category : 'Unclassified';
+    totals.abc[band].count++;
+    totals.abc[band].value += it.annual_consumption_value;
   }
   for (const k of ['stock_value', 'annual_consumption_value', 'annual_holding_cost', 'annual_setup_cost', 'annual_purchase_cost', 'total_annual_inventory_cost']) {
     totals[k] = parseFloat(totals[k].toFixed(2));
   }
-  for (const c of ['A', 'B', 'C']) totals.abc[c].value = parseFloat(totals.abc[c].value.toFixed(2));
+  for (const c of ['A', 'B', 'C', 'Unclassified']) totals.abc[c].value = parseFloat(totals.abc[c].value.toFixed(2));
   return totals;
 }
 
@@ -2276,6 +2554,9 @@ router.get('/dept-cost-analysis', requirePermission('inventory', 'view'), async 
     const iif = companyId != null ? 'AND ii.company_id = $1' : '';
     const wf = companyId != null ? 'AND w.company_id = $1' : '';
 
+    // The company classification every store shows (see assignAbc).
+    const classOf = new Map((await getAbcClassification(companyId)).map(r => [r.item_id, r]));
+
     const [deptItemsRes, whListRes] = await Promise.all([
       pool.query(`
         SELECT
@@ -2289,12 +2570,15 @@ router.get('/dept-cost-analysis', requirePermission('inventory', 'view'), async 
           COALESCE(ii.lead_time_days, 14)::int                       AS lead_time_days,
           COALESCE(uc.unit_cost, ii.standard_cost, 0)::numeric       AS unit_cost,
           COALESCE(SUM(sl.quantity_in - sl.quantity_out), 0)::numeric AS current_stock,
-          COALESCE(SUM(
-            CASE WHEN sl.quantity_out > 0
-                  AND COALESCE(sl.transaction_type, '') <> 'transfer'
-                  AND sl.transaction_date >= CURRENT_DATE - INTERVAL '12 months'
-                 THEN sl.quantity_out ELSE 0 END
-          ), 0)::numeric                                             AS annual_demand
+          -- Demand per ledgerSemantics — the planning engine's definition. This
+          -- used to exclude only 'transfer', so bin transfers, vendor returns,
+          -- cycle-count losses and adjustments all read as consumption here and
+          -- inflated this store's EOQ. Floored at zero per store.
+          GREATEST(COALESCE(SUM(
+            CASE WHEN sl.transaction_date >= CURRENT_DATE - INTERVAL '12 months'
+                  AND sl.transaction_date <= CURRENT_DATE
+                 THEN ${demandQtySql('sl')} ELSE 0 END
+          ), 0), 0)::numeric                                         AS annual_demand
         FROM stock_ledger sl
         JOIN warehouses w      ON w.id = sl.warehouse_id AND w.deleted_at IS NULL ${wf}
         JOIN inventory_items ii ON ii.id = sl.item_id AND ii.deleted_at IS NULL AND ii.is_active = true ${iif}
@@ -2353,7 +2637,7 @@ router.get('/dept-cost-analysis', requirePermission('inventory', 'view'), async 
       .filter(d => deptMap[d] || warehousesByDept[d]);
 
     const departments = allDepts.map(dept => {
-      const items = assignAbc(deptMap[dept] || []);
+      const items = assignAbc(deptMap[dept] || [], classOf);
       return {
         department: dept,
         label: DEPT_LABELS[dept] || dept,
@@ -2371,7 +2655,7 @@ router.get('/dept-cost-analysis', requirePermission('inventory', 'view'), async 
       acc.annual_demand = parseFloat(acc.annual_demand) + parseFloat(r.annual_demand);
       acc.current_stock = parseFloat(acc.current_stock) + parseFloat(r.current_stock);
     }
-    const consolidatedItems = assignAbc(Object.values(consolidatedMap).map(buildItem));
+    const consolidatedItems = assignAbc(Object.values(consolidatedMap).map(buildItem), classOf);
 
     res.json({
       config: {

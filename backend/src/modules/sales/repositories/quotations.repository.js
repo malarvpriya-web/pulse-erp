@@ -119,17 +119,19 @@ const quotationsRepository = {
     const newNumber   = `${baseNum}-v${newVersion}`;
 
     const result = await pool.query(`
+      -- company_id inherited from the quotation being revised. Omitting it made
+      -- every new revision tenant-less while its parent carried a company.
       INSERT INTO quotations
         (quotation_number, customer_id, quotation_date, validity_date,
          status, notes, version, parent_id, original_id, created_by,
-         subtotal, tax_amount, total_amount, discount_pct)
-      VALUES ($1,$2,CURRENT_DATE,$3,'draft',$4,$5,$6,$7,$8,$9,$10,$11,$12)
+         subtotal, tax_amount, total_amount, discount_pct, company_id)
+      VALUES ($1,$2,CURRENT_DATE,$3,'draft',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
       RETURNING *
     `, [
       newNumber, current.customer_id, current.validity_date,
       current.notes, newVersion, current.id, familyId, userId,
       current.subtotal || 0, current.tax_amount || 0, current.total_amount || 0,
-      current.discount_pct || 0,
+      current.discount_pct || 0, current.company_id ?? null,
     ]);
     const newQ = result.rows[0];
 

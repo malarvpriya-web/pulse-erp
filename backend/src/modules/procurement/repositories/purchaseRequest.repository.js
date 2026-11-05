@@ -25,18 +25,28 @@ class PurchaseRequestRepository {
     const {
       request_number, requested_by_employee_id, department_id, department,
       request_date, required_date, notes, company_id, priority, status,
+      source_suggestion_id,
     } = data;
     // priority was collected by the drawer and dropped on the floor here — the
     // column exists, so every "Urgent" request was silently filed as 'medium'.
     const pr = String(priority || 'medium').toLowerCase();
+    // `source_suggestion_id` is the provenance of a requisition raised from a
+    // reorder suggestion, and it is load-bearing: `uq_pr_source_suggestion`
+    // (migration 20260926000011) makes a SECOND requisition for the same
+    // suggestion a unique violation rather than a silent duplicate order. It is
+    // NULL for the overwhelming majority of requisitions, which are raised by
+    // hand and have no originating suggestion — the index is partial for that
+    // reason. Only suggestionToPr.service.js passes it.
     const result = await client.query(
       `INSERT INTO purchase_requests (request_number, requested_by_employee_id, department_id, department,
-                                      request_date, required_date, notes, company_id, priority, status)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+                                      request_date, required_date, notes, company_id, priority, status,
+                                      source_suggestion_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
       [request_number, requested_by_employee_id ?? null, department_id ?? null, department ?? null,
        request_date, required_date, notes, company_id ?? null,
        PR_PRIORITIES.includes(pr) ? pr : 'medium',
-       status || PR_INITIAL_STATUS]
+       status || PR_INITIAL_STATUS,
+       source_suggestion_id ?? null]
     );
     return result.rows[0];
   }

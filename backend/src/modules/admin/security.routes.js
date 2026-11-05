@@ -5,6 +5,7 @@ import pool    from '../shared/db.js';
 import { allowRoles } from '../../middlewares/auth.middleware.js';
 import auditRepository from '../audit/repositories/audit.repository.js';
 import { captureBefore } from '../../middlewares/captureBefore.js';
+import { companyOf } from '../../shared/scope.js';
 
 const router = express.Router();
 
@@ -221,10 +222,13 @@ router.get('/2fa/status', async (req, res) => {
              COALESCE(u.two_fa_enabled, FALSE) AS totp_enabled,
              u.updated_at AS last_2fa_at
       FROM employees e
-      LEFT JOIN users u ON LOWER(u.email) = LOWER(e.company_email)
+      -- The login is users.employee_id, not company_email: matching on the
+      -- editable HR field reported ANOTHER account's 2FA state after an edit.
+      LEFT JOIN users u ON u.employee_id = e.id
       WHERE LOWER(e.status) IN ('active','probation')
+        AND ($1::int IS NULL OR e.company_id = $1)
       ORDER BY e.first_name
-    `);
+    `, [companyOf(req)]);
     res.json({ success:true, users:rows });
   } catch (err) {
     res.json({ success:true, users:[] });
@@ -298,7 +302,16 @@ router.get('/gdpr/export/:userId', async (req, res) => {
   const export_data = {};
   await Promise.all([
     pool.query(`SELECT * FROM employees WHERE id=$1`,[uid]).then(({rows})=>{ export_data.employee=rows[0]||null; }).catch(()=>{}),
+    // A subject-access export must return the data actually held about the
+    // person, which now lives in leave_applications; leave_requests is frozen
+    // but still holds pre-2026-03-30 rows about them, so BOTH are exported.
+    pool.query(`SELECT * FROM leave_applications WHERE employee_id=$1 AND deleted_at IS NULL`,[uid]).then(({rows})=>{ export_data.leave_applications=rows; }).catch(()=>{ export_data.leave_applications=[]; }),
     pool.query(`SELECT * FROM leave_requests WHERE employee_id=$1`,[uid]).then(({rows})=>{ export_data.leave_requests=rows; }).catch(()=>{ export_data.leave_requests=[]; }),
+    // Same reasoning as the leave tables above: `attendance` is frozen (no
+    // writers, newest row 2026-03-29) but still holds this person's history, and
+    // `attendance_records` is the live table. A subject-access export must return
+    // both or it under-reports what is held about them.
+    pool.query(`SELECT * FROM attendance_records WHERE employee_id=$1 AND deleted_at IS NULL ORDER BY attendance_date DESC LIMIT 365`,[uid]).then(({rows})=>{ export_data.attendance_records=rows; }).catch(()=>{ export_data.attendance_records=[]; }),
     pool.query(`SELECT * FROM attendance WHERE employee_id=$1 ORDER BY date DESC LIMIT 365`,[uid]).then(({rows})=>{ export_data.attendance=rows; }).catch(()=>{ export_data.attendance=[]; }),
     pool.query(`SELECT * FROM payroll_runs WHERE employee_id=$1`,[uid]).then(({rows})=>{ export_data.payroll=rows; }).catch(()=>{ export_data.payroll=[]; }),
     pool.query(`SELECT * FROM timesheets WHERE employee_id=$1`,[uid]).then(({rows})=>{ export_data.timesheets=rows; }).catch(()=>{ export_data.timesheets=[]; }),
@@ -320,29 +333,108 @@ router.post('/gdpr/purge/:userId', async (req, res) => {
   const uid = req.params.userId;
   const anonEmail = `deleted_${uid}_${crypto.randomUUID()}@purged.local`;
   const anonName  = 'Deleted User';
+  const companyId = companyOf(req);
+  const actorId   = req.user?.userId ?? req.user?.id ?? null;
+
+  // ── ONE transaction: employee row, linked login(s) and the security event ──
+  //
+  // These were three independent statements, and the login step ended in
+  // `.catch(()=>{})`. A failure there (e.g. two logins linked to one employee
+  // both receiving the same anonymised address -> unique violation) left the
+  // employee anonymised and COMMITTED while the login kept the real name and
+  // email, and the response still said "PII ... has been anonymised". A failure
+  // of the security-event insert likewise left an irreversible purge with no
+  // record of it. Now either all of it commits or none of it does, and success
+  // is reported only after COMMIT.
+  //
+  // `step` names what was running when something failed, for the log line and
+  // the response. Ids only in the log — never the PII being purged.
+  let step = 'connect';
+  let client;
   try {
-    await pool.query(`
+    client = await pool.connect();
+    step = 'begin';
+    await client.query('BEGIN');
+
+    // Capture the target BEFORE anonymising it. TENANT SCOPE: `admin` is a
+    // per-company role, so the employee must be in the caller's company;
+    // companyOf(req) is null only for a genuinely global caller. FOR UPDATE so
+    // two concurrent purges of one employee serialise instead of interleaving.
+    step = 'find_employee';
+    const { rows: [target] } = await client.query(
+      `SELECT id FROM employees
+        WHERE id = $1 AND ($2::int IS NULL OR company_id = $2)
+        FOR UPDATE`,
+      [uid, companyId]
+    );
+    if (!target) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ success:false, message:'Employee not found' });
+    }
+
+    step = 'anonymise_employee';
+    const empRes = await client.query(`
       UPDATE employees SET
         first_name=$1, last_name='', company_email=$2, personal_email=NULL,
         phone=NULL, pan_number=NULL, aadhaar_number=NULL,
         account_number=NULL, ifsc_code=NULL, bank_name=NULL,
         emergency_name=NULL, emergency_phone=NULL, emergency_relationship=NULL,
         current_address=NULL, permanent_address=NULL
-      WHERE id=$3
-    `, [anonName, anonEmail, uid]);
-    await pool.query(`
-      UPDATE users SET name=$1, email=$2, two_fa_enabled=FALSE, totp_secret=NULL WHERE email=(
-        SELECT company_email FROM employees WHERE id=$3 LIMIT 1
-      )
-    `, [anonName, anonEmail, uid]).catch(()=>{});
-    await pool.query(
-      `INSERT INTO security_events(event_type,severity,user_id,details) VALUES($1,$2,$3,$4)`,
-      ['gdpr_purge','high', req.user?.userId??req.user?.id??null, JSON.stringify({ purged_user_id:uid })]
+      WHERE id=$3 AND ($4::int IS NULL OR company_id = $4)
+    `, [anonName, anonEmail, target.id, companyId]);
+    if (empRes.rowCount !== 1) {
+      throw Object.assign(new Error(`expected 1 employee row, updated ${empRes.rowCount}`), { purgeStep: step });
+    }
+
+    // The login to anonymise is the one LINKED to this employee
+    // (users.employee_id) — not whichever account's email equals the company
+    // email, which is editable and could name SOMEONE ELSE's login. Zero rows is
+    // legitimate (an employee with no login); an ERROR is not, and no longer
+    // swallowed.
+    step = 'anonymise_login';
+    const userRes = await client.query(
+      `UPDATE users SET name=$1, email=$2, two_fa_enabled=FALSE, totp_secret=NULL
+        WHERE employee_id = $3`,
+      [anonName, anonEmail, target.id]
     );
-    logAudit(req, 'delete', uid, 'employee', null, { action:'gdpr_purge', purged_user_id:uid });
-    res.json({ success:true, message:`PII for user ${uid} has been anonymised. Audit records retained for compliance.` });
+
+    step = 'record_security_event';
+    await client.query(
+      `INSERT INTO security_events(event_type,severity,user_id,details) VALUES($1,$2,$3,$4)`,
+      ['gdpr_purge','high', actorId, JSON.stringify({ purged_user_id:uid, logins_anonymised: userRes.rowCount })]
+    );
+
+    step = 'commit';
+    await client.query('COMMIT');
+
+    logAudit(req, 'delete', uid, 'employee', null, { action:'gdpr_purge', purged_user_id:uid, logins_anonymised: userRes.rowCount });
+    res.json({
+      success: true,
+      message: `PII for user ${uid} has been anonymised. Audit records retained for compliance.`,
+      logins_anonymised: userRes.rowCount,
+    });
   } catch (err) {
-    res.status(500).json({ success:false, message:err.message });
+    if (client) await client.query('ROLLBACK').catch(() => {});
+    const failedStep = err.purgeStep || step;
+    console.error(JSON.stringify({
+      ts: new Date().toISOString(), level: 'ERROR', event: 'gdpr_purge_failed',
+      employee_id: uid, actor_id: actorId, step: failedStep,
+      code: err.code ?? null, constraint: err.constraint ?? null, message: err.message,
+    }));
+    // A failed attempt is a security-relevant event too, and is recorded
+    // OUTSIDE the rolled-back transaction so it survives. Best-effort: the
+    // purge has already failed and that is what the caller must be told.
+    pool.query(
+      `INSERT INTO security_events(event_type,severity,user_id,details) VALUES($1,$2,$3,$4)`,
+      ['gdpr_purge_failed','high', actorId, JSON.stringify({ purged_user_id:uid, step: failedStep, code: err.code ?? null })]
+    ).catch(e => console.error('[security] could not record gdpr_purge_failed:', e.message));
+    res.status(500).json({
+      success: false,
+      message: `PII purge failed (${failedStep}). No changes were made — the record is exactly as it was, and the purge can be retried.`,
+      step: failedStep,
+    });
+  } finally {
+    client?.release();
   }
 });
 

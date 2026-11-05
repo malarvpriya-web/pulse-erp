@@ -1,0 +1,101 @@
+/* Payroll Center tab strips. The hero's action slot does not wrap, so seven
+   buttons there overflowed at phone width; this strip scrolls sideways
+   instead. `.pc-` is this page's prefix. */
+.pc-tabs {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  border-bottom: 1px solid #e5e7eb;
+  margin-top: 2px;
+}
+.pc-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex: 0 0 auto;
+  padding: 10px 14px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: #6b7280;
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.pc-tab:hover { color: #4c1d95; }
+.pc-tab.is-on { color: #6B3FDB; border-bottom-color: #6B3FDB; font-weight: 600; }
+.pc-tab:focus-visible, .pc-view:focus-visible { outline: 2px solid #6B3FDB; outline-offset: 2px; }
+
+.pc-views {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 14px;
+}
+.pc-view {
+  padding: 6px 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 999px;
+  background: #fff;
+  color: #374151;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.pc-view.is-on { background: #6B3FDB; border-color: #6B3FDB; color: #fff; }
+
+.pc-panel { min-width: 0; }
+
+/* An embedded page's hero actions, moved onto the white page. The hero's
+   ghost buttons are white-on-gradient; restyle them here (this beats
+   `.page-content button.plh-cta--ghost`). */
+.pc-toolbar {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+  gap: 10px; margin: 0 0 14px;
+}
+.pc-toolbar-who { font-size: 12.5px; color: #4b5563; }
+.pc-toolbar-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.pc-panel .pc-toolbar button.plh-cta,
+.pc-panel .pc-toolbar button.plh-cta--ghost {
+  background: #fff; color: #374151; border: 1px solid #e5e7eb; box-shadow: none;
+  -webkit-backdrop-filter: none; backdrop-filter: none;
+}
+.pc-panel .pc-toolbar button.plh-cta:disabled { cursor: not-allowed; opacity: .5; }
+
+/* Overview */
+.pc-ov-note { font-size: 13px; color: #6b7280; margin: 0 0 14px; }
+.pc-ov-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 14px;
+}
+.pc-ov-card {
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-left: 4px solid #d1d5db;
+  border-radius: 10px;
+  padding: 14px 16px;
+  min-width: 0;
+}
+.pc-ov-card header { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; color: #6b7280; }
+.pc-ov-card h3 { margin: 0; font-size: 14px; font-weight: 700; color: #1f2937; }
+.pc-ov-card ul { margin: 0 0 12px; padding-left: 18px; font-size: 12.5px; color: #374151; line-height: 1.5; flex: 1; }
+.pc-ov-card.is-ok   { border-left-color: #16a34a; } .pc-ov-card.is-ok header   { color: #16a34a; }
+.pc-ov-card.is-warn { border-left-color: #d97706; } .pc-ov-card.is-warn header { color: #d97706; }
+.pc-ov-card.is-bad  { border-left-color: #dc2626; } .pc-ov-card.is-bad header  { color: #dc2626; }
+.pc-ov-open {
+  align-self: flex-start;
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 6px 12px;
+  border: 1px solid #ddd6fe; border-radius: 8px;
+  background: #f5f3ff; color: #5b21b6;
+  font-size: 12px; font-weight: 600; cursor: pointer;
+}
+
+@media (max-width: 640px) {
+  .pc-tab { padding: 9px 10px; font-size: 12px; }
+}

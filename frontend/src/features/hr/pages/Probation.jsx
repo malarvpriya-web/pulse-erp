@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import {
   RefreshCw, Search, Bell, Clock, AlertTriangle, CheckCircle,
   Users, ChevronDown, ChevronUp, Send, X, Star, History,
@@ -6,21 +6,33 @@ import {
 import api from "@/services/api/client";
 import ResultDialog from "@/components/ResultDialog";
 import "./Probation.css";
+import DepartmentHeadsPanel from "../components/DepartmentHeadsPanel";
+import ProbationReviewsPanel from "../components/ProbationReviewsPanel";
 import { PageHero, PageShell } from '@/components/pulse-ui';
 
 /* ── helpers ── */
-const DEFAULT_PROBATION_DAYS = 180;
-const PROBATION_DAYS_BY_DESIGNATION = {
-  intern: 90,
-  trainee: 120,
-  apprentice: 120,
-};
-function probationDaysForEmp(emp = {}) {
-  const byContract = Number(emp.probation_days || emp.contract_probation_days || 0);
-  if (byContract > 0) return byContract;
-  const d = String(emp.designation || "").trim().toLowerCase();
-  if (d && PROBATION_DAYS_BY_DESIGNATION[d]) return PROBATION_DAYS_BY_DESIGNATION[d];
-  return DEFAULT_PROBATION_DAYS;
+/*
+ * Probation dates come from the SERVER. employees.probation_end_date is the one
+ * canonical end date (backend shared/probationDates.js writes it). This page
+ * used to compute joining + 180 days (90 for interns, 120 for trainees) and
+ * ignore the stored date entirely, so it disagreed with the dashboard, leave
+ * and the reminder job about the same employee. It now only measures the days
+ * between stored dates; an employee with no stored end date is shown as
+ * "No end date", never given a guessed one.
+ */
+const DAY_MS = 86400000;
+// After a send, the same employee's Notify button rests this long (guards a
+// double send). It says why on hover; it used to just grey out.
+const NOTIFY_COOLDOWN_MS = 60 * 60 * 1000;
+function utcDay(value) {
+  if (!value) return null;
+  const [y, m, d] = String(value).slice(0, 10).split('-').map(Number);
+  if (!y || !m || !d) return null;
+  return Date.UTC(y, m - 1, d);
+}
+function todayUtc() {
+  const n = new Date();
+  return Date.UTC(n.getFullYear(), n.getMonth(), n.getDate());
 }
 
 const AVATAR_PALETTE = [
@@ -37,20 +49,24 @@ function initials(f = '', l = '') {
   return ((f[0] || '') + (l[0] || '')).toUpperCase();
 }
 
-function calcProbation(joining_date, totalDays = DEFAULT_PROBATION_DAYS) {
-  if (!joining_date) return null;
-  const start   = new Date(joining_date);
-  const end     = new Date(joining_date);
-  end.setDate(end.getDate() + totalDays);
-  const today   = new Date();
-  today.setHours(0, 0, 0, 0);
-  const elapsed = Math.floor((today - start) / 86400000);
-  const remaining = totalDays - elapsed;
-  const pct = Math.min(100, Math.max(0, (elapsed / totalDays) * 100));
+/**
+ * Where an employee stands against their STORED end date (inclusive: the end
+ * date is their last day on probation, so 0 days remain on it). `attentionDays`
+ * is the company's reminder lead time — the same window the reminder job uses.
+ */
+function calcProbation(emp = {}, attentionDays = 14) {
+  const end = utcDay(emp.probation_end_date);
+  if (end == null) return null;
+  const start = utcDay(emp.joining_date);
+  const today = todayUtc();
+  const remaining = Math.round((end - today) / DAY_MS);
+  const totalDays = start != null ? Math.round((end - start) / DAY_MS) + 1 : null;
+  const elapsed = start != null ? Math.max(0, Math.round((today - start) / DAY_MS)) : null;
+  const pct = totalDays ? Math.min(100, Math.max(0, (elapsed / totalDays) * 100)) : 0;
   let status = "safe";
-  if      (remaining < 0)   status = "overdue";
-  else if (remaining <= 15) status = "critical";
-  else if (remaining <= 30) status = "warning";
+  if      (remaining < 0)              status = "overdue";
+  else if (remaining <= attentionDays) status = "critical";
+  else if (remaining <= 30)            status = "warning";
   return { start, end, elapsed, remaining, pct, status, totalDays };
 }
 
@@ -91,9 +107,13 @@ export default function Probation() {
   /* notify modal */
   const [modalEmp,      setModalEmp]      = useState(null);
   const [notifyTo,      setNotifyTo]      = useState('');
+  // The recipient is an EMPLOYEE ID of this company — the server resolves
+  // their login. A typed name that was not picked from the list has no id.
+  const [notifyToId,    setNotifyToId]    = useState(null);
   const [notifyType,    setNotifyType]    = useState('approval');
   const [notifyRemarks, setNotifyRemarks] = useState('');
   const [suggestions,   setSuggestions]   = useState([]);
+  const notifyTyped = useRef(false);   // false = value was prefilled or picked, not typed
   const [sending,       setSending]       = useState(false);
 
   /* decision modal */
@@ -102,16 +122,21 @@ export default function Probation() {
   const [rating,      setRating]      = useState(0);
   const [comments,    setComments]    = useState('');
   const [decidingSending, setDecidingSending] = useState(false);
-  const [autoAlerting, setAutoAlerting] = useState(false);
+  /* company probation policy (Probation settings) */
+  const [policy,        setPolicy]        = useState(null);
+  const [policyEdit,    setPolicyEdit]    = useState(null);   // { months, days } while editing
+  const [policySaving,  setPolicySaving]  = useState(false);
 
   const load = useCallback(async (quiet = false) => {
     if (!quiet) setLoading(true); else setRefreshing(true);
     try {
-      const [empRes, histRes, activeRes] = await Promise.allSettled([
+      const [empRes, histRes, activeRes, policyRes] = await Promise.allSettled([
         api.get('/employees', { params: { status: 'Probation' } }),
         api.get('/probation'),
         api.get('/employees', { params: { status: 'Active' } }),
+        api.get('/probation/settings'),
       ]);
+      if (policyRes.status === 'fulfilled') setPolicy(policyRes.value.data);
       const empsRaw = empRes.status === 'fulfilled' ? empRes.value.data : [];
       const hist = histRes.status === 'fulfilled' ? histRes.value.data : [];
       const EX = new Set(['left','terminated','resigned','inactive','ex-employee','notice_period','notice period']);
@@ -135,9 +160,11 @@ export default function Probation() {
   useEffect(() => { load(); }, [load]);
 
   /* ── KPI counts ── */
-  const enriched = employees.map(e => ({ ...e, prob: calcProbation(e.joining_date, probationDaysForEmp(e)) }));
+  const attentionDays = policy?.reminder_days ?? 14;
+  const enriched = employees.map(e => ({ ...e, prob: calcProbation(e, attentionDays) }));
   const kpi = {
     total    : enriched.length,
+    undated  : enriched.filter(e => !e.prob).length,
     critical : enriched.filter(e => e.prob?.status === 'critical').length,
     warning  : enriched.filter(e => e.prob?.status === 'warning').length,
     overdue  : enriched.filter(e => e.prob?.status === 'overdue').length,
@@ -146,7 +173,8 @@ export default function Probation() {
 
   /* ── filter ── */
   const filtered = enriched.filter(e => {
-    const matchTab = activeTab === 'all' || e.prob?.status === activeTab;
+    const matchTab = activeTab === 'all'
+      || (activeTab === 'undated' ? !e.prob : e.prob?.status === activeTab);
     const q = search.toLowerCase();
     const matchSearch = !q ||
       `${e.first_name} ${e.last_name}`.toLowerCase().includes(q) ||
@@ -170,77 +198,88 @@ export default function Probation() {
     }
   });
 
-  useEffect(() => {
-    if (autoAlerting || !enriched.length) return;
-    const critical = enriched.filter(e => e.prob?.status === 'critical' || e.prob?.status === 'overdue');
-    if (!critical.length) return;
-    const run = async () => {
-      setAutoAlerting(true);
-      try {
-        for (const emp of critical) {
-          const key = `probation_auto_alert_${emp.id}_${fmtDate(emp.prob?.end)}`;
-          if (localStorage.getItem(key) === '1') continue;
-          try {
-            await api.post('/probation', {
-              employee_id: emp.id,
-              notified_to: emp.reporting_manager || 'HR',
-              notified_role: 'Manager',
-              notification_type: 'probation_due',
-              module_name: 'Probation',
-              remarks: `Auto-alert: ${emp.first_name} ${emp.last_name} is in ${emp.prob.status} phase.`,
-            });
-            localStorage.setItem(key, '1');
-          } catch {
-            // best-effort trigger; do not block UI
-          }
-        }
-      } finally {
-        setAutoAlerting(false);
-      }
-    };
-    run();
-  }, [enriched, autoAlerting]);
+  // The page used to POST a "probation_due" alert for every critical/overdue
+  // employee on EVERY load, de-duplicated only in this browser's localStorage —
+  // so each new browser, device or cleared cache re-sent all of them (146
+  // pending log rows and 201 notifications for three employees). Reminders now
+  // come only from the daily job (backend jobs/probation.cron.js), which keeps a
+  // durable once-per-end-date ledger. Opening this page sends nothing.
 
   /* ── autocomplete ── */
-  const handleNotifyInput = v => {
-    setNotifyTo(v);
-    if (v.length > 0) {
-      const pool = [...activeEmps, ...allEmps.filter(e => !activeEmps.some(a => a.id === e.id))];
-      setSuggestions(
-        pool.filter(e =>
-          `${e.first_name} ${e.last_name}`.toLowerCase().includes(v.toLowerCase()) ||
-          e.office_id?.toLowerCase().includes(v.toLowerCase())
-        ).slice(0, 6)
-      );
-    } else {
-      setSuggestions([]);
-    }
+  // Was type-to-reveal: with the field empty the list stayed hidden, so you had
+  // to already know a name to notify anyone. It is a dropdown now — focusing the
+  // field opens the list, typing narrows it.
+  const notifyPool = () =>
+    [...activeEmps, ...allEmps.filter(e => !activeEmps.some(a => a.id === e.id))];
+
+  const matchEmployees = v => {
+    const q = (v || '').trim().toLowerCase();
+    const pool = notifyPool();
+    if (!q) return pool.slice(0, 50);
+    return pool.filter(e =>
+      `${e.first_name} ${e.last_name}`.toLowerCase().includes(q) ||
+      e.office_id?.toLowerCase().includes(q)
+    ).slice(0, 50);
   };
+
+  const handleNotifyInput = v => {
+    notifyTyped.current = true;
+    setNotifyTo(v);
+    setNotifyToId(null);      // typing invalidates the picked person
+    setSuggestions(matchEmployees(v));
+  };
+
+  // Focusing a field that still holds a prefilled or already-picked name should
+  // open the whole list — filtering by that name would show one row and hide
+  // everyone you might switch to.
+  const openNotifyList = () =>
+    setSuggestions(matchEmployees(notifyTyped.current ? notifyTo : ''));
 
   /* ── send notification ── */
   const handleSend = async () => {
-    if (!notifyTo.trim()) {
-      setDialog({ type:'warning', title:'Required', message:'Please select who to notify.' });
+    if (!notifyToId) {
+      setDialog({ type:'warning', title:'Required', message:'Pick the person to notify from the list.' });
       return;
     }
     setSending(true);
     try {
-      await api.post('/probation', {
+      const { data } = await api.post('/probation', {
         employee_id    : modalEmp.id,
-        notified_to    : notifyTo,
+        notified_to_employee_id: notifyToId,
         notified_role  : 'Manager',
         notification_type: notifyType,
-        module_name    : 'Probation',
         remarks        : notifyRemarks,
       });
-      setDialog({ type:'success', title:'Notification Sent', message:`${notifyTo} has been notified about ${modalEmp.first_name}'s probation.`, autoClose: 2500 });
+      // Recorded either way; say plainly when the person has no login to receive it.
+      const message = data?.recipient_has_login === false
+        ? `Recorded. ${notifyTo} has no Pulse login, so no in-app notification could be delivered to them.`
+        : `${notifyTo} has been notified about ${modalEmp.first_name}'s probation.`;
+      setDialog({ type: data?.recipient_has_login === false ? 'warning' : 'success', title:'Notification Sent', message, autoClose: 3500 });
       setModalEmp(null);
-      setNotifyTo(''); setNotifyRemarks(''); setSuggestions([]);
+      setNotifyTo(''); setNotifyToId(null); setNotifyRemarks(''); notifyTyped.current = false; setSuggestions([]);
       load(true);
-    } catch {
-      setDialog({ type:'error', title:'Failed to Send', message:'Could not send notification. Please try again.' });
+    } catch (err) {
+      setDialog({ type:'error', title:'Failed to Send', message: err?.response?.data?.error || 'Could not send notification. Please try again.' });
     } finally {
       setSending(false);
+    }
+  };
+
+  /* ── company probation policy ── */
+  const savePolicy = async () => {
+    setPolicySaving(true);
+    try {
+      const { data } = await api.put('/probation/settings', {
+        probation_months: policyEdit.months,
+        reminder_days: policyEdit.days,
+      });
+      setPolicy(data);
+      setPolicyEdit(null);
+      setDialog({ type:'success', title:'Policy Saved', message:'New employees will use this probation period. Saved end dates are not changed.', autoClose: 2500 });
+    } catch (err) {
+      setDialog({ type:'error', title:'Not Saved', message: err?.response?.data?.error || 'Could not save the probation policy.' });
+    } finally {
+      setPolicySaving(false);
     }
   };
 
@@ -286,8 +325,6 @@ export default function Probation() {
         </>}
       />
     }>
-      <ResultDialog dialog={dialog} onClose={() => setDialog(null)} />
-
       {/* Header */}
 
 
@@ -330,6 +367,53 @@ export default function Probation() {
           </div>
         </div>
       </div>
+
+      {/* Company probation policy — the period new hires get by default and
+          how far ahead the daily reminder goes to HR. Changing it never
+          rewrites an end date that is already saved. */}
+      {policy && (
+        <div className="prob-policy" role="group" aria-label="Probation policy">
+          {policyEdit ? (
+            <>
+              <label>
+                Default period
+                <input type="number" min={1} max={24} value={policyEdit.months}
+                  onChange={e => setPolicyEdit(p => ({ ...p, months: e.target.value }))} /> months
+              </label>
+              <label>
+                Remind HR
+                <input type="number" min={0} max={90} value={policyEdit.days}
+                  onChange={e => setPolicyEdit(p => ({ ...p, days: e.target.value }))} /> days before the end date
+              </label>
+              <button className="prob-modal-send" onClick={savePolicy} disabled={policySaving}>
+                {policySaving ? 'Saving…' : 'Save'}
+              </button>
+              <button className="prob-modal-cancel" onClick={() => setPolicyEdit(null)}>Cancel</button>
+            </>
+          ) : (
+            <>
+              <span>
+                Default probation <strong>{policy.probation_months} months</strong>
+                {policy.months_is_default ? ' (standard)' : ''}
+                {' · '}HR is reminded <strong>{policy.reminder_days} days</strong> before the end date
+                {policy.reminder_days_is_default ? ' (standard)' : ''}
+              </span>
+              <button className="prob-hist-action-btn"
+                onClick={() => setPolicyEdit({ months: policy.probation_months, days: policy.reminder_days })}>
+                Edit policy
+              </button>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Who reviews probations, per department. Its own permission checks:
+          hr:view to read, hr:edit to change (enforced by the server). */}
+      <DepartmentHeadsPanel />
+
+      {/* Open reviews and whether each reviewer is still the eligible head;
+          reassignment via the existing endpoint (hr:edit). */}
+      <ProbationReviewsPanel />
 
       {/* Notification history panel */}
       {showHistory && (
@@ -397,6 +481,7 @@ export default function Probation() {
           { key: 'overdue',  label: 'Overdue',   count: kpi.overdue },
           { key: 'warning',  label: 'Due Soon',  count: kpi.warning },
           { key: 'safe',     label: 'On Track',  count: kpi.safe },
+          { key: 'undated',  label: 'No End Date', count: kpi.undated },
         ].map(t => (
           <button
             key={t.key}
@@ -441,6 +526,7 @@ export default function Probation() {
             const cfg  = prob ? STATUS_CFG[prob.status] : STATUS_CFG.safe;
             const [avatarBg] = avatarColor(`${emp.first_name}${emp.last_name}`);
             const last = lastNotif[emp.id];
+            const coolingDown = !!last && (Date.now() - new Date(last.created_at).getTime()) < NOTIFY_COOLDOWN_MS;
             const btnClass =
               prob?.status === 'overdue' || prob?.status === 'critical'
                 ? 'prob-notify-btn-danger'
@@ -465,12 +551,14 @@ export default function Probation() {
                       {emp.designation && <span className="prob-badge prob-badge-desig">{emp.designation}</span>}
                     </div>
                   </div>
-                  {prob && (
+                  {prob ? (
                     <span
                       className={`prob-status-pill prob-status-${prob.status}`}
                     >
                       {cfg.label}
                     </span>
+                  ) : (
+                    <span className="prob-status-pill prob-status-undated">No end date</span>
                   )}
                 </div>
 
@@ -479,7 +567,9 @@ export default function Probation() {
                   <div className="prob-timeline">
                     <div className="prob-timeline-header">
                       <span className="prob-timeline-label">
-                        {prob.elapsed} / {prob.totalDays} days elapsed
+                        {prob.totalDays != null
+                          ? `${Math.min(prob.elapsed, prob.totalDays)} / ${prob.totalDays} days elapsed`
+                          : 'Joining date not recorded'}
                       </span>
                       <span
                         className="prob-days-chip"
@@ -487,6 +577,7 @@ export default function Probation() {
                       >
                         {prob.remaining > 0
                           ? `${prob.remaining}d left`
+                          : prob.remaining === 0 ? 'Ends today'
                           : `${Math.abs(prob.remaining)}d overdue`}
                       </span>
                     </div>
@@ -507,8 +598,8 @@ export default function Probation() {
                   </div>
                   <div className="prob-info-item">
                     <div className="prob-info-key">Probation Ends</div>
-                    <div className="prob-info-val" style={{ color: cfg.color }}>
-                      {prob ? fmtDate(prob.end) : '—'}
+                    <div className="prob-info-val" style={{ color: prob ? cfg.color : '#9ca3af' }}>
+                      {emp.probation_end_date ? fmtDate(emp.probation_end_date) : 'Not set — edit the employee'}
                     </div>
                   </div>
                   <div className="prob-info-item">
@@ -534,10 +625,14 @@ export default function Probation() {
                   )}
                   <button
                     className={`prob-notify-btn ${btnClass}`}
-                    disabled={last && (Date.now() - new Date(last.created_at).getTime()) < (1000 * 60 * 60)}
+                    disabled={coolingDown}
+                    title={coolingDown
+                      ? `Notified ${timeAgo(last.created_at)} — you can notify again after ${new Date(new Date(last.created_at).getTime() + NOTIFY_COOLDOWN_MS).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+                      : undefined}
                     onClick={() => {
                       setModalEmp(emp);
-                      setNotifyTo(emp.reporting_manager || '');
+                      setNotifyTo(emp.reporting_manager_id ? (emp.reporting_manager || '') : '');
+                      setNotifyToId(emp.reporting_manager_id || null);
                       setNotifyType(
                         prob?.status === 'overdue' || prob?.status === 'critical'
                           ? 'probation_due'
@@ -546,6 +641,7 @@ export default function Probation() {
                           : 'approval'
                       );
                       setNotifyRemarks('');
+                      notifyTyped.current = false;
                       setSuggestions([]);
                     }}
                   >
@@ -569,7 +665,7 @@ export default function Probation() {
 
       {/* ── Notify modal ── */}
       {modalEmp && (() => {
-        const prob = calcProbation(modalEmp.joining_date);
+        const prob = calcProbation(modalEmp, attentionDays);
         const cfg  = prob ? STATUS_CFG[prob.status] : STATUS_CFG.safe;
         const [avatarBg] = avatarColor(`${modalEmp.first_name}${modalEmp.last_name}`);
         return (
@@ -609,7 +705,7 @@ export default function Probation() {
                           />
                         </div>
                         <div style={{ fontSize: 11, color: '#6b7280', marginTop: 4 }}>
-                          {prob.elapsed} days elapsed · probation ends {fmtDate(prob.end)}
+                          {prob.elapsed != null ? `${prob.elapsed} days elapsed · ` : ''}probation ends {fmtDate(modalEmp.probation_end_date)}
                         </div>
                       </div>
                     )}
@@ -632,19 +728,24 @@ export default function Probation() {
                   <label>Notify To *</label>
                   <div className="prob-field-autocomplete">
                     <input
-                      placeholder="Search employee name or ID…"
+                      placeholder="Select an employee — or type a name or ID"
                       value={notifyTo}
                       onChange={e => handleNotifyInput(e.target.value)}
+                      onFocus={openNotifyList}
+                      onBlur={() => setTimeout(() => setSuggestions([]), 160)}
                     />
                     {suggestions.length > 0 && (
-                      <div className="prob-suggestions">
+                      // preventDefault keeps focus in the input: otherwise pressing
+                      // on the list blurred it, the blur timer closed the list, and
+                      // a slow click or a scrollbar drag picked no one.
+                      <div className="prob-suggestions" onMouseDown={e => e.preventDefault()}>
                         {suggestions.map(s => {
                           const [sb] = avatarColor(`${s.first_name}${s.last_name}`);
                           return (
                             <div
                               key={s.id}
                               className="prob-suggestion-item"
-                              onClick={() => { setNotifyTo(`${s.first_name} ${s.last_name}`); setSuggestions([]); }}
+                              onClick={() => { notifyTyped.current = false; setNotifyTo(`${s.first_name} ${s.last_name}`); setNotifyToId(s.id); setSuggestions([]); }}
                             >
                               <div className="prob-suggestion-av" style={{ background: sb }}>
                                 {initials(s.first_name, s.last_name)}
@@ -763,6 +864,12 @@ export default function Probation() {
           </div>
         </div>
       )}
+
+      {/* Last, so it paints over the notify/decision modals. It shares their
+          z-index (10000), and while it sat above them in the tree every warning
+          or error raised from inside a modal ("Pick the person to notify",
+          "Failed to Send") rendered underneath it — Send looked dead. */}
+      <ResultDialog dialog={dialog} onClose={() => setDialog(null)} />
     </PageShell>
   );
 }

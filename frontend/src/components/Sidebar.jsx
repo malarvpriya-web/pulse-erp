@@ -8,13 +8,16 @@ import {
 import './Sidebar.css';
 import { useAuth } from '@/context/AuthContext';
 import { NAV_ITEMS } from '@/config/routes';
-import { ORPHAN_NAV_ITEMS } from '@/config/autoRouter';
+import { ORPHAN_NAV_ITEMS, MERGED_ROUTES } from '@/config/autoRouter';
+import { useMentorStatus } from '@/features/internships/mentorStatus';
+import { useProbationReviewerStatus } from '@/features/hr/probationReviewerStatus';
 import {
   EMPLOYEE_SELF_SERVICE_PAGES, ADMIN_ONLY_PAGES, SUPER_ADMIN_ONLY_PAGES,
   ROLE_SECTION_ALLOWLIST, roleHasSectionAllowlist, HR_SCOPED_PAGES,
   FINANCE_RESTRICTED_SECTIONS, FINANCE_SELF_SERVICE_PAGES,
   FINANCE_ANALYTICS_SCOPED_PAGES, MANAGER_ANALYTICS_SCOPED_PAGES,
-  HR_EXEC_EXCLUDED_PAGES,
+  HR_EXEC_EXCLUDED_PAGES, MANAGER_HR_SCOPED_PAGES, ALWAYS_VISIBLE,
+  canOpenEmployeeMaster, EMPLOYEE_DIRECTORY_PAGE, EMPLOYEE_MASTER_PAGE, holdsModuleGrant,
 } from '@/config/menuCatalog';
 
 // Orphan groups are named "<Label> · More". Where the label doesn't match a
@@ -104,7 +107,25 @@ function buildNavItems(curated, orphans) {
   return [...merged.slice(0, at), ...band, ...merged.slice(at)];
 }
 
-const ALL_NAV_ITEMS = buildNavItems(NAV_ITEMS, ORPHAN_NAV_ITEMS);
+/**
+ * Drop the rows that live inside a hub page.
+ *
+ * The 2026-09-16 IA pass collapsed ~130 submenu rows into 34 tabbed hubs. Each
+ * absorbed page KEEPS its NAV_ITEMS entry, marked `inHub: '<HubKey>'`, because
+ * getSectionForPage() walks NAV_ITEMS to decide which section a page belongs
+ * to — delete the entry and the page resolves to `null`, which makes
+ * canRoleAccessPageBySection wave it through for every role. So the entry
+ * stays for permission resolution and is simply not drawn here.
+ */
+function stripHubbedRows(items) {
+  return items.map(item => {
+    if (item.divider || !Array.isArray(item.submenu)) return item;
+    const submenu = item.submenu.filter(sub => !sub.inHub);
+    return submenu.length === item.submenu.length ? item : { ...item, submenu };
+  });
+}
+
+const ALL_NAV_ITEMS = stripHubbedRows(buildNavItems(NAV_ITEMS, ORPHAN_NAV_ITEMS));
 
 /**
  * Drop `separator` rows that no longer head anything.
@@ -155,11 +176,23 @@ export default function Sidebar() {
 
   // Roles are many-to-many — gate on the whole set, never on the primary role
   // alone, or a member's extra roles grant them nothing in the menu.
-  const { roles, hasAnyRole, isEmployeeOnly, hasPermission, menuAccess } = useAuth();
+  const { user, role, roles, hasAnyRole, isEmployeeOnly, hasPermission, menuAccess } = useAuth();
+  // Whether this login is CURRENTLY an intern's assigned mentor — drives the
+  // `mentorOnly` entry (My Intern Evaluations). From the server, never the role.
+  const mentor = useMentorStatus();
+  // Whether this login CURRENTLY heads a department — drives the
+  // `probationReviewerOnly` entry (My Probation Reviews). From the server.
+  const reviewer = useProbationReviewerStatus();
 
   const isMenuVisible = (item) => {
+    // Mentor-only entries follow the ASSIGNMENT, not the role allowlists: shown
+    // to a current mentor whatever their role, hidden from a manager/employee who
+    // mentors nobody. Admins see every menu, this one included.
+    if (item.mentorOnly) return mentor.is_mentor === true || hasAnyRole('super_admin', 'admin');
+    if (item.probationReviewerOnly) return reviewer.is_head === true || hasAnyRole('super_admin', 'admin');
     if (hasAnyRole('super_admin')) return true;
-    if (item.name === 'Home') return true;
+    // Home and Approvals (everyone's My Requests) — see ALWAYS_VISIBLE.
+    if (ALWAYS_VISIBLE.has(item.name)) return true;
 
     // Admin-configured Page Access override wins for both grant and revoke.
     const override = menuAccess(item.name);
@@ -190,6 +223,15 @@ export default function Sidebar() {
     // the ones left empty for this role in the pass after the reduce.
     if (rawItem.divider) { acc.push(rawItem); return acc; }
     if (!isMenuVisible(rawItem)) return acc;
+    // One employee list per person: whoever can open All Employees gets that
+    // row and not the read-only phonebook (Layout.jsx redirects its URL the same
+    // way). canOpenEmployeeMaster() runs Layout's own route gate against the
+    // PRIMARY role, as Layout does, so a hidden row always means a working
+    // All Employees page — never an Access Denied one.
+    if (rawItem.page === EMPLOYEE_DIRECTORY_PAGE &&
+        canOpenEmployeeMaster(role, { route: MERGED_ROUTES[EMPLOYEE_MASTER_PAGE], menuAccess, hasPermission })) {
+      return acc;
+    }
 
     let item = rawItem;
 
@@ -211,6 +253,12 @@ export default function Sidebar() {
             : { ...item, submenu };
         }
       }
+    }
+
+    // employeeLinkOnly rows (Self Service) are the caller's own records — not
+    // drawn for a login with no linked employee, whatever its role.
+    if (user?.employee_id == null && Array.isArray(item.submenu) && item.submenu.some(sub => sub.employeeLinkOnly)) {
+      item = { ...item, submenu: item.submenu.filter(sub => !sub.employeeLinkOnly) };
     }
 
     // Admin-only pages (e.g. Knowledge Base) are hidden from every non-admin role.
@@ -263,6 +311,24 @@ export default function Sidebar() {
       if (submenu.length !== item.submenu.length) item = { ...item, submenu };
     }
 
+    // manager holds the 'HR' section only for Employee Directory and its own
+    // dashboard (MANAGER_HR_SCOPED_PAGES / canManagerAccessPage). Layout.jsx
+    // has always enforced that at the route, but the sidebar had no matching
+    // filter — so a manager was shown six HR rows that every one of them
+    // dead-ended on "Access Denied". Same shape as the 'Analytics & AI' and
+    // hr_exec filters either side of this one; measured in the browser sweep,
+    // 2026-09-16.
+    if (
+      item.name === 'HR' && hasAnyRole('manager') && !isAdminRole &&
+      menuAccess(item.name) !== 'view' && menuAccess(item.name) !== 'edit' &&
+      Array.isArray(item.submenu)
+    ) {
+      const submenu = item.submenu.filter(
+        sub => sub.separator || MANAGER_HR_SCOPED_PAGES.has(sub.page)
+      );
+      if (submenu.length !== item.submenu.length) item = { ...item, submenu };
+    }
+
     // hr_exec sees the full 'HR' menu except Payroll Center — role_permissions
     // grants it no payroll access (unlike hr_manager/payroll_admin, who hold
     // it in full or view-only respectively).
@@ -273,6 +339,20 @@ export default function Sidebar() {
     ) {
       const submenu = item.submenu.filter(
         sub => sub.separator || !HR_EXEC_EXCLUDED_PAGES.has(sub.page)
+      );
+      if (submenu.length !== item.submenu.length) item = { ...item, submenu };
+    }
+
+    // A row that carries its OWN `module` (HR: Internships, BGV, Workforce
+    // Analytics; Operations: Lifecycle Tracker) is shown only to a caller who
+    // can view that module. The group's gate above only decides whether the
+    // group appears at all, and a group can be held by roles without the row's
+    // grant (payroll_admin has no internships:view; a manager has no
+    // servicedesk:view) — without this they were offered a row that dead-ends
+    // on Access Denied at the route. Rows without their own module are untouched.
+    if (!isAdminRole && Array.isArray(item.submenu)) {
+      const submenu = item.submenu.filter(
+        sub => sub.separator || !sub.module || sub.module === item.module || holdsModuleGrant(hasPermission, sub.module, sub.moduleActions)
       );
       if (submenu.length !== item.submenu.length) item = { ...item, submenu };
     }
@@ -388,19 +468,17 @@ export default function Sidebar() {
           <span className="submenu-header-name">{activeSubmenu.label || activeSubmenu.name}</span>
         </div>
       )}
-      {activeSubmenu?.submenu?.map(sub =>
-        sub.separator ? (
-          <div key={sub.name} className="nav-section-label">{sub.name}</div>
-        ) : (
-          <button
-            key={sub.name}
-            className="nav-item"
-            onClick={() => { sub.tab ? navigate(`/${sub.page}?tab=${sub.tab}`) : setPage(sub.page); dispatch({ type: 'COLLAPSE' }); }}
-          >
-            {sub.name}
-          </button>
-        )
-      )}
+      {/* `separator` rows still group the submenu in NAV_ITEMS — they set the
+          order pages appear in — but they are no longer drawn as headings. */}
+      {activeSubmenu?.submenu?.filter(sub => !sub.separator).map(sub => (
+        <button
+          key={sub.name}
+          className="nav-item"
+          onClick={() => { sub.tab ? navigate(`/${sub.page}?tab=${sub.tab}`) : setPage(sub.page); dispatch({ type: 'COLLAPSE' }); }}
+        >
+          {sub.name}
+        </button>
+      ))}
     </div>
   );
 
@@ -431,7 +509,23 @@ export default function Sidebar() {
             >
               <button
                 className="nav-item"
+                aria-haspopup={item.submenu ? 'menu' : undefined}
+                aria-expanded={item.submenu ? state.openMenu === item.name : undefined}
                 onClick={() => {
+                  // Touch devices fire no mouseenter, so the hover handler
+                  // that opens the flyout never runs: a submenu parent was an
+                  // inert row on every phone and tablet. Tapping now toggles
+                  // its panel. A parent that has BOTH (Settings, Approvals) opens its
+                  // panel rather than navigating: its own page is always the
+                  // first row inside, so the panel loses nothing and is the
+                  // only way to reach the other rows on a touch device.
+                  if (item.submenu) {
+                    cancelCollapse();
+                    dispatch(state.openMenu === item.name
+                      ? { type: 'COLLAPSE' }
+                      : { type: 'OPEN_MENU', name: item.name });
+                    return;
+                  }
                   if (item.page) { setPage(item.page); dispatch({ type: 'COLLAPSE' }); }
                 }}
               >

@@ -1,11 +1,17 @@
 import express from "express";
-import { addEmployee, getEmployees, getEmployee, updateEmployee, deleteEmployee, getNextEmployeeCode, getEmployeeAnalytics, getExEmployees } from "./employee.controller.js";
-import { verifyToken, allowRoles, hasRole } from "../middlewares/auth.middleware.js";
+import { addEmployee, getEmployees, getEmployee, updateEmployee, deleteEmployee, getNextEmployeeCode, getEmployeeAnalytics, getExEmployees,
+  listBankChangeRequests, approveBankChangeRequest, rejectBankChangeRequest, withdrawBankChangeRequest, requestBankVerification } from "./employee.controller.js";
+import { verifyToken, allowRoles, hasRole, requirePermission } from "../middlewares/auth.middleware.js";
 import { logAudit } from "../services/AuditService.js";
 import pool from "../config/db.js";
 import { companyOf, callerIdentity } from "../shared/scope.js";
 import { presenceOf } from "../shared/presence.js";
 import { captureBefore } from '../middlewares/captureBefore.js';
+import { canonicalWritableStatus, WRITABLE_STATUSES, EXIT_STATUS, EXITED_STATUSES } from "../shared/employeeStatus.js";
+import { exitStatusWorkflowOnly } from "../shared/hrContainment.js";
+import { getDirectoryEntries } from "./employee.service.js";
+import { readScope } from "../shared/employeeAccess.js";
+import { withSalaryMasking } from "./salaryVisibility.js";
 
 const HR_ROLES = [
   "admin", "super_admin", "hr", "hr_manager", "hr_exec", "payroll_admin",
@@ -24,24 +30,50 @@ const EX_EMPLOYEE_ROLES = [...HR_ROLES, "manager", "department_head"];
 const router = express.Router();
 
 router.get("/analytics", verifyToken, getEmployeeAnalytics);
+// Bank-detail maker-checker (§204). Above the /:id routes so the path is not
+// read as an employee id. Each handler checks the employee_bank grant itself.
+router.get("/bank-change-requests", verifyToken, listBankChangeRequests);
+router.post("/bank-change-requests/:id/approve", verifyToken, approveBankChangeRequest);
+router.post("/bank-change-requests/:id/reject", verifyToken, rejectBankChangeRequest);
+router.post("/bank-change-requests/:id/withdraw", verifyToken, withdrawBankChangeRequest);
+// "Verify as-is": the details on record go to a second HR person unchanged (§206).
+router.post("/:id/bank-verification-request", verifyToken, requestBankVerification);
 router.get("/ex", verifyToken, allowRoles(...EX_EMPLOYEE_ROLES), getExEmployees);
 router.get("/", verifyToken, getEmployees);
 router.get("/next-code", verifyToken, allowRoles(...HR_ROLES), getNextEmployeeCode);
 
 // ── Salary revisions ──────────────────────────────────────────────────────────
-router.get("/:id/salary-revisions", verifyToken, allowRoles(...HR_ROLES, "hr_manager", "hr_exec", "payroll_admin", "finance_manager"), async (req, res) => {
+// PC-01 D5 (04 Nov 26): payroll:view, from the permission matrix — the same
+// right that reads salary assignments in Payroll Center. It used to be a role
+// list that also admitted hr_exec and finance_manager. Scope: the employee must
+// be in the caller's company; a login with no company is refused unless it is a
+// genuinely global super-admin scope (it used to read every tenant).
+router.get("/:id/salary-revisions", verifyToken, requirePermission('payroll', 'view'), async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id < 1) return res.status(400).json({ message: 'Invalid employee id' });
+  const companyId = companyOf(req);
+  if (companyId == null && !req.scope?.isGlobal) {
+    return res.status(403).json({ message: 'No company context for this login' });
+  }
   try {
+    // Salary history is the most sensitive payload this page serves and this
+    // route was gated on ROLE ONLY — `WHERE a.employee_id = $1`, no tenant
+    // predicate. Holding an HR role in company B was therefore enough to read
+    // company A's basic salary by id. The join to `employees` makes the
+    // caller's company part of the lookup instead of an afterthought; a null
+    // companyId is a genuinely global super-admin scope.
     const { rows } = await pool.query(
       `SELECT a.id, a.employee_id, a.effective_from, a.basic_salary,
               a.special_allowance, a.loan_deduction, a.advance_deduction, a.created_at,
+              a.entry_mode, a.annual_ctc, a.ctc_policy_version, a.breakdown, a.proposal_id,
               s.name AS structure_name, s.id AS structure_id
        FROM employee_salary_assignments a
+       JOIN employees e ON e.id = a.employee_id AND e.deleted_at IS NULL
        LEFT JOIN salary_structures s ON s.id = a.structure_id
        WHERE a.employee_id = $1
+         AND ($2::int IS NULL OR e.company_id = $2::int)
        ORDER BY a.effective_from DESC, a.created_at DESC`,
-      [id]
+      [id, companyId]
     );
     logAudit({ userId: req.user?.id, module: 'employees', recordId: id, recordType: 'salary_revision', action: 'view', req });
     res.json(rows);
@@ -96,8 +128,19 @@ router.post("/:id/offboard", verifyToken, allowRoles(...HR_ROLES), async (req, r
     // POST /initiate, the other entry point into the same flow).
     // Capitalized to match live employees.status convention and the
     // frontend's STATUS_STYLE.Notice badge (EmployeeProfile.jsx).
-    const newStatus = 'Notice';
-    await client.query(`UPDATE employees SET status=$1 WHERE id=$2`, [newStatus, empId]);
+    // canonicalWritableStatus rather than a bare literal: this value is the
+    // reason 'Notice' counts as employed everywhere else, so it must come from
+    // the same vocabulary those readers use.
+    const newStatus = canonicalWritableStatus('Notice');
+    // Defence in depth: the handler already proved this employee belongs to the
+    // caller's company above, but a bare `WHERE id =` on an employees write is the
+    // shape of the bug that was found on PATCH /:id/status and on exit F&F. The
+    // predicate costs nothing and removes the need to trace the proof.
+    await client.query(
+      `UPDATE employees SET status=$1, updated_at=NOW()
+        WHERE id=$2 AND ($3::int IS NULL OR company_id=$3)`,
+      [newStatus, empId, companyId]
+    );
 
     await client.query('COMMIT');
 
@@ -171,7 +214,7 @@ router.patch("/ex/:id/exit-details", verifyToken, allowRoles(...HR_ROLES), async
 
     await client.query('COMMIT');
     logAudit({ userId: req.user?.id, module: 'employees', recordId: empId, recordType: 'employee', action: 'update_exit_details', newData: req.body });
-    res.json({ success: true, employee: emp });
+    res.json(await withSalaryMasking(req, { success: true, employee: emp }));
   } catch (e) {
     await client.query('ROLLBACK');
     res.status(500).json({ error: e.message });
@@ -204,13 +247,16 @@ router.post("/ex/:id/rehire", verifyToken, allowRoles(...HR_ROLES), async (req, 
 
     const { rows: [emp] } = await client.query(
       `UPDATE employees
-          SET status      = 'Active',
-              joining_date = $1,
+          SET status      = $1,
+              joining_date = $2,
               exit_date   = NULL,
-              exit_reason = NULL
-        WHERE id = $2
+              exit_reason = NULL,
+              updated_at  = NOW()
+        WHERE id = $3 AND ($4::int IS NULL OR company_id = $4)
         RETURNING *`,
-      [joiningDate, empId]
+      // ACTIVE_STATUSES[0] capitalised via the vocabulary rather than a literal:
+      // a rehire must land on the same 'Active' every reader recognises.
+      [canonicalWritableStatus('Active'), joiningDate, empId, companyId]
     );
 
     // Close any open exit request
@@ -232,7 +278,7 @@ router.post("/ex/:id/rehire", verifyToken, allowRoles(...HR_ROLES), async (req, 
       newData: { status: 'Active', joining_date: joiningDate },
     });
 
-    res.json({ success: true, employee: emp });
+    res.json(await withSalaryMasking(req, { success: true, employee: emp }));
   } catch (e) {
     await client.query('ROLLBACK');
     res.status(500).json({ error: e.message });
@@ -249,7 +295,10 @@ const DIRECTORY_PHONE_ROLES = [
   'hr_manager', 'hr_exec', 'payroll_admin', 'manager',
 ];
 router.get("/directory", verifyToken, async (req, res) => {
-  const companyId = companyOf(req);
+  // An unresolved company is refused, not read as "every company".
+  const scope = readScope(req);
+  if (scope.refused) return res.status(403).json({ error: "Your account has no company assignment" });
+  const companyId = scope.companyId;
   // hasRole() over the whole user_roles set, lower-cased on both sides. The
   // previous Set membership test read req.user.role — the primary claim only —
   // so a manager or HR user holding that grant as a secondary role had the
@@ -257,37 +306,10 @@ router.get("/directory", verifyToken, async (req, res) => {
   // the Set purely to work around the missing case fold.
   const canSeePhone = hasRole(req, DIRECTORY_PHONE_ROLES);
   try {
-    const { rows } = await pool.query(
-      `SELECT
-         e.id,
-         e.office_id,
-         TRIM(COALESCE(e.first_name,'') || ' ' || COALESCE(e.last_name,'')) AS name,
-         e.first_name,
-         e.last_name,
-         e.designation,
-         e.department,
-         e.company_email,
-         CASE WHEN $2 THEN e.phone ELSE NULL END AS phone,
-         e.status,
-         e.photo_url,
-         e.joining_date,
-         e.location,
-         e.reporting_manager,
-         TO_CHAR(e.dob,          'MM-DD') AS birth_md,
-         TO_CHAR(e.joining_date, 'MM-DD') AS anniversary_md,
-         EXISTS (
-           SELECT 1 FROM leave_applications la
-           WHERE la.employee_id = e.id
-             AND CURRENT_DATE BETWEEN la.start_date AND la.end_date
-             AND (la.hr_status = 'approved' OR la.manager_status = 'approved')
-         ) AS on_leave_today
-       FROM employees e
-       WHERE LOWER(COALESCE(e.status,'active')) NOT IN
-               ('left','terminated','resigned','inactive','ex-employee','notice_period','notice period')
-         AND ($1::int IS NULL OR e.company_id = $1)
-       ORDER BY e.first_name, e.last_name`,
-      [companyId, canSeePhone]
-    );
+    // The projection lives in employee.service.js (getDirectoryEntries) so the
+    // single-employee read a directory-tier caller gets from GET /employees/:id
+    // is, by construction, exactly this phonebook row and no more.
+    const rows = await getDirectoryEntries({ companyId, canSeePhone });
     res.json(rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -436,28 +458,90 @@ router.get("/direct-reports", verifyToken, async (req, res) => {
 });
 
 router.get("/:id", verifyToken, getEmployee);
-router.post("/", verifyToken, allowRoles(...HR_ROLES), addEmployee);
-router.put("/:id", verifyToken, allowRoles(...HR_ROLES), updateEmployee);
+// ── Containment C6 / MD-14 (HR_P0_REMEDIATION_DESIGN_2026-11-03.md, P0-6) ──
+// A current employee reaches an exit status only through Exit Management, which
+// records the exit request, clearance and F&F. These three writers used to end
+// the employment directly: PUT with status 'Left' (All Employees → Terminate and
+// the Edit Employee status field), POST creating someone as 'Left', and DELETE,
+// which soft-deletes with status 'terminated'. A record that is ALREADY exited
+// may still be edited (or soft-deleted): that changes no employment. A body that
+// carries no exit status, or an id the controller will refuse anyway, passes
+// through untouched.
+const USE_EXIT_WORKFLOW = {
+  code: 'USE_EXIT_WORKFLOW',
+  error: 'An employee leaves through Exit Management (Initiate Exit), which records the exit, clearance and settlement.',
+};
+async function exitStatusViaWorkflow(req, res, next) {
+  if (!exitStatusWorkflowOnly()) return next();
+  try {
+    const endsEmployment = req.method === 'DELETE'
+      || canonicalWritableStatus(req.body?.status) === EXIT_STATUS;
+    if (!endsEmployment) return next();
+    if (req.method === 'POST') return res.status(409).json(USE_EXIT_WORKFLOW);
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id < 1) return next();
+    const { rows: [cur] } = await pool.query(
+      `SELECT status FROM employees WHERE id = $1 AND ($2::int IS NULL OR company_id = $2::int)`,
+      [id, companyOf(req)]);
+    if (!cur) return next();   // the controller answers with its own 404
+    if (EXITED_STATUSES.includes(String(cur.status || '').trim().toLowerCase())) return next();
+    return res.status(409).json(USE_EXIT_WORKFLOW);
+  } catch (err) { return next(err); }
+}
+
+router.post("/", verifyToken, allowRoles(...HR_ROLES), exitStatusViaWorkflow, addEmployee);
+router.put("/:id", verifyToken, allowRoles(...HR_ROLES), exitStatusViaWorkflow, updateEmployee);
 // Lightweight status-only patch — auto-sets confirmation_date when status → Active
 router.patch("/:id/status", verifyToken, allowRoles(...HR_ROLES, "hr_manager"), captureBefore('employees'), async (req, res) => {
   const empId = Number(req.params.id);
   if (!Number.isInteger(empId) || empId < 1) return res.status(400).json({ error: 'Invalid employee id' });
   const { status } = req.body;
   if (!status) return res.status(400).json({ error: 'status is required' });
+
+  // Validate against the canonical WRITE vocabulary. This endpoint took the
+  // body's `status` straight into an UPDATE, so any string at all became an
+  // employment status — `{"status":"totally-made-up"}` was a 200. That is how a
+  // vocabulary grows synonyms faster than anything can reconcile them.
+  // canonicalWritableStatus also fixes the spelling, so 'notice' is stored as
+  // 'Notice' rather than as a fourth variant of it.
+  const canonical = canonicalWritableStatus(status);
+  if (!canonical) {
+    return res.status(400).json({
+      error: `"${status}" is not a valid employment status.`,
+      allowed: WRITABLE_STATUSES,
+    });
+  }
+  // Containment C6 (HR_P0_REMEDIATION_DESIGN_2026-11-03.md, P0-6): ending the
+  // employment here skipped exit, clearance, F&F and login revocation. No screen
+  // sends it (EmployeesData's row and bulk menus never offer 'Left'), so only a
+  // direct API call is refused.
+  if (canonical === EXIT_STATUS && exitStatusWorkflowOnly()) {
+    return res.status(409).json({
+      code: 'USE_EXIT_WORKFLOW',
+      error: 'An employee leaves through Exit Management, not a status change.',
+    });
+  }
+
+  const companyId = companyOf(req);
   try {
     const today = new Date().toISOString().split('T')[0];
-    const confirmClause = String(status).toLowerCase() === 'active'
+    const confirmClause = canonical === 'Active'
       ? `, confirmation_date = COALESCE(confirmation_date, '${today}'::date)`
       : '';
+    // Tenant-scoped. This UPDATE was `WHERE id=$2` alone — the only employee
+    // write in this file with no company filter — so an HR user in one company
+    // could flip the employment status of any employee id in the database, in
+    // any tenant, and the audit entry would look entirely routine.
     const { rows } = await pool.query(
-      `UPDATE employees SET status=$1${confirmClause}, updated_at=NOW() WHERE id=$2 RETURNING *`,
-      [status, empId]
+      `UPDATE employees SET status=$1${confirmClause}, updated_at=NOW()
+        WHERE id=$2 AND ($3::int IS NULL OR company_id=$3) RETURNING *`,
+      [canonical, empId, companyId]
     );
     if (!rows.length) return res.status(404).json({ error: 'Employee not found' });
-    logAudit({ userId: req.user?.id, module: 'employees', recordId: empId, recordType: 'employee', action: 'update_status', newData: { status } });
-    res.json(rows[0]);
+    logAudit({ userId: req.user?.id, module: 'employees', recordId: empId, recordType: 'employee', action: 'update_status', newData: { status: canonical } });
+    res.json(await withSalaryMasking(req, rows[0]));
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
-router.delete("/:id", verifyToken, allowRoles(...HR_ROLES), deleteEmployee);
+router.delete("/:id", verifyToken, allowRoles(...HR_ROLES), exitStatusViaWorkflow, deleteEmployee);
 
 export default router;

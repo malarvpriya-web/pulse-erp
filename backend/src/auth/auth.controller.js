@@ -62,7 +62,7 @@ export const register = async (req, res) => {
     // Center looks, audit_logs is where "who created this user" is asked.
     await audit(req.user?.userId ?? null, 'user_registered', req, {
       created_user_id: user?.id ?? null,
-      created_email: req.body.email,
+      created_email: user?.email ?? req.body.email,
       role: req.body.role ?? null,
     });
     logAudit({
@@ -76,6 +76,9 @@ export const register = async (req, res) => {
     });
     res.json({ message: "User created successfully", user });
   } catch (err) {
+    // A duplicate login (409) or a blank email (400) is the caller's to fix,
+    // not a server fault.
+    if (err.statusCode) return res.status(err.statusCode).json({ error: err.message });
     console.error(err);
     res.status(500).json({ error: err.message });
   }

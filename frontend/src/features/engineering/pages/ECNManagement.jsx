@@ -120,6 +120,76 @@ function CreateECNForm({ onSave, onCancel, saving }) {
   );
 }
 
+/**
+ * Name the approvers of a change that has none. An ECN is decided only by its
+ * named approvers (policy 2026-10-20): without one it cannot be submitted, and
+ * a BOM version raises its ECN with none. Server: PUT /engineering/ecn/changes/:id
+ * { approvers } — accepted only while the change has no approvers; each must be
+ * an active colleague with engineering access and not the requester.
+ */
+function ApproverPicker({ ecnId, onSaved }) {
+  const toast = useToast();
+  const [q, setQ]           = useState('');
+  const [people, setPeople] = useState([]);
+  const [loaded, setLoaded] = useState(false);   // no "No matching colleagues" before the first answer
+  const [picked, setPicked] = useState([]);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    const t = setTimeout(() => {
+      api.get('/approvals/delegates', { params: { q } })
+        .then(r => setPeople(Array.isArray(r.data) ? r.data : []))
+        .catch(() => setPeople([]))
+        .finally(() => setLoaded(true));
+    }, 200);
+    return () => clearTimeout(t);
+  }, [q]);
+
+  const toggle = (u) => setPicked(p => (p.some(x => x.user_id === u.user_id) ? p.filter(x => x.user_id !== u.user_id) : [...p, u]));
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await api.put(`/engineering/ecn/changes/${ecnId}`, {
+        approvers: picked.map(u => ({ approver_id: u.user_id, approver_name: u.name })),
+      });
+      toast.success(`${picked.length} approver${picked.length === 1 ? '' : 's'} named`);
+      onSaved();
+    } catch (e) {
+      toast.error(e?.response?.data?.error || 'Could not save approvers');
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <div style={{ marginBottom: 16, padding: 12, border: '1px solid #fde68a', background: '#fffbeb', borderRadius: 8 }}>
+      <div style={{ fontSize: 12, fontWeight: 600, color: '#92400e', marginBottom: 6 }}>
+        <AlertTriangle size={13} style={{ marginRight: 4, verticalAlign: 'middle' }} />
+        No approvers named — this change cannot be submitted until at least one is.
+      </div>
+      <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 8 }}>
+        Every named approver must approve. Pick colleagues with engineering access (not yourself).
+      </div>
+      <input value={q} onChange={e => setQ(e.target.value)} placeholder="Filter colleagues…"
+        style={{ ...inp, marginBottom: 6 }} />
+      <div style={{ maxHeight: 160, overflowY: 'auto', border: '1px solid #e5e7eb', borderRadius: 6, background: '#fff' }}>
+        {people.length === 0 && (
+          <div style={{ padding: 8, fontSize: 12, color: '#9ca3af' }}>{loaded ? 'No matching colleagues.' : 'Loading colleagues…'}</div>
+        )}
+        {people.map(u => (
+          <label key={u.user_id} style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '6px 10px', fontSize: 12, cursor: 'pointer', borderBottom: '1px solid #f3f4f6' }}>
+            <input type="checkbox" checked={picked.some(x => x.user_id === u.user_id)} onChange={() => toggle(u)} />
+            <strong>{u.name}</strong>{u.designation && <span style={{ color: '#6b7280' }}>· {u.designation}</span>}
+          </label>
+        ))}
+      </div>
+      <button type="button" onClick={save} disabled={!picked.length || saving}
+        style={{ marginTop: 8, padding: '6px 14px', background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 8, cursor: picked.length ? 'pointer' : 'not-allowed', opacity: picked.length ? 1 : 0.6, fontWeight: 600, fontSize: 12 }}>
+        {saving ? 'Saving…' : `Save ${picked.length || ''} approver${picked.length === 1 ? '' : 's'}`}
+      </button>
+    </div>
+  );
+}
+
 function ECNDetail({ ecn, onClose, onRefresh }) {
   const toast = useToast();
   const [detail, setDetail]   = useState(null);
@@ -127,12 +197,14 @@ function ECNDetail({ ecn, onClose, onRefresh }) {
   const [acting,  setActing]  = useState(false);
   const [remarks, setRemarks] = useState('');
 
-  useEffect(() => {
+  const loadDetail = useCallback(() => {
     api.get(`/engineering/ecn/changes/${ecn.id}`)
       .then(r => setDetail(r.data))
       .catch(() => toast.error('Failed to load ECN detail'))
       .finally(() => setLoading(false));
-  }, [ecn.id]);
+  }, [ecn.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { loadDetail(); }, [loadDetail]);
+  const noApprovers = !!detail && (detail.approvals?.length ?? 0) === 0;
 
   const doAction = async (action) => {
     setActing(true);
@@ -195,6 +267,10 @@ function ECNDetail({ ecn, onClose, onRefresh }) {
             </div>
           )}
 
+          {noApprovers && (d.status === 'draft' || d.status === 'submitted') && (
+            <ApproverPicker ecnId={ecn.id} onSaved={() => { loadDetail(); onRefresh(); }} />
+          )}
+
           {/* Workflow actions */}
           {(d.status === 'draft' || d.status === 'submitted' || d.status === 'approved') && (
             <div style={{ borderTop: '1px solid #e5e7eb', paddingTop: 16, marginTop: 8 }}>
@@ -204,8 +280,10 @@ function ECNDetail({ ecn, onClose, onRefresh }) {
                 style={{ ...inp, resize: 'vertical', marginBottom: 12, width: '100%', boxSizing: 'border-box' }} />
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 {d.status === 'draft' && (
-                  <button onClick={() => doAction('submit')} disabled={acting}
-                    style={{ padding: '7px 16px', background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>
+                  <button onClick={() => doAction('submit')} disabled={acting || noApprovers}
+                    title={noApprovers ? 'Name at least one approver first' : undefined}
+                    style={{ padding: '7px 16px', background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 8, fontWeight: 600, fontSize: 13,
+                      cursor: noApprovers ? 'not-allowed' : 'pointer', opacity: noApprovers ? 0.45 : 1 }}>
                     <ArrowRight size={13} style={{ marginRight: 4, verticalAlign: 'middle' }} />Submit for Approval
                   </button>
                 )}

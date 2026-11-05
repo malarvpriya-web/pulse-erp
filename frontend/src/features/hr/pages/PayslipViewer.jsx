@@ -14,7 +14,7 @@ const safeNum = (n) => Number(n || 0);
 /**
  * @param {Function} setPage - navigate to another page key
  */
-export default function PayslipViewer({ setPage: _setPage }) {
+export default function PayslipViewer({ setPage: _setPage, embedded = false }) {
   const { user } = useAuth();
   const now = new Date();
   const [year, setYear] = useState(now.getFullYear());
@@ -86,7 +86,10 @@ export default function PayslipViewer({ setPage: _setPage }) {
       }
     } catch (err) {
       setPayslip(null);
-      setError(err.message || 'Failed to load payslip');
+      // 404 = not released yet (self-service sees approved payslips only);
+      // 422 = not payable, with the reason.
+      const d = err?.response?.data;
+      setError(d?.reasons?.length ? `${d.message}: ${d.reasons.map(r => r.message).join('; ')}` : (d?.message || err.message || 'Failed to load payslip'));
     } finally {
       setLoading(false);
     }
@@ -121,12 +124,12 @@ export default function PayslipViewer({ setPage: _setPage }) {
   const data = payslip;
   const totalEarnings = (data?.earnings || []).reduce((a, e) => a + safeNum(e.amount), 0);
   const totalDeductions = (data?.deductions || []).reduce((a, d) => a + safeNum(d.amount), 0);
-  const netPay = totalEarnings - totalDeductions;
+  const netPay = data?.net_pay != null ? safeNum(data.net_pay) : totalEarnings - totalDeductions;
   const fmt = (n) => `₹${safeNum(n).toLocaleString('en-IN')}`;
 
   const displayName = data?.employee?.name || resolvedEmployee?.name || 'Employee';
   const employeeInfo = {
-    id: data?.employee?.id || resolvedEmployee?.id || '-',
+    id: data?.employee_code || data?.employee?.code || resolvedEmployee?.office_id || '-',
     designation: data?.employee?.designation || resolvedEmployee?.designation || '-',
     department: data?.employee?.department || resolvedEmployee?.department || '-',
     pan: data?.employee?.pan || '-',
@@ -160,7 +163,7 @@ export default function PayslipViewer({ setPage: _setPage }) {
       doc.setFontSize(11);
       doc.text(`${MONTHS[month]} ${year}`, 14, 24);
       doc.text(`Employee: ${displayName}`, 14, 32);
-      doc.text(`Employee ID: ${employeeInfo.id}`, 14, 38);
+      doc.text(`Employee Code: ${employeeInfo.id}`, 14, 38);
       doc.text(`Designation: ${employeeInfo.designation}`, 14, 44);
       doc.text(`Department: ${employeeInfo.department}`, 14, 50);
 
@@ -237,35 +240,47 @@ export default function PayslipViewer({ setPage: _setPage }) {
     }
   };
 
+  const actions = (
+    <>
+      <button className="plh-cta plh-cta--ghost" onClick={handlePrint}>
+        <Printer size={14} /> Print
+      </button>
+      <button className="plh-cta plh-cta--ghost"
+        onClick={handleDownloadPdf}
+        disabled={!data || pdfBusy}>
+        <Download size={14} /> {pdfBusy ? 'Preparing PDF...' : 'Download PDF'}
+      </button>
+      <button className="plh-cta plh-cta--ghost"
+        onClick={handleEmailSelf}
+        disabled={!data || emailBusy}>
+        <Mail size={14} /> {emailBusy ? 'Emailing...' : 'Email My Payslip'}
+      </button>
+      <button className="plh-cta"
+        onClick={handleWhatsAppShare}
+        disabled={!data || waBusy}>
+        <MessageCircle size={14} /> {waBusy ? 'Sharing...' : 'WhatsApp Share'}
+      </button>
+    </>
+  );
+
   return (
-    <PageShell dock={
+    <PageShell embedded={embedded} dock={embedded ? null :
       <PageHero
         icon={Wallet}
         eyebrow="Human Resources"
         title="Payslip Viewer"
         subtitle="PDF password: DOB YYYYMMDD"
-        actions={<>
-          <button className="plh-cta plh-cta--ghost" onClick={handlePrint}>
-            <Printer size={14} /> Print
-          </button>
-          <button className="plh-cta plh-cta--ghost"
-            onClick={handleDownloadPdf}
-            disabled={!data || pdfBusy}>
-            <Download size={14} /> {pdfBusy ? 'Preparing PDF...' : 'Download PDF'}
-          </button>
-          <button className="plh-cta plh-cta--ghost"
-            onClick={handleEmailSelf}
-            disabled={!data || emailBusy}>
-            <Mail size={14} /> {emailBusy ? 'Emailing...' : 'Email My Payslip'}
-          </button>
-          <button className="plh-cta"
-            onClick={handleWhatsAppShare}
-            disabled={!data || waBusy}>
-            <MessageCircle size={14} /> {waBusy ? 'Sharing...' : 'WhatsApp Share'}
-          </button>
-        </>}
+        actions={actions}
       />
     }>
+      {embedded && (
+        <div className="pc-toolbar no-print">
+          <span className="pc-toolbar-who">
+            Showing <strong>{displayName}</strong>{selectedEmployee?.id ? ' (the employee last selected in Pulse)' : ' (your own payslip)'} · PDF password: DOB YYYYMMDD
+          </span>
+          <div className="pc-toolbar-actions">{actions}</div>
+        </div>
+      )}
       {error && (
         <div style={{ background: '#fee2e2', color: '#dc2626', borderRadius: '8px', padding: '10px 14px', marginBottom: '16px', fontSize: '13px' }}>
           {error}
@@ -331,7 +346,7 @@ export default function PayslipViewer({ setPage: _setPage }) {
           <div style={{ padding: '20px 24px', background: '#f9fafb', borderBottom: '1px solid #e5e7eb', display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '12px' }}>
             {[
               ['Employee Name', displayName],
-              ['Employee ID', employeeInfo.id],
+              ['Employee Code', employeeInfo.id],
               ['Designation', employeeInfo.designation],
               ['Department', employeeInfo.department],
               ['PAN Number', employeeInfo.pan],
@@ -376,6 +391,23 @@ export default function PayslipViewer({ setPage: _setPage }) {
             <span style={{ fontWeight: 700, fontSize: '16px' }}>Net Pay (Take Home)</span>
             <span style={{ fontWeight: 800, fontSize: '22px' }}>{fmt(netPay)}</span>
           </div>
+          {(data?.employer_contributions_list || []).length > 0 && (
+            <div style={{ margin: '0 24px 24px', fontSize: '13px' }}>
+              <div style={{ fontWeight: 700, color: '#374151', marginBottom: '8px' }}>
+                EMPLOYER CONTRIBUTIONS <span style={{ fontWeight: 400, color: '#6b7280' }}>— paid by the employer, not deducted from your pay</span>
+              </div>
+              {data.employer_contributions_list.map((c) => (
+                <div key={c.label} style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
+                  <span style={{ color: '#6b7280' }}>{c.label}</span><span>{fmt(c.amount)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {(data?.preview || (data?.status && !['approved', 'paid'].includes(data.status))) && (
+            <div style={{ margin: '0 24px 24px', color: '#b45309', fontSize: '12px', fontWeight: 600 }}>
+              {data.preview ? 'Preview — payroll has not been generated for this month.' : `Draft (${data.status}) — not an issued payslip until payroll is approved.`}
+            </div>
+          )}
         </div>
       )}
     </PageShell>

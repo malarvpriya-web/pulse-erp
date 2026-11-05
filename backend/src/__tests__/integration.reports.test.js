@@ -21,6 +21,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import request from 'supertest';
+import { FIXTURE_CODE_SQL } from '../shared/employeeCode.js';
 
 // setup.js sets a dummy DB_PASSWORD because every other suite mocks the pool.
 // Restore the real one FIRST — config/db.js builds its Pool at import time, so
@@ -97,7 +98,6 @@ afterAll(async () => {
     await pool.query(`DELETE FROM employees WHERE id = ANY($1::int[])`, [createdEmployees]);
   }
   await sweepDebris();
-  await pool.end();
 });
 
 /** Default params for a report — every declared filter gets a wide, valid value. */
@@ -288,8 +288,8 @@ describe('KPI reconciliation', () => {
   it('headcount excludes an exited employee from active but still counts the record', async () => {
     // employees.name is GENERATED from first_name/last_name — insert the parts.
     const { rows: [emp] } = await pool.query(
-      `INSERT INTO employees (first_name, last_name, department, status, company_id, joining_date)
-       VALUES ('ZZTEST', $1, 'ZZTEST_DEPT', 'Left', 1, CURRENT_DATE) RETURNING id`,
+      `INSERT INTO employees (office_id, first_name, last_name, department, status, company_id, joining_date)
+       VALUES (${FIXTURE_CODE_SQL}, 'ZZTEST', $1, 'ZZTEST_DEPT', 'Left', 1, CURRENT_DATE) RETURNING id`,
       [`exited_${TAG}`]
     );
     createdEmployees.push(emp.id);

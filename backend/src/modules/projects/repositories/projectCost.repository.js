@@ -76,15 +76,23 @@ const projectCostRepository = {
     return result.rows[0];
   },
 
-  async findByProject(project_id) {
+  /**
+   * Cost, revenue, profit and margin for one project — scoped through the
+   * project's company. The route used to pass a raw :id with no company filter,
+   * so any authenticated user could read another tenant's full P&L for a
+   * project by guessing its id. The projects JOIN was already here; only the
+   * predicate was missing.
+   */
+  async findByProject(project_id, company_id = null) {
     const result = await pool.query(
       `SELECT pcs.*,
               p.budget_amount, p.budget,
               COALESCE(p.budget_amount, p.budget, 0) AS contract_value
        FROM project_cost_summary pcs
        JOIN projects p ON p.id = pcs.project_id
-       WHERE pcs.project_id = $1`,
-      [project_id]
+       WHERE pcs.project_id = $1
+         AND ($2::int IS NULL OR p.company_id = $2)`,
+      [project_id, company_id ?? null]
     );
     return result.rows[0] || null;
   },

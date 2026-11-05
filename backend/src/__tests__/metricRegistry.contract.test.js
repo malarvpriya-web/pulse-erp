@@ -33,7 +33,7 @@
  *
  * Runner: Vitest | npx vitest run src/__tests__/metricRegistry.contract.test.js
  */
-import { describe, test, expect, afterAll } from 'vitest';
+import { describe, test, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
@@ -58,7 +58,6 @@ const {
   validateQueryConfig, buildMetricQuery, getMetric, listMetrics,
 } = await import('../shared/metricRegistry.js');
 
-afterAll(async () => { await pool.end().catch(() => {}); });
 
 /** Every (metric, dimension) pair the registry claims to support. */
 const COMBINATIONS = METRICS.flatMap((m) =>

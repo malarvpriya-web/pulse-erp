@@ -125,6 +125,10 @@ describe('PATCH /api/leaves/:id/approve — approval flow', () => {
 
   it('200 HR approves leave', async () => {
     mockAuthWithFullPermission();
+    // loadLeaveInCompany(): the route now reads the leave (company-scoped) first.
+    pool.query.mockResolvedValueOnce({ rows: [{ ...pendingLeave, employee_company_id: null }] });
+    // blockOwnLeaveDecision(): the actor's employee (HR, id 2) is not the requester (4).
+    pool.query.mockResolvedValueOnce({ rows: [{ employee_id: 2 }] });
     const approved = { ...pendingLeave, status: 'approved' };
     leavesRepo.updateStatus.mockResolvedValue(approved);
 
@@ -142,6 +146,10 @@ describe('PATCH /api/leaves/:id/approve — approval flow', () => {
 describe('PATCH /api/leaves/:id/reject — rejection flow', () => {
   it('200 HR rejects leave with reason', async () => {
     mockAuthWithFullPermission();
+    // loadLeaveInCompany(): the route now reads the leave (company-scoped) first.
+    pool.query.mockResolvedValueOnce({ rows: [{ ...pendingLeave, employee_company_id: null }] });
+    // blockOwnLeaveDecision(): the actor's employee (HR, id 2) is not the requester (4).
+    pool.query.mockResolvedValueOnce({ rows: [{ employee_id: 2 }] });
     const rejected = { ...pendingLeave, status: 'rejected' };
     leavesRepo.updateStatus.mockResolvedValue(rejected);
 

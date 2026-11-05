@@ -86,7 +86,21 @@
 @media (max-width: 1100px) { .ed-kpi-row { grid-template-columns: repeat(3, 1fr); } }
 @media (max-width: 700px)  { .ed-kpi-row { grid-template-columns: repeat(2, 1fr); } }
 
+/* A <button>, not a div: the band used to be keyboard-unreachable and had no
+   accessible role or name. Buttons bring role, focus and Enter/Space from the
+   platform — and also UA chrome, so the resets below belong IN this rule rather
+   than in a second `.ed-kpi-card` block further down the file. A duplicate
+   selector there had silently overridden this border, which is exactly the trap
+   this file's header warns about.
+   `text-align: left` earns its place: a button centres its content, which shunted
+   every value and label to the middle of the card. */
 .ed-kpi-card {
+  appearance: none;
+  -webkit-appearance: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  width: 100%;
   background: #fff;
   border: 1.5px solid #ede9fe;
   border-radius: 14px;
@@ -94,6 +108,11 @@
   display: flex; align-items: center; gap: 14px;
   transition: box-shadow .2s, transform .2s, border-color .15s;
   cursor: default;
+}
+/* Keyboard users only, so a mouse click does not leave a ring behind. */
+.ed-kpi-card:focus-visible {
+  outline: 2px solid #6B3FDB;
+  outline-offset: 2px;
 }
 .ed-kpi-card.ed-kpi-card-clickable { cursor: pointer; }
 .ed-kpi-card.ed-kpi-card-clickable:hover {
@@ -615,3 +634,187 @@
 .status.notice    { background:#fee2e2; color:#991b1b; }
 .status.left      { background:#f3f4f6; color:#6b7280; }
 @media (max-width:900px) { .snapshot-grid { grid-template-columns:1fr; } .docs-grid { grid-template-columns:1fr; } }
+
+/* ── Drill-down banner ──────────────────────────────────────────────────────
+   Shown when the page was opened from a dashboard card with a filter. A
+   narrowed list that does not announce itself reads as the full register. */
+.ed-drill-chip {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex-wrap: wrap;
+  background: #f5f3ff;
+  border: 1px solid #ddd4fb;
+  border-radius: 9px;
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  font-size: 12.5px;
+  color: #5b21b6;
+}
+.ed-drill-chip strong { font-weight: 700; }
+.ed-drill-chip svg { flex-shrink: 0; }
+
+.ed-drill-back,
+.ed-drill-clear {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: #fff;
+  border: 1px solid #ddd4fb;
+  border-radius: 7px;
+  padding: 3px 9px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #6B3FDB;
+  cursor: pointer;
+}
+.ed-drill-back:hover,
+.ed-drill-clear:hover { background: #ede9fe; }
+.ed-drill-back { margin-left: auto; }
+
+/* Soft status badge — used by the Notice column group for the exit-request
+   state, which is free text from exit_requests.status rather than one of the
+   page's own STATUS_CFG values. */
+.ed-badge-soft {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 7px;
+  border-radius: 20px;
+  background: #f5f3ff;
+  color: #5b21b6;
+  text-transform: capitalize;
+  white-space: nowrap;
+}
+
+
+/* ── Incomplete records ───────────────────────────────────────────────────────
+   Legacy rows missing Employee ID, Department or Role. They stay on the
+   register (they are real people), but they must not READ as complete master
+   records, which a neutral em-dash does. Amber, not red: the record is usable,
+   it is just unfinished. */
+.ed-missing {
+  display: inline-block;
+  font-size: 11px; font-weight: 600;
+  padding: 2px 8px; border-radius: 6px;
+  background: #fffbeb; color: #92400e;
+  border: 1px dashed #fcd34d;
+  white-space: nowrap;
+}
+.ed-gap-badge {
+  display: inline-flex; align-items: center; gap: 3px;
+  margin-left: 7px; vertical-align: middle;
+  font-size: 10px; font-weight: 700; letter-spacing: .02em;
+  padding: 1px 6px; border-radius: 20px;
+  background: #fffbeb; color: #92400e; border: 1px solid #fde68a;
+  white-space: nowrap;
+}
+/* A 2px inset marker rather than a row tint: a background colour on the row
+   fights the selected-row highlight, and the two states are independent. */
+.ed-tr-incomplete td:first-child { box-shadow: inset 3px 0 0 #f59e0b; }
+
+.ed-incomplete-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 34px; padding: 0 10px;
+  border-radius: 8px; border: 1.5px solid #e5e7eb; background: #fff;
+  color: #6b7280; font-size: 12px; font-weight: 600;
+  cursor: pointer; transition: all .15s; white-space: nowrap;
+}
+.ed-incomplete-btn:hover { border-color: #f59e0b; color: #92400e; background: #fffbeb; }
+.ed-incomplete-btn-on {
+  border-color: #f59e0b; background: #fffbeb; color: #92400e;
+}
+.ed-incomplete-count {
+  display: inline-block; min-width: 18px; text-align: center;
+  padding: 0 4px; border-radius: 20px;
+  background: #f59e0b; color: #fff; font-size: 10px; font-weight: 800;
+}
+
+/* ── Pagination: rows-per-page + numbered pages ───────────────────────────── */
+.ed-page-size { display: flex; align-items: center; gap: 7px; }
+.ed-page-size label { font-size: 12px; color: #6b7280; font-weight: 500; }
+.ed-page-size-select {
+  height: 30px; padding: 0 6px;
+  border: 1.5px solid #e5e7eb; border-radius: 8px;
+  background: #fff; color: #374151;
+  font-size: 12px; font-weight: 600; cursor: pointer;
+}
+.ed-page-size-select:focus-visible { outline: 2px solid #6B3FDB; outline-offset: 1px; }
+.ed-page-btn-current {
+  border-color: #6B3FDB; background: #6B3FDB; color: #fff;
+}
+.ed-page-btn-current:hover:not(:disabled) {
+  border-color: #6B3FDB; background: #5b33bd; color: #fff;
+}
+.ed-page-btn:focus-visible { outline: 2px solid #6B3FDB; outline-offset: 1px; }
+.ed-page-gap {
+  min-width: 20px; height: 34px;
+  display: flex; align-items: center; justify-content: center;
+  color: #9ca3af; font-size: 13px; font-weight: 700;
+}
+/* Wraps to its own line before it can push the page wider than the viewport. */
+.ed-page-btns { flex-wrap: wrap; }
+.ed-table-count-filtered { color: #9ca3af; font-weight: 500; }
+
+/* ── Bulk-action confirmation ─────────────────────────────────────────────── */
+.ed-modal-newval { color: #6B3FDB; }
+.ed-modal-note {
+  margin: 10px 0 0; padding: 8px 10px;
+  background: #f8f9fc; border-radius: 8px;
+  font-size: 11.5px; line-height: 1.45; color: #6b7280;
+}
+.ed-affected {
+  margin-top: 12px; border: 1px solid #f0f0f8; border-radius: 10px;
+  background: #fcfcfe; overflow: hidden;
+}
+.ed-affected-hd {
+  padding: 8px 12px; background: #f8f9fc;
+  border-bottom: 1px solid #f0f0f8;
+  font-size: 11px; font-weight: 700; color: #6b7280;
+  text-transform: uppercase; letter-spacing: .03em;
+}
+/* Scrolls inside the panel, so a 100-row selection cannot push Cancel and
+   Confirm off the bottom of the dialog. */
+.ed-affected-list {
+  list-style: none; margin: 0; padding: 4px 0;
+  max-height: 210px; overflow-y: auto;
+}
+.ed-affected-list li {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 12px;
+  padding: 5px 12px; font-size: 12px;
+}
+.ed-affected-list li + li { border-top: 1px solid #f6f6fb; }
+.ed-affected-name { font-weight: 600; color: #374151; }
+.ed-affected-meta { color: #9ca3af; font-size: 11px; white-space: nowrap; }
+.ed-affected-more {
+  padding: 7px 12px; border-top: 1px solid #f0f0f8;
+  font-size: 11px; font-weight: 600; color: #6b7280; background: #f8f9fc;
+}
+
+/* ── Narrow viewports ─────────────────────────────────────────────────────── */
+/* The table keeps its own horizontal scroll (.ed-table-scroll) at every width,
+   so the PAGE never scrolls sideways however many columns are switched on. */
+@media (max-width: 860px) {
+  .ed-pagination { justify-content: flex-start; }
+  .ed-page-info { order: 3; width: 100%; }
+}
+
+
+/* ── Rows-per-page in the filter bar ────────────────────────────────────────
+   Pushed to the right-hand end of the filter row, immediately before Columns:
+   filters on the left, view controls on the right. `margin-left:auto` moved from
+   .ed-col-btn-wrap to this wrapper so the two travel together, instead of the
+   Columns button claiming the free space and stranding the new control beside
+   the filters. */
+.ed-filter-right { display: flex; align-items: center; gap: 10px; margin-left: auto; }
+.ed-page-size-compact label { font-size: 11.5px; }
+@media (max-width: 1100px) {
+  /* Below this the filter row wraps; drop the auto margin so the pair starts the
+     new line rather than being pushed to its far right. */
+  .ed-filter-right { margin-left: 0; }
+}
+
+/* The "N have since left" note in the drill-down chip — secondary to the count it
+   qualifies, but not hidden: it is the reason the number differs from the card
+   that was clicked. */
+.ed-drill-note { color: #6b7280; font-weight: 500; }

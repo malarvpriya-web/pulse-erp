@@ -1,7 +1,11 @@
 ﻿import { Router } from 'express';
-import { verifyToken, requirePermission } from '../../middlewares/auth.middleware.js';
+import { verifyToken, requirePermission, permissionFor } from '../../middlewares/auth.middleware.js';
+import { validateDocumentUrl } from '../../home/documentDownload.js';
 import pool from '../shared/db.js';
 import { captureBefore } from '../../middlewares/captureBefore.js';
+import { EXIT_STATUS } from '../../shared/employeeStatus.js';
+import { companyOf, employeeOf } from '../../shared/scope.js';
+import { exitStatusWorkflowOnly } from '../../shared/hrContainment.js';
 
 const router = Router();
 
@@ -15,6 +19,7 @@ pool.query(`
   ALTER TABLE hr_policies ADD COLUMN IF NOT EXISTS drive_url TEXT;
   ALTER TABLE hr_policies ADD COLUMN IF NOT EXISTS requires_acknowledgement BOOLEAN DEFAULT false;
   ALTER TABLE hr_policies ADD COLUMN IF NOT EXISTS applicable_to VARCHAR(50) DEFAULT 'all';
+  ALTER TABLE hr_policies ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT true;
   ALTER TABLE hr_downloads ADD COLUMN IF NOT EXISTS company_id INTEGER;
   ALTER TABLE hr_downloads ADD COLUMN IF NOT EXISTS description TEXT DEFAULT '';
   ALTER TABLE hr_downloads ADD COLUMN IF NOT EXISTS download_count INTEGER DEFAULT 0;
@@ -58,14 +63,30 @@ function visibleToClause(role) {
   return `'all'`;
 }
 
+/**
+ * HR Documents are company forms: every endpoint needs a concrete company.
+ * A login without one used to read, edit and delete EVERY company's rows
+ * through `($1::int IS NULL OR company_id = $1)`, and to create rows with no
+ * company at all. Now it is refused before any SQL runs (§208).
+ */
+function downloadsCompany(req, res) {
+  const cid = companyOf(req);
+  if (cid == null) {
+    res.status(403).json({ error: 'No company context for this login' });
+    return null;
+  }
+  return cid;
+}
+
 router.get('/downloads', requirePermission('hr', 'view'), async (req, res) => {
   try {
-    const cid = req.scope?.company_id ?? null;
+    const cid = downloadsCompany(req, res);
+    if (cid == null) return;
     const { search = '', category = '' } = req.query;
     const allowed = visibleToClause(req.user?.role);
     const r = await pool.query(
       `SELECT * FROM hr_downloads
-        WHERE ($1::int IS NULL OR company_id = $1)
+        WHERE company_id = $1
           AND COALESCE(visible_to,'all') IN (${allowed})
           AND ($2 = '' OR LOWER(category) = LOWER($2))
           AND ($3 = '' OR LOWER(title) ILIKE '%' || LOWER($3) || '%'
@@ -82,15 +103,23 @@ router.get('/downloads', requirePermission('hr', 'view'), async (req, res) => {
 
 router.post('/downloads', requirePermission('hr', 'add'), async (req, res) => {
   try {
-    const cid = req.scope?.company_id ?? null;
+    const cid = downloadsCompany(req, res);
+    if (cid == null) return;
     const { title, category, description, file_url, file_type, visible_to } = req.body;
     if (!title?.trim()) return res.status(400).json({ error: 'title is required' });
     if (!file_url?.trim()) return res.status(400).json({ error: 'file_url is required' });
+    // created_by references employees(id). It used to receive the users.id,
+    // which failed the FK or credited whichever employee shared the number
+    // (§208). The uploader must be an employee of the company being written to.
+    const empId = await employeeOf(req, pool);
+    const { rows: [emp] } = empId == null ? { rows: [] } : await pool.query(
+      `SELECT id FROM employees WHERE id = $1 AND company_id = $2`, [empId, cid]);
+    if (!emp) return res.status(403).json({ error: 'No employee record is linked to this account' });
     const r = await pool.query(
       `INSERT INTO hr_downloads (company_id, title, category, description, file_url, file_type, visible_to, created_by)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
       [cid, title.trim(), category || 'General', description || '', file_url.trim(),
-       file_type || null, visible_to || 'all', req.user?.userId || null]
+       file_type || null, visible_to || 'all', emp.id]
     );
     res.status(201).json(r.rows[0]);
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -98,7 +127,8 @@ router.post('/downloads', requirePermission('hr', 'add'), async (req, res) => {
 
 router.patch('/downloads/:id', requirePermission('hr', 'edit'), captureBefore('hr_downloads'), async (req, res) => {
   try {
-    const cid = req.scope?.company_id ?? null;
+    const cid = downloadsCompany(req, res);
+    if (cid == null) return;
     const id = Number(req.params.id);
     if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'Invalid id' });
     const { title, category, description, file_url, file_type, visible_to } = req.body;
@@ -110,7 +140,7 @@ router.patch('/downloads/:id', requirePermission('hr', 'edit'), captureBefore('h
          file_url    = COALESCE($4, file_url),
          file_type   = COALESCE($5, file_type),
          visible_to  = COALESCE($6, visible_to)
-       WHERE id = $7 AND ($8::int IS NULL OR company_id = $8)
+       WHERE id = $7 AND company_id = $8
        RETURNING *`,
       [title?.trim() || null, category || null, description?.trim() || null,
        file_url?.trim() || null, file_type || null, visible_to || null, id, cid]
@@ -122,25 +152,28 @@ router.patch('/downloads/:id', requirePermission('hr', 'edit'), captureBefore('h
 
 router.patch('/downloads/:id/increment', requirePermission('hr', 'view'), captureBefore('hr_downloads'), async (req, res) => {
   try {
-    const cid = req.scope?.company_id ?? null;
+    const cid = downloadsCompany(req, res);
+    if (cid == null) return;
     const id = Number(req.params.id);
     if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'Invalid id' });
-    await pool.query(
+    const r = await pool.query(
       `UPDATE hr_downloads SET download_count = COALESCE(download_count,0) + 1
-        WHERE id=$1 AND ($2::int IS NULL OR company_id = $2)`,
+        WHERE id=$1 AND company_id = $2 RETURNING id`,
       [id, cid]
     );
+    if (!r.rows.length) return res.status(404).json({ error: 'Document not found' });
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 router.delete('/downloads/:id', requirePermission('hr', 'delete'), captureBefore('hr_downloads'), async (req, res) => {
   try {
-    const cid = req.scope?.company_id ?? null;
+    const cid = downloadsCompany(req, res);
+    if (cid == null) return;
     const id = Number(req.params.id);
     if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'Invalid id' });
     const r = await pool.query(
-      `DELETE FROM hr_downloads WHERE id=$1 AND ($2::int IS NULL OR company_id = $2) RETURNING id`,
+      `DELETE FROM hr_downloads WHERE id=$1 AND company_id = $2 RETURNING id`,
       [id, cid]
     );
     if (!r.rows.length) return res.status(404).json({ error: 'File not found' });
@@ -150,12 +183,31 @@ router.delete('/downloads/:id', requirePermission('hr', 'delete'), captureBefore
 
 // ── POLICIES ──────────────────────────────────────────────────────────────────
 
+// Containment C5 (HR_P0_REMEDIATION_DESIGN_2026-11-03.md, P0-5).
+// hr_policy_acknowledgements.employee_id is an EMPLOYEES id — the register
+// joins it to employees. Both routes below used the login's users.id (and
+// acknowledge took any employee_id from the request body), so an acknowledgement
+// was credited to whichever employee happened to share that number, and anyone
+// could file one for anyone. The acknowledging person is now always the caller's
+// own employee record in the caller's company; the body is never read for it.
+async function ownEmployeeInCompany(req) {
+  const cid = companyOf(req);
+  if (cid == null) return { status: 403, error: 'No company context for this login' };
+  const empId = await employeeOf(req, pool);
+  const { rows: [emp] } = empId == null ? { rows: [] } : await pool.query(
+    `SELECT id FROM employees WHERE id = $1 AND company_id = $2 AND deleted_at IS NULL`, [empId, cid]);
+  if (!emp) return { status: 403, error: 'No employee record is linked to this account' };
+  return { cid, employeeId: emp.id };
+}
+
 // Must be registered before /:id routes to avoid conflict
 // No requirePermission — any authenticated employee reads/acknowledges policies
 router.get('/policies/my-acknowledgements', async (req, res) => {
-  const employeeId = req.user?.userId;
-  if (!employeeId) return res.status(401).json({ error: 'Not authenticated' });
   try {
+    // A login with no employee of its own has acknowledged nothing.
+    const me = await ownEmployeeInCompany(req);
+    if (me.error) return res.json([]);
+    const employeeId = me.employeeId;
     const r = await pool.query(
       `SELECT policy_id FROM hr_policy_acknowledgements WHERE employee_id = $1`,
       [employeeId]
@@ -197,15 +249,25 @@ router.get('/policies/acknowledgement-counts', requirePermission('hr', 'view'), 
   }
 });
 
-// All authenticated employees can read company policies
+// Policy audience. 'all' = company-wide and employee-facing (also shown on
+// Home); 'internal' = HR/admin SOPs that stay inside this module. Anything
+// unrecognised is stored as 'internal': failing closed hides a document,
+// failing open publishes one.
+const POLICY_AUDIENCES = new Set(['all', 'internal']);
+const policyAudience = (v) => (v == null || v === '' ? null : POLICY_AUDIENCES.has(v) ? v : 'internal');
+
+// All authenticated employees can read company-wide, active policies. Internal
+// and retired ones are visible only to holders of hr:view (HR, payroll, admin).
 router.get('/policies', async (req, res) => {
   try {
     const cid = req.scope?.company_id ?? null;
+    const hrView = (await permissionFor(req, 'hr'))?.can_view === true;
     const r = await pool.query(
       `SELECT * FROM hr_policies
        WHERE ($1::int IS NULL OR company_id = $1 OR company_id IS NULL)
+         AND ($2::boolean OR (is_active AND applicable_to = 'all'))
        ORDER BY created_at DESC`,
-      [cid]
+      [cid, hrView]
     );
     res.json(r.rows);
   } catch (e) {
@@ -218,20 +280,27 @@ router.post('/policies', requirePermission('hr', 'add'), async (req, res) => {
   try {
     const cid = req.scope?.company_id ?? null;
     const { title, name, category, description, file_url, drive_url,
-            version, effective_date, review_date, requires_acknowledgement } = req.body;
+            version, effective_date, review_date, requires_acknowledgement,
+            applicable_to, is_active } = req.body;
     const policyTitle = title || name;
     if (!policyTitle) return res.status(400).json({ error: 'title is required' });
+    if (file_url) {
+      const urlError = validateDocumentUrl(file_url);
+      if (urlError) return res.status(400).json({ error: urlError });
+    }
     // If the submitted URL is a Drive link, store it in drive_url too
     const resolvedDriveUrl = drive_url || (file_url?.includes('drive.google.com') ? file_url : null);
     const r = await pool.query(
       `INSERT INTO hr_policies
          (company_id, title, category, description, file_url, drive_url, version,
-          effective_date, review_date, requires_acknowledgement, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+          effective_date, review_date, requires_acknowledgement, created_by,
+          applicable_to, is_active)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
       [cid, policyTitle, category || 'General', description || '',
        file_url || null, resolvedDriveUrl || null,
        version || 'v1.0', effective_date || null, review_date || null,
-       !!requires_acknowledgement, req.user?.userId || null]
+       !!requires_acknowledgement, req.user?.userId || null,
+       policyAudience(applicable_to) ?? 'all', is_active === undefined ? true : !!is_active]
     );
     res.json(r.rows[0]);
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -243,21 +312,32 @@ router.put('/policies/:id', requirePermission('hr', 'edit'), captureBefore('hr_p
   try {
     const cid = req.scope?.company_id ?? null;
     const { title, name, category, description, file_url, drive_url,
-            version, effective_date, review_date, requires_acknowledgement } = req.body;
+            version, effective_date, review_date, requires_acknowledgement,
+            applicable_to, is_active } = req.body;
     const policyTitle = title || name;
+    if (file_url) {
+      const urlError = validateDocumentUrl(file_url);
+      if (urlError) return res.status(400).json({ error: urlError });
+    }
     const resolvedDriveUrl = drive_url || (file_url?.includes('drive.google.com') ? file_url : null);
+    // A new file_url replaces drive_url as well: keeping the old Drive copy
+    // under COALESCE left readers that prefer drive_url on the previous file.
     const r = await pool.query(
       `UPDATE hr_policies SET
          title=COALESCE($1,title), category=COALESCE($2,category),
-         description=COALESCE($3,description), file_url=COALESCE($4,file_url),
-         drive_url=COALESCE($5,drive_url), version=COALESCE($6,version),
+         description=COALESCE($3,description), file_url=COALESCE($4::text,file_url),
+         drive_url=CASE WHEN $4::text IS NOT NULL THEN $5::text ELSE COALESCE($5::text,drive_url) END,
+         version=COALESCE($6,version),
          effective_date=COALESCE($7,effective_date), review_date=COALESCE($8,review_date),
-         requires_acknowledgement=COALESCE($9,requires_acknowledgement), updated_at=NOW()
+         requires_acknowledgement=COALESCE($9,requires_acknowledgement),
+         applicable_to=COALESCE($12,applicable_to), is_active=COALESCE($13,is_active),
+         updated_at=NOW()
        WHERE id=$10 AND ($11::int IS NULL OR company_id = $11 OR company_id IS NULL)
        RETURNING *`,
       [policyTitle || null, category || null, description || null, file_url || null,
        resolvedDriveUrl || null, version || null, effective_date || null, review_date || null,
-       requires_acknowledgement !== undefined ? !!requires_acknowledgement : null, id, cid]
+       requires_acknowledgement !== undefined ? !!requires_acknowledgement : null, id, cid,
+       policyAudience(applicable_to), is_active === undefined || is_active === null ? null : !!is_active]
     );
     if (!r.rows.length) return res.status(404).json({ error: 'Policy not found' });
     res.json(r.rows[0]);
@@ -277,13 +357,20 @@ router.delete('/policies/:id', requirePermission('hr', 'delete'), captureBefore(
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Any authenticated employee can acknowledge a policy
+// Any authenticated employee can acknowledge a policy — for themself only (C5).
 router.post('/policies/:id/acknowledge', async (req, res) => {
   const policyId = Number(req.params.id);
   if (!Number.isInteger(policyId) || policyId < 1) return res.status(400).json({ error: 'Invalid policy id' });
-  const employeeId = req.body?.employee_id || req.user?.userId;
-  if (!employeeId) return res.status(400).json({ error: 'employee_id is required' });
   try {
+    const me = await ownEmployeeInCompany(req);
+    if (me.error) return res.status(me.status).json({ error: me.error });
+    const employeeId = me.employeeId;
+    // The same policies GET /policies shows this company: its own and global ones.
+    const { rows: [policy] } = await pool.query(
+      `SELECT id, is_active FROM hr_policies WHERE id = $1 AND (company_id = $2 OR company_id IS NULL)`,
+      [policyId, me.cid]);
+    if (!policy) return res.status(404).json({ error: 'Policy not found' });
+    if (policy.is_active === false) return res.status(409).json({ error: 'This policy has been retired and can no longer be acknowledged' });
     // DO NOTHING — acknowledgements are immutable; first timestamp is the legal record
     const r = await pool.query(
       `INSERT INTO hr_policy_acknowledgements (policy_id, employee_id, ip_address)
@@ -926,6 +1013,29 @@ router.post('/offboarding/:employeeId/complete', verifyToken, requirePermission(
       return res.status(404).json({ error: 'Employee not found' });
     }
 
+    // Containment C6 (HR_P0_REMEDIATION_DESIGN_2026-11-03.md, P0-6): this used to
+    // end the employment whatever the state of the exit — no clearance, no F&F.
+    // It now finalises only an exit whose settlement was paid through
+    // POST /exit/fnf/:id/pay, the one path that enforces exit clearance. With no
+    // exit request at all there is nothing to finalise; use Exit Management.
+    if (exitStatusWorkflowOnly()) {
+      const { rows: [latest] } = await client.query(
+        `SELECT id, fnf_status FROM exit_requests
+          WHERE employee_id = $1 AND status NOT IN ('rejected','cancelled')
+          ORDER BY created_at DESC, id DESC LIMIT 1 FOR UPDATE`,
+        [employeeId]
+      );
+      if (!latest || latest.fnf_status !== 'paid') {
+        await client.query('ROLLBACK');
+        return res.status(409).json({
+          code: 'EXIT_NOT_SETTLED',
+          error: latest
+            ? 'Offboarding cannot be completed until the full & final settlement is paid and exit clearance is done (Exit Management).'
+            : 'This employee has no exit request. Start the exit in Exit Management first.',
+        });
+      }
+    }
+
     // Close any open exit request and capture last_working_date + separation_type
     const { rows: [er] } = await client.query(
       `UPDATE exit_requests
@@ -940,16 +1050,21 @@ router.post('/offboarding/:employeeId/complete', verifyToken, requirePermission(
     // type, so a completed termination or resignation showed up as a
     // retiree. Same mapping exitStatusSync.cron.js uses for its own
     // (independent, date-driven) finalization of the same transition.
-    const terminalStatus = er?.separation_type === 'termination' ? 'terminated'
-                          : er?.separation_type === 'retirement'  ? 'left'
-                          : 'resigned';
+    // One canonical exit status — see EXIT_STATUS in shared/employeeStatus.js.
+    // This was a second copy of exitStatusSync.cron.js's mapping and the two had
+    // already drifted: this one sent 'retirement' to 'left' while the cron sent
+    // it to 'resigned', so which of two independent paths finalised an exit
+    // decided what the employee's status said afterwards. The separation type is
+    // on the exit_request either way.
+    const terminalStatus = EXIT_STATUS;
 
     await client.query(
       `UPDATE employees
           SET status    = $1,
-              exit_date = COALESCE(exit_date, $2, CURRENT_DATE)
-        WHERE id = $3`,
-      [terminalStatus, er?.last_working_date || null, employeeId]
+              exit_date = COALESCE(exit_date, $2, CURRENT_DATE),
+              updated_at = NOW()
+        WHERE id = $3 AND ($4::int IS NULL OR company_id = $4)`,
+      [terminalStatus, er?.last_working_date || null, employeeId, companyId]
     );
 
     await client.query('COMMIT');

@@ -3,7 +3,11 @@ import {
   Bell, Calendar, Clock, Plane, User, X, CheckCircle,
   AlertCircle, IndianRupee, MessageSquare, Megaphone, Check
 } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import api from '@/services/api/client';
+import { useAuth } from '@/context/AuthContext';
+import { canRoleOpenPage } from '@/config/menuCatalog';
+import { notificationTarget } from './notificationTarget';
 import './NotificationDropdown.css';
 
 const TYPE_CONFIG = {
@@ -51,6 +55,8 @@ function groupByDate(items) {
 }
 
 export default function NotificationDropdown({ onViewAll }) {
+  const navigate = useNavigate();
+  const { role, menuAccess } = useAuth();
   const [open,  setOpen]  = useState(false);
   const [items, setItems] = useState([]);
   const ref = useRef(null);
@@ -95,6 +101,18 @@ export default function NotificationDropdown({ onViewAll }) {
   const markRead = async (id) => {
     setItems(prev => prev.map(n => n.id === id ? { ...n, is_read: true } : n));
     try { await api.put(`/notifications/${id}/read`); } catch { /* optimistic */ }
+  };
+
+  // Opening a notification marks it read and goes to the record's module —
+  // see notificationTarget.js. A notification with no resolvable home (or one
+  // pointing somewhere this role can't open) just closes the panel.
+  const openNotification = (n) => {
+    if (!n.is_read) markRead(n.id);
+    const target = notificationTarget(n, pg => canRoleOpenPage(role, pg, { menuAccess }));
+    if (!target) return; // nothing to open — leave the panel where it is
+    setOpen(false);
+    const qs = new URLSearchParams(target.params).toString();
+    navigate(`/${target.page}${qs ? `?${qs}` : ''}`);
   };
 
   const markAllRead = async () => {
@@ -144,7 +162,12 @@ export default function NotificationDropdown({ onViewAll }) {
                     return (
                       <div key={n.id}
                         className={`ntfd-item ${n.is_read ? '' : 'ntfd-item-unread'}`}
-                        onClick={() => markRead(n.id)}
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => openNotification(n)}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openNotification(n); }
+                        }}
                         style={{ cursor: 'pointer' }}>
                         <div className="ntfd-icon" style={{ background: color + '20', color, flexShrink:0 }}>
                           <Icon size={15} />

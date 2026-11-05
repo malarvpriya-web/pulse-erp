@@ -16,7 +16,14 @@ const CLASSIFICATIONS = ['Product','Service','Documentation','Training','Softwar
 const TRIGGER_EVENTS  = ['commissioning','service_visit','amc_visit','project_closure','manual'];
 
 export default function VoiceOfCustomer() {
-  const { showToast } = useToast();
+  // useToast() returns the toast FUNCTION itself (with .success/.error/…
+  // attached), not an object — `const { showToast } = useToast()` bound
+  // undefined, so the first toast this page tried to raise threw
+  // "showToast is not a function" and the ErrorBoundary took the page.
+  // Shimmed rather than rewritten so every call site below keeps its
+  // existing (message, type) signature.
+  const toast = useToast();
+  const showToast = (message, type = 'success') => toast({ message, type });
   const [tab, setTab] = useState('dashboard');
   const [dashboard, setDashboard] = useState(null);
   const [responses, setResponses] = useState([]);

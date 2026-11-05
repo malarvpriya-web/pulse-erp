@@ -24,19 +24,36 @@ const num = (v) => (v === null || v === undefined || v === '' ? 0 : parseFloat(v
 const addDays = (date, days) => new Date(date.getTime() + days * DAY_MS);
 const isoDate = (d) => (d ? new Date(d).toISOString().slice(0, 10) : null);
 
-/** Lot-sizing: turn a raw net requirement into an order quantity per item rules. */
+/**
+ * Lot-sizing: turn a raw net requirement into an order quantity per item rules.
+ *
+ * ⚠ The 'eoq' branch did NOT use EOQ. It read `lot_size_qty` and rounded the net
+ * requirement up to a multiple of it — which is precisely what 'fixed_qty' does,
+ * one branch above. `item.eoq` was never referenced, so an item deliberately set
+ * to economic-order-quantity lot sizing was silently getting fixed-quantity
+ * rounding instead, and the misnaming meant nobody looking at the item master
+ * would suspect it. It was also unreachable in practice: the branch required
+ * `lot > 0`, and every item in the database has lot_size_qty 0.
+ *
+ * It now orders in whole EOQ lots — the smallest number of economic lots that
+ * covers the requirement — and falls back to lot-for-lot when the item has no
+ * EOQ yet (a part with too little demand history is deliberately left NULL by
+ * the planning service rather than given a fabricated zero).
+ */
 function applyLotSizing(item, net) {
   let q = net;
   const rule = item.lot_sizing_rule || 'lot_for_lot';
   const lot = num(item.lot_size_qty);
+  const eoq = num(item.eoq);
 
   if (rule === 'fixed_qty' && lot > 0) {
     q = Math.ceil(net / lot) * lot;
   } else if (rule === 'min_max') {
     const target = num(item.max_order_qty) > 0 ? num(item.max_order_qty) : net;
     q = Math.max(net, target);
-  } else if (rule === 'eoq' && lot > 0) {
-    q = Math.ceil(net / lot) * lot;
+  } else if (rule === 'eoq') {
+    if (eoq > 0)      q = Math.ceil(net / eoq) * eoq;   // whole economic lots
+    else if (lot > 0) q = Math.ceil(net / lot) * lot;   // no EOQ yet — prior behaviour
   }
   if (num(item.min_order_qty) > 0) q = Math.max(q, num(item.min_order_qty));
   if (lot > 0 && rule !== 'fixed_qty' && rule !== 'eoq') q = Math.ceil(q / lot) * lot;
@@ -48,7 +65,8 @@ function applyLotSizing(item, net) {
  * @returns {Promise<{run, plannedOrders, exceptions, unmatched, timePhased}>}
  */
 export async function runMRP({ companyId, horizonDays = 90, bucketDays = 7, includeSalesOrders = true,
-  includeMPS = true, includeForecast = true, actor = {} }) {
+  includeMPS = true, includeForecast = true, actor = {}, runCapacityPlan = true,
+  planningWarehouseId = null }) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -81,6 +99,10 @@ export async function runMRP({ companyId, horizonDays = 90, bucketDays = 7, incl
              COALESCE(min_order_qty,0)   AS min_order_qty,
              COALESCE(max_order_qty,0)   AS max_order_qty,
              COALESCE(lot_size_qty,0)    AS lot_size_qty,
+             -- NOT coalesced to 0: NULL means "no demand history to compute it
+             -- from", which applyLotSizing must be able to tell apart from a
+             -- genuine zero so it can fall back rather than order nothing.
+             eoq                         AS eoq,
              COALESCE(lot_sizing_rule,'lot_for_lot') AS lot_sizing_rule,
              COALESCE(make_or_buy,'buy') AS make_or_buy,
              COALESCE(standard_cost,0)   AS standard_cost,
@@ -88,9 +110,37 @@ export async function runMRP({ companyId, horizonDays = 90, bucketDays = 7, incl
         FROM inventory_items
        WHERE ${scope()} AND COALESCE(is_active,true) = true AND deleted_at IS NULL`);
 
+    // ── 1b. The warehouse dimension ──────────────────────────────────────────
+    //
+    // MRP netted against `inventory_items.current_stock`, a single company-wide
+    // figure. For a business running one store that is correct and simpler. For
+    // one running several it is wrong in a way that does not look wrong: stock
+    // sitting in a Chennai store nets a Pune requirement, MRP plans nothing, and
+    // the line stops with the part 1,300 km away.
+    //
+    // `planningWarehouseId` restricts netting to what is actually available at
+    // the location being planned. It is opt-in: turning it on by default would
+    // silently change every existing plan.
+    const warehouseStock = new Map();     // itemId -> qty at planningWarehouseId
+    if (planningWarehouseId != null) {
+      const { rows: whRows } = await client.query(`
+        SELECT item_id,
+               SUM(COALESCE(quantity_in,0) - COALESCE(quantity_out,0)) AS qty
+          FROM stock_ledger
+         WHERE warehouse_id = $1 AND ${scope()}
+         GROUP BY item_id`, [planningWarehouseId]);
+      for (const r of whRows) warehouseStock.set(Number(r.item_id), num(r.qty));
+    }
+    const netByWarehouse = planningWarehouseId != null;
+
     const items = new Map(), byCode = new Map(), byName = new Map();
     for (const r of itemRows) {
-      const it = { ...r, current_stock: num(r.current_stock), safety_stock: num(r.safety_stock),
+      const it = { ...r,
+        current_stock: netByWarehouse
+          ? Math.max(0, num(warehouseStock.get(Number(r.id)) ?? 0))
+          : num(r.current_stock),
+        stock_basis: netByWarehouse ? `warehouse ${planningWarehouseId}` : 'all locations',
+        safety_stock: num(r.safety_stock),
         lead_time_days: parseInt(r.lead_time_days, 10) || 0, standard_cost: num(r.standard_cost) };
       items.set(r.id, it);
       if (r.item_code) byCode.set(String(r.item_code).toLowerCase(), it);
@@ -192,12 +242,30 @@ export async function runMRP({ companyId, horizonDays = 90, bucketDays = 7, incl
       // by lowercased string match — and a live audit run reported four of four
       // demand lines unmatched because the description column held prose. The
       // code/name fallback stays for rows predating the column.
+      //
+      // Lines WITH an item: what is still to leave, per order and item, from
+      // v_sales_order_open_allocation — ordered minus the net stock the order's
+      // pick lists hold out (and approved legacy shipments). It used to be
+      // quantity - fulfilled_qty, but nothing ever writes fulfilled_qty, so a
+      // picked order was planned for again in full while its stock had already
+      // left on-hand. The view's order_active is the same status set as before
+      // (not deleted, not cancelled / completed / delivered / closed).
+      // Lines WITHOUT an item cannot be tied to pick postings and keep the
+      // code/name match below.
       const { rows } = await client.query(`
+        SELECT v.item_id, ii.item_code, NULL::text AS description,
+               v.open_demand_qty AS qty,
+               COALESCE(so.delivery_date, so.order_date) AS need_date, so.order_number
+          FROM v_sales_order_open_allocation v
+          JOIN sales_orders so ON so.id = v.sales_order_id
+          LEFT JOIN inventory_items ii ON ii.id = v.item_id
+         WHERE ${scope('v.company_id')} AND v.open_demand_qty > 0
+        UNION ALL
         SELECT soi.item_id, soi.item_code, soi.description,
                (COALESCE(soi.quantity,0) - COALESCE(soi.fulfilled_qty,0)) AS qty,
                COALESCE(so.delivery_date, so.order_date) AS need_date, so.order_number
           FROM sales_order_items soi JOIN sales_orders so ON so.id = soi.order_id
-         WHERE ${scope('so.company_id')} AND so.deleted_at IS NULL
+         WHERE ${scope('so.company_id')} AND so.deleted_at IS NULL AND soi.item_id IS NULL
            AND LOWER(COALESCE(so.order_status,'')) NOT IN ('cancelled','completed','delivered','closed')
            AND (COALESCE(soi.quantity,0) - COALESCE(soi.fulfilled_qty,0)) > 0`);
       for (const r of rows) {
@@ -307,11 +375,19 @@ export async function runMRP({ companyId, horizonDays = 90, bucketDays = 7, incl
 
     // inventory_allocations carries no status or company_id — an allocation row
     // exists only while it is live, and scoping comes through the item.
+    // Physical consumption (allocation_source 'consumption') is NOT committed
+    // demand: its stock already left on the ledger, which on-hand reflects.
+    // Order promises ('order_promise') are not either: the order line they
+    // reserve for is already gross demand above, so subtracting the allocation
+    // too counted the same order twice. NULL (historical, unclassified) and
+    // advanced_manual still count, as they always have.
     await optional('inventory_allocations', `
       SELECT a.item_id, SUM(COALESCE(a.quantity,0)) AS qty
         FROM inventory_allocations a
         JOIN inventory_items i ON i.id = a.item_id
        WHERE ${scope('i.company_id')}
+         AND a.allocation_source IS DISTINCT FROM 'consumption'
+         AND a.allocation_source IS DISTINCT FROM 'order_promise'
        GROUP BY a.item_id`,
       (rows) => { for (const r of rows) addCommitted(r.item_id, num(r.qty)); });
 
@@ -500,8 +576,15 @@ export async function runMRP({ companyId, horizonDays = 90, bucketDays = 7, incl
     // This is also the path by which a SUPPLIER DELAY reaches planning — the
     // audit found supplier lateness measured in vendor health and never fed back
     // into MRP or production.
+    // Action messages against supply that already exists. They are persisted as
+    // mrp_planned_orders rows with order_type = 'reschedule' and status 'action'
+    // — the reschedule_* and supply_ref_* columns were added for exactly this and
+    // had never been written, so every reschedule lived only as a text exception
+    // nobody could act on in bulk.
+    const rescheduleActions = [];
+
     await optional('open PO reschedule check', `
-      SELECT poi.item_id, po.po_number,
+      SELECT poi.item_id, po.po_number, po.id AS po_id,
              (COALESCE(poi.quantity,0) - COALESCE(poi.received_qty,0)) AS qty,
              COALESCE(po.expected_delivery_date, po.order_date) AS due
         FROM purchase_order_items poi JOIN purchase_orders po ON po.id = poi.po_id
@@ -521,6 +604,11 @@ export async function runMRP({ companyId, horizonDays = 90, bucketDays = 7, incl
             if (due > addDays(today, horizonDays)) return;
             exceptions.push({ item, type: 'reschedule_out', severity: 'info', need_date: due,
               message: `${item.item_name}: ${r.po_number} delivers ${isoDate(due)} but there is no demand for it in this horizon. Consider deferring or cancelling.` });
+            rescheduleActions.push({
+              item, action: 'cancel', qty: num(r.qty), need_date: due, to_date: null,
+              supply_ref_type: 'purchase_order', supply_ref: r.po_number, supply_ref_id: r.po_id ?? null,
+              reason: `No demand for this item in the horizon — supplier order ${r.po_number} is not needed`,
+            });
             continue;
           }
           const slipDays = Math.round((due - firstNeed) / DAY_MS);
@@ -528,9 +616,24 @@ export async function runMRP({ companyId, horizonDays = 90, bucketDays = 7, incl
             exceptions.push({ item, type: 'reschedule_in', severity: slipDays > 14 ? 'critical' : 'warning',
               need_date: firstNeed,
               message: `${item.item_name}: ${r.po_number} is due ${isoDate(due)} but is needed ${isoDate(firstNeed)} — ${slipDays} day(s) late. Expedite the supplier.` });
+            rescheduleActions.push({
+              // 'pull_in' / 'push_out', not 'reschedule_in' / 'reschedule_out':
+              // reschedule_action is varchar(12) and the longer words silently
+              // overflowed it, taking the whole MRP run down with a 500.
+              item, action: 'pull_in', qty: num(r.qty),
+              need_date: firstNeed, to_date: firstNeed,
+              supply_ref_type: 'purchase_order', supply_ref: r.po_number, supply_ref_id: r.po_id ?? null,
+              reason: `Supplier delivery ${isoDate(due)} is ${slipDays} day(s) after the need date — pull in or expedite`,
+            });
           } else if (slipDays < -bucketDays * 4) {
             exceptions.push({ item, type: 'reschedule_out', severity: 'info', need_date: firstNeed,
               message: `${item.item_name}: ${r.po_number} arrives ${Math.abs(slipDays)} day(s) before it is needed. Defer to reduce carrying cost.` });
+            rescheduleActions.push({
+              item, action: 'push_out', qty: num(r.qty),
+              need_date: firstNeed, to_date: firstNeed,
+              supply_ref_type: 'purchase_order', supply_ref: r.po_number, supply_ref_id: r.po_id ?? null,
+              reason: `Supplier delivery is ${Math.abs(slipDays)} day(s) earlier than needed — defer to reduce carrying cost`,
+            });
           }
         }
       });
@@ -572,6 +675,31 @@ export async function runMRP({ companyId, horizonDays = 90, bucketDays = 7, incl
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
         [run.id, companyId ?? null, ex.item.id, ex.item.item_code, ex.item.item_name, ex.type, ex.severity, ex.message, isoDate(ex.need_date)]);
     }
+
+    // Action messages against supply that already exists.
+    //
+    // Status 'action', not 'planned': convert-all selects status='planned', so
+    // these can never be mistaken for a new order to raise. They are an
+    // instruction about a purchase order that is already placed — which is the
+    // path by which a measured supplier delay finally reaches planning, instead
+    // of being scored in vendor health and stopping there.
+    for (const ra of rescheduleActions) {
+      await client.query(`
+        INSERT INTO mrp_planned_orders
+          (run_id, company_id, item_id, item_code, item_name, order_type, low_level_code,
+           quantity, uom, need_date, start_date, lead_time_days, gross_requirement,
+           on_hand, scheduled_receipts, safety_stock, net_requirement, lot_rule,
+           unit_cost, est_value, status,
+           reschedule_action, reschedule_to_date, reschedule_reason,
+           supply_ref_type, supply_ref_id, pegging)
+        VALUES ($1,$2,$3,$4,$5,'reschedule',0,$6,$7,$8,$8,0,0,0,0,0,0,'n/a',0,0,'action',
+                $9,$10,$11,$12,$13,$14)`,
+        [run.id, companyId ?? null, ra.item.id, ra.item.item_code, ra.item.item_name,
+         ra.qty, ra.item.unit_of_measure || 'nos', isoDate(ra.need_date),
+         ra.action, isoDate(ra.to_date), ra.reason,
+         ra.supply_ref_type, ra.supply_ref_id,
+         JSON.stringify([{ type: ra.supply_ref_type, ref: ra.supply_ref, id: ra.supply_ref_id }])]);
+    }
     for (const r of tpRows) {
       await client.query(`
         INSERT INTO mrp_time_phased (run_id, company_id, item_id, item_code, item_name, low_level_code,
@@ -585,7 +713,39 @@ export async function runMRP({ companyId, horizonDays = 90, bucketDays = 7, incl
     }
 
     await client.query('COMMIT');
-    return { run, plannedOrders, exceptions, unmatched,
+
+    // ── 7. Hand the plan to capacity planning ────────────────────────────────
+    //
+    // MRP does its own coarse capacity check above, per release bucket, which is
+    // enough to raise an exception. It is not a capacity plan: it does not model
+    // working days, downtime or the labour constraint, and it leaves nothing a
+    // planner can open.
+    //
+    // `crp_runs.mrp_run_id` has always existed; `mrp_runs.crp_run_id` did not
+    // point back, so a run and the capacity picture for that run could not be
+    // shown together. Running CRP here closes the loop.
+    //
+    // Deliberately AFTER the commit and deliberately non-fatal: a capacity run
+    // that fails must not lose a completed material plan. The link being null is
+    // then a true statement — capacity was not planned for this run.
+    let crpRun = null;
+    if (runCapacityPlan !== false) {
+      try {
+        const { runCRP } = await import('./crpEngine.service.js');
+        const crp = await runCRP({
+          companyId, horizonDays, bucketDays, includePlanned: true, actor, mrpRunId: run.id,
+        });
+        crpRun = crp?.run ?? null;
+        if (crpRun) {
+          await pool.query(`UPDATE mrp_runs SET crp_run_id = $2 WHERE id = $1`, [run.id, crpRun.id]);
+          run.crp_run_id = crpRun.id;
+        }
+      } catch (e) {
+        console.warn('[mrp] capacity plan skipped:', e.message);
+      }
+    }
+
+    return { run, plannedOrders, exceptions, unmatched, crpRun, rescheduleActions,
       buckets: buckets.map(b => ({ index: b.index, start: isoDate(b.start), end: isoDate(b.end) })),
       timePhased: tpRows.map(r => ({ item_id: r.item.id, item_name: r.item.item_name, low_level_code: r.llc,
         bucket_index: r.bucket.index, gross_requirements: r.gross, scheduled_receipts: r.sched,

@@ -111,7 +111,13 @@ describe('WarehouseManagement — smoke', () => {
 // ── InventorySettings — regression guard: untouched, still owns its own shell ──
 
 describe('InventorySettings — smoke (untouched by this pass)', () => {
-  beforeEach(() => { mockRouteState.page = 'InventorySettings'; });
+  beforeEach(() => {
+    mockRouteState.page = 'InventorySettings';
+    // GET /settings/:module answers a settings OBJECT ({} when nothing is
+    // saved). The file-wide `{ data: [] }` stub is not one, and since §200
+    // ModuleSettingsPanel refuses a non-object instead of showing defaults.
+    api.get.mockImplementation((url) => Promise.resolve({ data: String(url).startsWith('/settings/') ? {} : [] }));
+  });
 
   it('renders without crashing via ModuleSettingsPanel', async () => {
     render(<InventorySettings />);

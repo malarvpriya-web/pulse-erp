@@ -7,6 +7,8 @@ import { resolveRange } from '../../shared/dashboardFilters.js';
 import grnService from '../procurement/services/grn.service.js';
 import { rollupQualityStatus } from './services/qualityRollup.service.js';
 import { captureBefore } from '../../middlewares/captureBefore.js';
+import { toCsvObjects } from '../../shared/csv.js';
+import { finalInspectionReadiness } from '../warehouse/pickListWorkflow.service.js';
 
 const router = Router();
 router.use(verifyToken);
@@ -64,18 +66,10 @@ async function holdProductionOrderOnQcFail(referenceType, referenceId) {
   ).catch(() => {});
 }
 
-function toCSV(rows) {
-  if (!rows.length) return '';
-  const headers = Object.keys(rows[0]);
-  const lines = [headers.join(',')];
-  for (const r of rows) {
-    lines.push(headers.map(h => {
-      const v = r[h] == null ? '' : String(r[h]).replace(/"/g, '""');
-      return `"${v}"`;
-    }).join(','));
-  }
-  return lines.join('\n');
-}
+// Delegates to the shared writer, which additionally neutralises values a
+// spreadsheet would EVALUATE as formulas (a leading = + - @). See shared/csv.js.
+// This one always quoted every cell, so no `minimal` here — bytes unchanged.
+const toCSV = (rows) => (rows.length ? toCsvObjects(rows) : '');
 
 /* ── Seed default checklists including HVDC/STATCOM FAT templates ─────────── */
 const seedData = async () => {
@@ -561,8 +555,12 @@ router.post('/capa', requirePermission('quality', 'add'), canCreate, async (req,
     );
     if (employee_id) {
       pool.query(
-        `INSERT INTO notifications (user_id, notification_type, title, message, module_name, link) VALUES ($1,'task','CAPA Assigned',$2,'quality','/quality/capa')`,
-        [employee_id, `CAPA assigned: ${String(description).slice(0, 100)}`]
+        // The frontend router is one segment of PascalCase page key — the old
+        // '/quality/capa' resolved to nothing, so clicking this notification
+        // went nowhere (see frontend notificationTarget.js).
+        `INSERT INTO notifications (user_id, notification_type, title, message, module_name, reference_id, link)
+         VALUES ($1,'task','CAPA Assigned',$2,'quality',$3,'/CAPAManagement')`,
+        [employee_id, `CAPA assigned: ${String(description).slice(0, 100)}`, rows[0].id]
       ).catch(() => {});
     }
     res.status(201).json({ success: true, data: rows[0] });
@@ -781,7 +779,8 @@ router.get('/test-runs/:id', requirePermission('quality', 'view'), canView, asyn
   try {
     const companyId = cid(req);
     const { rows } = await pool.query(
-      `SELECT tr.*, COALESCE(json_agg(pp.*) FILTER (WHERE pp.id IS NOT NULL), '[]') as punch_points
+      `SELECT tr.*, COALESCE(json_agg(pp.*) FILTER (WHERE pp.id IS NOT NULL), '[]') as punch_points,
+              (SELECT COALESCE(json_agg(m.* ORDER BY m.id), '[]') FROM test_run_measurements m WHERE m.test_run_id = tr.id) AS measurements
        FROM test_runs tr
        LEFT JOIN punch_points pp ON pp.test_run_id=tr.id
        WHERE tr.id=$1 AND ($2::int IS NULL OR tr.company_id=$2)
@@ -808,27 +807,187 @@ router.post('/test-runs', requirePermission('quality', 'add'), canCreate, async 
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
+/* PUT /test-runs/:id — record a test run's outcome.
+   It used to write `result` and `measurements`, neither of which is a column
+   of test_runs, so every save from the FAT screen failed — and the dispatch
+   gate's FAT check (overall_result) could never be satisfied from the UI.
+   The contract the screen sends is kept and mapped onto the real schema:
+     result        passed | failed | in-progress (the screen), or the stored
+                   vocabulary pass | fail | in_progress | hold → overall_result
+                   (CHECK-constrained); pass/fail stamp completed_at once
+     status        pending | in-progress | passed | failed | cancelled
+     measurements  [{ parameter, specified, actual, unit, result }] → NEW rows
+                   in test_run_measurements (a reading is appended, never
+                   overwritten). actual must be a number; a numeric spec is the
+                   target value, any other spec text is kept verbatim in notes.
+                   result pass | fail.
+     customer_accepted (boolean), customer_accepted_at (date), ncr_id (an NCR
+                   of the same company)
+   Any other field, or a value outside these vocabularies, is refused (422)
+   rather than ignored. One transaction; the run row is locked. */
+const RUN_RESULTS = { passed: 'pass', failed: 'fail', 'in-progress': 'in_progress',
+                      pass: 'pass', fail: 'fail', in_progress: 'in_progress', hold: 'hold' };
+const RUN_STATUSES = ['pending', 'in-progress', 'passed', 'failed', 'cancelled'];
+const RUN_FIELDS = ['status', 'result', 'measurements', 'customer_accepted', 'customer_accepted_at', 'ncr_id'];
 router.put('/test-runs/:id', requirePermission('quality', 'edit'), canCreate, captureBefore('test_runs'), async (req, res) => {
+  const body = req.body || {};
+  const bad = (code, error, extra = {}) => res.status(422).json({ success: false, code, error, ...extra });
+  const unknown = Object.keys(body).filter(k => !RUN_FIELDS.includes(k));
+  if (unknown.length) return bad('UNKNOWN_FIELD', `Not a field of a test run update: ${unknown.join(', ')}.`, { fields: unknown });
+  const { status, result, measurements, customer_accepted, customer_accepted_at, ncr_id } = body;
+  if (result !== undefined && !Object.hasOwn(RUN_RESULTS, result)) {
+    return bad('RESULT_INVALID', `result must be one of ${Object.keys(RUN_RESULTS).join(', ')}.`);
+  }
+  if (status !== undefined && !RUN_STATUSES.includes(status)) {
+    return bad('STATUS_INVALID', `status must be one of ${RUN_STATUSES.join(', ')}.`);
+  }
+  if (customer_accepted !== undefined && typeof customer_accepted !== 'boolean') {
+    return bad('CUSTOMER_ACCEPTED_INVALID', 'customer_accepted must be true or false.');
+  }
+  if (customer_accepted_at !== undefined && customer_accepted_at !== null && Number.isNaN(Date.parse(customer_accepted_at))) {
+    return bad('CUSTOMER_ACCEPTED_AT_INVALID', 'customer_accepted_at must be a date.');
+  }
+  const readings = [];
+  if (measurements !== undefined) {
+    if (!Array.isArray(measurements)) return bad('MEASUREMENTS_INVALID', 'measurements must be a list.');
+    for (const [i, m] of measurements.entries()) {
+      const name = String(m?.parameter ?? '').trim();
+      const actual = m?.actual === '' || m?.actual == null ? NaN : Number(m.actual);
+      if (!name) return bad('MEASUREMENT_INVALID', `Measurement ${i + 1} needs a parameter.`);
+      if (!Number.isFinite(actual)) return bad('MEASUREMENT_INVALID', `Measurement ${i + 1} (${name}) needs a numeric actual value.`);
+      if (!['pass', 'fail'].includes(m?.result)) return bad('MEASUREMENT_INVALID', `Measurement ${i + 1} (${name}) result must be pass or fail.`);
+      const spec = m?.specified == null ? '' : String(m.specified).trim();
+      const specNum = spec !== '' && Number.isFinite(Number(spec)) ? Number(spec) : null;
+      readings.push({ name, actual, unit: m?.unit ? String(m.unit) : null, result: m.result,
+                      target: specNum, notes: spec !== '' && specNum == null ? `Specified: ${spec}` : null });
+    }
+  }
+
+  const companyId = cid(req);
+  const client = await pool.connect();
   try {
-    const companyId = cid(req);
-    const { status, result, measurements, customer_accepted, customer_accepted_at, ncr_id } = req.body;
+    await client.query('BEGIN');
+    const { rows: [run] } = await client.query(
+      `SELECT id, company_id, completed_at FROM test_runs
+        WHERE id = $1 AND deleted_at IS NULL AND ($2::int IS NULL OR company_id = $2) FOR UPDATE`, [req.params.id, companyId]);
+    if (!run) { await client.query('ROLLBACK'); return res.status(404).json({ success: false, error: 'Not found' }); }
+    if (ncr_id !== undefined && ncr_id !== null) {
+      const { rows: [ncr] } = await client.query(
+        `SELECT id FROM ncr_reports WHERE id = $1 AND company_id IS NOT DISTINCT FROM $2`, [ncr_id, run.company_id]);
+      if (!ncr) { await client.query('ROLLBACK'); return bad('NCR_NOT_FOUND', `NCR ${ncr_id} not found.`); }
+    }
+
     const fields = ['updated_at=NOW()'];
-    const params = [req.params.id, companyId];
+    const params = [run.id];
     const add = (val, expr) => { params.push(val); fields.push(`${expr}=$${params.length}`); };
-    if (status !== undefined)             add(status, 'status');
-    if (result !== undefined)             add(result, 'result');
-    if (measurements !== undefined)       add(JSON.stringify(measurements), 'measurements');
-    if (customer_accepted !== undefined)  add(customer_accepted, 'customer_accepted');
+    const overall = result !== undefined ? RUN_RESULTS[result] : undefined;
+    if (status !== undefined)               add(status, 'status');
+    if (overall !== undefined)              add(overall, 'overall_result');
+    if (overall === 'pass' || overall === 'fail') fields.push('completed_at=COALESCE(completed_at, NOW())');
+    if (overall === 'pass')                 add(false, 'dispatch_blocked');
+    if (customer_accepted !== undefined)    add(customer_accepted, 'customer_accepted');
     if (customer_accepted_at !== undefined) add(customer_accepted_at, 'customer_accepted_at');
-    if (ncr_id !== undefined)             add(ncr_id, 'ncr_id');
-    if (result === 'passed')              { params.push(false); fields.push(`dispatch_blocked=$${params.length}`); }
-    const { rows } = await pool.query(
-      `UPDATE test_runs SET ${fields.join(',')} WHERE id=$1 AND ($2::int IS NULL OR company_id=$2) RETURNING *`,
-      params
-    );
-    if (!rows.length) return res.status(404).json({ success: false, error: 'Not found' });
-    res.json({ success: true, data: rows[0] });
+    if (ncr_id !== undefined)               add(ncr_id, 'ncr_id');
+    const { rows: [updated] } = await client.query(
+      `UPDATE test_runs SET ${fields.join(',')} WHERE id = $1 RETURNING *`, params);
+    for (const m of readings) {
+      await client.query(`
+        INSERT INTO test_run_measurements
+          (test_run_id, parameter_name, unit, measured_value, target_value, result, measurement_ts, notes)
+        VALUES ($1,$2,$3,$4,$5,$6,NOW(),$7)`,
+        [run.id, m.name, m.unit, m.actual, m.target, m.result, m.notes]);
+    }
+    await client.query('COMMIT');
+    const { rows: saved } = await pool.query(
+      `SELECT * FROM test_run_measurements WHERE test_run_id = $1 ORDER BY id`, [run.id]);
+    res.json({ success: true, data: { ...updated, measurements: saved } });
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    res.status(500).json({ success: false, error: e.message });
+  } finally { client.release(); }
+});
+
+/* ── QC REQUIREMENTS (which inspections dispatch needs) ──────────────────────
+   Engineering's definition of which inspections an order or a product needs
+   (qc_requirements, migration 20261028000002). Read by the dispatch gate: a
+   configured requirement with no passed record blocks dispatch. Nothing is
+   configured by default — GET /dispatch-readiness says so (qc_plan
+   'not_configured') rather than implying the order was inspected. */
+router.get('/qc-requirements', requirePermission('quality', 'view'), canView, async (req, res) => {
+  try {
+    const { item_id, sales_order_id, include_retired } = req.query;
+    const params = [cid(req)];
+    let where = '($1::int IS NULL OR r.company_id = $1)';
+    if (!include_retired) where += ' AND r.active';
+    if (item_id) { params.push(item_id); where += ` AND r.item_id = $${params.length}`; }
+    if (sales_order_id) { params.push(sales_order_id); where += ` AND r.sales_order_id = $${params.length}`; }
+    const { rows } = await pool.query(`
+      SELECT r.*, ii.item_name, so.order_number FROM qc_requirements r
+        LEFT JOIN inventory_items ii ON ii.id = r.item_id
+        LEFT JOIN sales_orders so ON so.id = r.sales_order_id
+       WHERE ${where} ORDER BY r.id`, params);
+    res.json({ success: true, data: rows });
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
+router.post('/qc-requirements', requirePermission('quality', 'edit'), canCreate, async (req, res) => {
+  const body = req.body || {};
+  const bad = (status, code, error) => res.status(status).json({ success: false, code, error });
+  const known = ['item_id', 'sales_order_id', 'inspection', 'test_name', 'notes'];
+  const unknown = Object.keys(body).filter(k => !known.includes(k));
+  if (unknown.length) return bad(422, 'UNKNOWN_FIELD', `Not a field of a QC requirement: ${unknown.join(', ')}.`);
+  const { item_id = null, sales_order_id = null, inspection, test_name = null, notes = null } = body;
+  if (!['FAT', 'quality_test'].includes(inspection)) return bad(422, 'INSPECTION_INVALID', "inspection must be 'FAT' or 'quality_test'.");
+  if ((item_id == null) === (sales_order_id == null)) return bad(422, 'SCOPE_INVALID', 'Name exactly one of item_id or sales_order_id.');
+  if (inspection === 'FAT' && test_name) return bad(422, 'TEST_NAME_INVALID', 'test_name applies to quality_test requirements only.');
+  const companyId = cid(req);
+  if (companyId == null) return bad(422, 'COMPANY_REQUIRED', 'A QC requirement belongs to a company.');
+  try {
+    if (item_id != null) {
+      const { rows: [it] } = await pool.query(`SELECT id FROM inventory_items WHERE id = $1 AND company_id = $2`, [item_id, companyId]);
+      if (!it) return bad(404, 'ITEM_NOT_FOUND', 'Item not found.');
+    } else {
+      const { rows: [so] } = await pool.query(`SELECT id FROM sales_orders WHERE id = $1 AND company_id = $2`, [sales_order_id, companyId]);
+      if (!so) return bad(404, 'SALES_ORDER_NOT_FOUND', 'Sales order not found.');
+    }
+    const { rows: [row] } = await pool.query(`
+      INSERT INTO qc_requirements (company_id, item_id, sales_order_id, inspection, test_name, notes, created_by)
+      VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+      [companyId, item_id, sales_order_id, inspection, test_name ? String(test_name).trim() : null, notes, uid(req)]);
+    logAudit({ userId: uid(req), module: 'quality', recordId: row.id, recordType: 'qc_requirement', action: 'create',
+               newData: row, req, company_id: companyId });
+    res.status(201).json({ success: true, data: row });
+  } catch (e) {
+    if (e.code === '23505') return bad(409, 'REQUIREMENT_EXISTS', 'That requirement is already configured.');
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// Retire, never delete: the requirement stays as history of what dispatch was held to.
+router.delete('/qc-requirements/:id', requirePermission('quality', 'edit'), canCreate, async (req, res) => {
+  try {
+    const { rows: [row] } = await pool.query(`
+      UPDATE qc_requirements SET active = false, retired_by = $3, retired_at = NOW()
+       WHERE id = $1 AND active AND ($2::int IS NULL OR company_id = $2) RETURNING *`, [req.params.id, cid(req), uid(req)]);
+    if (!row) return res.status(404).json({ success: false, error: 'Not found' });
+    logAudit({ userId: uid(req), module: 'quality', recordId: row.id, recordType: 'qc_requirement', action: 'retire',
+               newData: row, req, company_id: row.company_id });
+    res.json({ success: true, data: row });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
+/* GET /dispatch-readiness?sales_order_id= — what the dispatch gate would say. */
+router.get('/dispatch-readiness', requirePermission('quality', 'view'), canView, async (req, res) => {
+  const soId = req.query.sales_order_id;
+  if (!/^\d+$/.test(String(soId ?? ''))) return res.status(400).json({ success: false, error: 'sales_order_id is required' });
+  const client = await pool.connect();
+  try {
+    const { rows: [so] } = await client.query(
+      `SELECT id, company_id FROM sales_orders WHERE id = $1 AND ($2::int IS NULL OR company_id = $2)`, [soId, cid(req)]);
+    if (!so) return res.status(404).json({ success: false, error: 'Sales order not found' });
+    res.json({ success: true, data: await finalInspectionReadiness(client, so.company_id, so.id) });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+  finally { client.release(); }
 });
 
 /* ── SUPPLIER QUALITY ────────────────────────────────────────────────────── */

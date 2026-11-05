@@ -28,10 +28,10 @@ const FOLDER_CONFIG = {
   procurement:  { label: 'Procurement',   icon: 'Package',               module: 'procurement' },
   projects:     { label: 'Projects',      icon: 'FolderKanban',          module: 'projects' },
   production:   { label: 'Production',    icon: 'Factory' },
-  recruitment:  { label: 'Recruitment',   icon: 'Briefcase' },
+  recruitment:  { label: 'Recruitment',   icon: 'Briefcase',             module: 'recruitment' },
   timesheets:   { label: 'Timesheets',    icon: 'Clock',                 module: 'timesheets' },
   performance:  { label: 'Performance',   icon: 'Trophy' },
-  leaves:       { label: 'Leaves',        icon: 'Umbrella',              module: 'leave' },
+  leaves:       { label: 'Leaves',        icon: 'Umbrella',              module: 'leaves' },
   attendance:   { label: 'Attendance',    icon: 'CalendarCheck',         module: 'attendance' },
   travel:       { label: 'Travel Desk',   icon: 'Plane' },
   servicedesk:  { label: 'Service Desk',  icon: 'Headphones' },
@@ -64,6 +64,16 @@ const FOLDER_CONFIG = {
 // ---------------------------------------------------------------------------
 const PAGE_DISPLAY_NAMES = {
   CFODashboard:           'CFO Dashboard',
+  // IoT (Phase 4). Without these, the acronym splitter renders IoTHealth as
+  // "Io T Health" — the same class of cosmetic drift the display-name map exists
+  // to absorb.
+  IoTHealth:              'IoT Platform Health',
+  AlertCenter:            'Alert Centre',
+  AlertRules:             'Alert Rules',
+  FleetMonitor:           'Fleet Monitor',
+  Equipment360:           'Equipment 360',
+  MetricRegistry:         'Metric & Device Registry',
+  HardwarePilots:         'Hardware Pilots',
   RDHub:                  'R&D Hub',
   EngineerHome:           'My Field Jobs',
   BOMBuilder:             'BOM Builder',
@@ -154,6 +164,7 @@ const PAGE_DISPLAY_NAMES = {
   AttendanceAnalytics:    'Attendance Analytics',
   OrgChart:               'Org Chart',
   EmployeeAssets:         'Employee Assets',
+  BiometricAccess:        'Gate Pass & Visitors',
   AdminDashboard:         'Operations Dashboard',
   EmployeeDashboard:      'My Dashboard',
   SystemHealth:           'System Health',
@@ -204,6 +215,9 @@ const NON_PAGE_FILES = new Set([
   'MenuPermissions',   // admin — embedded tab inside AccessControl
   'VendorProjectImpact', // procurement — embedded panel inside Vendor360
   'PublicSigning',     // documents — public fullscreen route (App.jsx), not a menu page
+  'CareersPortal',     // recruitment — public fullscreen careers page (App.jsx). Auto-routing
+                       // it would put a menu row and a search hit on a page that takes a
+                       // portal key in its path and renders outside the shell.
 ]);
 
 // Real pages whose *filename* differs from the curated route key they're reached
@@ -219,6 +233,13 @@ const DUPLICATE_PAGE_ALIASES = new Set([
   'CompOffPage',         // → CompOff ('Comp Off')
   'LeaveEncashmentPage', // → LeaveEncashment ('Encashment')
   'StockManagement',     // → ServiceStockManagement ('Spare Parts Stock')
+  // Superseded duplicates (2026-09-16 navigation audit). Each is a strict
+  // subset of a page that IS in the menu — same endpoints, fewer features —
+  // so surfacing it a second time was a duplicate menu row onto one feature.
+  // Kept routable so old links/bookmarks still resolve.
+  'PDCOutstanding',      // ⊂ PDCManagement, live as Payments → 'PDC Management'
+  'ReportPDC',           // re-export of PDCOutstanding
+  'FieldService',        // ⊂ FieldVisitScheduler ('Field Service')
 ]);
 
 /**
@@ -242,12 +263,30 @@ function isPageModule(key) {
 // ---------------------------------------------------------------------------
 const AUTO_ROUTES = {};
 
+/**
+ * `module` is load-bearing, not metadata.
+ *
+ * Layout.jsx's last route-level gate is `if (route.module) { …hasPermission… }`.
+ * A route that declares no module skips it entirely — and every entry built here
+ * used to be `{ component, _auto, _path }` with no module at all. So any page
+ * reached through auto-discovery was rendered for every authenticated role,
+ * whatever its role_permissions row said, while its hand-registered siblings in
+ * routes.jsx were gated normally. The folder already knows which module it
+ * belongs to (FOLDER_CONFIG, used for the nav group), so the route uses the same
+ * answer.
+ *
+ * Only folders that declare a module are affected; the rest keep `null` and are
+ * left to the section and self-service gates exactly as before. A manual entry
+ * in routes.jsx still wins outright — MERGED_ROUTES spreads it last.
+ */
 for (const [path, importer] of Object.entries(FEATURE_PAGES)) {
   const key = extractPageKey(path);
   if (!isPageModule(key)) continue;
   if (!AUTO_ROUTES[key]) {
+    const folder = extractFolder(path);
     AUTO_ROUTES[key] = {
       component: lazy(importer),
+      module: (folder && FOLDER_CONFIG[folder]?.module) || null,
       _auto: true,
       _path: path,
     };

@@ -170,14 +170,63 @@ async function deviceAuth(req, res, next) {
  * site share one public IP, so one chatty gateway could exhaust the budget for
  * every other device behind the same NAT — and conversely a single device could
  * flood freely from its own IP. Keying on the authenticated device identity is
- * what actually bounds a device; the IP limiter stays underneath as a backstop
- * against unauthenticated floods.
+ * what actually bounds a device.
+ *
+ * It bounds only AUTHENTICATED traffic, because it runs after deviceAuth. See
+ * preAuthLimiter below for the half it cannot cover.
  */
 const deviceLimiter = memoryRateLimit({
   windowMs: parseInt(process.env.IOT_DEVICE_RL_WINDOW_MS || '60000', 10),
   max: parseInt(process.env.IOT_DEVICE_RL_MAX || '120', 10),
   bucket: 'iot_device',
   key: (req) => `dev:${req.device?.equipment_id ?? req.body?.device_uid ?? req.ip}`,
+});
+
+/**
+ * Pre-authentication rate limiting, keyed on IP.
+ *
+ * THE DEFECT THIS EXISTS TO CLOSE
+ * -------------------------------
+ * server.js excludes /iot/ingest and /iot/gateway/heartbeat from the global
+ * IP limiter, because a 300/min-per-IP budget is a SITE limit that several
+ * gateways behind one NAT exhaust between them (measured: a 500-device capacity
+ * run returned 4,500 429s and stored nothing). That exclusion was correct, but
+ * it was unconditional, and the per-device limiter above cannot stand in for it
+ * because deviceAuth runs FIRST: an unauthenticated caller is rejected before
+ * ever reaching it.
+ *
+ * So these two routes had no ceiling whatsoever for unauthenticated traffic.
+ * Reproduced 2026-09-15 against the running server: 400 unauthenticated POSTs to
+ * /iot/ingest from one IP returned 400 × 401 and ZERO 429s, while the same 400
+ * requests to a human-facing IoT route from the same IP were cut off after 252.
+ * Each of those 401s costs an indexed SELECT with a LEFT JOIN — deviceAuth has
+ * to look the device up before it can say the token is wrong — so the endpoint
+ * was a credential-free way to make the database do unbounded work.
+ *
+ * It counts ONLY the requests that fail. A successful batch never moves the
+ * counter, so a site with any number of gateways behind one NAT can send as much
+ * valid telemetry as it likes and the original defect does not come back. That
+ * asymmetry is the whole design: charging every request and refunding the good
+ * ones looks equivalent but is not, because once the counter is over budget the
+ * limiter rejects at entry — a legitimate device would be turned away before it
+ * could earn its refund, and one broken gateway would take out every other device
+ * at the site. Measured while building this: with count-and-refund, 60 valid
+ * batches behind an exhausted counter returned 60 x 429.
+ *
+ * The budget is still CHECKED on the way in, so a refused request costs no
+ * database work. The ceiling is deliberately generous — a gateway polling once a
+ * minute would have to be wrong 600 times a minute to reach it — because this
+ * sheds floods; it is not an authentication control.
+ */
+const preAuthLimiter = memoryRateLimit({
+  windowMs: parseInt(process.env.IOT_PREAUTH_RL_WINDOW_MS || '60000', 10),
+  max: parseInt(process.env.IOT_PREAUTH_RL_MAX || '600', 10),
+  bucket: 'iot_preauth',
+  // Count the failures only. 401 (bad or absent credentials) and 403 (revoked,
+  // disabled or expired) are the two a flood produces; 400 is a malformed body,
+  // which is equally cheap to generate and equally not-telemetry. A 2xx never
+  // counts.
+  countIf: (_req, res) => res.statusCode >= 400,
 });
 
 /** Classify event time against the skew policy. */
@@ -196,7 +245,7 @@ function classifyTime(eventTs, receivedAt) {
 }
 
 // ── POST /iot/ingest ──────────────────────────────────────────────────────────
-router.post('/ingest', deviceAuth, deviceLimiter, async (req, res) => {
+router.post('/ingest', preAuthLimiter, deviceAuth, deviceLimiter, async (req, res) => {
   const { equipment_id, company_id, capabilities, equipment_name } = req.device;
   const gatewayUid = req.body?.gateway_uid ? String(req.body.gateway_uid).slice(0, 120) : null;
   const samples = Array.isArray(req.body?.samples) ? req.body.samples : null;
@@ -297,6 +346,33 @@ router.post('/ingest', deviceAuth, deviceLimiter, async (req, res) => {
   try {
     await client.query('BEGIN');
 
+    // 0. DEVICE LOCK, TAKEN FIRST. This is a deadlock fix, found by
+    //    scripts/iot-capacity-test.mjs and not by any functional test:
+    //
+    //    Two batches from the SAME device can be in flight at once — a gateway
+    //    retrying while its next poll flushes, or simply two gateway processes.
+    //    The original statement order took per-metric row locks on device_latest
+    //    BEFORE the device row lock on customer_equipment, so two such
+    //    transactions could hold what the other needed:
+    //
+    //      T1  holds device_latest(V_L1)        waits for customer_equipment(42)
+    //      T2  holds customer_equipment(42)     waits for device_latest(V_L1)
+    //
+    //    Postgres broke the cycle by killing one with 40P01 (deadlock detected),
+    //    which surfaced as a 500 and a retryable batch. Measured at 2 failures in
+    //    30 concurrent batches across 10 devices — rare enough to pass every
+    //    functional test and frequent enough to matter on a real site.
+    //
+    //    Locking the device row first gives every batch for a device ONE
+    //    serialisation point, taken in the same order every time, so the cycle
+    //    cannot form. It also makes the read-then-write of connection_state
+    //    below atomic.
+    const { rows: deviceLock } = await client.query(
+      `SELECT connection_state FROM customer_equipment WHERE id = $1 FOR UPDATE`,
+      [equipment_id],
+    );
+    const priorConnectionState = deviceLock[0]?.connection_state ?? null;
+
     // 1. raw samples. ON CONFLICT DO NOTHING against the sample identity is what
     //    makes a retry a no-op at the database level.
     const cols = [];
@@ -335,7 +411,11 @@ router.post('/ingest', deviceAuth, deviceLimiter, async (req, res) => {
       const prev = latest.get(s.metric);
       if (!prev || s.eventTs > prev.eventTs) latest.set(s.metric, s);
     }
-    for (const s of latest.values()) {
+    // Sorted by metric name so concurrent batches take these row locks in the
+    // SAME order. The device lock above already prevents the cycle; this is the
+    // second line of defence, and it costs nothing.
+    const latestOrdered = [...latest.values()].sort((a, b) => a.metric.localeCompare(b.metric));
+    for (const s of latestOrdered) {
       await client.query(
         `INSERT INTO device_latest (equipment_id, company_id, metric, ts, value, quality, received_at, quality_code, unit)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
@@ -352,14 +432,11 @@ router.post('/ingest', deviceAuth, deviceLimiter, async (req, res) => {
     // 3. liveness — driven by RECEIPT, not by the event stamp the device chose.
     if (currentEligible.length) {
       const newestEvent = currentEligible.reduce((m, s) => (s.eventTs > m ? s.eventTs : m), currentEligible[0].eventTs);
-      // Read the prior state first: the ONLINE event must only be recorded on an
-      // actual transition, or a device reporting every 60 s writes 1,440 "came
-      // online" events a day and MTBF becomes meaningless.
-      const { rows: before } = await client.query(
-        `SELECT connection_state FROM customer_equipment WHERE id = $1 FOR UPDATE`,
-        [equipment_id],
-      );
-      const prior = before[0]?.connection_state ?? null;
+      // priorConnectionState was read under the device lock at step 0. The ONLINE
+      // event is only recorded on an actual transition — a device reporting every
+      // 60 s would otherwise write 1,440 "came online" events a day and make MTBF
+      // meaningless.
+      const prior = priorConnectionState;
       await client.query(
         `UPDATE customer_equipment
             SET last_seen_at  = GREATEST(COALESCE(last_seen_at, $2::timestamptz), $2::timestamptz),
@@ -477,7 +554,7 @@ async function quarantine(db, { company_id, equipment_id, gatewayUid, batchUid, 
 // The gateway reports its own health so an operator can tell an equipment problem
 // from a gateway problem from a network problem. Authenticated with the same
 // device token, because the gateway already holds one.
-router.post('/gateway/heartbeat', deviceAuth, async (req, res) => {
+router.post('/gateway/heartbeat', preAuthLimiter, deviceAuth, async (req, res) => {
   try {
     const { company_id, equipment_id } = req.device;
     const b = req.body || {};

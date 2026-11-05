@@ -16,11 +16,15 @@ import { resolveGstRate } from '../../../shared/gstRate.js';
 import { rollupQualityStatus } from '../../quality/services/qualityRollup.service.js';
 import { resolveSourcingAdvisory } from '../services/sourcingAdvisory.service.js';
 import { hasRole, allowRoles, permissionFor } from '../../../middlewares/auth.middleware.js';
-import { requiredBand, assertCanDecideAmount, requireProcurement } from '../procurement.authz.js';
-import { rankOptions, TCO_DEFAULTS } from '../engines/tcoEngine.js';
+import { requiredBand, assertCanDecideAmount, assertNotSelfApproval, requireProcurement } from '../procurement.authz.js';
+import { rankOptions, parsePaymentTerms, TCO_DEFAULTS, DAY_COUNT_BASES } from '../engines/tcoEngine.js';
 import {
   loadTcoParams, loadVendorPerformance, loadAnnualDemand, masterRate, tcoBasis,
+  loadFxForCurrencies, fxFieldsFor, TcoParamsUnavailableError, quoteFreightFields,
 } from '../services/tco.service.js';
+import { normCurrency, resolveFxRates } from '../../finance/services/fxRate.service.js';
+import { loadFreightInputs, TRANSPORT_MODES, SERVICE_LEVELS } from '../services/freight.service.js';
+import { requirePermission as requireModulePermission } from '../../../middlewares/auth.middleware.js';
 import {
   loadSpendFacets, loadSpendTrend, loadInvoiceSpend, poSpendInr,
   resolveLimit as resolveSpendLimit,
@@ -36,8 +40,12 @@ import {
   PROC_DEFAULTS, TCO_SETTING_COLS, TCO_RANGES, getProcSettings,
 } from '../services/procurementSettings.service.js';
 import threeWayMatchRoutes, { createThreeWayMatchRecord } from './threeWayMatch.routes.js';
+import freightRoutes from './freight.routes.js';
 import { assertTransition, isNoop } from '../procurement.stateMachine.js';
 import { captureBefore } from '../../../middlewares/captureBefore.js';
+import { toCsv, sendCsv } from '../../../shared/csv.js';
+import { getPlanningSettings, resolveUnitCost } from '../../inventory/services/inventoryPlanning.service.js';
+import { demandQtySql, demandRowSql } from '../../inventory/services/ledgerSemantics.js';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
@@ -193,15 +201,20 @@ router.get('/purchase-requests/export', requireProcurement('export'), async (req
       LEFT JOIN employees e ON e.id = pr.requested_by_employee_id
       WHERE ${conditions.join(' AND ')} ORDER BY pr.request_date DESC
     `, params);
-    const header = 'PR No,Date,Description,Priority,Requested By,Amount,Status,Created';
-    const csvRows = rows.map(r => [
-      r.request_number||'', r.request_date||'', r.description||'', r.priority||'',
-      r.requested_by||'', r.total_amount||0, r.status||'',
-      r.created_at ? new Date(r.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '',
-    ].map(v => `"${String(v).replace(/"/g,'""')}"`).join(','));
-    res.setHeader('Content-Type', 'text/csv');
-    res.setHeader('Content-Disposition', `attachment; filename="purchase-requests-${Date.now()}.csv"`);
-    res.send([header, ...csvRows].join('\n'));
+    // `description` is pr.notes, typed by whoever raised the requisition, and
+    // `requested_by` is an employee name. Both are free text written by someone
+    // other than the analyst who opens this file, so the export goes out through
+    // the shared writer, which neutralises cells a spreadsheet would otherwise
+    // evaluate as formulas. See shared/csv.js for what that attack looks like.
+    const csv = toCsv(
+      'PR No,Date,Description,Priority,Requested By,Amount,Status,Created',
+      rows.map(r => [
+        r.request_number||'', r.request_date||'', r.description||'', r.priority||'',
+        r.requested_by||'', r.total_amount||0, r.status||'',
+        r.created_at ? new Date(r.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '',
+      ])
+    );
+    sendCsv(res, 'purchase-requests', csv);
   } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
@@ -267,6 +280,17 @@ router.put('/purchase-requests/:id/approve', requireProcurement('approve'), asyn
       if (decide) {
         await client.query('ROLLBACK');
         return res.status(decide.status).json(decide.body);
+      }
+
+      // Segregation of duties. Authority to clear the amount is not authority to
+      // clear YOUR OWN request for it — checked after the band gate so a caller
+      // who fails both is told about the one that is actually their ceiling.
+      const sod = assertNotSelfApproval(req, oldPr.requested_by_employee_id, settings, {
+        amount, docType: 'requisition',
+      });
+      if (sod) {
+        await client.query('ROLLBACK');
+        return res.status(sod.status).json(sod.body);
       }
 
       const actorId = req.user.userId ?? req.user.id;
@@ -585,7 +609,13 @@ router.post('/tco/advisory', requireProcurement('view'), async (req, res) => {
 
     if (!Number.isFinite(vendorId)) return res.status(422).json({ error: 'vendor_id is required' });
 
-    const params = await loadTcoParams(companyId);
+    let params;
+    try {
+      params = await loadTcoParams(companyId);
+    } catch (e) {
+      if (!(e instanceof TcoParamsUnavailableError)) throw e;
+      return res.status(503).json({ tco_available: false, error: e.message, code: e.code, lines: [], totals: null, advisory: null });
+    }
     if (!params.tco_enabled) {
       return res.json({ tco_enabled: false, lines: [], totals: null, advisory: null });
     }
@@ -606,16 +636,30 @@ router.post('/tco/advisory', requireProcurement('view'), async (req, res) => {
       // at whatever the price book remembers — that is the commitment being
       // made. Alternatives are costed at their own best known price.
       const chosenKnown = alt.find(a => a.vendor_id === vendorId);
+      // The typed rate is in the PO's currency, not the price book's. Every
+      // price is converted with an APPROVED company rate; the PO form's own
+      // exchange_rate box is not used — an unreviewed per-document number must
+      // not decide which vendor looks cheaper.
+      const typed = Number.isFinite(line.rate) && line.rate > 0;
+      const chosenCurrency = typed ? (req.body?.currency || null) : (chosenKnown?.currency ?? null);
+      const fx = await loadFxForCurrencies(companyId, [chosenCurrency, ...alt.map(a => a.currency)], params);
       const options = [
         {
           ...(chosenKnown || { vendor_id: vendorId, vendor_name: null }),
-          unit_price: Number.isFinite(line.rate) && line.rate > 0
-            ? line.rate
-            : (chosenKnown?.unit_price ?? null),
+          unit_price: typed ? line.rate : (chosenKnown?.unit_price ?? null),
+          ...fxFieldsFor(chosenCurrency, fx, params.base_currency),
           is_chosen: true,
         },
-        ...alt.filter(a => a.vendor_id !== vendorId),
+        ...alt.filter(a => a.vendor_id !== vendorId)
+          .map(a => ({ ...a, ...fxFieldsFor(a.currency, fx, params.base_currency) })),
       ].map(o => ({ ...o, quantity: line.quantity }));
+      // Same freight model as the RFQ comparison (§216): this line's weight to
+      // the main receiving point, per vendor lane and rate card.
+      const freight = await loadFreightInputs(companyId, params, {
+        vendorIds: options.map(o => o.vendor_id),
+        lines: [{ item_id: line.item_id, quantity: line.quantity }],
+      });
+      for (const o of options) o.freight_model = freight.get(Number(o.vendor_id)) ?? null;
 
       const ranked = rankOptions(options, params);
       const chosen = ranked.options.find(o => o.is_chosen);
@@ -631,6 +675,10 @@ router.post('/tco/advisory', requireProcurement('view'), async (req, res) => {
         chosen_tco_per_unit: chosen?.tco?.tco_per_unit ?? null,
         chosen_confidence: chosen?.tco?.confidence ?? null,
         chosen_assumptions: chosen?.tco?.assumptions ?? [],
+        chosen_completeness: chosen?.tco?.completeness ?? null,
+        chosen_freight: chosen?.tco?.freight ?? null,
+        comparison_status: ranked.comparison_status,
+        recommendation_status: ranked.recommendation?.status ?? null,
         alternative_count: Math.max(0, ranked.options.length - 1),
         best_vendor_id: best && !best.is_chosen ? best.vendor_id : null,
         best_vendor_name: best && !best.is_chosen ? best.vendor_name : null,
@@ -647,6 +695,11 @@ router.post('/tco/advisory', requireProcurement('view'), async (req, res) => {
 
     res.json({
       tco_enabled: true,
+      // The weakest line decides: one line without freight makes the advice
+      // incomplete; one on assumed freight makes it provisional (§216).
+      comparison_status: results.some(r => r.comparison_status === 'incomplete') ? 'incomplete'
+        : results.some(r => r.comparison_status === 'provisional') ? 'provisional'
+        : results.length ? 'complete' : null,
       lines: results,
       totals: {
         chosen_tco_total: +chosenTotal.toFixed(2),
@@ -686,10 +739,11 @@ async function alternativesForItem(itemId, companyId) {
               ivp.unit_price * (1 - COALESCE(ivp.discount_pct,0)/100.0) AS net_price,
               ivp.moq, ivp.pack_size, ivp.lead_time_days, ivp.tax_pct,
               ivp.freight_per_unit, ivp.packaging_per_unit, ivp.duty_pct,
-              ivp.tooling_cost, ivp.scrap_rate_pct
+              ivp.tooling_cost, ivp.scrap_rate_pct, ivp.currency
          FROM item_vendor_prices ivp
-        WHERE ivp.item_id = $1 AND ivp.deleted_at IS NULL`,
-      [itemId]
+        WHERE ivp.item_id = $1 AND ivp.deleted_at IS NULL
+          ${companyId == null ? '' : 'AND ivp.company_id = $2'}`,
+      args
     ).catch(() => ({ rows: [] })),
     pool.query(
       `SELECT po.supplier_id AS vendor_id,
@@ -702,11 +756,16 @@ async function alternativesForItem(itemId, companyId) {
       args
     ).catch(() => ({ rows: [] })),
     pool.query(
-      `SELECT item_name, gst_rate, default_gst_rate, holding_cost_pct FROM inventory_items WHERE id = $1`,
-      [itemId]
+      `SELECT item_name, gst_rate, default_gst_rate, holding_cost_pct FROM inventory_items
+        WHERE id = $1 ${companyId == null ? '' : 'AND company_id = $2'}`,
+      args
     ).catch(() => ({ rows: [] })),
     loadVendorPerformance(itemId, companyId),
   ]);
+
+  // Another company's component is not an alternative source for this one —
+  // and returning its price book would disclose that company's negotiated rates.
+  if (!item.rows.length) return [];
 
   const demand = await loadAnnualDemand(itemId, companyId);
   const it = item.rows[0] || {};
@@ -722,6 +781,7 @@ async function alternativesForItem(itemId, companyId) {
       tax_pct: n(r.tax_pct) ?? itemTax,
       freight_per_unit: n(r.freight_per_unit), packaging_per_unit: n(r.packaging_per_unit),
       duty_pct: n(r.duty_pct), tooling_cost: n(r.tooling_cost), scrap_rate_pct: n(r.scrap_rate_pct),
+      currency: r.currency || null,
     });
   }
   for (const r of poAgg.rows) {
@@ -734,8 +794,9 @@ async function alternativesForItem(itemId, companyId) {
   const { rows: vRows } = await pool.query(
     `SELECT id, vendor_name, lead_time_days, payment_terms_days, on_time_pct,
             defect_rate, is_single_source
-       FROM vendors WHERE id = ANY($1::int[]) AND deleted_at IS NULL`,
-    [[...byVendor.keys()]]
+       FROM vendors WHERE id = ANY($1::int[]) AND deleted_at IS NULL
+        ${companyId == null ? '' : 'AND company_id = $2'}`,
+    companyId == null ? [[...byVendor.keys()]] : [[...byVendor.keys()], companyId]
   );
   const vMap = Object.fromEntries(vRows.map(v => [v.id, v]));
 
@@ -753,7 +814,8 @@ async function alternativesForItem(itemId, companyId) {
       reject_basis:    pf.reject_rate_pct != null ? 'observed' : 'estimated',
       on_time_pct:     pf.on_time_pct ?? masterRate(v.on_time_pct),
       on_time_basis:   pf.on_time_pct != null ? 'observed' : 'estimated',
-      freight_pct_observed: pf.freight_pct_observed ?? null,
+      freight_pct_observed:  pf.freight_pct_observed ?? null,
+      freight_sample_orders: pf.freight_sample_orders ?? null,
       is_single_source: !!v.is_single_source,
       annual_demand_qty: demand.annual_demand_qty,
       holding_cost_pct: n(it.holding_cost_pct),
@@ -939,20 +1001,21 @@ router.get('/purchase-orders/export', requireProcurement('export'), async (req, 
       ORDER BY po.created_at DESC
     `, params);
 
-    const header = 'PO No,Vendor,Items,Value,Status,Created Date';
-    const csvRows = rows.map(r => [
-      r.po_number || '',
-      r.vendor_name || '',
-      r.items_count || 0,
-      r.total_amount || 0,
-      r.status || '',
-      r.created_at ? new Date(r.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '',
-    ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(','));
-
-    const csv = [header, ...csvRows].join('\n');
-    res.setHeader('Content-Type', 'text/csv');
-    res.setHeader('Content-Disposition', `attachment; filename="purchase-orders-${Date.now()}.csv"`);
-    res.send(csv);
+    // vendor_name reaches this column from the vendor master, which the PUBLIC
+    // self-registration portal writes into — so it is attacker-supplied text on
+    // the shortest path there is to a finance analyst's spreadsheet.
+    const csv = toCsv(
+      'PO No,Vendor,Items,Value,Status,Created Date',
+      rows.map(r => [
+        r.po_number || '',
+        r.vendor_name || '',
+        r.items_count || 0,
+        r.total_amount || 0,
+        r.status || '',
+        r.created_at ? new Date(r.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '',
+      ])
+    );
+    sendCsv(res, 'purchase-orders', csv);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -1099,6 +1162,17 @@ router.patch('/purchase-orders/:id/approve', requireProcurement('approve'), asyn
       if (decide) {
         await client.query('ROLLBACK');
         return res.status(decide.status).json(decide.body);
+      }
+
+      // Segregation of duties — see the requisition route above. `created_by` is
+      // the buyer who raised the order and FKs employees(id), the same id space
+      // the check compares in.
+      const sod = assertNotSelfApproval(req, oldPo.created_by, settings, {
+        amount, docType: 'purchase order',
+      });
+      if (sod) {
+        await client.query('ROLLBACK');
+        return res.status(sod.status).json(sod.body);
       }
 
       // Check min vendor rating if supplier set. `avgRating > 0 &&` used to
@@ -1342,15 +1416,16 @@ router.get('/grn/export', requireProcurement('export', 'store_keeper'), async (r
       ORDER BY grn.received_date DESC
     `, params);
 
-    const header = 'GRN No,Date,PO No,Vendor,Warehouse,Items,Received Qty,Rejected Qty,Notes';
-    const csvRows = rows.map(r => [
-      r.grn_number||'', r.received_date||'', r.po_number||'', r.vendor_name||'',
-      r.warehouse||'', r.items_count||0, r.total_qty||0, r.rejected_qty||0, r.notes||'',
-    ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(','));
-
-    res.setHeader('Content-Type', 'text/csv');
-    res.setHeader('Content-Disposition', `attachment; filename="grn-${Date.now()}.csv"`);
-    res.send([header, ...csvRows].join('\n'));
+    // `notes` is the store keeper's free-text receipt remark, `vendor_name` is
+    // portal-supplied — same exposure as the PR and PO extracts above.
+    const csv = toCsv(
+      'GRN No,Date,PO No,Vendor,Warehouse,Items,Received Qty,Rejected Qty,Notes',
+      rows.map(r => [
+        r.grn_number||'', r.received_date||'', r.po_number||'', r.vendor_name||'',
+        r.warehouse||'', r.items_count||0, r.total_qty||0, r.rejected_qty||0, r.notes||'',
+      ])
+    );
+    sendCsv(res, 'grn', csv);
   } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
@@ -1680,14 +1755,28 @@ router.get('/rfqs/:id', requireProcurement('view'), async (req, res) => {
  * commercial terms alone and the basis block says so, rather than silently
  * borrowing the first line's parameters for the whole basket.
  */
-async function scoreRfqQuotes(rfq, items, quotes, companyId) {
+async function scoreRfqQuotes(rfq, items, quotes, companyId, { fx: fxGiven = null } = {}) {
   const lineQty = items.reduce((s, i) => s + (parseFloat(i.quantity) || 0), 0);
   const totalQty = lineQty > 0 ? lineQty : (parseFloat(rfq.quantity) || 0) || 1;
 
   const singleItemId = items.length === 1 && items[0].item_id ? Number(items[0].item_id) : null;
 
   let itemRow = {}, perf = new Map(), demand = { annual_demand_qty: null };
-  const params = await loadTcoParams(companyId);
+  let params;
+  try {
+    params = await loadTcoParams(companyId);
+  } catch (e) {
+    if (!(e instanceof TcoParamsUnavailableError)) throw e;
+    // Settings unreadable: no TCO at all, said plainly — never the defaults.
+    return {
+      quotes: quotes.map(q => ({ ...q, tco: null })),
+      comparison: {
+        quantity: totalQty, best_tco_vendor_id: null, best_price_vendor_id: null,
+        best_tco_per_unit: null, tco_spread_pct: 0, recommendation: null, confidence: 0,
+      },
+      basis: { tco_enabled: null, tco_available: false, tco_unavailable_reason: e.message, quantity: totalQty },
+    };
+  }
 
   // TCO switched off for this company: return the quotes untouched and a
   // ranking with null winners, so the award modal falls back to price without
@@ -1708,7 +1797,8 @@ async function scoreRfqQuotes(rfq, items, quotes, companyId) {
     const [{ rows: ir }, p, d] = await Promise.all([
       pool.query(
         `SELECT gst_rate, default_gst_rate, holding_cost_pct, min_order_qty
-           FROM inventory_items WHERE id = $1`, [singleItemId]
+           FROM inventory_items WHERE id = $1 AND ($2::int IS NULL OR company_id = $2)`,
+        [singleItemId, companyId ?? null]
       ).catch(() => ({ rows: [] })),
       loadVendorPerformance(singleItemId, companyId),
       loadAnnualDemand(singleItemId, companyId),
@@ -1718,6 +1808,31 @@ async function scoreRfqQuotes(rfq, items, quotes, companyId) {
 
   const n = (v) => { const x = parseFloat(v); return Number.isFinite(x) ? x : null; };
   const itemTax = resolveGstRate(itemRow);
+
+  // Approved Finance rates as of today — or, at award, the exact map the award
+  // itself resolved, so the frozen snapshot and the PO use the same rate.
+  // Quote currencies AND freight currencies (§219): freight quoted in its own
+  // currency is restated with an approved rate too.
+  const fx = fxGiven ?? await loadFxForCurrencies(companyId, quotes.flatMap(q => [q.currency, q.freight_currency]), params);
+  const overrideOf = (q) => (q.fx_rate_override != null
+    ? { rate: q.fx_rate_override, reason: q.fx_override_reason, by_user_id: q.fx_override_by_user_id, at: q.fx_override_at }
+    : null);
+
+  // Freight inputs (§216): the whole consignment — EVERY RFQ line, weighed —
+  // to the main receiving point. A quoted weight per unit applies only to a
+  // single-line RFQ (one number cannot describe a mixed basket).
+  const freightLines = items.length
+    ? items.map(i => ({ item_id: i.item_id ?? null, item_label: i.item_id ? null : (i.item_name || 'an uncatalogued line'),
+                        quantity: parseFloat(i.quantity) || 0, quantity_uom: i.unit || null }))
+    : [{ item_id: null, item_label: rfq.item_description || 'the RFQ requirement', quantity: totalQty, quantity_uom: rfq.unit || null }];
+  const freight = await loadFreightInputs(companyId, params, {
+    vendorIds: quotes.map(q => q.vendor_id),
+    lines: freightLines,
+    quoteOverrides: new Map(quotes.map(q => [Number(q.vendor_id), {
+      weight_kg_per_unit: q.shipping_weight_kg_per_unit, weight_uom: q.shipping_weight_uom,
+      transport_mode: q.transport_mode, service_level: q.service_level,
+    }])),
+  });
 
   const ranked = rankOptions(quotes.map((q) => {
     const pf = perf.get(Number(q.vendor_id)) || {};
@@ -1732,7 +1847,7 @@ async function scoreRfqQuotes(rfq, items, quotes, companyId) {
       quote_id: q.id,
       unit_price: unit,
       quantity: totalQty,
-      freight_amount:   n(q.freight_amount),
+      ...quoteFreightFields(q, fx, params.base_currency),
       insurance_amount: n(q.insurance_amount),
       duty_amount:      n(q.duty_amount),
       packaging_amount: n(q.packaging_amount),
@@ -1745,15 +1860,17 @@ async function scoreRfqQuotes(rfq, items, quotes, companyId) {
       lead_time_days:  q.delivery_days ?? q.vendor_lead_time_days ?? null,
       lead_time_basis: q.delivery_days != null ? 'quoted'
         : (q.vendor_lead_time_days != null ? 'estimated' : 'assumed'),
-      payment_terms_days: parsePaymentTermsDays(q.payment_terms) ?? n(q.vendor_payment_terms_days),
-      payment_terms_basis: parsePaymentTermsDays(q.payment_terms) != null ? 'quoted' : 'estimated',
+      ...paymentTermsFields(q.payment_terms, q.vendor_payment_terms_days),
+      ...fxFieldsFor(q.currency, fx, params.base_currency, overrideOf(q)),
+      freight_model: freight.get(Number(q.vendor_id)) ?? null,
       // masterRate() reads a hand-maintained 0 as "never measured" rather than
       // as a real 0% on-time record, which would fabricate a penalty.
       reject_rate_pct: pf.reject_rate_pct ?? masterRate(q.defect_rate),
       reject_basis:    pf.reject_rate_pct != null ? 'observed' : 'estimated',
       on_time_pct:     pf.on_time_pct ?? masterRate(q.on_time_pct),
       on_time_basis:   pf.on_time_pct != null ? 'observed' : 'estimated',
-      freight_pct_observed: pf.freight_pct_observed ?? null,
+      freight_pct_observed:  pf.freight_pct_observed ?? null,
+      freight_sample_orders: pf.freight_sample_orders ?? null,
       is_single_source: !!q.is_single_source,
       annual_demand_qty: demand.annual_demand_qty,
       holding_cost_pct:  n(itemRow.holding_cost_pct),
@@ -1784,10 +1901,18 @@ async function scoreRfqQuotes(rfq, items, quotes, companyId) {
       tco_spread_pct: ranked.tco_spread_pct,
       recommendation: ranked.recommendation,
       confidence: ranked.confidence,
+      comparison_status: ranked.comparison_status,
     },
     basis: tcoBasis(params, {
       quantity: totalQty,
       quantity_basis: lineQty > 0 ? 'sum of RFQ item lines' : 'RFQ header quantity',
+      comparison_status: ranked.comparison_status,
+      // Every quote's freight as costed — source, inputs, rate card, FX, missing
+      // inputs — frozen with the award like fx_applied.
+      freight_applied: ranked.options.filter(o => o.tco?.computable).map(o => ({
+        quote_id: o.quote_id, vendor_id: o.vendor_id,
+        completeness: o.tco.completeness, freight: o.tco.freight,
+      })),
       // Says plainly why a multi-line RFQ carries no carrying-cost context.
       item_context: singleItemId
         ? 'single-line RFQ — item holding cost, demand and GST applied'
@@ -1795,29 +1920,42 @@ async function scoreRfqQuotes(rfq, items, quotes, companyId) {
       annual_demand_qty: demand.annual_demand_qty,
       demand_source: demand.demand_source ?? null,
       tax_pct: itemTax,
+      // Every conversion this comparison made (or refused), per quote — part of
+      // the award snapshot, so the rate behind a decision is never re-derived.
+      fx_applied: ranked.options
+        .filter(o => o.tco?.fx || o.tco?.reason === 'no_fx_rate')
+        .map(o => ({
+          quote_id: o.quote_id, vendor_id: o.vendor_id,
+          currency: o.tco.fx?.from ?? o.tco.currency,
+          applied: o.tco.fx ?? null,
+          unavailable: o.tco.reason === 'no_fx_rate' ? (o.tco.fx_detail ?? { reason: 'no_approved_rate' }) : null,
+        })),
     }),
   };
 }
 
 /**
- * Credit days from a free-text payment terms string ("Net 30", "45 days",
- * "30 Days from Invoice"). Returns null when nothing parses — an unreadable
- * term must NOT be scored as cash-on-delivery, which would hand the vendor a
- * financing penalty they never earned.
+ * Payment-terms fields for the engine from a quote's free text, falling back to
+ * the vendor master's credit days. An unreadable term returns null days — it
+ * must NOT be scored as cash-on-delivery, which would hand the vendor a
+ * financing penalty they never earned. Parsing lives in the engine
+ * (parsePaymentTerms) so it is unit-tested with the arithmetic it feeds.
  */
-function parsePaymentTermsDays(text) {
-  if (text == null) return null;
-  const s = String(text).trim();
-  if (!s) return null;
-  if (/\b(advance|prepaid|pia|payment in advance)\b/i.test(s)) {
-    const adv = s.match(/(\d{1,3})\s*(?:days?)?/i);
-    return adv ? -Math.abs(parseInt(adv[1], 10)) : -1;
+function paymentTermsFields(text, vendorDays) {
+  const t = parsePaymentTerms(text);
+  if (t) {
+    return {
+      payment_terms_days: t.net_days,
+      payment_terms_basis: 'quoted',
+      early_discount_pct: t.discount_pct ?? null,
+      early_discount_days: t.discount_days ?? null,
+    };
   }
-  if (/\b(cod|cash on delivery|immediate|against delivery)\b/i.test(s)) return 0;
-  const m = s.match(/(?:net\s*)?(\d{1,3})\s*(?:days?)?/i);
-  if (!m) return null;
-  const d = parseInt(m[1], 10);
-  return Number.isFinite(d) && d >= 0 && d <= 365 ? d : null;
+  const v = parseFloat(vendorDays);
+  return {
+    payment_terms_days: Number.isFinite(v) ? v : null,
+    payment_terms_basis: 'estimated',
+  };
 }
 
 router.post('/rfqs', requireProcurement('add'), async (req, res) => {
@@ -1960,62 +2098,287 @@ router.post('/rfqs/:rfqId/responses/:vendorId', requireProcurement('edit'), asyn
     );
     if (!ownVendor[0]) return res.status(404).json({ error: 'Vendor not found' });
 
-    // Prices are money. A negative quote is not a discount, it is a data error
-    // that would win every TCO comparison it entered.
-    for (const [field, value] of Object.entries({
-      unit_price: req.body.unit_price, total_amount: req.body.total_amount,
-      freight_amount: req.body.freight_amount, insurance_amount: req.body.insurance_amount,
-      duty_amount: req.body.duty_amount, packaging_amount: req.body.packaging_amount,
-      other_charges: req.body.other_charges, tooling_cost: req.body.tooling_cost,
-    })) {
-      if (value != null && value !== '' && parseFloat(value) < 0) {
-        return res.status(400).json({ error: `${field.replace(/_/g, ' ')} cannot be negative.` });
-      }
-    }
-    if (req.body.tax_pct != null && req.body.tax_pct !== '' &&
-        (parseFloat(req.body.tax_pct) < 0 || parseFloat(req.body.tax_pct) > 100)) {
-      return res.status(400).json({ error: 'Tax percentage must be between 0 and 100.' });
-    }
-    const {
-      unit_price, total_amount, delivery_days, payment_terms, notes,
-      // TCO adders. Each is optional and each stays NULL when not supplied —
-      // a 0 default would assert "freight is free" and quietly flatter this
-      // vendor against one who did declare their charges.
-      freight_amount, insurance_amount, duty_amount, packaging_amount,
-      other_charges, tooling_cost, tax_pct, warranty_months, moq,
-      currency, valid_until,
-    } = req.body;
-    const nn = (v) => {
-      if (v == null || v === '') return null;
-      const n = parseFloat(v);
-      return Number.isFinite(n) ? n : null;
-    };
+    const { rows: lineRows } = await pool.query(
+      `SELECT COUNT(*)::int AS n, MIN(unit) AS unit FROM rfq_items WHERE rfq_id = $1`, [rfqId]);
+    const parsed = readQuoteBody(req.body, { lineCount: lineRows[0]?.n ?? 0 });
+    if (parsed.error) return res.status(parsed.status || 400).json({ error: parsed.error, field: parsed.field });
+    const v = parsed.values;
     const { rows } = await pool.query(`
       INSERT INTO rfq_quotes (
-        rfq_id, vendor_id, unit_price, total_amount, delivery_days, payment_terms, notes,
-        freight_amount, insurance_amount, duty_amount, packaging_amount,
-        other_charges, tooling_cost, tax_pct, warranty_months, moq, currency, valid_until)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+        rfq_id, vendor_id, ${QUOTE_COLUMNS.join(', ')})
+      VALUES ($1,$2,${QUOTE_COLUMNS.map((_, i) => `$${i + 3}`).join(',')})
       ON CONFLICT (rfq_id, vendor_id) DO UPDATE SET
-        unit_price=EXCLUDED.unit_price, total_amount=EXCLUDED.total_amount,
-        delivery_days=EXCLUDED.delivery_days, payment_terms=EXCLUDED.payment_terms, notes=EXCLUDED.notes,
-        freight_amount=EXCLUDED.freight_amount, insurance_amount=EXCLUDED.insurance_amount,
-        duty_amount=EXCLUDED.duty_amount, packaging_amount=EXCLUDED.packaging_amount,
-        other_charges=EXCLUDED.other_charges, tooling_cost=EXCLUDED.tooling_cost,
-        tax_pct=EXCLUDED.tax_pct, warranty_months=EXCLUDED.warranty_months,
-        moq=EXCLUDED.moq, currency=EXCLUDED.currency, valid_until=EXCLUDED.valid_until
+        ${QUOTE_COLUMNS.map(c => `${c}=EXCLUDED.${c}`).join(', ')},
+        -- An FX override was documented for THIS quote's currency. If the quote
+        -- is re-submitted in another currency it no longer applies.
+        fx_rate_override       = CASE WHEN rfq_quotes.currency IS DISTINCT FROM EXCLUDED.currency THEN NULL ELSE rfq_quotes.fx_rate_override END,
+        fx_override_reason     = CASE WHEN rfq_quotes.currency IS DISTINCT FROM EXCLUDED.currency THEN NULL ELSE rfq_quotes.fx_override_reason END,
+        fx_override_by_user_id = CASE WHEN rfq_quotes.currency IS DISTINCT FROM EXCLUDED.currency THEN NULL ELSE rfq_quotes.fx_override_by_user_id END,
+        fx_override_at         = CASE WHEN rfq_quotes.currency IS DISTINCT FROM EXCLUDED.currency THEN NULL ELSE rfq_quotes.fx_override_at END
       RETURNING *
-    `, [rfqId, vendorId, unit_price, total_amount, delivery_days, payment_terms, notes,
-        nn(freight_amount), nn(insurance_amount), nn(duty_amount), nn(packaging_amount),
-        nn(other_charges), nn(tooling_cost), nn(tax_pct),
-        warranty_months == null || warranty_months === '' ? null : parseInt(warranty_months, 10),
-        nn(moq), currency || null, valid_until || null]);
+    `, [rfqId, vendorId, ...QUOTE_COLUMNS.map(c => v[c])]);
     await pool.query(
       `UPDATE rfqs SET status='responses_received' WHERE id=$1 AND status='sent' AND ($2::int IS NULL OR company_id = $2)`,
       [rfqId, cid(req)]
     );
     res.json(rows[0]);
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+/**
+ * The quote fields a vendor states, in one list, read and validated in ONE
+ * place for both write paths (POST …/responses/:vendorId and the quote-entry
+ * dialog's PUT …/quotes/:quoteId). §219.
+ *
+ * Values are stored AS THE VENDOR STATED THEM — in the quote's currency, and
+ * freight in its own freight_currency when that differs. Nothing is converted
+ * here; comparisons convert with an approved Finance rate (§215).
+ */
+const QUOTE_COLUMNS = [
+  'unit_price', 'total_amount', 'delivery_days', 'payment_terms', 'notes',
+  'freight_amount', 'freight_per_unit', 'freight_currency',
+  'insurance_amount', 'duty_amount', 'packaging_amount', 'other_charges', 'tooling_cost',
+  'tax_pct', 'warranty_months', 'moq', 'currency', 'valid_until',
+  'vendor_quote_ref', 'quote_date',
+  'shipping_weight_kg_per_unit', 'shipping_weight_uom', 'transport_mode', 'service_level',
+];
+
+/**
+ * readQuoteBody(body, { lineCount, requirePrice })
+ * → { values } or { error, field, status }. Blank = NULL, never 0.
+ */
+function readQuoteBody(b = {}, { lineCount = 0, requirePrice = false } = {}) {
+  const fail = (field, error, status = 400) => ({ field, error, status });
+  const blank = (x) => x == null || (typeof x === 'string' && x.trim() === '');
+  const money = (k) => {
+    if (blank(b[k])) return { v: null };
+    const n = Number(b[k]);
+    if (!Number.isFinite(n)) return { e: fail(k, `${k.replace(/_/g, ' ')} must be a number.`) };
+    // Prices are money. A negative quote is not a discount, it is a data error
+    // that would win every TCO comparison it entered.
+    if (n < 0) return { e: fail(k, `${k.replace(/_/g, ' ')} cannot be negative.`) };
+    return { v: n };
+  };
+  const v = {};
+  for (const k of ['unit_price', 'total_amount', 'freight_amount', 'freight_per_unit', 'insurance_amount',
+                   'duty_amount', 'packaging_amount', 'other_charges', 'tooling_cost', 'moq']) {
+    const r = money(k); if (r.e) return r.e; v[k] = r.v;
+  }
+  if (requirePrice && !(v.unit_price > 0) && !(v.total_amount > 0)) {
+    return fail('unit_price', 'Enter the quoted unit price or total amount.', 422);
+  }
+  // One freight basis: an amount for the consignment OR a rate per unit.
+  // Both would be counted once by the engine and the other silently ignored.
+  if (v.freight_amount != null && v.freight_per_unit != null) {
+    return fail('freight_per_unit', 'Quote freight as an amount OR per unit, not both.', 422);
+  }
+  if (blank(b.tax_pct)) v.tax_pct = null;
+  else {
+    const t = Number(b.tax_pct);
+    if (!Number.isFinite(t) || t < 0 || t > 100) return fail('tax_pct', 'Tax percentage must be between 0 and 100.');
+    v.tax_pct = t;
+  }
+  for (const k of ['delivery_days', 'warranty_months']) {
+    if (blank(b[k])) { v[k] = null; continue; }
+    const n = Number(b[k]);
+    if (!Number.isInteger(n) || n < 0) return fail(k, `${k.replace(/_/g, ' ')} must be a whole number of 0 or more.`);
+    v[k] = n;
+  }
+  // An ISO code or nothing. "usd " and "US$" used to be stored verbatim and
+  // could never match a rate.
+  for (const k of ['currency', 'freight_currency']) {
+    if (blank(b[k])) { v[k] = null; continue; }
+    const c = normCurrency(b[k]);
+    if (!c) return fail(k, `${k === 'currency' ? 'Currency' : 'Freight currency'} must be a 3-letter ISO code (e.g. USD), not '${b[k]}'.`);
+    v[k] = c;
+  }
+  if (v.freight_currency && v.freight_amount == null && v.freight_per_unit == null) {
+    return fail('freight_currency', 'A freight currency needs a freight amount or a freight rate per unit.', 422);
+  }
+  for (const k of ['valid_until', 'quote_date']) {
+    if (blank(b[k])) { v[k] = null; continue; }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(b[k])) || Number.isNaN(Date.parse(`${b[k]}T00:00:00Z`))) {
+      return fail(k, `${k.replace(/_/g, ' ')} must be a date (YYYY-MM-DD).`);
+    }
+    v[k] = String(b[k]);
+  }
+  if (v.valid_until && v.quote_date && v.valid_until < v.quote_date) {
+    return fail('valid_until', 'The quote cannot expire before the date it was issued.', 422);
+  }
+  v.payment_terms = blank(b.payment_terms) ? null : String(b.payment_terms).trim();
+  v.notes = blank(b.notes) ? null : String(b.notes);
+  v.vendor_quote_ref = blank(b.vendor_quote_ref) ? null : String(b.vendor_quote_ref).trim();
+  if (v.vendor_quote_ref && v.vendor_quote_ref.length > 80) return fail('vendor_quote_ref', 'Quotation reference must be at most 80 characters.');
+
+  // Freight inputs the vendor quoted (§216). Optional; validated, never defaulted.
+  const w = money('shipping_weight_kg_per_unit'); if (w.e) return w.e;
+  v.shipping_weight_kg_per_unit = w.v;
+  if (v.shipping_weight_kg_per_unit != null && v.shipping_weight_kg_per_unit <= 0) {
+    return fail('shipping_weight_kg_per_unit', 'Quoted shipping weight must be greater than 0 kg per unit.');
+  }
+  v.shipping_weight_uom = blank(b.shipping_weight_uom) ? null : String(b.shipping_weight_uom).trim();
+  if (v.shipping_weight_kg_per_unit != null && !v.shipping_weight_uom) {
+    return fail('shipping_weight_uom', 'State the unit the quoted weight is per (e.g. NOS, MTR).', 422);
+  }
+  if (v.shipping_weight_uom && v.shipping_weight_kg_per_unit == null) {
+    return fail('shipping_weight_uom', 'A weight unit needs a quoted weight per unit.', 422);
+  }
+  if (v.shipping_weight_uom && v.shipping_weight_uom.length > 20) return fail('shipping_weight_uom', 'Weight unit must be at most 20 characters.');
+  // One weight per unit cannot describe a basket of different items; the
+  // freight model uses it only for a single-line RFQ, so on a multi-line RFQ it
+  // would be silently ignored — refuse it instead.
+  if (v.shipping_weight_kg_per_unit != null && lineCount > 1) {
+    return fail('shipping_weight_kg_per_unit', 'A quoted weight per unit applies only to a single-line RFQ; on a multi-line RFQ each item\'s own weight is used.', 422);
+  }
+  v.transport_mode = blank(b.transport_mode) ? null : String(b.transport_mode).toLowerCase();
+  if (v.transport_mode && !TRANSPORT_MODES.includes(v.transport_mode)) {
+    return fail('transport_mode', `transport_mode must be one of ${TRANSPORT_MODES.join(', ')}`);
+  }
+  v.service_level = blank(b.service_level) ? null : String(b.service_level).toUpperCase();
+  if (v.service_level && !SERVICE_LEVELS.includes(v.service_level)) {
+    return fail('service_level', `service_level must be one of ${SERVICE_LEVELS.join(', ')}`);
+  }
+  return { values: v };
+}
+
+/**
+ * GET /rfqs/:rfqId/quotes/:quoteId — the COMPLETE stored quote, for the
+ * quote-entry dialog to load before editing (the write replaces every field,
+ * so the form must start from what is stored, not from a list row).
+ *
+ * PUT /rfqs/:rfqId/quotes/:quoteId — record or edit an INVITED vendor's quote.
+ * The row must already exist on this RFQ (send-to-vendors creates it), so an
+ * uninvited vendor cannot be given a quote here. procurement:edit; the RFQ must
+ * be open; company-scoped through the RFQ. A price is required.
+ */
+async function loadQuoteForEntry(req, res) {
+  const rfqId = parseInt(req.params.rfqId, 10);
+  const quoteId = parseInt(req.params.quoteId, 10);
+  if (!Number.isFinite(rfqId) || !Number.isFinite(quoteId)) {
+    res.status(400).json({ error: 'rfqId and quoteId must be integers' }); return null;
+  }
+  const { rows: [q] } = await pool.query(
+    `SELECT rq.*, rq.valid_until::text AS valid_until, rq.quote_date::text AS quote_date,
+            r.status AS rfq_status, r.rfq_number, v.vendor_name,
+            (SELECT COUNT(*)::int FROM rfq_items ri WHERE ri.rfq_id = r.id) AS line_count,
+            (SELECT MIN(ri.unit) FROM rfq_items ri WHERE ri.rfq_id = r.id) AS line_unit
+       FROM rfq_quotes rq
+       JOIN rfqs r ON r.id = rq.rfq_id
+       LEFT JOIN vendors v ON v.id = rq.vendor_id
+      WHERE rq.id = $1 AND rq.rfq_id = $2 AND ($3::int IS NULL OR r.company_id = $3)`,
+    [quoteId, rfqId, cid(req)]);
+  if (!q) { res.status(404).json({ error: 'Quote not found on this RFQ — only invited vendors can be quoted.' }); return null; }
+  return q;
+}
+
+router.get('/rfqs/:rfqId/quotes/:quoteId', requireProcurement('view'), async (req, res) => {
+  try {
+    const q = await loadQuoteForEntry(req, res); if (!q) return;
+    res.json({ data: q });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+router.put('/rfqs/:rfqId/quotes/:quoteId', requireProcurement('edit'), async (req, res) => {
+  try {
+    const q = await loadQuoteForEntry(req, res); if (!q) return;
+    // A closed event has been awarded; changing a quote would change the field
+    // the award was decided against after the fact.
+    if (q.rfq_status === 'closed' || q.rfq_status === 'cancelled') {
+      return res.status(409).json({ error: `${q.rfq_number} is ${q.rfq_status} and is no longer accepting quotes.`, code: 'RFQ_NOT_OPEN' });
+    }
+    if (q.rfq_status === 'draft') {
+      return res.status(409).json({ error: `${q.rfq_number} has not been sent to vendors yet.`, code: 'RFQ_NOT_OPEN' });
+    }
+    const parsed = readQuoteBody(req.body, { lineCount: q.line_count, requirePrice: true });
+    if (parsed.error) return res.status(parsed.status || 400).json({ error: parsed.error, field: parsed.field });
+    const v = parsed.values;
+    const currencyChanged = (q.currency ?? null) !== (v.currency ?? null);
+    const { rows: [row] } = await pool.query(
+      `UPDATE rfq_quotes SET ${QUOTE_COLUMNS.map((c, i) => `${c} = $${i + 2}`).join(', ')}
+              ${currencyChanged ? ', fx_rate_override = NULL, fx_override_reason = NULL, fx_override_by_user_id = NULL, fx_override_at = NULL' : ''}
+        WHERE id = $1
+        RETURNING *, valid_until::text AS valid_until, quote_date::text AS quote_date`,
+      [q.id, ...QUOTE_COLUMNS.map(c => v[c])]);
+    await pool.query(
+      `UPDATE rfqs SET status='responses_received' WHERE id=$1 AND status='sent' AND ($2::int IS NULL OR company_id = $2)`,
+      [q.rfq_id, cid(req)]);
+    logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'procurement', recordId: q.id, recordType: 'rfq_quote',
+      action: q.unit_price == null && q.total_amount == null ? 'create' : 'update',
+      oldData: Object.fromEntries(QUOTE_COLUMNS.map(c => [c, q[c]])), newData: Object.fromEntries(QUOTE_COLUMNS.map(c => [c, row[c]])), req });
+    res.json({ data: row, fx_override_cleared: currencyChanged && q.fx_rate_override != null });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+/**
+ * PUT /rfqs/:rfqId/quotes/:quoteId/fx-override  { rate, reason }
+ * DELETE same path — clear it.
+ *
+ * A documented, quote-specific exchange rate for when no approved company rate
+ * fits (e.g. a forward contract booked for this purchase). Finance decides, so
+ * the gate is finance:approve, not a procurement permission. A reason is
+ * mandatory (≥ 10 characters, also a DB CHECK) and who/when is recorded; the
+ * mutation is audited by the router mount. Refused once the RFQ is closed:
+ * the award snapshot is frozen and must not drift.
+ */
+async function loadOpenQuote(req, res) {
+  const rfqId = parseInt(req.params.rfqId, 10);
+  const quoteId = parseInt(req.params.quoteId, 10);
+  if (!Number.isFinite(rfqId) || !Number.isFinite(quoteId)) {
+    res.status(400).json({ error: 'rfqId and quoteId must be integers' }); return null;
+  }
+  const { rows: [q] } = await pool.query(
+    `SELECT rq.*, r.status AS rfq_status, r.rfq_number
+       FROM rfq_quotes rq JOIN rfqs r ON r.id = rq.rfq_id
+      WHERE rq.id = $1 AND rq.rfq_id = $2 AND ($3::int IS NULL OR r.company_id = $3)`,
+    [quoteId, rfqId, cid(req)]
+  );
+  if (!q) { res.status(404).json({ error: 'Quote not found' }); return null; }
+  if (q.rfq_status === 'closed' || q.rfq_status === 'cancelled') {
+    res.status(409).json({ error: `${q.rfq_number} is ${q.rfq_status}; its comparison is frozen and the exchange rate can no longer change.`, code: 'RFQ_FROZEN' });
+    return null;
+  }
+  return q;
+}
+
+router.put('/rfqs/:rfqId/quotes/:quoteId/fx-override', requireModulePermission('finance', 'approve'), async (req, res) => {
+  try {
+    const q = await loadOpenQuote(req, res); if (!q) return;
+    const params = await loadTcoParams(cid(req));
+    const quoteCurrency = normCurrency(q.currency);
+    if (!quoteCurrency || quoteCurrency === params.base_currency) {
+      return res.status(422).json({ error: `This quote is in ${quoteCurrency || 'no stated currency'}; an exchange-rate override only applies to a quote in a currency other than ${params.base_currency}.` });
+    }
+    const rate = parseFloat(req.body?.rate);
+    const reason = String(req.body?.reason ?? '').trim();
+    if (!Number.isFinite(rate) || rate <= 0) return res.status(422).json({ error: 'rate must be a positive number' });
+    if (reason.length < 10) return res.status(422).json({ error: 'A reason of at least 10 characters is required for an exchange-rate override.' });
+    const userId = req.user?.userId ?? req.user?.id ?? null;
+    if (userId == null) return res.status(401).json({ error: 'No user identity on the request' });
+    const { rows: [row] } = await pool.query(
+      `UPDATE rfq_quotes SET fx_rate_override = $2, fx_override_reason = $3,
+              fx_override_by_user_id = $4, fx_override_at = NOW()
+        WHERE id = $1
+        RETURNING id, currency, fx_rate_override, fx_override_reason, fx_override_by_user_id, fx_override_at`,
+      [q.id, rate, reason, userId]
+    );
+    logAudit({ userId, module: 'procurement', recordId: q.id, recordType: 'rfq_quote_fx_override', action: 'update',
+      oldData: { fx_rate_override: q.fx_rate_override, fx_override_reason: q.fx_override_reason }, newData: row, req });
+    res.json({ data: row });
+  } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
+});
+
+router.delete('/rfqs/:rfqId/quotes/:quoteId/fx-override', requireModulePermission('finance', 'approve'), async (req, res) => {
+  try {
+    const q = await loadOpenQuote(req, res); if (!q) return;
+    const { rows: [row] } = await pool.query(
+      `UPDATE rfq_quotes SET fx_rate_override = NULL, fx_override_reason = NULL,
+              fx_override_by_user_id = NULL, fx_override_at = NULL
+        WHERE id = $1 RETURNING id, currency, fx_rate_override`, [q.id]);
+    logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'procurement', recordId: q.id,
+      recordType: 'rfq_quote_fx_override', action: 'delete',
+      oldData: { fx_rate_override: q.fx_rate_override, fx_override_reason: q.fx_override_reason }, newData: row, req });
+    res.json({ data: row });
+  } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
 });
 
 /**
@@ -2125,6 +2488,47 @@ router.patch('/rfqs/:rfqId/award/:vendorId', requireProcurement('approve'), asyn
       });
     }
 
+    // ── The exchange rate ────────────────────────────────────────────────────
+    // A foreign-currency award raised an INR purchase order carrying the
+    // foreign amount (total_amount_inr = total x COALESCE(exchange_rate, 1)), so
+    // USD 1,000 became Rs 1,000. The PO now carries the quote's currency and the
+    // rate actually applied — an approved Finance rate or the quote's documented
+    // override — and with neither the award is refused rather than guessed.
+    // Resolved ONCE here; the frozen decision below reuses the same map.
+    let awardParams = null;
+    let awardFx = null;
+    let poCurrency = null;
+    let poRate = 1;
+    try {
+      awardParams = await loadTcoParams(companyId);
+    } catch (e) {
+      if (!(e instanceof TcoParamsUnavailableError)) throw e;
+    }
+    const baseCurrency = awardParams?.base_currency
+      ?? normCurrency((await client.query(
+        `SELECT default_currency FROM procurement_settings WHERE company_id = $1`, [companyId])).rows[0]?.default_currency)
+      ?? 'INR';
+    const quoteCurrency = normCurrency(quote.currency);
+    if (quoteCurrency && quoteCurrency !== baseCurrency) {
+      const { rows: allQuotes } = await client.query(`SELECT currency, freight_currency FROM rfq_quotes WHERE rfq_id = $1`, [rfqId]);
+      awardFx = await resolveFxRates(companyId, allQuotes.flatMap(q => [q.currency, q.freight_currency]), {
+        baseCurrency, maxAgeDays: awardParams?.tco_fx_max_age_days ?? TCO_DEFAULTS.tco_fx_max_age_days, db: client,
+      });
+      const f = fxFieldsFor(quoteCurrency, awardFx, baseCurrency, quote.fx_rate_override != null
+        ? { rate: quote.fx_rate_override, reason: quote.fx_override_reason } : null);
+      if (f.fx_unavailable) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({
+          error: `${quote.vendor_name || `Vendor ${vendorId}`} quoted in ${quoteCurrency} and there is no usable exchange rate: ${f.fx_unavailable.message} Approve a rate in Forex Management, or record a documented override on the quote, before awarding.`,
+          code: 'FX_RATE_REQUIRED', currency: quoteCurrency, fx: f.fx_unavailable,
+        });
+      }
+      poCurrency = quoteCurrency;
+      poRate = f.fx_rate;
+    } else {
+      poCurrency = quoteCurrency || baseCurrency;
+    }
+
     await client.query(`UPDATE rfq_quotes SET is_winner = false WHERE rfq_id = $1`, [rfqId]);
     await client.query(`UPDATE rfq_quotes SET is_winner = true WHERE rfq_id = $1 AND vendor_id = $2`, [rfqId, vendorId]);
     const { rows: [closedRfq] } = await client.query(
@@ -2161,10 +2565,11 @@ router.patch('/rfqs/:rfqId/award/:vendorId', requireProcurement('approve'), asyn
     const { rows: [po] } = await client.query(`
       INSERT INTO purchase_orders (po_number, supplier_id, pr_id, total_amount, subtotal, status,
                                    order_date, company_id, created_by, notes,
-                                   expected_delivery_date, expected_delivery_basis)
+                                   expected_delivery_date, expected_delivery_basis,
+                                   currency, exchange_rate)
       VALUES ($1,$2,$3,$4,$4,'draft',CURRENT_DATE,$5,$6,$7,
               CASE WHEN $8::int IS NULL THEN NULL ELSE CURRENT_DATE + ($8::int || ' days')::interval END,
-              $9) RETURNING *
+              $9, $10, $11) RETURNING *
     `, [
       poNum, vendorId,
       // rfqs.pr_id is varchar while purchase_requests.id is integer — real
@@ -2180,6 +2585,8 @@ router.patch('/rfqs/:rfqId/award/:vendorId', requireProcurement('approve'), asyn
       `Awarded from ${rfq.rfq_number}${quote.vendor_name ? ` to ${quote.vendor_name}` : ''}`,
       promisedDays,
       deliveryBasis,
+      poCurrency,
+      poRate,
     ]);
 
     // Carry real line items onto the PO — an RFQ-award that only writes the
@@ -2280,7 +2687,7 @@ router.patch('/rfqs/:rfqId/award/:vendorId', requireProcurement('approve'), asyn
     // a decision that has already been made, and losing it must not undo the
     // award. It is reported, never swallowed silently.
     const decision = await recordAwardDecision({
-      rfqId, vendorId, poId: tot?.id ?? po.id, req,
+      rfqId, vendorId, poId: tot?.id ?? po.id, req, fx: awardFx,
     }).catch((e) => {
       console.error(`[award] TCO decision record failed for RFQ ${rfqId} — the award stands but has no frozen comparison:`, e.message);
       return null;
@@ -2307,7 +2714,7 @@ router.patch('/rfqs/:rfqId/award/:vendorId', requireProcurement('approve'), asyn
  * is an audit artefact, and a caller that could post its own TCO figures could
  * post flattering ones.
  */
-async function recordAwardDecision({ rfqId, vendorId, poId, req }) {
+async function recordAwardDecision({ rfqId, vendorId, poId, req, fx = null }) {
   const companyId = cid(req);
   const { rows: rfqRows } = await pool.query(`SELECT * FROM rfqs WHERE id = $1`, [rfqId]);
   if (!rfqRows[0]) return null;
@@ -2324,13 +2731,25 @@ async function recordAwardDecision({ rfqId, vendorId, poId, req }) {
     [rfqId]
   );
 
-  const scored = await scoreRfqQuotes(rfqRows[0], items, quotes, companyId);
+  const scored = await scoreRfqQuotes(rfqRows[0], items, quotes, companyId, { fx });
+  // Settings unreadable: there is no comparison to freeze. Say so — a row with
+  // tco_enabled=true and no figures would read as "TCO ran and found nothing".
+  if (scored.basis.tco_available === false) {
+    console.error(`[award] RFQ ${rfqId}: no TCO decision recorded — ${scored.basis.tco_unavailable_reason}`);
+    return { recorded: false, reason: scored.basis.tco_unavailable_reason };
+  }
   const cmp = scored.comparison;
   const won = scored.quotes.find(q => Number(q.vendor_id) === Number(vendorId));
 
   const lowestTco   = scored.quotes.find(q => q.is_lowest_tco);
   const lowestPrice = scored.quotes.find(q => q.is_lowest_price);
-  const followed = cmp.best_tco_vendor_id == null
+  // Three separate facts (§216): the award happened (this row); how complete the
+  // comparison was; whether it produced a recommendation. "Followed" is only
+  // meaningful against a recommendation that was actually made — an incomplete
+  // comparison withheld one, so it is NULL, never true.
+  const recommendationStatus = cmp.recommendation?.status
+    ?? (cmp.best_tco_vendor_id == null ? 'none' : 'made');
+  const followed = cmp.best_tco_vendor_id == null || recommendationStatus === 'withheld_incomplete'
     ? null
     : Number(cmp.best_tco_vendor_id) === Number(vendorId);
 
@@ -2346,9 +2765,10 @@ async function recordAwardDecision({ rfqId, vendorId, poId, req }) {
        awarded_unit_price, awarded_tco_total, awarded_tco_per_unit, awarded_confidence,
        lowest_tco_vendor_id, lowest_tco_total, lowest_price_vendor_id, lowest_price_total,
        tco_saving_forgone, followed_recommendation, tco_breakdown, tco_basis,
-       tco_enabled, decided_by_user_id, company_id)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
-     RETURNING id, followed_recommendation, tco_saving_forgone, awarded_tco_total`,
+       tco_enabled, decided_by_user_id, company_id, comparison_status, recommendation_status)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
+     RETURNING id, followed_recommendation, tco_saving_forgone, awarded_tco_total,
+               comparison_status, recommendation_status`,
     [
       rfqId, won?.id ?? null, vendorId, poId, cmp.quantity,
       won?.unit_price ?? null, won?.tco_total ?? null, won?.tco_per_unit ?? null,
@@ -2361,6 +2781,8 @@ async function recordAwardDecision({ rfqId, vendorId, poId, req }) {
       scored.basis.tco_enabled !== false,
       req.user?.userId ?? req.user?.id ?? null,
       companyId,
+      cmp.comparison_status ?? null,
+      recommendationStatus,
     ]
   );
   return rows[0] ?? null;
@@ -2949,7 +3371,11 @@ router.get('/analytics/eoq', requireProcurement('view'), async (req, res) => {
     const companyId = cid(req);
 
     const itemResult = await pool.query(
-      `SELECT id, item_code, item_name, COALESCE(reorder_level, 0) AS reorder_level
+      `SELECT id, item_code, item_name, COALESCE(reorder_level, 0) AS reorder_level,
+              eoq, annual_demand, avg_daily_demand, reorder_point_calculated,
+              safety_stock_calculated, service_level_pct, abc_class,
+              annual_consumption_value, planning_params_computed_at,
+              COALESCE(lead_time_days, 0) AS item_lead_time_days
        FROM inventory_items
        WHERE id = $1 AND ($2::INTEGER IS NULL OR company_id = $2)`,
       [itemId, companyId || null]
@@ -2957,13 +3383,105 @@ router.get('/analytics/eoq', requireProcurement('view'), async (req, res) => {
     if (!itemResult.rows.length) return res.status(404).json({ error: 'Item not found' });
     const item = itemResult.rows[0];
 
-    // Annual demand from last 12 months consumption/outflow
+    // ── The governed answer, where one exists ────────────────────────────────
+    // This endpoint used to recompute EOQ and ROP inline from its own module
+    // constants, ignoring inventory_planning_settings, the item's real lead
+    // time, and safety stock entirely. It is what the Inventory Dashboard "EOQ
+    // Planner" calls, so the number a planner read on screen was NOT the number
+    // the system alerts on — measured across the nine items with computed
+    // parameters, its reorder point came out at 30-52% of the governed one on
+    // every long-lead part, because it substituted a flat 14-day lead time and
+    // dropped safety stock.
+    //
+    // The persisted parameters now answer by default. A caller that passes an
+    // explicit ordering_cost / holding_rate / lead_time_days is asking a
+    // what-if question, which is a legitimate use of a planner screen, so the
+    // inline computation is kept for exactly that case — and labelled, so a
+    // what-if can never be mistaken for the governed figure.
+    const hasOverride = ['ordering_cost', 'holding_rate', 'lead_time_days']
+      .some(k => req.query[k] !== undefined && req.query[k] !== '');
+
+    if (!hasOverride && item.eoq != null && item.planning_params_computed_at) {
+      const eoqV       = parseFloat(item.eoq);
+      const annualD    = parseFloat(item.annual_demand || 0);
+      const leadDays   = parseInt(item.item_lead_time_days, 10) || 0;
+      const unitCostG  = annualD > 0 ? parseFloat(item.annual_consumption_value || 0) / annualD : 0;
+      const settings   = await getPlanningSettings(companyId || null);
+      const orderS     = parseFloat(settings.ordering_cost) || DEFAULT_ORDERING_COST;
+      const holdR      = parseFloat(settings.holding_cost_rate) || DEFAULT_HOLDING_RATE;
+      const holdPerU   = unitCostG * holdR;
+      const delivery   = new Date();
+      delivery.setDate(delivery.getDate() + leadDays);
+
+      return res.json({
+        item_id: item.id,
+        item_code: item.item_code,
+        item_name: item.item_name,
+        source: 'governed',
+        computed_at: item.planning_params_computed_at,
+        annual_demand: annualD,
+        unit_cost: Math.round(unitCostG * 100) / 100,
+        ordering_cost: orderS,
+        holding_cost_rate_annual: holdR,
+        annual_holding_cost_per_unit: Math.round(holdPerU * 100) / 100,
+        eoq: Math.round(eoqV * 100) / 100,
+        reorder_level_master: parseFloat(item.reorder_level || 0),
+        // The governed reorder point: demand over the item's OWN lead time,
+        // plus safety stock. Both were missing from the inline version.
+        reorder_point_calculated: parseFloat(item.reorder_point_calculated || 0),
+        safety_stock: parseFloat(item.safety_stock_calculated || 0),
+        service_level_pct: parseFloat(item.service_level_pct || 0),
+        abc_class: item.abc_class,
+        lead_time_days: leadDays,
+        expected_delivery_date: delivery.toISOString().slice(0, 10),
+        annual_cost_breakup: {
+          purchase_cost: Math.round(annualD * unitCostG * 100) / 100,
+          ordering_cost: eoqV > 0 ? Math.round((annualD / eoqV) * orderS * 100) / 100 : 0,
+          holding_cost:  eoqV > 0 ? Math.round((eoqV / 2) * holdPerU * 100) / 100 : 0,
+        },
+        total_annual_inventory_cost: Math.round((
+          annualD * unitCostG
+          + (eoqV > 0 ? (annualD / eoqV) * orderS : 0)
+          + (eoqV > 0 ? (eoqV / 2) * holdPerU : 0)
+        ) * 100) / 100,
+      });
+    }
+
+    // No governed parameters and no override: say so rather than inventing a
+    // figure from one month of history. The planning service deliberately
+    // leaves these NULL below min_periods_for_stats, and an EOQ presented
+    // without that caveat is exactly how the hand-typed values were trusted.
+    if (!hasOverride && item.eoq == null) {
+      // The price does not depend on demand history, so it is still answered —
+      // from the planning precedence (purchase rate, standard cost, ledger
+      // rate), never from annual_consumption_value / annual_demand, which are
+      // NULL for exactly these items.
+      const { unit_cost, unit_cost_source } = await resolveUnitCost(item.id, companyId || null);
+      return res.json({
+        item_id: item.id,
+        item_code: item.item_code,
+        item_name: item.item_name,
+        source: 'insufficient_history',
+        eoq: null,
+        reorder_point_calculated: null,
+        unit_cost,
+        unit_cost_source,
+        reorder_level_master: parseFloat(item.reorder_level || 0),
+        message: 'Not enough consumption history to compute planning parameters for this item. '
+               + 'Run Inventory → Planning → Recompute once the item has traded for a few periods.',
+      });
+    }
+
+    // Annual demand from the last 12 months, per ledgerSemantics — the same
+    // demand the governed figure is built on. Every outward row used to count
+    // here, transfers and vendor returns included.
     const demandResult = await pool.query(
-      `SELECT COALESCE(SUM(quantity_out), 0) AS annual_demand
+      `SELECT GREATEST(COALESCE(SUM(${demandQtySql()}), 0), 0) AS annual_demand
        FROM stock_ledger
        WHERE item_id = $1
-         AND quantity_out > 0
+         AND ${demandRowSql()}
          AND transaction_date >= CURRENT_DATE - INTERVAL '12 months'
+         AND transaction_date <= CURRENT_DATE
          AND ($2::INTEGER IS NULL OR company_id = $2)`,
       [itemId, companyId || null]
     );
@@ -3006,14 +3524,26 @@ router.get('/analytics/eoq', requireProcurement('view'), async (req, res) => {
     const totalAnnualInventoryCost = purchaseCostAnnual + orderingCostAnnual + holdingCostAnnual;
 
     const dailyDemand = annualDemand / 365;
-    const reorderPoint = dailyDemand * leadTimeDays;
+    // The item's OWN lead time unless the caller overrode it. Defaulting to a
+    // flat 14 days regardless of the part was the larger half of why this
+    // endpoint's reorder point disagreed with the governed one on every item.
+    const effectiveLeadDays = Number.isFinite(parseInt(req.query.lead_time_days, 10))
+      ? parseInt(req.query.lead_time_days, 10)
+      : (parseInt(item.item_lead_time_days, 10) || leadTimeDays);
+    // Safety stock belongs in a reorder point. Omitting it published a figure
+    // that was structurally below the one the system alerts on.
+    const safetyStock = parseFloat(item.safety_stock_calculated || 0);
+    const reorderPoint = dailyDemand * effectiveLeadDays + safetyStock;
     const expectedDeliveryDate = new Date();
-    expectedDeliveryDate.setDate(expectedDeliveryDate.getDate() + leadTimeDays);
+    expectedDeliveryDate.setDate(expectedDeliveryDate.getDate() + effectiveLeadDays);
 
     res.json({
       item_id: item.id,
       item_code: item.item_code,
       item_name: item.item_name,
+      // A what-if, never to be confused with the governed parameters. The
+      // caller asked for a specific ordering cost / holding rate / lead time.
+      source: 'what_if',
       annual_demand: annualDemand,
       unit_cost: unitCost,
       ordering_cost: orderingCost,
@@ -3022,7 +3552,8 @@ router.get('/analytics/eoq', requireProcurement('view'), async (req, res) => {
       eoq: parseFloat(eoq.toFixed(2)),
       reorder_level_master: parseFloat(item.reorder_level || 0),
       reorder_point_calculated: parseFloat(reorderPoint.toFixed(2)),
-      lead_time_days: leadTimeDays,
+      safety_stock: safetyStock,
+      lead_time_days: effectiveLeadDays,
       expected_delivery_date: expectedDeliveryDate.toISOString().slice(0, 10),
       annual_cost_breakup: {
         purchase_cost: parseFloat(purchaseCostAnnual.toFixed(2)),
@@ -3361,82 +3892,156 @@ router.put('/settings', async (req, res) => {
       return res.status(403).json({ error: 'Admin access required' });
     }
     const companyId = cid(req);
-    const b = req.body;
+    if (companyId == null) return res.status(400).json({ error: 'No company scope on the request; settings are per company.' });
+    const b = req.body || {};
 
-    // Validate the TCO rates before they reach SQL. These feed every vendor
-    // comparison in the app, so a typo here silently changes which vendor the
-    // buyer is told to award — reject it rather than clamp it.
-    const tcoValues = [];
-    for (const col of TCO_SETTING_COLS) {
-      const dflt = TCO_DEFAULTS[col];
-      if (typeof dflt === 'boolean') { tcoValues.push(b[col] ?? dflt); continue; }
-      if (b[col] == null || b[col] === '') { tcoValues.push(dflt); continue; }
-      const v = parseFloat(b[col]);
-      const [lo, hi] = TCO_RANGES[col] || [0, Number.MAX_SAFE_INTEGER];
-      if (!Number.isFinite(v) || v < lo || v > hi) {
-        return res.status(422).json({ error: `${col} must be a number between ${lo} and ${hi}` });
+    // ── Absent means "unchanged", never "reset" ──────────────────────────────
+    // Every column used to be written as `b.x ?? <default>`, so a request that
+    // omitted a field — an older client, a partial save, a script — reset it to
+    // the default: approval limits, the TCO rate card, segregation of duties.
+    // The saved row is now read FOR UPDATE and each field falls back to it; the
+    // defaults apply only when the company has no row yet.
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const { rows: [saved] } = await client.query(
+        `SELECT * FROM procurement_settings WHERE company_id = $1 FOR UPDATE`, [companyId]);
+      const given = (k) => b[k] !== undefined && b[k] !== null && b[k] !== '';
+      const val = (k, dflt) => (given(k) ? b[k] : (saved?.[k] ?? dflt));
+
+      // Validate the TCO rates before they reach SQL. These feed every vendor
+      // comparison in the app, so a typo here silently changes which vendor the
+      // buyer is told to award — reject it rather than clamp it.
+      const tcoValues = [];
+      for (const col of TCO_SETTING_COLS) {
+        const dflt = TCO_DEFAULTS[col];
+        if (typeof dflt === 'boolean') { tcoValues.push(given(col) ? !!b[col] : (saved?.[col] ?? dflt)); continue; }
+        if (!given(col)) { tcoValues.push(saved?.[col] ?? dflt); continue; }
+        const v = parseFloat(b[col]);
+        const [lo, hi] = TCO_RANGES[col] || [0, Number.MAX_SAFE_INTEGER];
+        if (!Number.isFinite(v) || v < lo || v > hi) {
+          await client.query('ROLLBACK');
+          return res.status(422).json({ error: `${col} must be a number between ${lo} and ${hi}` });
+        }
+        if (col === 'tco_day_count_basis' && !DAY_COUNT_BASES.includes(v)) {
+          await client.query('ROLLBACK');
+          return res.status(422).json({ error: `tco_day_count_basis must be one of ${DAY_COUNT_BASES.join(' or ')}` });
+        }
+        tcoValues.push(col === 'tco_horizon_months' || col === 'tco_fx_max_age_days' ? Math.round(v) : v);
       }
-      tcoValues.push(col === 'tco_horizon_months' ? Math.round(v) : v);
-    }
 
-    await pool.query(
-      `INSERT INTO procurement_settings (
-         company_id,
-         default_payment_terms_days, auto_approve_below, grn_qty_tolerance_pct, min_vendor_rating,
-         l1_approval_limit, l2_approval_limit, cfo_approval_above,
-         enforce_3way_match, block_payment_on_mismatch, allowable_price_variance_pct,
-         pr_prefix, po_prefix, grn_prefix, rfq_prefix,
-         notify_po_approval, notify_grn_receipt, alert_vendor_rating_drop, alert_overdue_delivery,
-         ${TCO_SETTING_COLS.join(', ')},
-         updated_at
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,
-                 ${TCO_SETTING_COLS.map((_, i) => `$${20 + i}`).join(',')},
-                 NOW())
-       ON CONFLICT (company_id) DO UPDATE SET
-         default_payment_terms_days  = EXCLUDED.default_payment_terms_days,
-         auto_approve_below          = EXCLUDED.auto_approve_below,
-         grn_qty_tolerance_pct       = EXCLUDED.grn_qty_tolerance_pct,
-         min_vendor_rating           = EXCLUDED.min_vendor_rating,
-         l1_approval_limit           = EXCLUDED.l1_approval_limit,
-         l2_approval_limit           = EXCLUDED.l2_approval_limit,
-         cfo_approval_above          = EXCLUDED.cfo_approval_above,
-         enforce_3way_match          = EXCLUDED.enforce_3way_match,
-         block_payment_on_mismatch   = EXCLUDED.block_payment_on_mismatch,
-         allowable_price_variance_pct= EXCLUDED.allowable_price_variance_pct,
-         pr_prefix                   = EXCLUDED.pr_prefix,
-         po_prefix                   = EXCLUDED.po_prefix,
-         grn_prefix                  = EXCLUDED.grn_prefix,
-         rfq_prefix                  = EXCLUDED.rfq_prefix,
-         notify_po_approval          = EXCLUDED.notify_po_approval,
-         notify_grn_receipt          = EXCLUDED.notify_grn_receipt,
-         alert_vendor_rating_drop    = EXCLUDED.alert_vendor_rating_drop,
-         alert_overdue_delivery      = EXCLUDED.alert_overdue_delivery,
-         ${TCO_SETTING_COLS.map(c => `${c} = EXCLUDED.${c}`).join(', ')},
-         updated_at                  = NOW()`,
-      [
-        companyId,
-        b.default_payment_terms_days ?? 30,
-        b.auto_approve_below          ?? 5000,
-        b.grn_qty_tolerance_pct       ?? 5,
-        b.min_vendor_rating           ?? 3,
-        b.l1_approval_limit           ?? 25000,
-        b.l2_approval_limit           ?? 100000,
-        b.cfo_approval_above          ?? 500000,
-        b.enforce_3way_match          ?? false,
-        b.block_payment_on_mismatch   ?? false,
-        b.allowable_price_variance_pct?? 3,
-        b.pr_prefix                   ?? 'PR',
-        b.po_prefix                   ?? 'PO',
-        b.grn_prefix                  ?? 'GRN',
-        b.rfq_prefix                  ?? 'RFQ',
-        b.notify_po_approval          ?? false,
-        b.notify_grn_receipt          ?? false,
-        b.alert_vendor_rating_drop    ?? false,
-        b.alert_overdue_delivery      ?? false,
-        ...tcoValues,
-      ]
-    );
-    res.json({ ok: true, tco: Object.fromEntries(TCO_SETTING_COLS.map((c, i) => [c, tcoValues[i]])) });
+      // Default Currency used to be shown, edited and "saved" without ever being
+      // written. It is the currency every TCO comparison is expressed in, so it
+      // must be a real ISO code.
+      let currency = saved?.default_currency ?? 'INR';
+      if (given('default_currency')) {
+        currency = normCurrency(b.default_currency);
+        if (!currency) {
+          await client.query('ROLLBACK');
+          return res.status(422).json({ error: `default_currency must be a 3-letter ISO code, not '${b.default_currency}'` });
+        }
+      }
+
+      // Main receiving point (§216): where freight lanes end when an RFQ/PO
+      // names no warehouse. Must be one of THIS company's warehouses. An
+      // explicit null clears it; absent leaves it as saved.
+      let mainWarehouse = saved?.main_receiving_warehouse_id ?? null;
+      if (Object.prototype.hasOwnProperty.call(b, 'main_receiving_warehouse_id')) {
+        if (b.main_receiving_warehouse_id == null || b.main_receiving_warehouse_id === '') {
+          mainWarehouse = null;
+        } else {
+          const wid = Number.parseInt(b.main_receiving_warehouse_id, 10);
+          const { rows: wh } = Number.isFinite(wid) ? await client.query(
+            `SELECT id FROM warehouses WHERE id = $1 AND company_id = $2 AND deleted_at IS NULL`, [wid, companyId]) : { rows: [] };
+          if (!wh.length) {
+            await client.query('ROLLBACK');
+            return res.status(422).json({ error: 'main_receiving_warehouse_id must be one of this company\'s warehouses' });
+          }
+          mainWarehouse = wid;
+        }
+      }
+
+      const { rows: [row] } = await client.query(
+        `INSERT INTO procurement_settings (
+           company_id,
+           default_payment_terms_days, auto_approve_below, grn_qty_tolerance_pct, min_vendor_rating,
+           l1_approval_limit, l2_approval_limit, cfo_approval_above,
+           enforce_3way_match, block_payment_on_mismatch, allowable_price_variance_pct,
+           pr_prefix, po_prefix, grn_prefix, rfq_prefix,
+           notify_po_approval, notify_grn_receipt, alert_vendor_rating_drop, alert_overdue_delivery,
+           allow_self_approval, default_currency, main_receiving_warehouse_id,
+           ${TCO_SETTING_COLS.join(', ')},
+           updated_at
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,
+                   ${TCO_SETTING_COLS.map((_, i) => `$${23 + i}`).join(',')},
+                   NOW())
+         ON CONFLICT (company_id) DO UPDATE SET
+           default_payment_terms_days  = EXCLUDED.default_payment_terms_days,
+           auto_approve_below          = EXCLUDED.auto_approve_below,
+           grn_qty_tolerance_pct       = EXCLUDED.grn_qty_tolerance_pct,
+           min_vendor_rating           = EXCLUDED.min_vendor_rating,
+           l1_approval_limit           = EXCLUDED.l1_approval_limit,
+           l2_approval_limit           = EXCLUDED.l2_approval_limit,
+           cfo_approval_above          = EXCLUDED.cfo_approval_above,
+           enforce_3way_match          = EXCLUDED.enforce_3way_match,
+           block_payment_on_mismatch   = EXCLUDED.block_payment_on_mismatch,
+           allowable_price_variance_pct= EXCLUDED.allowable_price_variance_pct,
+           pr_prefix                   = EXCLUDED.pr_prefix,
+           po_prefix                   = EXCLUDED.po_prefix,
+           grn_prefix                  = EXCLUDED.grn_prefix,
+           rfq_prefix                  = EXCLUDED.rfq_prefix,
+           notify_po_approval          = EXCLUDED.notify_po_approval,
+           notify_grn_receipt          = EXCLUDED.notify_grn_receipt,
+           alert_vendor_rating_drop    = EXCLUDED.alert_vendor_rating_drop,
+           alert_overdue_delivery      = EXCLUDED.alert_overdue_delivery,
+           allow_self_approval         = EXCLUDED.allow_self_approval,
+           default_currency            = EXCLUDED.default_currency,
+           main_receiving_warehouse_id = EXCLUDED.main_receiving_warehouse_id,
+           ${TCO_SETTING_COLS.map(c => `${c} = EXCLUDED.${c}`).join(', ')},
+           updated_at                  = NOW()
+         RETURNING *`,
+        [
+          companyId,
+          val('default_payment_terms_days', 30),
+          val('auto_approve_below', 5000),
+          val('grn_qty_tolerance_pct', 5),
+          val('min_vendor_rating', 3),
+          val('l1_approval_limit', 25000),
+          val('l2_approval_limit', 100000),
+          val('cfo_approval_above', 500000),
+          val('enforce_3way_match', false),
+          val('block_payment_on_mismatch', false),
+          val('allowable_price_variance_pct', 3),
+          val('pr_prefix', 'PR'),
+          val('po_prefix', 'PO'),
+          val('grn_prefix', 'GRN'),
+          val('rfq_prefix', 'RFQ'),
+          val('notify_po_approval', false),
+          val('notify_grn_receipt', false),
+          val('alert_vendor_rating_drop', false),
+          val('alert_overdue_delivery', false),
+          // Absent from the body means "leave the control as it is" — a client
+          // that has not been updated to send this field must not silently
+          // change segregation of duties by omission.
+          val('allow_self_approval', false),
+          currency,
+          mainWarehouse,
+          ...tcoValues,
+        ]
+      );
+      await client.query('COMMIT');
+      res.json({
+        ok: true,
+        data: { ...PROC_DEFAULTS, ...row },
+        tco: Object.fromEntries(TCO_SETTING_COLS.map((c) => [c,
+          row[c] == null ? null : (typeof TCO_DEFAULTS[c] === 'boolean' ? row[c] : Number(row[c]))])),
+      });
+    } catch (e) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw e;
+    } finally {
+      client.release();
+    }
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -3775,6 +4380,8 @@ router.patch('/ncr/:id/attachment', requireProcurement('edit', 'qc_manager', 'qc
 // /three-way-match, /three-way-match/:id/approve, /three-way-match/:id/resolve.
 // API compatibility is the point of the mount: no client changes.
 router.use('/', threeWayMatchRoutes);
+// Freight lanes and maker-checker rate cards (§216).
+router.use('/freight', freightRoutes);
 
 export default router;
 

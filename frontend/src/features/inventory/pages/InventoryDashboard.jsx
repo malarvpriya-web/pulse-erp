@@ -6,6 +6,7 @@ import {
 import {
   Package, AlertTriangle, TrendingUp, ShoppingCart, RefreshCw,
   ArrowUpRight, Plus, ArrowRightLeft, LayoutDashboard,
+  Target, PackageX, RotateCw, ShieldAlert, Layers, Clock,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import { ChartExpandButton } from '@/components/dashboard/DashCard';
@@ -22,6 +23,14 @@ const fmt = n => {
 
 
 const COLORS = ['#6366f1', '#10b981', '#7c5cf0', '#3b82f6', '#8b5cf6'];
+
+/**
+ * A measured figure that has no value yet reads as an em-dash, never as 0.
+ * "We consumed nothing" and "we cannot compute this" are different findings and
+ * a 0 quietly claims the first one.
+ */
+const numOrDash = (v, suffix = '', dp = 0) =>
+  v === null || v === undefined ? '—' : `${parseFloat(v).toFixed(dp)}${suffix}`;
 
 const KPI = ({ icon: Icon, label, value, sub, color, alert }) => (
   <div className={`invd-kpi${alert ? ' invd-kpi-alert' : ''}`} style={{ '--c': color }}>
@@ -41,7 +50,11 @@ export default function InventoryDashboard({ setPage }) {
   const [moves,   setMoves]   = useState([]);
   const [items,   setItems]   = useState([]);
   const [selectedItemId, setSelectedItemId] = useState('');
-  const [eoqData, setEoqData] = useState(null);
+  // The GOVERNED planning parameters — one row per item, straight from the
+  // service that computes and persists them. This replaces two separate
+  // client-side reinventions (see the EOQ panel and the ABC panel below).
+  const [planningParams, setPlanningParams] = useState([]);
+  const [kpis, setKpis] = useState(null);
   const [loading, setLoading] = useState(false);
   const [apiErrors, setApiErrors] = useState([]);
 
@@ -72,12 +85,14 @@ export default function InventoryDashboard({ setPage }) {
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [dashRes, sumRes, lowRes, movRes, itemsRes] = await Promise.allSettled([
+    const [dashRes, sumRes, lowRes, movRes, itemsRes, kpiRes, paramRes] = await Promise.allSettled([
       api.get('/inventory/dashboard', { params }),
       api.get('/inventory/stock/summary'),
       api.get('/inventory/stock/low-stock'),
       api.get('/inventory/stock/movement', { params: { limit: 8 } }),
       api.get('/inventory/items', { params: { limit: 200 } }),
+      api.get('/inventory/planning/kpis'),
+      api.get('/inventory/planning/parameters'),
     ]);
 
     if (!isMounted.current) return;
@@ -87,7 +102,13 @@ export default function InventoryDashboard({ setPage }) {
     if (sumRes.status === 'rejected')  errors.push('Stock Summary');
     if (lowRes.status === 'rejected')  errors.push('Low Stock Alerts');
     if (movRes.status === 'rejected')  errors.push('Recent Movements');
+    if (kpiRes.status === 'rejected')  errors.push('Cost vs Service KPIs');
+    if (paramRes.status === 'rejected') errors.push('Planning Parameters');
     setApiErrors(errors);
+
+    setKpis(kpiRes.status === 'fulfilled' ? kpiRes.value.data : null);
+    const rawParams = paramRes.status === 'fulfilled' ? paramRes.value.data : [];
+    setPlanningParams(Array.isArray(rawParams) ? rawParams : []);
 
     const rawStats = dashRes.status === 'fulfilled' ? dashRes.value.data : null;
     setStats(rawStats || null);
@@ -114,21 +135,33 @@ export default function InventoryDashboard({ setPage }) {
     { key: 'warehouse_id', label: 'Warehouse', allLabel: 'All Warehouses', options: options.warehouses },
     { key: 'category_id',  label: 'Category',  allLabel: 'All Categories', options: options.categories },
   ];
+  /*
+   * /procurement/analytics/eoq answers from the GOVERNED parameters now — the
+   * same persisted figures MRP, the reorder alerts and the purchase
+   * requisitions act on — and stamps each reply with `source`. It used to
+   * recompute inline from its own constants, including a flat 14-day lead time
+   * in place of each item's real one and no safety stock at all, which is why
+   * this card showed 30-52% of the governed reorder point on long-lead parts.
+   *
+   * It is still the right caller for this panel because it also returns the
+   * annual cost break-up — purchase, ordering and holding — which is the cost
+   * half of the trade-off this screen exists to show, and which the raw
+   * parameter list does not carry.
+   */
+  const [eoqData, setEoqData] = useState(null);
   useEffect(() => {
-    const fetchEoq = async () => {
-      if (!selectedItemId) {
-        setEoqData(null);
-        return;
-      }
-      try {
-        const res = await api.get('/procurement/analytics/eoq', { params: { item_id: selectedItemId } });
-        if (isMounted.current) setEoqData(res.data || null);
-      } catch {
-        if (isMounted.current) setEoqData(null);
-      }
-    };
-    fetchEoq();
+    if (!selectedItemId) { setEoqData(null); return; }
+    let cancelled = false;
+    api.get('/procurement/analytics/eoq', { params: { item_id: selectedItemId } })
+      .then((r) => { if (!cancelled && isMounted.current) setEoqData(r.data || null); })
+      .catch(() => { if (!cancelled && isMounted.current) setEoqData(null); });
+    return () => { cancelled = true; };
   }, [selectedItemId]);
+
+  /* Whether a planner has overruled the model on this item. The EOQ endpoint
+     reports the governed figures but not which of them is pinned, and an
+     override that cannot be seen is an override nobody can review. */
+  const eoqOverride = planningParams.find((p) => String(p.id) === String(selectedItemId)) || null;
 
 
   const s = stats || {};
@@ -136,27 +169,31 @@ export default function InventoryDashboard({ setPage }) {
     name: r.category,
     qty: parseInt(r.total_quantity) || 0,
   }));
-  const stockRows = summary.map((r) => {
-    const qty = parseFloat(r.balance ?? r.total_quantity ?? 0);
-    const rate = parseFloat(r.avg_rate ?? r.rate ?? 0);
-    const value = parseFloat((r.value ?? (qty * rate)) || 0);
-    return {
-      code: r.item_code || r.category || 'ITEM',
-      value: Number.isFinite(value) ? value : 0,
-    };
-  }).filter((r) => r.value > 0);
-  const sortedByValue = [...stockRows].sort((a, b) => b.value - a.value);
-  const totalStockValue = sortedByValue.reduce((s2, r) => s2 + r.value, 0);
-  let running = 0;
-  const abcRows = sortedByValue.map((r) => {
-    running += r.value;
-    const cumPct = totalStockValue > 0 ? (running / totalStockValue) * 100 : 0;
-    const cls = cumPct <= 80 ? 'A' : cumPct <= 95 ? 'B' : 'C';
-    return { ...r, cls };
-  });
-  const abcStats = abcRows.reduce((acc, r) => {
-    acc[r.cls].count += 1;
-    acc[r.cls].value += r.value;
+  /*
+   * ABC comes from the classification the planning service computed and
+   * persisted. It used to be recomputed here in the browser, and it was wrong
+   * in three separate ways at once:
+   *
+   *   1. WRONG BASIS. It ranked items by the value of stock ON HAND. ABC ranks
+   *      by ANNUAL CONSUMPTION VALUE. A cheap part consumed constantly is an A;
+   *      an expensive part sitting untouched in a corner is not. Ranking by
+   *      what happens to be on the shelf inverts precisely that judgement.
+   *   2. HARD-CODED BANDS of 80/95, against the governed thresholds — which are
+   *      70/90 by default and settable per company. The screen and the engine
+   *      could not agree even in principle.
+   *   3. THE BOUNDARY TEST WAS INVERTED. It banded on the cumulative AFTER
+   *      adding each item, so a single part holding 80% of all value came out B
+   *      and a sole part holding 100% came out C — the most important item in
+   *      the business, filed as the tail.
+   *
+   * Items the service deliberately left unclassified (too little demand history
+   * to compute one honestly) are excluded rather than defaulted into C.
+   */
+  const abcStats = planningParams.reduce((acc, p) => {
+    const cls = p.abc_class;
+    if (!acc[cls]) return acc;
+    acc[cls].count += 1;
+    acc[cls].value += parseFloat(p.annual_consumption_value || 0);
     return acc;
   }, {
     A: { count: 0, value: 0, color: '#ef4444' },
@@ -243,6 +280,91 @@ export default function InventoryDashboard({ setPage }) {
         <KPI icon={TrendingUp}    label="Holding Cost / Month" value={fmt(s.total_holding_cost_monthly)} color="#6B3FDB" sub={`Annual rate ${(parseFloat(s.holding_cost_rate_annual || 0) * 100).toFixed(1)}%`} />
         <KPI icon={ShoppingCart}  label="Pending POs"     value={s.pending_pos || 0}     color="#7c5cf0" sub="Awaiting receipt" />
       </div>
+
+      {/*
+        Cost against service level — the trade-off the rest of this screen only
+        shows one side of. Every figure is measured from the ledger over the
+        company's planning window; none is a target dressed up as a result.
+      */}
+      {kpis && (
+        <>
+          <div className="invd-kpis" style={{ marginTop: 4 }}>
+            {/*
+              Two numbers, deliberately in one tile. The TARGET picks the z that
+              sizes safety stock; the ACHIEVED figure is what the ledger actually
+              did. Showing the target alone — which is what most inventory
+              dashboards do — reports a policy as though it were an outcome.
+            */}
+            <KPI
+              icon={Target}
+              label="Service Level"
+              value={numOrDash(kpis.service_level.achieved_in_stock_pct, '%', 1)}
+              color="#10b981"
+              alert={kpis.service_level.achieved_in_stock_pct !== null
+                     && kpis.service_level.achieved_in_stock_pct < kpis.service_level.target_pct}
+              sub={`Achieved vs ${numOrDash(kpis.service_level.target_pct, '%', 0)} target · in-stock days`}
+            />
+            <KPI
+              icon={PackageX}
+              label="Stockouts"
+              value={kpis.stockouts.items_currently_out}
+              color="#ef4444"
+              alert={kpis.stockouts.items_currently_out > 0}
+              sub={`${kpis.stockouts.stockout_events_in_window} event(s) in ${kpis.window.days}d`}
+            />
+            <KPI
+              icon={RotateCw}
+              label="Inventory Turnover"
+              value={numOrDash(kpis.turnover.inventory_turnover, '×', 2)}
+              color="#6366f1"
+              sub={`${numOrDash(kpis.turnover.days_of_inventory, ' days')} of inventory`}
+            />
+            <KPI
+              icon={ShieldAlert}
+              label="Safety Stock Breaches"
+              value={kpis.safety_stock_breaches.count}
+              color="#f59e0b"
+              alert={kpis.safety_stock_breaches.count > 0}
+              sub="Below the level in force"
+            />
+            <KPI
+              icon={Layers}
+              label="Excess Stock"
+              value={fmt(kpis.excess_inventory.total_excess_value)}
+              color="#7c5cf0"
+              sub={`${kpis.excess_inventory.count} item(s) over ${kpis.excess_inventory.threshold_cover_days}d cover`}
+            />
+            <KPI
+              icon={Clock}
+              label="Slow / Non-moving"
+              value={fmt(kpis.obsolete_slow_moving.total_value)}
+              color="#64748b"
+              sub={`${kpis.obsolete_slow_moving.slow_moving_count} slow · ${kpis.obsolete_slow_moving.non_moving_count} non-moving`}
+            />
+          </div>
+          {/*
+            Said plainly rather than buried in a tooltip: this is availability,
+            not a demand-weighted fill rate, and the database cannot produce the
+            latter because no requested quantity is recorded anywhere. Leaving it
+            unsaid would let an availability figure be quoted as a fill rate,
+            which is the number a customer actually cares about.
+          */}
+          <p style={{ fontSize: 11.5, color: '#6b7280', margin: '2px 2px 14px' }}>
+            Measured {kpis.window.start} → {kpis.window.end} at daily resolution.
+            Service level is <strong>availability</strong> ({kpis.service_level.item_days_out_of_stock} of{' '}
+            {kpis.service_level.item_days_carried} item-days out of stock across{' '}
+            {kpis.service_level.items_carried} item(s) actually carried). A demand-weighted
+            fill rate is not computable: issues record the quantity given, never the quantity asked for.
+            {kpis.coverage.last_planning_run && (
+              <> Parameters last recomputed{' '}
+                {new Date(kpis.coverage.last_planning_run)
+                  .toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' })}
+                {' '}({kpis.coverage.items_classified} of {kpis.coverage.items_total} items classified).
+              </>
+            )}
+          </p>
+        </>
+      )}
 
       {/* main grid */}
       <div className="invd-grid">
@@ -354,17 +476,47 @@ export default function InventoryDashboard({ setPage }) {
               </select>
             </div>
             {!eoqData && <p style={{ color: '#6b7280', margin: 0 }}>EOQ data not available for selected item.</p>}
-            {eoqData && (
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
-                <div><strong>EOQ:</strong> {parseFloat(eoqData.eoq || 0).toFixed(2)}</div>
-                <div><strong>Annual Demand:</strong> {parseFloat(eoqData.annual_demand || 0).toFixed(2)}</div>
-                <div><strong>Reorder Point:</strong> {parseFloat(eoqData.reorder_point_calculated || 0).toFixed(2)}</div>
-                <div><strong>Expected Delivery:</strong> {eoqData.expected_delivery_date || '—'}</div>
-                <div><strong>Purchase Cost:</strong> {fmt(eoqData.annual_cost_breakup?.purchase_cost)}</div>
-                <div><strong>Ordering Cost:</strong> {fmt(eoqData.annual_cost_breakup?.ordering_cost)}</div>
-                <div><strong>Holding Cost:</strong> {fmt(eoqData.annual_cost_breakup?.holding_cost)}</div>
-                <div><strong>Total Annual Cost:</strong> {fmt(eoqData.total_annual_inventory_cost)}</div>
-              </div>
+            {/* The service leaves an item below min_periods_for_stats NULL on
+                purpose — a zero EOQ computed from no data reads as a deliberate
+                decision to order nothing. The screen has to say which it is. */}
+            {eoqData && eoqData.source === 'insufficient_history' && (
+              <p style={{ color: '#6b7280', margin: 0 }}>
+                Not enough demand history to compute planning parameters for this item —
+                left blank rather than shown as zero.
+              </p>
+            )}
+            {eoqData && eoqData.source !== 'insufficient_history' && (
+              <>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
+                  <div><strong>EOQ:</strong> {numOrDash(eoqData.eoq, '', 2)}</div>
+                  <div><strong>Annual Demand:</strong> {numOrDash(eoqData.annual_demand, '', 2)}</div>
+                  <div><strong>Reorder Point:</strong> {numOrDash(eoqData.reorder_point_calculated, '', 2)}</div>
+                  <div><strong>Safety Stock:</strong> {numOrDash(eoqData.safety_stock, '', 2)}</div>
+                  <div><strong>Lead Time:</strong> {numOrDash(eoqData.lead_time_days, ' days')}</div>
+                  <div><strong>Expected Delivery:</strong> {eoqData.expected_delivery_date || '—'}</div>
+                  <div><strong>Purchase Cost:</strong> {fmt(eoqData.annual_cost_breakup?.purchase_cost)}</div>
+                  <div><strong>Ordering Cost:</strong> {fmt(eoqData.annual_cost_breakup?.ordering_cost)}</div>
+                  <div><strong>Holding Cost:</strong> {fmt(eoqData.annual_cost_breakup?.holding_cost)}</div>
+                  <div><strong>Total Annual Cost:</strong> {fmt(eoqData.total_annual_inventory_cost)}</div>
+                </div>
+                {/* Where the figure came from, and whether a planner overruled the
+                    model — an override nobody can see is an override nobody can
+                    review. `source` distinguishes the governed answer from a
+                    what-if run with caller-supplied costs. */}
+                <p style={{ fontSize: 12, color: '#6b7280', marginTop: 10, marginBottom: 0 }}>
+                  Source: <strong>{eoqData.source || 'governed'}</strong>
+                  {eoqData.abc_class && ` · class ${eoqData.abc_class}`}
+                  {eoqData.service_level_pct > 0
+                    && ` · service level ${parseFloat(eoqData.service_level_pct).toFixed(0)}%`}
+                  {eoqOverride?.safety_stock_source === 'manual'
+                    && ` · safety stock pinned by a planner (model says ${parseFloat(eoqOverride.safety_stock_calculated || 0).toFixed(2)})`}
+                  {eoqOverride?.reorder_point_source === 'manual'
+                    && ` · reorder point pinned by a planner (model says ${parseFloat(eoqOverride.reorder_point_calculated || 0).toFixed(2)})`}
+                  {eoqData.computed_at
+                    && ` · computed ${new Date(eoqData.computed_at)
+                          .toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' })}`}
+                </p>
+              </>
             )}
           </div>
         </div>
@@ -372,8 +524,8 @@ export default function InventoryDashboard({ setPage }) {
         {/* ABC analysis */}
         <div className="invd-card invd-fc12">
           <div className="invd-card-hd">
-            <span className="invd-card-title">ABC Analysis (By Stock Value)</span>
-            <ChartExpandButton title="ABC Analysis" subtitle="Item classes by stock value">
+            <span className="invd-card-title">ABC Analysis (By Annual Consumption Value)</span>
+            <ChartExpandButton title="ABC Analysis" subtitle="Item classes by annual consumption value">
               {abcChart(420)}
             </ChartExpandButton>
           </div>

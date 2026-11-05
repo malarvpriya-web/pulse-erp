@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import api from '@/services/api/client';
+import { candidateRows } from '../shared/constants';
 import { useToast } from '@/context/ToastContext';
 import { Plus, FileText, X, Search, CheckCircle, XCircle, Send, UserPlus } from 'lucide-react';
 import { matchesSearch } from '../shared/search';
@@ -116,7 +117,7 @@ export default function OfferManagement() {
       api.get('/recruitment/openings', { params: { status: 'open' } }),
     ]).then(([offersRes, candsRes, openingsRes]) => {
       setOffers(offersRes.status === 'fulfilled' && Array.isArray(offersRes.value.data) ? offersRes.value.data : []);
-      setCandidates(candsRes.status === 'fulfilled' && Array.isArray(candsRes.value.data) ? candsRes.value.data : []);
+      setCandidates(candsRes.status === 'fulfilled' ? candidateRows(candsRes.value.data) : []);
       setOpenings(openingsRes.status === 'fulfilled' && Array.isArray(openingsRes.value.data) ? openingsRes.value.data : []);
     }).finally(() => setLoading(false));
   }, []);
@@ -173,6 +174,18 @@ export default function OfferManagement() {
       showToast('Offer accepted — candidate marked as hired');
     } catch (err) {
       showToast(err.response?.data?.error || 'Failed to accept offer', 'error');
+    }
+  };
+
+  // Accepted offer → DRAFT salary proposal for the hired employee (annual CTC
+  // converted by the server; an approver finalises it in Payroll → Salary
+  // Structure). Available when the company has CTC-driven entry switched on.
+  const prepareSalary = async (o) => {
+    try {
+      await api.post(`/recruitment/offers/${o.id}/salary-proposal`, {});
+      showToast('Salary proposal prepared — awaiting approval in Payroll → Salary Structure');
+    } catch (err) {
+      showToast(err.response?.data?.message || 'Could not prepare the salary proposal', 'error');
     }
   };
 
@@ -286,6 +299,12 @@ export default function OfferManagement() {
                               <XCircle size={11}/> Decline
                             </button>
                           </>
+                        )}
+                        {o.offer_status === 'accepted' && (
+                          <button onClick={() => prepareSalary(o)} title="Convert this offer's annual CTC into a salary proposal for approval"
+                            style={{ padding:'4px 8px', background:'#ede9fe', color:'#5b21b6', border:'none', borderRadius:6, cursor:'pointer', fontSize:11, fontWeight:600 }}>
+                            Prepare salary proposal
+                          </button>
                         )}
                         {['draft','pending_approval','sent'].includes(o.offer_status) && (
                           <button onClick={() => updateStatus(o.id, 'withdrawn')}

@@ -99,11 +99,18 @@ const leavesRepository = {
     } = data;
 
     const result = await pool.query(
+      // company_id is derived from the employee rather than left to the caller.
+      // It was not set at all before, so every new application landed with a NULL
+      // tenant — and the company-scoped dashboard counts (`company_id = $1`) match
+      // NULL against nothing, so a freshly applied leave was invisible to every
+      // approval queue that scopes by company. Nullable rows also slip past the
+      // composite unique indexes that lead with company_id.
       `INSERT INTO leave_applications
          (employee_id, leave_type_id, start_date, end_date, number_of_days, reason,
           attachment_url, manager_id, manager_status, hr_status, l2_status,
-          is_lop, clubbing_flag, half_day, half_day_session, lop_days)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending','pending',NULL,$9,$10,$11,$12,$13)
+          is_lop, clubbing_flag, half_day, half_day_session, lop_days, company_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending','pending',NULL,$9,$10,$11,$12,$13,
+          (SELECT company_id FROM employees WHERE id = $1))
        RETURNING *`,
       [employee_id, leave_type_id, start_date, end_date, number_of_days, reason,
        attachment_url || null, manager_id || null,
@@ -358,22 +365,35 @@ const leavesRepository = {
   async updateStatus(id, status, actor_id, comments = '') {
     const normalized = String(status || '').toLowerCase();
     return withTransaction(async (client) => {
+      // FOR UPDATE: two decisions on the same leave serialise here, and the
+      // second sees the first one's result instead of deciding it again.
       const { rows: before } = await client.query(
-        `SELECT * FROM leave_applications WHERE id = $1 AND deleted_at IS NULL`, [id]
+        `SELECT * FROM leave_applications WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`, [id]
       );
       if (!before.length) throw workflowError('Leave application not found', 'LEAVE_NOT_ACTIONABLE');
       const prev = before[0];
       if (prev.status === normalized) throw workflowError('Leave already has requested status', 'LEAVE_NOT_ACTIONABLE');
+      // Only real transitions. A decided leave used to be re-openable to
+      // 'pending' (no balance reversal) and then approved again — deducting the
+      // balance twice — and a rejected or cancelled one could be approved.
+      const ALLOWED = { pending: ['approved', 'rejected', 'cancelled'], approved: ['cancelled'] };
+      if (!(ALLOWED[prev.status] || []).includes(normalized)) {
+        throw workflowError(`A leave that is ${prev.status} cannot be set to ${normalized}`, 'LEAVE_NOT_ACTIONABLE');
+      }
 
       const result = await client.query(
         `UPDATE leave_applications
-         SET status = $1,
-             hr_status     = CASE WHEN $1 IN ('approved','rejected') THEN $1 ELSE hr_status END,
-             l2_status     = CASE WHEN $1 IN ('approved','rejected') THEN $1 ELSE l2_status END,
-             manager_status = CASE WHEN $1 IN ('approved','rejected') AND manager_status = 'pending' THEN $1 ELSE manager_status END,
+         -- $1 is cast everywhere: bare in SET it deduces varchar, inside the
+         -- CASE/IN it deduces text, and Postgres refuses the statement
+         -- ("inconsistent types deduced for parameter $1") — which made
+         -- cancel, withdraw, HR bulk-approve and status update all 500.
+         SET status = $1::varchar,
+             hr_status     = CASE WHEN $1::varchar IN ('approved','rejected') THEN $1::varchar ELSE hr_status END,
+             l2_status     = CASE WHEN $1::varchar IN ('approved','rejected') THEN $1::varchar ELSE l2_status END,
+             manager_status = CASE WHEN $1::varchar IN ('approved','rejected') AND manager_status = 'pending' THEN $1::varchar ELSE manager_status END,
              hr_id         = COALESCE(hr_id, $3),
              hr_comments   = COALESCE($4, hr_comments),
-             hr_approved_at = CASE WHEN $1 IN ('approved','rejected') THEN CURRENT_TIMESTAMP ELSE hr_approved_at END,
+             hr_approved_at = CASE WHEN $1::varchar IN ('approved','rejected') THEN CURRENT_TIMESTAMP ELSE hr_approved_at END,
              updated_at    = CURRENT_TIMESTAMP
          WHERE id = $2 AND deleted_at IS NULL
          RETURNING *`,

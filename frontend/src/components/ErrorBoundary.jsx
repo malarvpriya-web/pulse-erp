@@ -1,10 +1,32 @@
 import { Component } from 'react';
 
 export default class ErrorBoundary extends Component {
-  state = { hasError: false, error: null, info: null };
+  state = { hasError: false, error: null, info: null, resetKey: undefined };
 
   static getDerivedStateFromError(error) {
     return { hasError: true, error };
+  }
+
+  /**
+   * Clear the caught error when the thing being rendered changes.
+   *
+   * Without this the boundary is a one-way door: `hasError` stays true for the
+   * life of the mount, so after ONE page throws, every later sidebar click
+   * renders this same error screen instead of the page it asked for — the
+   * whole app looks broken and the only way out is the Reload button.
+   * Measured 2026-09-16: a single crashing page took out the following 121
+   * navigations in a browser sweep.
+   *
+   * Layout.jsx passes the current page key as `resetKey`, so navigating away
+   * from the page that threw gives the next one a clean boundary. A page that
+   * throws every time still shows this screen — it just no longer poisons its
+   * neighbours.
+   */
+  static getDerivedStateFromProps(props, state) {
+    if (props.resetKey === state.resetKey) return null;
+    return state.hasError
+      ? { hasError: false, error: null, info: null, resetKey: props.resetKey }
+      : { resetKey: props.resetKey };
   }
 
   componentDidCatch(error, info) {

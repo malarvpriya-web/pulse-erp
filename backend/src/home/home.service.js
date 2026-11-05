@@ -1,34 +1,44 @@
 import pool from "../config/db.js";
+import { classifySource } from "./documentDownload.js";
+import { myPendingApprovals } from "../modules/approvals/approvals.controller.js";
+import { resolveViewer, visibleAnnouncements, audienceSql } from "../announcements/announcement.visibility.js";
 
-export const getActiveAnnouncements = async () => {
-  const result = await pool.query(`
-    SELECT id, title, message, created_by, created_at, to_date AS expiry_date
-    FROM announcements
-    WHERE is_active = true
-    AND (to_date IS NULL OR to_date >= CURRENT_DATE)
-    ORDER BY created_at DESC
-  `);
-  return result.rows;
-};
+// The signed-in user's live announcements — announcement.visibility.js is the one
+// definition shared with GET /announcements/active. This used to ignore
+// publish_at, from_date, archive and audience (an announcement for one employee
+// reached everyone), and showed company_id NULL rows to every company.
+// `viewer` = { companyId, userId, employeeId }; no company → nothing.
+export const getActiveAnnouncements = async (viewer = {}) =>
+  visibleAnnouncements(await resolveViewer(viewer));
 
 // There has never been an `events` table — the company-events feed is carried by
 // `announcements` (title / from_date / category / message line up 1:1 with the
 // columns this used to select). Kept the original output shape so any consumer
 // of /api/home/events/upcoming is unaffected.
-export const getUpcomingEvents = async (companyId = null) => {
+export const getUpcomingEvents = async (viewer = {}) => {
+  // Same visibility rule as the announcements feed (company, audience, not
+  // archived, published), except that an announcement whose From date is still
+  // ahead counts — an upcoming event is one that has not started yet. A
+  // Scheduled Publish time still hides it until then.
+  const v = await resolveViewer(viewer);
+  if (v.companyId == null) return [];
   const result = await pool.query(`
-    SELECT id,
-           title,
-           category    AS department,
-           from_date   AS event_date,
-           message     AS description
-    FROM announcements
-    WHERE is_active
-      AND COALESCE(to_date, from_date) >= CURRENT_DATE
-      AND ($1::int IS NULL OR company_id = $1)
-    ORDER BY from_date ASC
+    SELECT a.id,
+           a.title,
+           a.category    AS department,
+           a.from_date   AS event_date,
+           a.message     AS description
+    FROM announcements a
+    LEFT JOIN employees e ON e.id = $2::int AND e.company_id = $1::int
+    WHERE a.company_id = $1::int
+      AND a.deleted_at IS NULL
+      AND a.is_active
+      AND (a.publish_at IS NULL OR a.publish_at <= NOW())
+      AND COALESCE(a.to_date, a.from_date) >= CURRENT_DATE
+      AND ${audienceSql('a', 'e')}
+    ORDER BY a.from_date ASC
     LIMIT 10
-  `, [companyId]);
+  `, [v.companyId, v.employeeId]);
   return result.rows;
 };
 
@@ -89,11 +99,14 @@ export const getTodaysCelebrations = async () => {
 // than `updated_date`; neither carries the status/is_active flags these queries
 // filtered on. Both endpoints therefore 500'd on every call — /home/resources is
 // mounted and reachable, so the Resources panel has never loaded.
+// Same audience as the Home panel: an all-employee endpoint must not list
+// internal or retired policies.
 export const getActivePolicies = async (companyId = null) => {
   const result = await pool.query(`
     SELECT id, title AS name, version, file_url, updated_at AS updated_date, category
     FROM hr_policies
     WHERE ($1::int IS NULL OR company_id = $1)
+      AND is_active AND applicable_to = 'all'
     ORDER BY updated_at DESC
   `, [companyId]);
   return result.rows;
@@ -170,50 +183,103 @@ export const getUserIdentity = async (userId) => {
   return rows[0] || null;
 };
 
-// Policy documents for the Home "Policies" panel — reads `hr_policies`, the
-// same table features/hr/pages/Policies.jsx writes to via its "Link Policy"
-// form (POST /hr/policies). Previously this panel read a static seeded
-// category on `company_documents`, so anything actually linked/uploaded on
-// the Policies page never appeared on Home — this is the fix for that.
-// `NULLIF(..., '#')` guards hr_policies.file_url's schema default ('#' for
-// rows inserted before the URL-required form validation existed) so DocTile
-// shows its "Soon" placeholder instead of a dead link.
-export const getPolicyDocuments = async (companyId = null) => {
-  return strictRows(
-    `SELECT id, title, category, description,
-            NULLIF(COALESCE(drive_url, file_url), '#') AS file_url, updated_at
-       FROM hr_policies
-      WHERE ($1::integer IS NULL OR company_id = $1 OR company_id IS NULL)
-      ORDER BY updated_at DESC, title ASC`,
-    [companyId]
-  );
+// A Home document tile never carries a Drive link: Drive files are downloaded
+// through GET /home/documents/:kind/:id/download (documentDownload.js), which
+// returns the file itself. `download` says how the tile behaves:
+//   'file' → Download button, streamed by Pulse
+//   'link' → an external page (not Drive), opened in a new tab; file_url set
+//   null   → not linked to a usable file yet
+const toHomeDoc = ({ source_url, ...doc }) => {
+  const download = classifySource(source_url);
+  return { ...doc, download, file_url: download === 'link' ? String(source_url).trim() : null };
 };
 
-// Brand Vault reference documents ('brand_assets' category on company_documents
-// — company_documents has no per-role admin UI, see MODULE_FEATURE_CONNECTION_
-// MANUAL.md §101). A NULL company_id row is a global default visible to every
-// company. `roles` gates rows that have a non-NULL `visible_roles` (e.g.
-// Letterhead Template is HR/Accounts-only) — a row with NULL visible_roles is
-// visible to every role, unchanged from before this column existed.
-// admin/super_admin always see everything regardless of visible_roles.
-export const getCompanyDocuments = async (category, companyId = null, roles = null) => {
-  const roleList = Array.isArray(roles) && roles.length
-    ? roles.map(r => String(r).toLowerCase())
-    : null;
-  return strictRows(
-    `SELECT id, title, category, description, file_url, icon, updated_at
-       FROM company_documents
-      WHERE category = $1
-        AND is_active = true
-        AND ($2::integer IS NULL OR company_id = $2 OR company_id IS NULL)
-        AND (
-          visible_roles IS NULL
-          OR $3::text[] && visible_roles
-          OR $3::text[] && ARRAY['admin','super_admin','superadmin']::text[]
-        )
-      ORDER BY updated_at DESC, title ASC`,
-    [category, companyId, roleList]
+// The policy rows Home may show and serve: company-wide (applicable_to='all')
+// and active. Anything else — 'internal' HR/admin SOPs, the SEED placeholder
+// audiences, retired policies — stays inside the HR module. Fail-closed: an
+// unknown audience is not company-wide.
+//
+// file_url is what HR last typed; drive_url is a copy kept for Drive links.
+// file_url wins so a link changed from Drive to elsewhere is not shadowed by
+// the stale copy. '#' is the column's legacy default, meaning "no link".
+const HOME_POLICY_WHERE = `
+        ($1::integer IS NULL OR company_id = $1 OR company_id IS NULL)
+    AND is_active
+    AND applicable_to = 'all'`;
+const POLICY_SOURCE = `COALESCE(NULLIF(BTRIM(file_url), '#'), NULLIF(BTRIM(drive_url), ''))`;
+
+// Policies panel — one tile per policy, at its latest version. The Policies
+// page records a new version as a NEW row with the same title, so without
+// DISTINCT ON every superseded version was listed beside the current one.
+// "Latest" = newest row already in effect; a version whose effective date is
+// still ahead only shows if no earlier version is active.
+export const getPolicyDocuments = async (companyId = null) => {
+  const rows = await strictRows(
+    `SELECT * FROM (
+       SELECT DISTINCT ON (LOWER(BTRIM(title)))
+              id, title, category, description, version, effective_date, updated_at,
+              ${POLICY_SOURCE} AS source_url
+         FROM hr_policies
+        WHERE ${HOME_POLICY_WHERE}
+        ORDER BY LOWER(BTRIM(title)),
+                 (effective_date IS NOT NULL AND effective_date > CURRENT_DATE),
+                 created_at DESC, id DESC
+     ) latest
+     ORDER BY LOWER(title)`,
+    [companyId]
   );
+  return rows.map(toHomeDoc);
+};
+
+export const findHomePolicy = async (id, companyId = null) => {
+  const rows = await strictRows(
+    `SELECT id, title, ${POLICY_SOURCE} AS source_url
+       FROM hr_policies
+      WHERE ${HOME_POLICY_WHERE} AND id = $2`,
+    [companyId, id]
+  );
+  return rows[0] || null;
+};
+
+// Brand Vault reference documents ('brand_assets' category on company_documents,
+// edited in Settings → Brand Vault). A NULL company_id row is a global default
+// visible to every company. `roles` gates rows that have a non-NULL
+// `visible_roles` (e.g. Letterhead Template is HR/Accounts-only) — a row with
+// NULL visible_roles is visible to every role. admin/super_admin always see
+// everything regardless of visible_roles.
+const BRAND_WHERE = `
+        category = 'brand_assets'
+    AND is_active = true
+    AND ($1::integer IS NULL OR company_id = $1 OR company_id IS NULL)
+    AND (
+      visible_roles IS NULL
+      OR $2::text[] && visible_roles
+      OR $2::text[] && ARRAY['admin','super_admin','superadmin']::text[]
+    )`;
+const roleListOf = (roles) => (Array.isArray(roles) && roles.length
+  ? roles.map(r => String(r).toLowerCase())
+  : null);
+
+export const getBrandAssets = async (companyId = null, roles = null) => {
+  const rows = await strictRows(
+    `SELECT id, title, description, version, effective_date, icon, updated_at,
+            file_url AS source_url
+       FROM company_documents
+      WHERE ${BRAND_WHERE}
+      ORDER BY LOWER(title)`,
+    [companyId, roleListOf(roles)]
+  );
+  return rows.map(toHomeDoc);
+};
+
+export const findBrandAsset = async (id, companyId = null, roles = null) => {
+  const rows = await strictRows(
+    `SELECT id, title, file_url AS source_url
+       FROM company_documents
+      WHERE ${BRAND_WHERE} AND id = $3`,
+    [companyId, roleListOf(roles), id]
+  );
+  return rows[0] || null;
 };
 
 // Today's attendance punch for one employee — powers the Home clock-in widget.
@@ -352,36 +418,47 @@ const pendingApprovalUnion = async (companyId) => {
     .sort((a, b) => new Date(a.request_date || 0) - new Date(b.request_date || 0));
 };
 
-// Employee "My pending approvals" — split into two labeled groups. Exported so
-// the read-only My Requests page (approvals.controller.js getMyRequests) can
-// reuse the same "awaiting my action" logic without re-deriving the query.
-export const getEmployeeApprovals = async (userId, employeeId, companyId) => {
-  const all = await pendingApprovalUnion(companyId);
+// Rows shown on Home's My Pending Approvals card; "View all" opens the rest.
+export const HOME_APPROVALS_PREVIEW = 5;
+
+// Employee "My pending approvals".
+//
+// awaitingMyAction IS the Approval Center's My Pending Approvals list
+// (approvals.controller.js myPendingApprovals) — every module, each with its
+// own decision rule, plus the review queues (intern evaluations, probation
+// reviews). Home shows the first few; `awaitingMyActionTotal` is the full
+// count. It used to be a second, narrower rule over five tables (requester's
+// reporting manager / approver_id), so the card and "View all" disagreed.
+export const getEmployeeApprovals = async (userId, employeeId, companyId, req) => {
+  const [mine, all] = await Promise.all([
+    myPendingApprovals(req),
+    pendingApprovalUnion(companyId),
+  ]);
   const empId = employeeId != null ? String(employeeId) : null;
-  const uId   = userId != null ? String(userId) : null;
 
-  // (a) Awaiting my action — I'm the assigned approver, or I'm the reporting
-  //     manager of the requester (leave/expense raised by my reportees).
-  const awaitingMyAction = all.filter(r =>
-    (r.approver_id != null && String(r.approver_id) === uId) ||
-    (empId != null && r.requester_manager_id != null && String(r.requester_manager_id) === empId)
-  );
-
-  // (b) Awaiting others — requests I raised that are still pending someone else.
+  // Awaiting others — requests I raised that are still pending someone else
+  // (feeds the hero's My Requests counter).
   const awaitingOthers = empId == null ? [] : all.filter(r =>
     r.requester_emp_id != null && String(r.requester_emp_id) === empId
   );
 
   return {
-    awaitingMyAction: awaitingMyAction.slice(0, 8),
-    awaitingOthers:   awaitingOthers.slice(0, 8),
+    awaitingMyAction: mine.slice(0, HOME_APPROVALS_PREVIEW).map(r => ({
+      id: r.id, type: r.request_type, request_type: r.request_type, title: r.request_title,
+      request_title: r.request_title, requested_by: r.requested_by, request_date: r.request_date,
+      amount: r.amount, overdue: r.overdue,
+      // Review queues open their own form; everything else opens the Approval Center.
+      open: r.actions?.open ?? null,
+    })),
+    awaitingMyActionTotal: mine.length,
+    awaitingOthers: awaitingOthers.slice(0, 8),
   };
 };
 
 // Main orchestrator. `user` = req.user (JWT), `scope` = req.scope.
 // Home is identical for every role — everyone gets their own personal open
 // tasks and pending approvals (no company-wide management metrics band).
-export const getHomeSummary = async (user, scope) => {
+export const getHomeSummary = async (user, scope, req) => {
   const role       = String(user?.role || '').toLowerCase();
   const userId     = user?.userId ?? user?.id ?? null;
   const employeeId = user?.employee_id ?? null;
@@ -399,13 +476,13 @@ export const getHomeSummary = async (user, scope) => {
   // `degraded` so the panel says "couldn't load" and offers a retry.
   const SLICES = [
     ['identity',      getUserIdentity(userId),                                  null],
-    ['announcements', getActiveAnnouncements(),                                 []],
+    ['announcements', getActiveAnnouncements({ companyId, userId, employeeId }), []],
     ['policies',      getPolicyDocuments(companyId),                            []],
-    ['brandAssets',   getCompanyDocuments('brand_assets', companyId, roles),    []],
+    ['brandAssets',   getBrandAssets(companyId, roles),                         []],
     ['myAttendance',  getMyAttendanceToday(employeeId, companyId),              null],
     ['myTasks',       getMyOpenTasks(employeeId),                               []],
-    ['myApprovals',   getEmployeeApprovals(userId, employeeId, companyId),
-                      { awaitingMyAction: [], awaitingOthers: [] }],
+    ['myApprovals',   getEmployeeApprovals(userId, employeeId, companyId, req),
+                      { awaitingMyAction: [], awaitingMyActionTotal: 0, awaitingOthers: [] }],
   ];
   const settled  = await Promise.allSettled(SLICES.map(([, p]) => p));
   const degraded = [];

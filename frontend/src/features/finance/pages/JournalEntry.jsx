@@ -46,13 +46,18 @@ const DCInput = ({ value, onChange, type }) => (
 );
 
 // ── Status badge ──────────────────────────────────────────────────────────────
-const StatusBadge = ({ status }) => {
+// `reversed` is no longer a STATUS. A reversed entry stays `'posted'` so it
+// remains in the ledger and nets against its reversing leg (finance audit F06).
+// The API returns a derived `is_reversed` instead; passing it here wins over
+// the status label. The status map keeps its `'reversed'` key because other
+// record types on this page still carry that literal.
+const StatusBadge = ({ status, reversed = false }) => {
   const map = {
     posted:  { bg:'#dcfce7', color:'#16a34a', label:'Posted' },
     draft:   { bg:'#f3f4f6', color:'#6b7280', label:'Draft' },
     reversed:{ bg:'#fee2e2', color:'#dc2626', label:'Reversed' },
   };
-  const s = map[status] || map.draft;
+  const s = reversed ? map.reversed : (map[status] || map.draft);
   return <span className="je-status" style={{ background:s.bg, color:s.color }}>{s.label}</span>;
 };
 
@@ -385,7 +390,7 @@ export default function JournalEntry() {
       <ConfirmDialog
         open={!!pendingReverse}
         title="Create Reversal"
-        message="Create a reversal entry? The original will be marked as reversed."
+        message="Create a reversal entry? The original stays posted and the reversal offsets it, so both remain in the ledger."
         confirmLabel="Create Reversal"
         variant="warning"
         onConfirm={handleReverse}
@@ -523,7 +528,7 @@ export default function JournalEntry() {
                               title={`Unbalanced: ₹${Math.abs(parseFloat(entry.total_debit||0) - parseFloat(entry.total_credit||0)).toFixed(2)} diff`}/>
                           )}
                         </td>
-                        <td><StatusBadge status={entry.status}/></td>
+                        <td><StatusBadge status={entry.status} reversed={entry.is_reversed}/></td>
                         <td>
                           <div className="je-row-actions">
                             <button className="je-action-btn" title="View"
@@ -683,7 +688,7 @@ export default function JournalEntry() {
                 </p>
               </div>
               <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-                <StatusBadge status={viewEntry.status}/>
+                <StatusBadge status={viewEntry.status} reversed={viewEntry.is_reversed}/>
                 {isEntryUnbalanced(viewEntry) && (
                   <span style={{ fontSize:12, color:'#dc2626', fontWeight:600 }}>⚠ Unbalanced</span>
                 )}

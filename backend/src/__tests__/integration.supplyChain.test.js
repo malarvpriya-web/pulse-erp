@@ -9,13 +9,14 @@
  * DELIBERATELY NOT MOCKED, for the same reason as integration.planToProduce:
  * every claim here is about SQL and data flow, and a stubbed pool proves neither.
  *
- * Self-cleaning: every row created is removed in afterAll, keyed off TAG. The
+ * Self-cleaning: the one row it writes (a stock_ledger adjustment, to prove the
+ * balance trigger corrects itself) is removed in that test's own `finally`. The
  * suite is READ-ONLY over the SCA-REF reference dataset — it asserts against it
  * but never mutates it, so running the tests does not degrade the demo data (a
  * failure mode the audit found in two other suites, which decrement
  * inventory_items.current_stock directly with no ledger row).
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
@@ -44,8 +45,6 @@ beforeAll(async () => {
     `SELECT COUNT(*)::int AS n FROM inventory_items WHERE item_code = 'CP-1000' AND company_id = $1`, [CID]);
   hasReferenceData = rows[0].n > 0;
 });
-
-afterAll(async () => { await pool.end(); });
 
 // ─────────────────────────────────────────────────────────────────────────────
 describe('SCA · schema identity', () => {

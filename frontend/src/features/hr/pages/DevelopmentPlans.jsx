@@ -4,6 +4,7 @@ import { Users } from 'lucide-react';
 import api from '@/services/api/client';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import { localDay } from '@/utils/dateFormatter';
 
 /* ─── style tokens ──────────────────────────────────────────── */
 const INP = { width: '100%', boxSizing: 'border-box', padding: '7px 10px',
@@ -174,7 +175,7 @@ export default function DevelopmentPlans() {
 
   const updateActionStatus = async (planId, actionId, status) => {
     try {
-      const completion_date = status === 'completed' ? new Date().toISOString().split('T')[0] : null;
+      const completion_date = status === 'completed' ? localDay() : null;
       await api.patch(`/succession/development-plans/${planId}/actions/${actionId}`, { status, completion_date });
       loadPlanDetail(planId);
       loadPlans();
@@ -219,7 +220,7 @@ export default function DevelopmentPlans() {
     try {
       await api.patch(`/succession/development-plans/${id}`, {
         status,
-        completion_date: status === 'completed' ? new Date().toISOString().split('T')[0] : null,
+        completion_date: status === 'completed' ? localDay() : null,
       });
       loadPlans();
       if (selPlan?.id === id) loadPlanDetail(id);

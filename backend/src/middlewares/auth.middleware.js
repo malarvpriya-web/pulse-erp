@@ -293,6 +293,21 @@ export const permissionColumn = (action) => {
   return VALID_ACTIONS.has(col) ? col : null;
 };
 
+/**
+ * Does the caller hold `action` on `module`? The same resolution as
+ * requirePermission (user override, else the union over every role held), for
+ * handlers that decide inside the request — "own record, OR this grant".
+ * Fails closed: no row, an unknown action or a lookup error is `false`.
+ */
+export const can = async (req, module, action) => {
+  const col = permissionColumn(action);
+  if (!col) return false;
+  try {
+    const perm = await permissionFor(req, module);
+    return perm?.[col] === true;
+  } catch { return false; }
+};
+
 export const requirePermission = (module, action) => async (req, res, next) => {
   const col = ACTION_MAP[action] ?? action;
   if (!VALID_ACTIONS.has(col))

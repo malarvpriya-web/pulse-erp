@@ -19,25 +19,64 @@ class GRNRepository {
     const {
       grn_number, po_id, received_by, received_date, warehouse_id, notes, company_id,
       status, quality_status, idempotency_key, vendor_dc_number, vendor_dc_date,
+      freight_amount, insurance_amount, other_charges,
     } = data;
+
+    // Inbound charges for THIS consignment (20260917000003). `?? null` and not
+    // `?? 0`: freight is a per-lorry cost that differs every delivery, and a
+    // receipt nobody costed must stay distinguishable from one that genuinely
+    // arrived carriage-paid. A 0 written here means "measured, and it was free"
+    // and the TCO comparison credits the vendor for it; a NULL means "not
+    // captured" and the freight line falls back to the company rate and says
+    // so. purchase_orders.freight_amount lost that distinction to a DEFAULT 0
+    // and has been unusable ever since.
+    const money = (v) => {
+      if (v == null || v === '') return null;
+      const n = typeof v === 'number' ? v : parseFloat(v);
+      return Number.isFinite(n) && n >= 0 ? n : null;
+    };
+
     const result = await client.query(
       `INSERT INTO goods_receipt_notes
          (grn_number, po_id, received_by, received_date, warehouse_id, notes, company_id,
-          status, quality_status, idempotency_key, vendor_dc_number, vendor_dc_date)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
+          status, quality_status, idempotency_key, vendor_dc_number, vendor_dc_date,
+          freight_amount, insurance_amount, other_charges)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING *`,
       [grn_number, po_id, received_by, received_date, warehouse_id, notes, company_id ?? null,
        status || 'pending', quality_status || 'not_required',
-       idempotency_key ?? null, vendor_dc_number ?? null, vendor_dc_date ?? null]
+       idempotency_key ?? null, vendor_dc_number ?? null, vendor_dc_date ?? null,
+       money(freight_amount), money(insurance_amount), money(other_charges)]
     );
     return result.rows[0];
   }
 
+  /**
+   * The receipt line now keeps the lot identity it is told, instead of accepting
+   * it and discarding it (audit finding 7.1).
+   *
+   * These values also reach inventory_batches, and that is deliberate
+   * duplication rather than an oversight: the batch is current stock and can be
+   * consumed, depleted and eventually deleted, while the GRN line is the
+   * permanent record of what a supplier actually delivered on a given day. A
+   * recall run years later reads the receipt, not the lot — which may be long
+   * gone. Keeping it in one place only would mean losing procurement genealogy
+   * the moment the stock is used up.
+   */
   async createItem(client, data) {
-    const { grn_id, po_item_id, item_id, quantity_received, quantity_rejected, rate, remarks } = data;
+    const {
+      grn_id, po_item_id, item_id, quantity_received, quantity_rejected, rate, remarks,
+      batch_number = null, supplier_batch_no = null, manufacturer = null,
+      manufacturer_part_no = null, manufacturing_date = null, expiry_date = null,
+    } = data;
     const result = await client.query(
-      `INSERT INTO grn_items (grn_id, po_item_id, item_id, quantity_received, quantity_rejected, rate, remarks) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-      [grn_id, po_item_id, item_id, quantity_received, quantity_rejected, rate, remarks]
+      `INSERT INTO grn_items
+         (grn_id, po_item_id, item_id, quantity_received, quantity_rejected, rate, remarks,
+          batch_number, supplier_batch_no, manufacturer, manufacturer_part_no,
+          manufacturing_date, expiry_date)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING *`,
+      [grn_id, po_item_id, item_id, quantity_received, quantity_rejected, rate, remarks,
+       batch_number, supplier_batch_no, manufacturer, manufacturer_part_no,
+       manufacturing_date, expiry_date]
     );
     return result.rows[0];
   }

@@ -5,13 +5,11 @@ import { useToast } from '@/context/ToastContext';
 import { useAuth } from '@/context/AuthContext';
 import { Plus, X, Search, MapPin, FileText, CheckCircle, BarChart3 } from 'lucide-react';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import VocabSelect from '@/components/core/VocabSelect';
 
-const VISIT_TYPES = [
-  'Sales Visit', 'Customer Meeting', 'Application Engineering',
-  'Site Survey', 'FAT Support', 'Installation', 'Commissioning',
-  'Service Visit', 'AMC Visit', 'Training', 'Design Discussion',
-  'Tender Discussion', 'Internal Meeting',
-];
+// Visit types are now the visit-type master, seeded with the union of the three
+// lists this app carried (here 13, CustomerVisits 7, TravelRequests 13) —
+// backend/src/modules/master/vocabularies.js.
 
 const OUTCOMES = [
   'Positive', 'Follow-up Required', 'Order Expected', 'No Interest',
@@ -334,9 +332,8 @@ export default function VisitReports() {
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 20 }}>
               <div>
                 <label style={lbl}>Visit Type *</label>
-                <select value={form.visit_type} onChange={e => fld('visit_type', e.target.value)} style={inp}>
-                  {VISIT_TYPES.map(t => <option key={t}>{t}</option>)}
-                </select>
+                <VocabSelect vocab="visit-types" value={form.visit_type}
+                  onChange={v => fld('visit_type', v)} selectStyle={inp} />
               </div>
               <div>
                 <label style={lbl}>Visit Date *</label>

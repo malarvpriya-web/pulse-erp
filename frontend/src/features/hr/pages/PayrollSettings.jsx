@@ -19,7 +19,7 @@ const SECTIONS = [
         label: 'Pay Day of Month',
         type: 'number',
         default: 25,
-        helpText: 'Day of month on which salaries are disbursed (1–31)',
+        helpText: 'Day salaries reach employees. Payroll is "overdue" once this date passes without approval/payment.',
         placeholder: '25',
       },
       {
@@ -27,8 +27,15 @@ const SECTIONS = [
         label: 'Payroll Cutoff Day',
         type: 'number',
         default: 20,
-        helpText: 'Last day to submit attendance / leaves before payroll runs',
+        helpText: 'Attendance and leave for the month are frozen on this day. It must fall BEFORE the pay day when salary is paid in the same month.',
         placeholder: '20',
+      },
+      {
+        key: 'pay_in_following_month',
+        label: 'Pay in Following Month',
+        type: 'toggle',
+        default: false,
+        helpText: 'On: the month is paid on the pay day of the NEXT month (must be by the 7th — Code on Wages s.17), so the cutoff can be month-end.',
       },
       {
         key: 'working_days',
@@ -42,7 +49,7 @@ const SECTIONS = [
   },
   {
     title: 'Salary Components',
-    description: 'Toggle which allowance components are included in the CTC structure',
+    description: 'Toggle which allowance components the salary structure pays (part of monthly gross)',
     fields: [
       {
         key: 'enable_hra',
@@ -68,7 +75,7 @@ const SECTIONS = [
         label: 'Special Allowance',
         type: 'toggle',
         default: true,
-        helpText: 'Balancing allowance to meet total CTC',
+        helpText: 'Balancing allowance that tops earnings up to the structure\'s monthly gross target',
       },
     ],
   },
@@ -81,7 +88,14 @@ const SECTIONS = [
         label: 'Provident Fund (PF)',
         type: 'toggle',
         default: true,
-        helpText: '12% of basic salary, matched by employer',
+        helpText: '12% employee + 12% employer on PF wages (Basic, raised to 50% of pay under the Code on Social Security). Employer share is employer cost, never deducted from pay. Ceiling comes from the statutory rules in force for the month.',
+      },
+      {
+        key: 'pf_restrict_to_ceiling',
+        label: 'Restrict PF to Wage Ceiling',
+        type: 'toggle',
+        default: true,
+        helpText: 'On: contribute on PF wages up to the statutory ceiling (₹15,000; ₹25,000 from 17-Sep-2026). Off: contribute on full PF wages (EPS stays capped).',
       },
       {
         key: 'esi_enabled',
@@ -94,8 +108,10 @@ const SECTIONS = [
         key: 'professional_tax',
         label: 'Professional Tax',
         type: 'toggle',
-        default: false,
-        helpText: 'State-level tax; varies by state and salary slab',
+        // Must match the server default (payrollSettings.js): with no saved
+        // value the payroll deducted PT while this screen showed it OFF.
+        default: true,
+        helpText: 'State slab of the employee\'s branch (else company) state. This switch is the ONLY source — the PT line in a salary structure is not used.',
       },
       {
         key: 'tds_auto_calculate',
@@ -109,11 +125,62 @@ const SECTIONS = [
         label: 'Income Tax Regime',
         type: 'select',
         options: [
-          { value: 'new', label: 'New Regime (Default — FY 2025-26)' },
+          { value: 'new', label: 'New Regime (default)' },
           { value: 'old', label: 'Old Regime (80C / HRA exemptions)' },
         ],
         default: 'new',
         helpText: 'New regime: standard deduction ₹75,000. Old regime: 80C + HRA exemptions apply.',
+      },
+    ],
+  },
+  {
+    title: 'Statutory jurisdiction',
+    description: 'Which state\'s professional tax and labour welfare fund rules apply — payroll approval is blocked until this is recorded',
+    fields: [
+      {
+        key: 'statutory_state',
+        label: 'Statutory state',
+        type: 'select',
+        options: [
+          { value: '', label: '— Not recorded —' },
+          'Tamil Nadu', 'Karnataka', 'Maharashtra', 'Telangana', 'Andhra Pradesh', 'Kerala', 'Gujarat', 'West Bengal',
+        ],
+        default: '',
+        helpText: 'Every employee in a payroll must resolve to this state (from their branch, else the company record). If they do not, approval is blocked until the company or branch state is corrected.',
+      },
+      {
+        key: 'pt_local_body',
+        label: 'PT local body type',
+        type: 'select',
+        options: [
+          { value: '', label: '— Not recorded —' },
+          { value: 'municipal_corporation', label: 'Municipal corporation' },
+          { value: 'municipality', label: 'Municipality' },
+          { value: 'town_panchayat', label: 'Town panchayat' },
+          { value: 'village_panchayat', label: 'Village panchayat' },
+        ],
+        default: '',
+        helpText: 'Tamil Nadu levies professional tax through the local body where the office or factory is. Pulse holds the Urban Local Bodies Rules 2023 table; a village panchayat publishes its own rates.',
+      },
+      {
+        key: 'pt_local_body_name',
+        label: 'PT local body name',
+        type: 'text',
+        default: '',
+        placeholder: 'e.g. Srivilliputhur Municipality',
+      },
+    ],
+  },
+  {
+    title: 'CTC-driven salary entry',
+    description: 'Pilot: enter salaries as annual CTC with a full breakdown and an approval step',
+    fields: [
+      {
+        key: 'ctc_mode',
+        label: 'CTC-driven salary entry',
+        type: 'toggle',
+        default: false,
+        helpText: 'Off: salaries are entered as monthly Basic (current behaviour). On: HR can prepare salary proposals from an annual CTC, offers and increments become proposals, and an approver finalises them. Finalising also needs the company CTC definition recorded and the statutory rules it uses confirmed.',
       },
     ],
   },
@@ -136,7 +203,7 @@ const SECTIONS = [
   },
 ];
 
-export default function PayrollSettings({ setPage }) {
+export default function PayrollSettings({ setPage, embedded = false }) {
   return (
     <ModuleSettingsPanel
       moduleName="Payroll"
@@ -144,6 +211,7 @@ export default function PayrollSettings({ setPage }) {
       apiEndpoint="/settings/payroll"
       setPage={setPage}
       sections={SECTIONS}
+      embedded={embedded}
     />
   );
 }

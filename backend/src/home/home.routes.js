@@ -12,5 +12,6 @@ router.get("/policies",       verifyToken, homeController.getPolicies);
 router.get("/resources",      verifyToken, homeController.getResources);
 router.get("/holidays",       verifyToken, homeController.getHolidays);
 router.get("/holidays/all",   verifyToken, homeController.getAllHolidays);
+router.get("/documents/:kind/:id/download", verifyToken, homeController.downloadDocument);
 
 export default router;

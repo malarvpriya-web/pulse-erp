@@ -155,7 +155,27 @@ beforeAll(async () => {
       `SELECT u.id, u.email, u.employee_id
          FROM users u JOIN user_roles ur ON ur.user_id = u.id JOIN roles r ON r.id = ur.role_id
         WHERE r.code = $1 AND u.is_active = true
-        ORDER BY u.id DESC LIMIT 1`, [role]);
+          AND u.email NOT LIKE '%@pulse.test'
+          AND u.email NOT LIKE '%@example.test'
+        ORDER BY u.id ASC LIMIT 1`, [role]);
+    // ⚠ OLDEST, and never a .test address. This was `ORDER BY u.id DESC`, which
+    // asks for the NEWEST holder of the role — precisely the account another
+    // suite created seconds ago as a fixture.
+    //
+    //   integration.genealogyTraceability (and materialIssueAttribution,
+    //   deliveryFollowupCron, tenantScopedCrons) insert active users granted
+    //   `admin` / `procurement_manager` and delete them in afterAll. vitest runs
+    //   4 workers in parallel against the one database, so that afterAll lands
+    //   in the middle of THIS file. The account behind every token here then
+    //   stops existing, verifyToken takes its `!rows.length` branch, and six
+    //   assertions fail as `expected 401 to be 410/409/200` — with nothing wrong
+    //   in the code under test. Measured: 2 runs in 3 at the time of writing.
+    //
+    // The seeded canonical accounts (admin@manifest.in, pilot.purchase@… ) hold
+    // the lowest ids and outlive every run, so ASC is stable by construction.
+    // The e-mail predicates are belt-and-braces for debris a crashed run left
+    // behind with a low id.
+    //
     // logout_at is deliberately NOT filtered: verifyToken revokes a token whose
     // `iat` predates it, and these are minted now, so a logged-out account still
     // authenticates with a fresh token — which is the real behaviour.

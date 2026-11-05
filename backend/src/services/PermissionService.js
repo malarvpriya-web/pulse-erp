@@ -40,6 +40,15 @@ const KNOWN_MODULES = [
   'reports','admin','dashboard','announcements','notifications',
   'attendance','timesheets','performance','recruitment',
   'approvals','documents','audit','service',
+  // Background verification. Present here so a role holding NO bgv row gets an
+  // explicit deny-all in the login payload rather than no entry at all —
+  // hasPermission() on the frontend returns false either way, but a missing
+  // module is indistinguishable from "the matrix has not been seeded yet", and
+  // that ambiguity is what PERMISSION_NOT_CONFIGURED exists to make loud.
+  'bgv',
+  // The findings behind a discrepancy, gated separately from the right to run
+  // BGV at all. See 20260930000011_bgv_sensitive_permission.js.
+  'bgv_sensitive',
 ];
 
 // ── Single module lookup ──────────────────────────────────────────────────────

@@ -35,6 +35,7 @@ vi.mock('../modules/inventory/repositories/stockLedger.repository.js', () => ({
     record:          vi.fn(),
     findAll:         vi.fn(),
     createEntry:     vi.fn(),
+    resolveStockOwnership: vi.fn(),
     getStockSummary: vi.fn(),
     getLowStockItems: vi.fn(),
   },
@@ -78,6 +79,19 @@ const passthrough = () => {
     .mockResolvedValueOnce({ rows: [ACTIVE_USER] }) // verifyToken active-check
     .mockResolvedValueOnce({ rows: [] })             // requirePermission: user-level
     .mockResolvedValueOnce({ rows: [FULL_PERMISSION] });            // requirePermission: role-level
+};
+
+// Stock movement needs a company scope (a login with none gets 403 — see
+// integration.stockMovementTenantScope.test.js). verifyToken takes it from the
+// user row when the token carries no company claim.
+const passthroughWithCompany = () => {
+  pool.query
+    .mockResolvedValueOnce({ rows: [{ ...ACTIVE_USER, company_id: 1 }] }) // verifyToken active-check
+    .mockResolvedValueOnce({ rows: [] })                                   // requirePermission: user-level
+    .mockResolvedValueOnce({ rows: [FULL_PERMISSION] });                   // requirePermission: role-level
+  // Item and warehouse ownership is the repository's job; it is mocked here
+  // with the rest of the repository, and proven against the real DB elsewhere.
+  stockLedgerRepo.resolveStockOwnership.mockResolvedValue(1);
 };
 
 const ITEM = {
@@ -169,7 +183,7 @@ describe('POST /api/inventory/items', () => {
 
 describe('POST /api/inventory/stock/movement', () => {
   it('201 records a stock-in transaction', async () => {
-    passthrough();
+    passthroughWithCompany();
     // A receipt adds stock, so there is nothing to check availability against:
     // the handler goes straight from BEGIN to the ledger write. This fixture
     // used to send movement_type 'stock_in', which the route does not recognise
@@ -195,7 +209,7 @@ describe('POST /api/inventory/stock/movement', () => {
   });
 
   it('201 records a stock-out transaction against free stock', async () => {
-    passthrough();
+    passthroughWithCompany();
     // An issue asks two questions now, not one: what is on hand, and how much of
     // it is already reserved. 10000 on hand with nothing reserved is all free.
     const mockClient = {
@@ -219,7 +233,7 @@ describe('POST /api/inventory/stock/movement', () => {
   });
 
   it('422 refuses an issue that would eat stock reserved for someone else', async () => {
-    passthrough();
+    passthroughWithCompany();
     // 100 on hand, 90 of it spoken for: only 10 is issuable without naming the
     // reservation being drawn on.
     const mockClient = {

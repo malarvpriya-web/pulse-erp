@@ -20,14 +20,17 @@ function fileChecksum(filePath) {
   return crypto.createHash('sha256').update(content).digest('hex');
 }
 
-function makeKnexShim(client) {
+// Exported so migration fixture tests run a migration through this exact
+// adapter (src/__tests__/helpers/migrationFixtureDb.js, §226).
+export function makeKnexShim(client) {
   return {
     raw:   (sql, bindings) => client.query(sql, bindings || []),
     query: (sql, bindings) => client.query(sql, bindings || []),
   };
 }
 
-function migrationFiles() {
+// Exported so a test can verify file ordering against the runner itself (§227).
+export function migrationFiles() {
   if (!fs.existsSync(MIGRATIONS_DIR)) return [];
   return fs.readdirSync(MIGRATIONS_DIR)
     .filter(f => f.endsWith('.js'))
@@ -239,32 +242,72 @@ export async function migrationStatus() {
 
 // ── Public: verify all migrations applied (post-deploy) ──────────────────────
 
-export async function verifyApplied() {
-  const client = await pool.connect();
+/**
+ * What the ledger says against the files on disk. Runs in a READ ONLY transaction
+ * and creates nothing, so the application role can call it. A database with no
+ * ledger reports every file as missing instead of creating one.
+ */
+export async function readMigrationState(client) {
+  await client.query('BEGIN READ ONLY');
   try {
-    await ensureTrackingTable(client);
-
+    const { rows: [{ ledger }] } = await client.query(
+      `SELECT to_regclass('schema_migrations') IS NOT NULL AS ledger`
+    );
+    const files = migrationFiles();
+    if (!ledger) {
+      return { ok: false, ledger: false, total: files.length, applied: 0, missing: files, tamperWarnings: [] };
+    }
     const { rows: applied } = await client.query(
       'SELECT name, checksum FROM schema_migrations ORDER BY name'
     );
     const appliedNames = new Set(applied.map(r => r.name));
-
-    const files = migrationFiles();
     const missing  = files.filter(f => !appliedNames.has(f));
     const tamperWarnings = await detectTamperedMigrations(client);
-
-    const ok = missing.length === 0 && tamperWarnings.length === 0;
-
     return {
-      ok,
+      ok: missing.length === 0 && tamperWarnings.length === 0,
+      ledger: true,
       total:    files.length,
       applied:  applied.length,
       missing,
       tamperWarnings,
     };
   } finally {
+    await client.query('ROLLBACK');
+  }
+}
+
+export async function verifyApplied() {
+  const client = await pool.connect();
+  try {
+    return await readMigrationState(client);
+  } finally {
     client.release();
   }
+}
+
+/**
+ * The startup check. The server no longer migrates itself: migrations run as a
+ * separate step with the migrator's credentials (`npm run migrate`), and the
+ * application role cannot run them. A pending migration refuses startup, because
+ * this code expects a schema the database does not have yet. A checksum warning
+ * does not: it says the ledger and a file disagree, not that the schema is behind.
+ */
+export function migrationStartupProblem(state) {
+  if (state.missing.length === 0) return null;
+  const shown = state.missing.slice(0, 10).map(f => `  • ${f}`).join('\n');
+  const more = state.missing.length > 10 ? `\n  …and ${state.missing.length - 10} more` : '';
+  return `${state.ledger ? '' : 'This database has no migration ledger. '}${state.missing.length} migration(s) have not been applied:\n${shown}${more}\n`
+    + 'Run them with the migrator credentials (npm run migrate), then start the server again.';
+}
+
+export async function assertMigrationsApplied() {
+  const state = await verifyApplied();
+  for (const w of state.tamperWarnings) {
+    if (!w.includes('Superseded:')) console.warn(w);
+  }
+  const problem = migrationStartupProblem(state);
+  if (problem) throw new Error(problem);
+  return state;
 }
 
 // ── Fresh-database bootstrap ──────────────────────────────────────────────────

@@ -24,6 +24,7 @@ import express from 'express';
 import pool from '../../../config/db.js';
 import { requirePermission } from '../../../middlewares/auth.middleware.js';
 import { PROJECT_TYPES } from '../../../shared/projectTypes.js';
+import { vocabularyValues } from '../../../shared/masterVocabulary.js';
 import { companyOf } from '../../../shared/scope.js';
 import { captureBefore } from '../../../middlewares/captureBefore.js';
 
@@ -31,7 +32,11 @@ const router = express.Router();
 const cid = (req) => req.scope?.company_id ?? companyOf(req);
 const svcAdmin = (action) => requirePermission('servicedesk', action);
 
-const ZONES = ['North', 'South', 'East', 'West', 'Central'];
+// Fallback only. The live list is the master (master_zones / master_values PROJECT_TYPE); left as a plain
+// array this was a second master that disagreed with the first as soon as
+// anyone used the new "+ Add" pickers — an added value passed the dropdown and
+// was then written as NULL by an `includes()` that had never heard of it.
+const ZONE_FALLBACK = ['North', 'South', 'East', 'West', 'Central'];
 const TICKET_STATUSES = ['Open', 'Analysis', 'In Progress', 'Pending', 'Resolved', 'Closed'];
 
 // `projects` has no site-name column; site_city is the closest thing to the
@@ -162,10 +167,14 @@ router.get('/filters', svcAdmin('view'), async (req, res) => {
         [companyId]
       ),
     ]);
+    const [zones, serviceTypes] = await Promise.all([
+      vocabularyValues('ZONE', companyId, ZONE_FALLBACK),
+      vocabularyValues('PROJECT_TYPE', companyId, PROJECT_TYPES),
+    ]);
     res.json({
       statuses:      TICKET_STATUSES,
-      zones:         ZONES,
-      service_types: PROJECT_TYPES,
+      zones,
+      service_types: serviceTypes,
       categories:    cats.rows.map(r => r.v),
       projects:      projects.rows,
     });

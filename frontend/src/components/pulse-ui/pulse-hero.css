@@ -93,6 +93,30 @@
 .plh-page--embed > .plh-dock::after { display: none; }
 .plh-page--embed > .plh-body { padding: 0; }
 
+/* ── HUB TAB PANEL (host-side embed) ────────────────────────────────────────
+   `.plh-page--embed` above only applies when the nested page ACCEPTS and
+   forwards the `embedded` prop. TabHub passes it, but 129 of the 136 pages the
+   2026-09-16 hub consolidation mounts as tab panels render
+   `<PageShell dock={...}>` unconditionally and ignore props — so the prop
+   alone left every one of them free to freeze its own opaque sticky dock on
+   top of the host's tab strip and swallow the tab clicks (§148: the clicks die
+   under the dock, invisible to a screenshot).
+
+   Keying the same geometry on the HOST's wrapper instead makes it impossible
+   for a child to defeat, and a page added to a hub later inherits it with no
+   change of its own. Descendant combinators, not `>`: the shell is one level
+   inside the wrapper, and some children nest it deeper still. */
+.plh-tabpanel .plh-page { margin: 0; min-height: 0; background: transparent; }
+.plh-tabpanel .plh-dock {
+  position: static;
+  top: auto;
+  z-index: auto;
+  padding: 0;
+  background: transparent;
+}
+.plh-tabpanel .plh-dock::after { display: none; }
+.plh-tabpanel .plh-body { padding: 0; }
+
 /* ══════════════════════════════════════════════════════════════════════
    HERO BAND
 ══════════════════════════════════════════════════════════════════════ */

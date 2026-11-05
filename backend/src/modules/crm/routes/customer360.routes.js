@@ -314,11 +314,19 @@ router.get('/customer360/:partyId/projects', requirePermission('crm', 'view'), a
   const { partyId } = req.params;
   let projects = [];
 
+  // Held to the customer's own company (req.party, set by the router.param
+  // gate above): the name match below used to pick up any company's project
+  // whose customer_name normalised to the same string.
+  //
+  // health_score / billing_model are not projects columns (billing_type is);
+  // naming them made this query fail on every call, and the catch below
+  // turned that into an empty list, so this tab never showed a project. The
+  // response keys the page reads are kept.
   try {
     const r = await pool.query(
       `SELECT p.id, p.project_code, p.project_name, p.status,
-              p.start_date, p.end_date, p.budget_amount, p.health_score,
-              p.billing_model, p.project_type, p.created_at,
+              p.start_date, p.end_date, p.budget_amount, NULL::numeric AS health_score,
+              p.billing_type AS billing_model, p.project_type, p.created_at,
               e.name AS project_manager_name,
               COALESCE(
                 (SELECT SUM(total_cost) FROM project_cost_summary WHERE project_id = p.id), 0
@@ -331,13 +339,14 @@ router.get('/customer360/:partyId/projects', requirePermission('crm', 'view'), a
        LEFT JOIN accounts     a ON a.id = o.account_id AND a.deleted_at IS NULL
        LEFT JOIN parties      pt ON pt.id = $1
        WHERE p.deleted_at IS NULL
+         AND p.company_id IS NOT DISTINCT FROM $2
          AND ( a.party_id = $1
                OR (pt.id IS NOT NULL AND crm_norm_name(p.customer_name) = crm_norm_name(pt.name)) )
        ORDER BY p.created_at DESC`,
-      [partyId]
+      [partyId, req.party.company_id ?? null]
     );
     projects = r.rows;
-  } catch (_) {}
+  } catch (e) { console.error('[customer360/projects] project query failed:', e.message); }
 
   // Fetch milestones for each project
   const projectIds = projects.map(p => p.id);
@@ -345,7 +354,7 @@ router.get('/customer360/:partyId/projects', requirePermission('crm', 'view'), a
   if (projectIds.length > 0) {
     try {
       const r = await pool.query(
-        `SELECT id, project_id, milestone_name, due_date, status, amount
+        `SELECT id, project_id, title AS milestone_name, due_date, status, amount
          FROM project_milestones
          WHERE project_id = ANY($1)
          ORDER BY due_date ASC`,
@@ -361,10 +370,11 @@ router.get('/customer360/:partyId/projects', requirePermission('crm', 'view'), a
     try {
       const r = await pool.query(
         `SELECT * FROM lifecycle_instances
-         WHERE project_id = ANY($1) OR sales_order_id IN (
-           SELECT id FROM sales_orders WHERE customer_id = $2
-         )`,
-        [projectIds, partyId]
+         WHERE company_id IS NOT DISTINCT FROM $3
+           AND (project_id = ANY($1) OR sales_order_id IN (
+             SELECT id FROM sales_orders WHERE customer_id = $2 AND company_id IS NOT DISTINCT FROM $3
+           ))`,
+        [projectIds, partyId, req.party.company_id ?? null]
       );
       lifecycle = r.rows;
     } catch (_) {}

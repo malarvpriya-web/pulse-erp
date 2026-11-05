@@ -7,6 +7,7 @@ import {
 } from 'recharts';
 import { Briefcase, TrendingDown, AlertTriangle, CheckCircle, IndianRupee } from 'lucide-react';
 import { Stat } from '@/components/pulse-ui';
+import { drillProps, toProject } from './drillThrough';
 
 const fmtL = (n) => {
   const v = parseFloat(n || 0);
@@ -36,7 +37,7 @@ function KpiCard({ label, value, sub, color, icon: Icon, warn }) {
   return <Stat label={label} value={value} sub={sub} color={color} icon={Icon} warn={warn} />;
 }
 
-function ProjectTable({ projects, title, emptyMsg }) {
+function ProjectTable({ projects, title, emptyMsg, onNavigate }) {
   if (!projects || projects.length === 0) {
     return (
       <div style={{ background: '#fff', border: `1px solid ${C.border}`, borderRadius: 14, padding: 32, textAlign: 'center', color: '#9ca3af' }}>
@@ -62,7 +63,11 @@ function ProjectTable({ projects, title, emptyMsg }) {
               const hCfg = HEALTH_CFG[p.health_label]
                 || { bg: '#f3f4f6', color: '#6b7280' };   // 'Cost Not Tracked' and any future label
               return (
-                <tr key={p.id} style={{ borderBottom: '1px solid #f3f4f6', background: p.is_loss_making ? '#fff5f5' : i % 2 === 0 ? '#fff' : '#fafafa' }}>
+                <tr
+                  key={p.id}
+                  {...drillProps(onNavigate && p.id ? () => onNavigate(...toProject(p.id)) : null, p.name)}
+                  style={{ borderBottom: '1px solid #f3f4f6', background: p.is_loss_making ? '#fff5f5' : i % 2 === 0 ? '#fff' : '#fafafa', cursor: onNavigate && p.id ? 'pointer' : 'default' }}
+                >
                   <td style={{ padding: '8px 12px' }}>
                     <div style={{ fontWeight: 700, color: '#111827', fontSize: 12 }}>{p.name}</div>
                     {p.code && <div style={{ fontSize: 10, color: '#9ca3af', fontFamily: 'monospace' }}>{p.code}</div>}
@@ -105,7 +110,7 @@ function ProjectTable({ projects, title, emptyMsg }) {
   );
 }
 
-export default function ProjectProfitabilityPanel({ data }) {
+export default function ProjectProfitabilityPanel({ data, onNavigate }) {
   const [view, setView] = useState('overview');
   const summary     = data?.summary      || {};
   const projects    = data?.projects     || [];
@@ -228,12 +233,12 @@ export default function ProjectProfitabilityPanel({ data }) {
               )}
             </div>
           </div>
-          <ProjectTable projects={projects.slice(0, 10)} title="All Projects Overview" />
+          <ProjectTable onNavigate={onNavigate} projects={projects.slice(0, 10)} title="All Projects Overview" />
         </div>
       )}
 
       {view === 'profitable' && (
-        <ProjectTable projects={topProfit} title="Top Profitable Projects" emptyMsg="No project profit data available" />
+        <ProjectTable onNavigate={onNavigate} projects={topProfit} title="Top Profitable Projects" emptyMsg="No project profit data available" />
       )}
 
       {view === 'loss' && (
@@ -247,16 +252,16 @@ export default function ProjectProfitabilityPanel({ data }) {
               </div>
             </div>
           )}
-          <ProjectTable projects={lossMaking} title="Loss-Making Projects" emptyMsg="No loss-making projects — portfolio is profitable" />
+          <ProjectTable onNavigate={onNavigate} projects={lossMaking} title="Loss-Making Projects" emptyMsg="No loss-making projects — portfolio is profitable" />
         </div>
       )}
 
       {view === 'overbudget' && (
-        <ProjectTable projects={overBudget} title="Over Budget Projects" emptyMsg="All projects are within budget" />
+        <ProjectTable onNavigate={onNavigate} projects={overBudget} title="Over Budget Projects" emptyMsg="All projects are within budget" />
       )}
 
       {view === 'delayed' && (
-        <ProjectTable projects={delayed} title="Delayed Projects" emptyMsg="All projects are on schedule" />
+        <ProjectTable onNavigate={onNavigate} projects={delayed} title="Delayed Projects" emptyMsg="All projects are on schedule" />
       )}
     </div>
   );

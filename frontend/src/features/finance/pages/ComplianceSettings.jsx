@@ -29,7 +29,7 @@ const SECTIONS = [
     fields: [
       { key: 'tan', label: 'TAN Number', type: 'text', placeholder: 'MUMB12345A' },
       { key: 'tds_payment_due_day', label: 'TDS Deposit Due Day', type: 'number', placeholder: '7' },
-      { key: 'form24q_quarterly', label: 'File Form 24Q Quarterly', type: 'toggle' },
+      { key: 'form24q_quarterly', label: 'File Form 138 (formerly 24Q) Quarterly', type: 'toggle' },
       { key: 'lower_deduction_check', label: 'Check Lower Deduction Certificates', type: 'toggle' },
     ],
   },

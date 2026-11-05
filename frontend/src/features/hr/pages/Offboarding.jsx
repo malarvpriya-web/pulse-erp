@@ -49,7 +49,7 @@ const isOverdue = (item) =>
   !item.done && item.due_date && new Date(item.due_date) < new Date(new Date().toDateString());
 
 // ── component ─────────────────────────────────────────────────────────────────
-export default function Offboarding({ setPage }) {
+export default function Offboarding({ setPage, embedded = false }) {
   const [employees,        setEmployees]        = useState([]);
   const [loading,          setLoading]          = useState(false);
   const [error,            setError]            = useState(null);
@@ -273,33 +273,49 @@ export default function Offboarding({ setPage }) {
   });
 
   // ── render ──────────────────────────────────────────────────────────────────
+  // Inside the Exit Management hub the hub's banner is the page header, so this
+  // page draws no hero of its own and its actions move to a toolbar row. The
+  // hero's ghost buttons are white-on-transparent, so the toolbar uses the
+  // page's light button style instead.
+  const toolbarBtn = { border: '1px solid #e5e7eb', background: '#fff', borderRadius: 8, padding: '7px 12px', fontSize: 12, cursor: 'pointer', color: '#374151', display: 'inline-flex', alignItems: 'center', gap: 6 };
+  const actionList = [
+    !selectedEmp && {
+      key: 'initiate', label: '+ Initiate Offboarding', ghost: true,
+      // Exits are started on the exit desk; inside the hub that is the next tab over.
+      onClick: () => (embedded ? setPage?.('ExitCenter', { tab: 'exit' }) : setPage?.('ExitManagement')),
+    },
+    { key: 'template', label: 'Template Config', ghost: true, onClick: () => setShowTemplate((s) => !s) },
+    !selectedEmp && {
+      key: 'export', label: <><Download size={13} /> Export CSV</>,
+      onClick: handleExport, disabled: employees.length === 0,
+    },
+  ].filter(Boolean);
+
   return (
-    <PageShell dock={
+    <PageShell embedded={embedded} dock={embedded ? null :
       <PageHero
         icon={Users}
         eyebrow="Human Resources"
         title="Offboarding"
         actions={<>
-          {!selectedEmp && (
-            <button className="plh-cta plh-cta--ghost"
-              onClick={() => setPage?.('ExitManagement')}>
-              + Initiate Offboarding
+          {actionList.map(a => (
+            <button key={a.key} className={`plh-cta${a.ghost ? ' plh-cta--ghost' : ''}`}
+              onClick={a.onClick} disabled={a.disabled}>
+              {a.label}
             </button>
-          )}
-          <button className="plh-cta plh-cta--ghost"
-            onClick={() => setShowTemplate((s) => !s)}>
-            Template Config
-          </button>
-          {!selectedEmp && (
-            <button className="plh-cta"
-              onClick={handleExport}
-              disabled={employees.length === 0}>
-              <Download size={13} /> Export CSV
-            </button>
-          )}
+          ))}
         </>}
       />
     }>
+      {embedded && (
+        <div className="plh-toolbar" style={{ justifyContent: 'flex-end' }}>
+          {actionList.map(a => (
+            <button key={a.key} type="button" style={toolbarBtn} onClick={a.onClick} disabled={a.disabled}>
+              {a.label}
+            </button>
+          ))}
+        </div>
+      )}
       <ConfirmDialog
         open={pendingMarkComplete}
         title="Complete Offboarding"

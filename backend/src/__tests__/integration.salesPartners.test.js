@@ -115,7 +115,6 @@ afterAll(async () => {
   // Catches rows whose POST succeeded but whose id never made it into `created`
   // (an assertion that threw mid-helper), which the id-keyed deletes above miss.
   await sweepDebris();
-  await pool.end();
 });
 
 const mkPartner = async (body) => {

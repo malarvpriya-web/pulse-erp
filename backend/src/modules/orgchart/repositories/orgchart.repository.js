@@ -44,15 +44,28 @@ const orgChartRepository = {
       [employee_id, manager_id ?? null, department ?? null, position_level ?? null]
     );
 
-    // Keep canonical FK in sync so auto-tree and direct-reports agree
+    // Keep canonical FK in sync so auto-tree and direct-reports agree.
+    //
+    // Scoped to the employee's OWN company by joining through the manager: this
+    // was a bare `WHERE id = $2`, and unlike the other org-chart writes it had no
+    // prior ownership check either — `upsert` takes employee_id straight from the
+    // request body. The manager must already be in the same company (the cycle
+    // check above plus assertValidManager on the route enforce that), so deriving
+    // the scope from the pair is sound and needs no extra parameter plumbing
+    // through this repository's signature.
     await pool.query(
-      `UPDATE employees
+      `UPDATE employees e
           SET reporting_manager_id = $1,
               reporting_manager = COALESCE(
-                (SELECT TRIM(first_name || ' ' || COALESCE(last_name,'')) FROM employees WHERE id = $1),
-                reporting_manager
+                (SELECT NULLIF(TRIM(COALESCE(m.name, m.first_name || ' ' || COALESCE(m.last_name,''))), '')
+                   FROM employees m WHERE m.id = $1),
+                e.reporting_manager
               )
-        WHERE id = $2`,
+        WHERE e.id = $2
+          AND ($1::int IS NULL
+               OR EXISTS (SELECT 1 FROM employees m
+                           WHERE m.id = $1
+                             AND COALESCE(m.company_id, 0) = COALESCE(e.company_id, 0)))`,
       [manager_id ?? null, employee_id]
     );
 

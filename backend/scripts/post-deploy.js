@@ -22,6 +22,7 @@ import fs   from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import crypto from 'crypto';
+import { resolveDbTarget, pgToolEnv, dbTargetOverrides } from '../src/config/dbTarget.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -31,9 +32,11 @@ if (fs.existsSync(dotenvPath)) {
   const vars = fs.readFileSync(dotenvPath, 'utf8')
     .split('\n')
     .filter(l => l.trim() && !l.startsWith('#') && l.includes('='));
+  // A value already in the environment was supplied on purpose, and `npm run migrate`
+  // honours it too: these checks must look at the database the migration will use.
   for (const line of vars) {
     const [k, ...rest] = line.split('=');
-    process.env[k.trim()] = rest.join('=').trim();
+    if (process.env[k.trim()] === undefined) process.env[k.trim()] = rest.join('=').trim();
   }
 }
 
@@ -44,15 +47,9 @@ const jsonMode = args.includes('--json');
 const MIGRATIONS_DIR = path.join(__dirname, '../src/database/migrations');
 const BACKUP_DIR     = path.join(__dirname, '../backups');
 
-const DB = {
-  host:     process.env.DB_HOST     || 'localhost',
-  port:     process.env.DB_PORT     || '5432',
-  name:     process.env.DB_NAME     || 'Pulse',
-  user:     process.env.DB_USER     || 'postgres',
-  password: process.env.DB_PASSWORD || '',
-};
+const DB = resolveDbTarget(process.env);
 
-const pgEnv = { ...process.env, PGPASSWORD: DB.password };
+const pgEnv = pgToolEnv(DB, process.env);
 
 // Core tables that must exist in every Pulse deployment
 const REQUIRED_TABLES = [
@@ -78,8 +75,14 @@ function err(msg)  { errors.push(msg);   if (!jsonMode) console.error(msg); }
 function warn(msg) { warnings.push(msg); if (!jsonMode) console.warn(msg); }
 function note(msg) { info.push(msg);     if (!jsonMode) console.log(msg); }
 
+// ── A target that differs from .env is allowed, and never silent ─────────
+for (const note of dbTargetOverrides(process.env, fs.existsSync(dotenvPath) ? fs.readFileSync(dotenvPath, 'utf8') : '')) {
+  warn(`  ⚠️   ${note}`);
+}
+
 function fileChecksum(filePath) {
-  const content = fs.readFileSync(filePath, 'utf8');
+  // The same normalisation as config/migrations.js, or a Windows checkout reads as tampering.
+  const content = fs.readFileSync(filePath, 'utf8').replace(/\r\n/g, '\n');
   return crypto.createHash('sha256').update(content).digest('hex');
 }
 

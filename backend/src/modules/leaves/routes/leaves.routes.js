@@ -7,7 +7,7 @@ import { evaluateRules } from '../../../services/RuleEngineService.js';
 import { logAudit } from '../../../services/AuditService.js';
 import { authorizeManagerApproval, DENIED_MESSAGE } from '../../../shared/managerApprovalAuthz.js';
 import { hasRole } from '../../../middlewares/auth.middleware.js';
-import { employeeOf } from '../../../shared/scope.js';
+import { employeeOf, companyOf } from '../../../shared/scope.js';
 
 const router = express.Router();
 
@@ -137,7 +137,7 @@ async function postLopToPayroll(application, poolRef) {
     // Find active payroll run for this employee and period
     const { rows: runRows } = await poolRef.query(`
       SELECT id FROM payroll_runs
-      WHERE employee_id = $1 AND month = $2 AND year = $3 AND status NOT IN ('paid','cancelled')
+      WHERE employee_id = $1 AND month = $2 AND year = $3 AND status IN ('draft', 'pending')  -- drafts only: an approved run is posted to the GL and backs the payslip and payment (PAYROLL_DATA_FLOW_AUDIT.md Part 10)
       LIMIT 1
     `, [application.employee_id, month, year]).catch(() => ({ rows: [] }));
 
@@ -357,6 +357,106 @@ function canSeeApplication(req, application) {
       || Number(application.hr_id)       === Number(self);
 }
 
+/**
+ * Load ONE leave application for a decision or a single-record read, inside
+ * the caller's company. Every route below that takes `:id` goes through this.
+ *
+ * Before 2026-10-19 they loaded `WHERE id = $1` alone, and the HR/admin
+ * override in authorizeManagerApproval() carries no company — so an HR user in
+ * company B could approve, reject, cancel or delegate company A's leave by id.
+ * A row in another company is reported exactly like a missing one (null → 404),
+ * so the response does not confirm that the id exists elsewhere. A global
+ * super admin (companyOf() === null) is unscoped, as everywhere else.
+ */
+async function loadLeaveInCompany(req, id) {
+  if (!/^\d+$/.test(String(id))) return null;
+  const { rows } = await pool.query(
+    `SELECT la.*, e.company_id AS employee_company_id,
+            COALESCE(e.name, CONCAT(e.first_name, ' ', COALESCE(e.last_name, ''))) AS employee_name
+       FROM leave_applications la
+       LEFT JOIN employees e ON e.id = la.employee_id
+      WHERE la.id = $1 AND la.deleted_at IS NULL`,
+    [id]
+  );
+  const row = rows[0];
+  if (!row) return null;
+  const companyId = companyOf(req);
+  const rowCompany = row.employee_company_id ?? row.company_id;
+  if (companyId != null && Number(rowCompany) !== Number(companyId)) return null;
+  return row;
+}
+
+// Who may decide each level. L2 and HR-final carried only the module grant
+// `leaves:approve`, which every manager holds — so any manager could take the
+// department-head or HR-final decision on anyone's leave. These are the role
+// sets the leave approval queues already use (LeaveApprovals.jsx QUEUES), now
+// enforced where the decision is made. Union of all roles held (hasRole).
+const L2_APPROVER_ROLES = ['department_head', 'l2_approver', 'admin', 'super_admin', 'hr_manager'];
+const HR_FINAL_ROLES    = ['hr', 'hr_manager', 'admin', 'super_admin'];
+// authorizeManagerApproval()'s identity-free overrides (primary role).
+const L1_OVERRIDE_ROLES = ['admin', 'super_admin', 'hr', 'hr_manager', 'hr_exec'];
+
+/**
+ * Policy (2026-10-20): nobody decides their own leave — not at L1, L2 or
+ * HR-final, not as a delegate, not through the generic status / bulk /
+ * workflow routes. The HR/admin override in authorizeManagerApproval() and the
+ * L2/HR role checks are identity-free, so an HR user, department head or admin
+ * could approve their own leave before this.
+ *
+ * The actor's employee is read from the users table (the trusted link), not
+ * from the token or the request. Returns true when it has answered the request
+ * (403 SELF_APPROVAL_BLOCKED); the leave is untouched and stays pending for
+ * another eligible approver at the same level. The message says whether one
+ * exists — if none does, an administrator has to provide one.
+ */
+async function blockOwnLeaveDecision(req, res, leave, level) {
+  const userId = req.user?.userId ?? req.user?.id ?? null;
+  const { rows: [me] } = userId == null ? { rows: [] }
+    : await pool.query('SELECT employee_id FROM users WHERE id = $1', [userId]);
+  const actorEmp = me?.employee_id ?? null;
+  if (actorEmp == null || String(actorEmp) !== String(leave.employee_id)) return false;
+
+  const others = await countAlternateLeaveApprovers(leave, level);
+  const who = { l1: 'the reporting manager, an assigned delegate, HR or an admin',
+                l2: 'another department head or L2 approver', hr: 'another HR user' }[level];
+  res.status(403).json({
+    error: others > 0
+      ? `You cannot decide your own leave. It stays pending for ${who} (${others} eligible in your company).`
+      : `You cannot decide your own leave, and no one else in your company is eligible to decide it at this level `
+        + `(${who}). It stays pending until an administrator assigns one — for example a reporting manager, a delegate, `
+        + `or the ${level === 'l2' ? 'department_head / l2_approver' : level === 'hr' ? 'hr / hr_manager' : 'hr'} role to a colleague.`,
+    code: 'SELF_APPROVAL_BLOCKED',
+    level,
+    eligible_alternates: others,
+  });
+  return true;
+}
+
+// Active logins in the leave's company, other than the requester, that this
+// level's rule would accept. Used for the message only — the routes themselves
+// still enforce the rule for whoever acts.
+async function countAlternateLeaveApprovers(leave, level) {
+  const company = leave.employee_company_id ?? leave.company_id;
+  const base = `FROM users u LEFT JOIN employees e ON e.id = u.employee_id
+                WHERE u.is_active = TRUE AND COALESCE(e.company_id, u.company_id) = $1
+                  AND u.employee_id IS DISTINCT FROM $2`;
+  const roleHeld = (roles) => `EXISTS (SELECT 1 FROM user_roles ur JOIN roles r ON r.id = ur.role_id
+                                       WHERE ur.user_id = u.id AND LOWER(r.code) = ANY('{${roles.join(',')}}'::text[]))`;
+  let sql;
+  const params = [company, leave.employee_id];
+  if (level === 'l1') {
+    params.push(leave.delegate_approver_id ?? null);
+    sql = `SELECT COUNT(DISTINCT u.id)::int AS n ${base}
+             AND (u.employee_id = (SELECT reporting_manager_id FROM employees WHERE id = $2)
+                  OR u.employee_id = $3
+                  OR LOWER(u.role) = ANY('{${L1_OVERRIDE_ROLES.join(',')}}'::text[]))`;
+  } else {
+    sql = `SELECT COUNT(DISTINCT u.id)::int AS n ${base} AND ${roleHeld(level === 'l2' ? L2_APPROVER_ROLES : HR_FINAL_ROLES)}`;
+  }
+  const { rows: [r] } = await pool.query(sql, params);
+  return r?.n ?? 0;
+}
+
 // ── Generic status update — HR/Admin only; guards against bypassing workflow ──
 export async function handleStatusUpdate(req, res) {
   const role = (req.user?.role || '').toLowerCase();
@@ -372,6 +472,14 @@ export async function handleStatusUpdate(req, res) {
     return res.status(403).json({ error: 'Use the specific approve/reject endpoints for your role' });
   }
   try {
+    const existing = await loadLeaveInCompany(req, req.params.id);
+    if (!existing) return res.status(404).json({ error: 'Leave application not found' });
+    // A non-HR caller reaches this only to cancel, and only their own leave —
+    // the same rule PUT /:id/cancel applies. It used to cancel ANY leave.
+    if (!isAdminOrHR(role) && String(existing.employee_id) !== String(req.user?.employee_id)) {
+      return res.status(403).json({ error: 'You can only cancel your own leave applications' });
+    }
+    if (normalized !== 'cancelled' && await blockOwnLeaveDecision(req, res, existing, 'hr')) return;
     const application = await leavesRepository.updateStatus(
       req.params.id,
       normalized,
@@ -458,11 +566,16 @@ router.get('/probation-status', requirePermission('leaves', 'view'), async (req,
     if (!empId || isNaN(parseInt(empId, 10))) {
       return res.json({ in_probation: false, probation_end: null });
     }
+    // The STORED probation_end_date only (shared/probationDates.js). The old
+    // fallback to joining_date + 90 days was a fourth probation rule that
+    // disagreed with the other three. Company-scoped: an HR user's
+    // ?employee_id= could read any tenant's probation state.
     const { rows } = await pool.query(
-      `SELECT status, joining_date,
-              COALESCE(probation_end_date, (joining_date + INTERVAL '90 days')::date) AS prob_end
-       FROM employees WHERE id = $1 LIMIT 1`,
-      [empId]
+      `SELECT status, joining_date, probation_end_date::text AS prob_end
+       FROM employees
+       WHERE id = $1 AND ($2::int IS NULL OR company_id = $2)
+       LIMIT 1`,
+      [empId, companyOf(req)]
     );
     if (!rows.length) return res.json({ in_probation: false, probation_end: null });
     const { status, prob_end } = rows[0];
@@ -855,7 +968,8 @@ router.get('/applications', requirePermission('leaves', 'view'), async (req, res
 
 router.get('/applications/:id', requirePermission('leaves', 'view'), async (req, res) => {
   try {
-    const application = await leavesRepository.findById(req.params.id);
+    const application = (await loadLeaveInCompany(req, req.params.id))
+      && await leavesRepository.findById(req.params.id);
     if (!application) return res.status(404).json({ error: 'Application not found' });
     // Same module-grant problem as the list route: 'leaves:view' admits every
     // employee, so without this an employee could read any colleague's leave —
@@ -873,6 +987,12 @@ router.get('/applications/:id', requirePermission('leaves', 'view'), async (req,
 // Approval history for a leave application
 router.get('/applications/:id/history', requirePermission('leaves', 'view'), async (req, res) => {
   try {
+    // The trail names approvers and carries their comments: same visibility as
+    // the application itself (it had none — any employee could walk ids).
+    const application = await loadLeaveInCompany(req, req.params.id);
+    if (!application || !canSeeApplication(req, application)) {
+      return res.status(404).json({ error: 'Application not found' });
+    }
     const { rows } = await pool.query(`
       SELECT lah.*,
         COALESCE(e.name, CONCAT(e.first_name,' ',COALESCE(e.last_name,''))) AS approver_name,
@@ -900,6 +1020,59 @@ async function handleApplyLeave(req, res) {
     if (!isAdminOrHR(role)) {
       normalizedPayload.employee_id = req.user?.employee_id;
       employee_id = req.user?.employee_id;
+    }
+
+    /**
+     * No employee to file the leave FOR.
+     *
+     * `leave_applications.employee_id` is NOT NULL, and nothing above guarantees a
+     * value: a non-HR caller gets `req.user.employee_id`, which is NULL for any
+     * login that is not linked to an employee row — the three admin accounts are
+     * deliberately unlinked (see the employee-login policy). The INSERT therefore
+     * reached Postgres with NULL and came back as a bare 500:
+     *
+     *   null value in column "employee_id" of relation "leave_applications"
+     *   violates not-null constraint
+     *
+     * That is a 400: the request cannot be fulfilled as sent, and the caller can
+     * see why. A 500 says "the server is broken", which sends someone reading
+     * logs after a phantom outage.
+     *
+     * The two causes get different messages because they need different actions —
+     * an HR user forgot to say who, an employee's login needs linking.
+     */
+    if (!normalizedPayload.employee_id) {
+      return res.status(400).json({
+        error: isAdminOrHR(role)
+          ? 'Specify which employee this leave application is for (employee_id).'
+          : 'Your login is not linked to an employee record, so leave cannot be applied for. Please contact HR.',
+        code: 'EMPLOYEE_LINK_REQUIRED',
+        module: 'leaves',
+      });
+    }
+
+    /**
+     * Same class of defect, one column over.
+     *
+     * `leave_applications.number_of_days` is NOT NULL, and
+     * `normalizeApplicationPayload` only PASSES IT THROUGH — `body.number_of_days
+     * ?? days ?? total_days ?? numberOfDays`. A caller who sends dates but no day
+     * count reached the INSERT with NULL and got another bare 500.
+     *
+     * Validated rather than derived, deliberately. The dates are right there and
+     * `end - start` looks obvious, but how many LEAVE days that is depends on
+     * weekends, the holiday calendar and half-days — policy the Apply Leave form
+     * already owns and sends (`number_of_days: days`). Computing a second answer
+     * here would be a second opinion on leave policy, and the two would drift.
+     * So: the UI is unaffected, and an integration that omits it is told what is
+     * missing instead of being handed a 500.
+     */
+    if (normalizedPayload.number_of_days == null || normalizedPayload.number_of_days === '') {
+      return res.status(400).json({
+        error: 'number_of_days is required — send the leave-day count for this date range.',
+        code: 'NUMBER_OF_DAYS_REQUIRED',
+        module: 'leaves',
+      });
     }
 
     // Auto-resolve manager_id
@@ -1019,11 +1192,13 @@ async function handleApplyLeave(req, res) {
       // regardless of its per-type allowed_in_probation flag. LOP types are
       // always allowed so probationers can still record unpaid absence.
       if (!lt.is_lop_type) {
+        // Stored probation_end_date only — no joining_date + 90 days fallback.
+        // No .catch: a failed lookup used to read as "no employee" and let paid
+        // leave through; it is now a 500 like any other failure in this handler.
         const { rows: empProb } = await pool.query(
-          `SELECT status, joining_date,
-                  COALESCE(probation_end_date, (joining_date + INTERVAL '90 days')::date) AS prob_end
+          `SELECT status, joining_date, probation_end_date::text AS prob_end
            FROM employees WHERE id = $1`, [employee_id]
-        ).catch(() => ({ rows: [] }));
+        );
         if (empProb.length) {
           const probEnd = empProb[0].prob_end ? new Date(empProb[0].prob_end) : null;
           const inProbation =
@@ -1113,8 +1288,10 @@ router.post('/approve/manager/:id', requirePermission('leaves', 'approve'), asyn
   try {
     const actorEmpId = req.user?.employee_id; // Always use authenticated user
     const { comments } = req.body;
-    const { rows: oldRows } = await pool.query(`SELECT * FROM leave_applications WHERE id = $1`, [req.params.id]);
-    if (!oldRows.length) return res.status(404).json({ error: 'Leave application not found' });
+    const found = await loadLeaveInCompany(req, req.params.id);
+    if (!found) return res.status(404).json({ error: 'Leave application not found' });
+    if (await blockOwnLeaveDecision(req, res, found, 'l1')) return;
+    const oldRows = [found];
     const auth = await authorizeManagerApproval({
       actorEmployeeId: actorEmpId,
       actorRole: req.user?.role,
@@ -1141,8 +1318,10 @@ router.post('/reject/manager/:id', requirePermission('leaves', 'approve'), async
     const actorEmpId = req.user?.employee_id;
     const { comments } = req.body;
     if (!comments?.trim()) return res.status(400).json({ error: 'A rejection reason (comments) is required' });
-    const { rows: oldRows } = await pool.query(`SELECT * FROM leave_applications WHERE id = $1`, [req.params.id]);
-    if (!oldRows.length) return res.status(404).json({ error: 'Leave application not found' });
+    const found = await loadLeaveInCompany(req, req.params.id);
+    if (!found) return res.status(404).json({ error: 'Leave application not found' });
+    if (await blockOwnLeaveDecision(req, res, found, 'l1')) return;
+    const oldRows = [found];
     const auth = await authorizeManagerApproval({
       actorEmployeeId: actorEmpId,
       actorRole: req.user?.role,
@@ -1165,7 +1344,13 @@ router.post('/approve/l2/:id', requirePermission('leaves', 'approve'), async (re
   try {
     const actorEmpId = req.user?.employee_id;
     const { comments } = req.body;
-    const { rows: oldRows } = await pool.query(`SELECT * FROM leave_applications WHERE id = $1`, [req.params.id]);
+    const found = await loadLeaveInCompany(req, req.params.id);
+    if (!found) return res.status(404).json({ error: 'Leave application not found' });
+    if (await blockOwnLeaveDecision(req, res, found, 'l2')) return;
+    if (!hasRole(req, ...L2_APPROVER_ROLES)) {
+      return res.status(403).json({ error: 'Only a department head or L2 approver can take the L2 decision' });
+    }
+    const oldRows = [found];
     const application = await leavesRepository.approveByL2(req.params.id, actorEmpId, comments);
     logAudit({ userId: req.user?.userId, module: 'leaves', recordId: req.params.id, recordType: 'leave_application', action: 'approve', oldData: oldRows[0] ?? null, newData: { ...application, actor_role: 'l2_approver' }, req });
     // Sync to attendance if this is a single-level approval that results in status='approved'
@@ -1184,7 +1369,13 @@ router.post('/reject/l2/:id', requirePermission('leaves', 'approve'), async (req
     const actorEmpId = req.user?.employee_id;
     const { comments } = req.body;
     if (!comments?.trim()) return res.status(400).json({ error: 'A rejection reason (comments) is required' });
-    const { rows: oldRows } = await pool.query(`SELECT * FROM leave_applications WHERE id = $1`, [req.params.id]);
+    const found = await loadLeaveInCompany(req, req.params.id);
+    if (!found) return res.status(404).json({ error: 'Leave application not found' });
+    if (await blockOwnLeaveDecision(req, res, found, 'l2')) return;
+    if (!hasRole(req, ...L2_APPROVER_ROLES)) {
+      return res.status(403).json({ error: 'Only a department head or L2 approver can take the L2 decision' });
+    }
+    const oldRows = [found];
     const application = await leavesRepository.rejectByL2(req.params.id, actorEmpId, comments);
     logAudit({ userId: req.user?.userId, module: 'leaves', recordId: req.params.id, recordType: 'leave_application', action: 'reject', oldData: oldRows[0] ?? null, newData: { ...application, actor_role: 'l2_approver' }, req });
     reverseLeaveAttendance(application, pool).catch(() => {});
@@ -1200,7 +1391,13 @@ router.post('/approve/hr/:id', requirePermission('leaves', 'approve'), async (re
   try {
     const actorEmpId = req.user?.employee_id;
     const { comments } = req.body;
-    const { rows: oldRows } = await pool.query(`SELECT * FROM leave_applications WHERE id = $1`, [req.params.id]);
+    const found = await loadLeaveInCompany(req, req.params.id);
+    if (!found) return res.status(404).json({ error: 'Leave application not found' });
+    if (await blockOwnLeaveDecision(req, res, found, 'hr')) return;
+    if (!hasRole(req, ...HR_FINAL_ROLES)) {
+      return res.status(403).json({ error: 'Only HR can take the final leave decision' });
+    }
+    const oldRows = [found];
     const application = await leavesRepository.approveByHR(req.params.id, actorEmpId, comments);
     logAudit({ userId: req.user?.userId, module: 'leaves', recordId: req.params.id, recordType: 'leave_application', action: 'approve', oldData: oldRows[0] ?? null, newData: { ...application, actor_role: 'hr' }, req });
     // Auto-sync attendance records for approved leave dates (WFH-aware, holiday-aware)
@@ -1219,7 +1416,13 @@ router.post('/reject/hr/:id', requirePermission('leaves', 'approve'), async (req
     const actorEmpId = req.user?.employee_id;
     const { comments } = req.body;
     if (!comments?.trim()) return res.status(400).json({ error: 'A rejection reason (comments) is required' });
-    const { rows: oldRows } = await pool.query(`SELECT * FROM leave_applications WHERE id = $1`, [req.params.id]);
+    const found = await loadLeaveInCompany(req, req.params.id);
+    if (!found) return res.status(404).json({ error: 'Leave application not found' });
+    if (await blockOwnLeaveDecision(req, res, found, 'hr')) return;
+    if (!hasRole(req, ...HR_FINAL_ROLES)) {
+      return res.status(403).json({ error: 'Only HR can take the final leave decision' });
+    }
+    const oldRows = [found];
     const application = await leavesRepository.rejectByHR(req.params.id, actorEmpId, comments);
     logAudit({ userId: req.user?.userId, module: 'leaves', recordId: req.params.id, recordType: 'leave_application', action: 'reject', oldData: oldRows[0] ?? null, newData: { ...application, actor_role: 'hr' }, req });
     reverseLeaveAttendance(application, pool).catch(() => {});
@@ -1240,6 +1443,15 @@ router.post('/bulk-approve', requirePermission('leaves', 'approve'), async (req,
   const results = [];
   for (const id of ids) {
     try {
+      // Same company gate as the single routes — an id from another company
+      // is reported as not found, never approved.
+      const target = await loadLeaveInCompany(req, id);
+      if (!target) { results.push({ id, status: 'error', error: 'Leave application not found' }); continue; }
+      // Never approve your own leave in a batch either.
+      const self = { status: () => self, json: (b) => { self.body = b; return self; } };
+      if (await blockOwnLeaveDecision(req, self, target, 'hr')) {
+        results.push({ id, status: 'error', code: 'SELF_APPROVAL_BLOCKED', error: self.body?.error }); continue;
+      }
       const app = await leavesRepository.updateStatus(id, 'approved', actorEmpId, comments || 'Bulk approved');
       syncLeaveToAttendance(app, pool).catch(() => {});
       notifyLeaveEvent('approved', app, req.user, [app.employee_id]);
@@ -1358,9 +1570,8 @@ router.put('/:id/reject', requirePermission('leaves', 'approve'), (req, res) =>
 router.put('/:id/cancel', requirePermission('leaves', 'view'), async (req, res) => {
   try {
     const role = (req.user?.role || '').toLowerCase();
-    const { rows: appRows } = await pool.query(`SELECT * FROM leave_applications WHERE id = $1 AND deleted_at IS NULL`, [req.params.id]);
-    if (!appRows.length) return res.status(404).json({ error: 'Leave application not found' });
-    const app = appRows[0];
+    const app = await loadLeaveInCompany(req, req.params.id);
+    if (!app) return res.status(404).json({ error: 'Leave application not found' });
     // Non-admin employees can only cancel their own
     if (!isAdminOrHR(role)) {
       if (String(app.employee_id) !== String(req.user?.employee_id)) {
@@ -1382,9 +1593,8 @@ router.post('/:id/withdraw', requirePermission('leaves', 'view'), async (req, re
     const { reason } = req.body;
     if (!reason?.trim()) return res.status(400).json({ error: 'Withdrawal reason is required' });
     const role = (req.user?.role || '').toLowerCase();
-    const { rows: appRows } = await pool.query(`SELECT * FROM leave_applications WHERE id = $1 AND deleted_at IS NULL`, [req.params.id]);
-    if (!appRows.length) return res.status(404).json({ error: 'Leave application not found' });
-    const app = appRows[0];
+    const app = await loadLeaveInCompany(req, req.params.id);
+    if (!app) return res.status(404).json({ error: 'Leave application not found' });
     if (!isAdminOrHR(role) && String(app.employee_id) !== String(req.user?.employee_id)) {
       return res.status(403).json({ error: 'You can only withdraw your own leave applications' });
     }
@@ -1436,15 +1646,42 @@ router.post('/delegate/:id', requirePermission('leaves', 'approve'), async (req,
   try {
     const { delegate_employee_id, comments } = req.body;
     if (!delegate_employee_id) return res.status(400).json({ error: 'delegate_employee_id is required' });
+    // Only someone already entitled to take the L1 decision may hand it on —
+    // the rule travel's and reimbursement's delegate routes already apply.
+    // This route used to let any `leaves:approve` holder (every manager)
+    // re-point any company's leave at anyone, including the requester.
+    const found = await loadLeaveInCompany(req, req.params.id);
+    if (!found) return res.status(404).json({ error: 'Leave application not found' });
+    // Choosing who decides your own leave is deciding it.
+    if (await blockOwnLeaveDecision(req, res, found, 'l1')) return;
+    const auth = await authorizeManagerApproval({
+      actorEmployeeId: req.user?.employee_id,
+      actorRole: req.user?.role,
+      requesterEmployeeId: found.employee_id,
+      delegateApproverId: found.delegate_approver_id,
+    });
+    if (!auth.authorized) return res.status(403).json({ error: DENIED_MESSAGE });
+    const { rows: [delegate] } = await pool.query(
+      `SELECT id FROM employees
+        WHERE id::text = $1::text AND company_id = $2 AND deleted_at IS NULL
+          AND LOWER(status) IN ('active', 'probation', 'notice')`,
+      [String(delegate_employee_id), found.employee_company_id ?? found.company_id]
+    );
+    if (!delegate) return res.status(400).json({ error: 'The delegate must be an active employee in the same company' });
+    if (String(delegate.id) === String(found.employee_id)) {
+      return res.status(400).json({ error: 'A leave cannot be delegated to the person who applied for it' });
+    }
+    // Delegation hands on the L1 decision, so only while L1 is still open.
     const { rows } = await pool.query(`
       UPDATE leave_applications
       SET delegate_approver_id = $1, updated_at = NOW()
       WHERE id = $2
         AND status = 'pending'
+        AND manager_status = 'pending'
         AND deleted_at IS NULL
       RETURNING *
-    `, [delegate_employee_id, req.params.id]);
-    if (!rows.length) return res.status(404).json({ error: 'Leave not found or not in pending state' });
+    `, [delegate.id, req.params.id]);
+    if (!rows.length) return res.status(409).json({ error: 'This leave is no longer awaiting its first-level decision' });
     logAudit({ userId: req.user?.userId, module: 'leaves', recordId: req.params.id, recordType: 'leave_application', action: 'delegate', newData: { delegate_employee_id, comments }, req });
     res.json({ success: true, data: rows[0] });
   } catch (err) {
@@ -1632,11 +1869,9 @@ router.post('/:id/workflow/advance', requirePermission('leaves', 'approve'), asy
     const { action, comments } = req.body;
     if (!['approve', 'reject'].includes(action))
       return res.status(400).json({ error: 'action must be approve or reject' });
-    const { rows: [leaveRow] } = await pool.query(
-      `SELECT employee_id, delegate_approver_id FROM leave_applications WHERE id = $1`,
-      [req.params.id]
-    );
+    const leaveRow = await loadLeaveInCompany(req, req.params.id);
     if (!leaveRow) return res.status(404).json({ error: 'Leave application not found' });
+    if (await blockOwnLeaveDecision(req, res, leaveRow, 'l1')) return;
     const auth = await authorizeManagerApproval({
       actorEmployeeId: req.user?.employee_id,
       actorRole: req.user?.role,

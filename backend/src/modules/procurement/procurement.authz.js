@@ -97,6 +97,60 @@ export function assertCanDecideAmount(req, amount, settings, action = 'approve')
   } };
 }
 
+/**
+ * Segregation of duties: the person who raised a document may not be the person
+ * who approves it.
+ *
+ * `assertCanDecideAmount` above asks only whether this ACCOUNT carries enough
+ * authority for this AMOUNT. It never asked whether the account is the same
+ * person on both sides of the decision, so a manager holding L1 authority could
+ * raise a ₹20,000 requisition and approve it himself — every check passed, and
+ * the audit trail recorded a properly approved document.
+ *
+ * @param {object} req
+ * @param {number|string|null} raisedByEmployeeId  employees.id of the requester
+ *        (`purchase_requests.requested_by_employee_id`, `purchase_orders.created_by`)
+ * @param {object} settings  procurement settings for the company
+ * @param {object} [opts]
+ * @param {number} [opts.amount]   the document's value
+ * @param {string} [opts.docType]  'requisition' | 'purchase order' — message only
+ * @returns {null|{status:number,body:object}} null when permitted.
+ *
+ * SCOPE. The rule engages only where the approval decision carries authority.
+ * An amount in the 'auto' band needs no authority to clear, so blocking
+ * self-approval there would stop a ₹500 requisition for no control benefit.
+ *
+ * KNOWN LIMIT, STATED RATHER THAN PAPERED OVER. The comparison is on
+ * employees.id, because that is the only id space both sides share — the
+ * approver columns FK employees(id), not users(id). An account with no employee
+ * linkage (`req.user.employee_id` NULL, which is the case for the standalone
+ * admin logins) cannot be matched against a requester, so it is not blocked.
+ * Those accounts are ROLE_LEVEL 4 with unlimited authority in any case; closing
+ * this needs employee linkage on the login, not a guess here. Guessing — say,
+ * falling back to comparing users.id against an employees.id — would compare
+ * two different id spaces and block unrelated people at random.
+ */
+export function assertNotSelfApproval(req, raisedByEmployeeId, settings, opts = {}) {
+  const { amount = null, docType = 'document' } = opts;
+
+  if (settings?.allow_self_approval) return null;
+
+  // No authority required at this value ⇒ no second pair of eyes to protect.
+  if (amount != null && requiredBand(amount, settings || {}) === 'auto') return null;
+
+  const actorEmpId = req.user?.employee_id ?? null;
+  if (actorEmpId == null || raisedByEmployeeId == null) return null;
+  if (String(actorEmpId) !== String(raisedByEmployeeId)) return null;
+
+  return { status: 403, body: {
+    error: 'Forbidden',
+    code:  'SELF_APPROVAL_BLOCKED',
+    message: `You raised this ${docType}, so you cannot also approve it. `
+           + `Route it to another approver with the required authority. `
+           + `(A company that must allow this can enable self-approval in Procurement Settings.)`,
+  } };
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Route-level permission gate
 // ─────────────────────────────────────────────────────────────────────────────

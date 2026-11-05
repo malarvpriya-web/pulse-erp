@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useCallback } from 'react';
 import * as XLSX from 'xlsx';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
+import { useAuth } from '@/context/AuthContext';
 import { fmtDate } from '@/utils/dateFormatter';
 import {
   Banknote, Search, Download, X, FileText, Wallet, CheckCircle2,
@@ -97,6 +98,12 @@ export default function TravelPayment() {
   const pageRows = useMemo(() => filtered.slice((page - 1) * pageSize, page * pageSize), [filtered, page, pageSize]);
 
   const queueValue = filtered.reduce((s, c) => s + previewAdjustment(c).net, 0);
+
+  // expense_payments:approve — the grant PUT /claims/:id/pay checks (§202);
+  // never on one's own claim.
+  const { user, hasPermission } = useAuth();
+  const canPay = (c) => hasPermission('expense_payments', 'approve')
+    && !(user?.employee_id != null && String(c.employee_id) === String(user.employee_id));
 
   const openPay = (c) => {
     setForm({ payment_ref:'', payment_date:new Date().toISOString().slice(0,10), payment_mode:'NEFT' });
@@ -216,7 +223,7 @@ export default function TravelPayment() {
                         <td style={td}>{fmtDate(c.payment_date)}</td>
                         <td style={td}>{c.payment_ref || '—'}</td>
                         <td style={td}>
-                          {c.status === PAYABLE_STATUS ? (
+                          {c.status === PAYABLE_STATUS && canPay(c) ? (
                             <button onClick={() => openPay(c)}
                               style={{ display:'inline-flex', alignItems:'center', gap:4, padding:'5px 10px', background:'#065f46', color:'#fff', border:'none', borderRadius:6, cursor:'pointer', fontSize:12, fontWeight:600 }}>
                               <Banknote size={12}/> Pay

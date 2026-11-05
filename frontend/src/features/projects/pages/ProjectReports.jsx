@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import api from '@/services/api/client';
 import { getProjects } from '../services/projectsService';
+import { projectStageOf } from '../shared/projectStage';
 import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const fmt = (n) => {
@@ -149,10 +150,12 @@ export default function ProjectReports({ setPage }) {
                       { label: 'Contract Value', value: fmt(project.contract_value || project.budget_amount), color: '#0369a1' },
                       { label: 'Budget Spent', value: pct(project.budget_spent || r?.budget_utilization), color: '#6B3FDB' },
                       { label: 'Progress', value: pct(project.progress_percentage || r?.progress_percentage), color: '#15803d' },
-                      { label: 'Lifecycle Stage', value: (r?.current_stage || project.current_stage || '—').replace(/_/g, ' '), color: '#7c5cf0' },
+                      // Derived from the project's lifecycle by the server, with the
+                      // shared mapping; "Unavailable stage" when it has none.
+                      { label: 'Stage (from lifecycle)', value: projectStageOf(r).label, color: projectStageOf(r).color, title: projectStageOf(r).why, testId: 'report-stage' },
                     ].map(k => (
-                      <div key={k.label} style={{ textAlign: 'center', padding: '12px 8px', background: 'var(--color-background)', borderRadius: 8 }}>
-                        <div style={{ fontSize: 18, fontWeight: 700, color: k.color }}>{k.value}</div>
+                      <div key={k.label} title={k.title} style={{ textAlign: 'center', padding: '12px 8px', background: 'var(--color-background)', borderRadius: 8 }}>
+                        <div data-testid={k.testId} style={{ fontSize: 18, fontWeight: 700, color: k.color }}>{k.value}</div>
                         <div style={{ fontSize: 11, color: '#9ca3af' }}>{k.label}</div>
                       </div>
                     ))}

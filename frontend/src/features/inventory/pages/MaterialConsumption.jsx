@@ -11,7 +11,20 @@ const thStyle = { padding: '10px 16px', textAlign: 'left', fontWeight: 600, font
 const tdStyle = { padding: '10px 16px', fontSize: 13, color: '#111827', borderBottom: '1px solid #f8f8fc' };
 const inputStyle = { width: '100%', padding: '8px 12px', border: '1px solid #e9e4ff', borderRadius: 8, fontSize: 13, boxSizing: 'border-box' };
 
-const REF_TYPES = ['manual', 'production_order', 'sales_order', 'project', 'maintenance'];
+// Only these two are accepted by POST /inventory/consumption: sales-order,
+// production and maintenance issues have their own workflows.
+const REF_TYPES = ['manual', 'project'];
+
+// Rows written before allocations recorded their source (allocation_source
+// NULL). Kept exactly as they were, but never verified as consumption: some
+// are sales-order commitments. Labelled rather than hidden.
+const isLegacy = (row) => row.allocation_source == null;
+const LegacyTag = ({ label = 'Legacy (unclassified)' }) => (
+  <span title="Recorded before allocations stated their source; not verified as consumption"
+    style={{ marginLeft: 6, padding: '2px 8px', background: '#fff7ed', color: '#9a3412', borderRadius: 4, fontSize: 11, whiteSpace: 'nowrap' }}>
+    {label}
+  </span>
+);
 
 export default function MaterialConsumption() {
   const toast = useToast();
@@ -27,7 +40,7 @@ export default function MaterialConsumption() {
 
   // Log Consumption modal
   const [showLog, setShowLog] = useState(false);
-  const [logForm, setLogForm] = useState({ item_id: '', warehouse_id: '', quantity: '', reference_type: 'manual', reference_id: '', project_id: '', notes: '' });
+  const [logForm, setLogForm] = useState({ item_id: '', warehouse_id: '', quantity: '', reference_type: 'manual', project_id: '', notes: '' });
   const [items, setItems] = useState([]);
   const [warehouses, setWarehouses] = useState([]);
   const [projects, setProjects] = useState([]);
@@ -67,6 +80,10 @@ export default function MaterialConsumption() {
       toast.error('Item, warehouse, and quantity are required');
       return;
     }
+    if (logForm.reference_type === 'project' && !logForm.project_id) {
+      toast.error('Select the project this material was used on');
+      return;
+    }
     setSubmitting(true);
     try {
       await api.post('/inventory/consumption', {
@@ -74,13 +91,12 @@ export default function MaterialConsumption() {
         warehouse_id: logForm.warehouse_id,
         quantity: parseFloat(logForm.quantity),
         reference_type: logForm.reference_type,
-        reference_id: logForm.reference_id || undefined,
         project_id: logForm.project_id || undefined,
         notes: logForm.notes || undefined,
       });
       toast.success('Consumption logged and stock deducted');
       setShowLog(false);
-      setLogForm({ item_id: '', warehouse_id: '', quantity: '', reference_type: 'manual', reference_id: '', project_id: '', notes: '' });
+      setLogForm({ item_id: '', warehouse_id: '', quantity: '', reference_type: 'manual', project_id: '', notes: '' });
       load();
     } catch (err) {
       toast.error(err?.response?.data?.error || 'Failed to log consumption');
@@ -152,7 +168,7 @@ export default function MaterialConsumption() {
                   <td style={tdStyle}>{fmt2(row.total_consumed)}</td>
                   <td style={tdStyle}>{fmtRs(row.avg_rate)}</td>
                   <td style={{ ...tdStyle, fontWeight: 600, color: '#6B3FDB' }}>{fmtRs(row.total_value)}</td>
-                  <td style={tdStyle}>{row.transaction_count}</td>
+                  <td style={tdStyle}>{row.transaction_count}{row.legacy_transaction_count > 0 && <LegacyTag label={`${row.legacy_transaction_count} legacy (unclassified)`} />}</td>
                 </tr>
               ))}
             </tbody>
@@ -187,7 +203,7 @@ export default function MaterialConsumption() {
                     <tbody>
                       {rows.map((row, i) => (
                         <tr key={i} style={{ background: i % 2 === 0 ? '#fff' : '#fafafa' }}>
-                          <td style={tdStyle}>{row.item_name} <span style={{ fontSize: 11, color: '#9ca3af' }}>({row.item_code})</span></td>
+                          <td style={tdStyle}>{row.item_name} <span style={{ fontSize: 11, color: '#9ca3af' }}>({row.item_code})</span>{isLegacy(row) && <LegacyTag />}</td>
                           <td style={tdStyle}>{row.warehouse_name}</td>
                           <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: 12 }}>{row.reference_id || '—'}</td>
                           <td style={tdStyle}>{fmt2(row.quantity)}</td>
@@ -251,7 +267,7 @@ export default function MaterialConsumption() {
                     <td style={tdStyle}>
                       <span style={{ padding: '2px 8px', background: '#f0ebff', color: '#6B3FDB', borderRadius: 4, fontSize: 11 }}>
                         {(row.reference_type || row.allocation_type || 'manual').replace(/_/g, ' ')}
-                      </span>
+                      </span>{isLegacy(row) && <LegacyTag />}
                     </td>
                     <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: 12 }}>{row.reference_id || '—'}</td>
                     <td style={tdStyle}>{row.project_name || (row.project_id ? `#${row.project_id}` : '—')}</td>
@@ -294,23 +310,16 @@ export default function MaterialConsumption() {
                 <input type="number" min="0.01" step="0.01" placeholder="0.00" value={logForm.quantity}
                   onChange={e => setLogForm(p => ({ ...p, quantity: e.target.value }))} style={inputStyle} />
               </div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-                <div>
-                  <label style={{ fontSize: 12, color: '#6b7280', display: 'block', marginBottom: 4 }}>Reference Type</label>
-                  <select value={logForm.reference_type} onChange={e => setLogForm(p => ({ ...p, reference_type: e.target.value }))} style={inputStyle}>
-                    {REF_TYPES.map(t => <option key={t} value={t}>{t.replace(/_/g, ' ')}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label style={{ fontSize: 12, color: '#6b7280', display: 'block', marginBottom: 4 }}>Reference ID</label>
-                  <input type="text" placeholder="e.g. PO-1234" value={logForm.reference_id}
-                    onChange={e => setLogForm(p => ({ ...p, reference_id: e.target.value }))} style={inputStyle} />
-                </div>
+              <div>
+                <label style={{ fontSize: 12, color: '#6b7280', display: 'block', marginBottom: 4 }}>Reference Type</label>
+                <select value={logForm.reference_type} onChange={e => setLogForm(p => ({ ...p, reference_type: e.target.value }))} style={inputStyle}>
+                  {REF_TYPES.map(t => <option key={t} value={t}>{t.replace(/_/g, ' ')}</option>)}
+                </select>
               </div>
               <div>
-                <label style={{ fontSize: 12, color: '#6b7280', display: 'block', marginBottom: 4 }}>Project</label>
+                <label style={{ fontSize: 12, color: '#6b7280', display: 'block', marginBottom: 4 }}>Project{logForm.reference_type === 'project' ? ' *' : ''}</label>
                 <select value={logForm.project_id} onChange={e => setLogForm(p => ({ ...p, project_id: e.target.value }))} style={inputStyle}>
-                  <option value="">— No project —</option>
+                  <option value="">{logForm.reference_type === 'project' ? 'Select project…' : '— No project —'}</option>
                   {projects.map(pr => <option key={pr.id} value={pr.id}>{pr.project_name} {pr.project_code ? `(${pr.project_code})` : ''}</option>)}
                 </select>
               </div>

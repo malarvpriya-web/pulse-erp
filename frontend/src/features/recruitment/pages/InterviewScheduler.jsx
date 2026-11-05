@@ -9,7 +9,7 @@ import {
 import './InterviewScheduler.css';
 import { useToast } from '@/context/ToastContext';
 import { fmtDate as fmtDateStr } from '@/utils/dateFormatter';
-import { CAT_STYLE, DIFF_STYLE } from '../shared/constants';
+import { CAT_STYLE, DIFF_STYLE, candidateRows } from '../shared/constants';
 import Drawer from '../shared/components/Drawer';
 import { PageHero, PageShell } from '@/components/pulse-ui';
 
@@ -243,7 +243,7 @@ const InterviewScheduler = ({ setPage }) => {
   useEffect(() => { fetchInterviews(); }, [fetchInterviews]);
 
   useEffect(() => {
-    api.get('/recruitment/candidates').then(r => setCandidates(Array.isArray(r.data) ? r.data : [])).catch(() => {});
+    api.get('/recruitment/candidates').then(r => setCandidates(candidateRows(r.data))).catch(() => {});
   }, []);
 
   const cancelInterview = async (id) => {

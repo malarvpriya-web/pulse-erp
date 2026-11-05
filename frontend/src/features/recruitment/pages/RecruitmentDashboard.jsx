@@ -10,6 +10,7 @@ import {
   ResponsiveContainer, Cell, PieChart, Pie,
 } from 'recharts';
 import api from '@/services/api/client';
+import { candidateRows } from '../shared/constants';
 import { ChartExpandButton } from '@/components/dashboard/DashCard';
 import DataTable from '@/components/core/DataTable';
 import { fmtDate } from '@/utils/dateFormatter';
@@ -321,7 +322,7 @@ export default function RecruitmentDashboard({ setPage }) {
     if (!isMounted.current) return;
     setKpis(kpiRes.status === 'fulfilled' ? kpiRes.value.data : null);
     setPositions(posRes.status === 'fulfilled' && Array.isArray(posRes.value.data) ? posRes.value.data : []);
-    setCandidates(canRes.status === 'fulfilled' && Array.isArray(canRes.value.data) ? canRes.value.data : []);
+    setCandidates(canRes.status === 'fulfilled' ? candidateRows(canRes.value.data) : []);
     setInterviews(intRes.status === 'fulfilled' && Array.isArray(intRes.value.data) ? intRes.value.data : []);
     setPipelineCounts(pipeRes.status === 'fulfilled' && Array.isArray(pipeRes.value.data) ? pipeRes.value.data : []);
     setSourceData(srcRes.status === 'fulfilled' && Array.isArray(srcRes.value.data) ? srcRes.value.data : []);

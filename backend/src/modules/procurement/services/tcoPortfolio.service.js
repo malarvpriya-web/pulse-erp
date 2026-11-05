@@ -58,7 +58,10 @@
  */
 import pool from '../../shared/db.js';
 import { rankOptions } from '../engines/tcoEngine.js';
-import { loadTcoParams } from './tco.service.js';
+import {
+  loadTcoParams, loadFxForCurrencies, fxFieldsFor, TcoParamsUnavailableError, quoteFreightFields,
+} from './tco.service.js';
+import { loadFreightInputs } from './freight.service.js';
 
 const round2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
 
@@ -135,7 +138,13 @@ const LATEST_PER_RFQ = `
  * re-scored — see the file header.
  */
 async function loadOpenOpportunities({ companyId, limit }) {
-  const params = await loadTcoParams(companyId);
+  let params;
+  try {
+    params = await loadTcoParams(companyId);
+  } catch (e) {
+    if (!(e instanceof TcoParamsUnavailableError)) throw e;
+    return { rows: [], total: 0, group_count: 0, disabled: false, unavailable: e.message };
+  }
   if (!params.tco_enabled) {
     return { rows: [], total: 0, group_count: 0, disabled: true };
   }
@@ -181,6 +190,16 @@ async function loadOpenOpportunities({ companyId, limit }) {
     [events.map((e) => e.id)]
   );
 
+  const fx = await loadFxForCurrencies(companyId, quotes.flatMap((q) => [q.currency, q.freight_currency]), params);
+  const { rows: rfqLines } = await pool.query(
+    `SELECT rfq_id, item_id, item_name, quantity, unit FROM rfq_items WHERE rfq_id = ANY($1::int[]) ORDER BY id`,
+    [events.map((e) => e.id)]);
+  const linesByRfq = new Map();
+  for (const l of rfqLines) {
+    if (!linesByRfq.has(l.rfq_id)) linesByRfq.set(l.rfq_id, []);
+    linesByRfq.get(l.rfq_id).push(l);
+  }
+
   const byRfq = new Map();
   for (const q of quotes) {
     if (!byRfq.has(q.rfq_id)) byRfq.set(q.rfq_id, []);
@@ -193,6 +212,19 @@ async function loadOpenOpportunities({ companyId, limit }) {
     if (qs.length < 2) continue;
 
     const qty = num(ev.line_qty) > 0 ? num(ev.line_qty) : (num(ev.header_qty) || 1);
+    // Same freight model as the RFQ comparison (§216).
+    const evLines = linesByRfq.get(ev.id) ?? [];
+    const freight = await loadFreightInputs(companyId, params, {
+      vendorIds: qs.map((q) => q.vendor_id),
+      lines: evLines.length
+        ? evLines.map((l) => ({ item_id: l.item_id ?? null, item_label: l.item_id ? null : (l.item_name || 'an uncatalogued line'),
+                                quantity: num(l.quantity, 0), quantity_uom: l.unit || null }))
+        : [{ item_id: null, item_label: ev.rfq_number, quantity: qty }],
+      quoteOverrides: new Map(qs.map((q) => [Number(q.vendor_id), {
+        weight_kg_per_unit: q.shipping_weight_kg_per_unit, weight_uom: q.shipping_weight_uom,
+        transport_mode: q.transport_mode, service_level: q.service_level,
+      }])),
+    });
     const ranked = rankOptions(qs.map((q) => {
       const total = num(q.total_amount, null);
       const unit = num(q.unit_price, null) ?? (total != null && qty > 0 ? total / qty : null);
@@ -201,7 +233,7 @@ async function loadOpenOpportunities({ companyId, limit }) {
         vendor_name: q.vendor_name || `Vendor #${q.vendor_id}`,
         unit_price: unit,
         quantity: qty,
-        freight_amount:   num(q.freight_amount, null),
+        ...quoteFreightFields(q, fx, params.base_currency),
         insurance_amount: num(q.insurance_amount, null),
         duty_amount:      num(q.duty_amount, null),
         packaging_amount: num(q.packaging_amount, null),
@@ -211,6 +243,11 @@ async function loadOpenOpportunities({ companyId, limit }) {
         moq:              num(q.moq, null),
         lead_time_days:     q.delivery_days ?? q.vendor_lead_time_days ?? null,
         payment_terms_days: num(q.vendor_payment_terms_days, null),
+        // Same FX rule as every other comparison (§215): approved rate or
+        // documented override, otherwise the quote is not ranked.
+        ...fxFieldsFor(q.currency, fx, params.base_currency, q.fx_rate_override != null
+          ? { rate: q.fx_rate_override, reason: q.fx_override_reason } : null),
+        freight_model: freight.get(Number(q.vendor_id)) ?? null,
       };
     }), params);
 
@@ -230,6 +267,7 @@ async function loadOpenOpportunities({ companyId, limit }) {
       price_gap_pct: rec.price_gap_pct,
       saving_available: round2(rec.tco_saving),
       confidence: ranked.confidence,
+      comparison_status: ranked.comparison_status,   // provisional = rests on assumed freight
     });
   }
 
@@ -399,6 +437,7 @@ export async function loadTcoPortfolio({ companyId, from = null, to = null, limi
       event_count: openRes.group_count,
       rows: openRes.rows,
       tco_disabled: openRes.disabled,
+      tco_unavailable_reason: openRes.unavailable ?? null,
       note: 'Live events re-scored against today\'s parameters. Awarded events are never re-scored: their comparison is frozen at the moment it was decided.',
     },
 

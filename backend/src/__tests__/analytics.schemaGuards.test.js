@@ -208,6 +208,27 @@ describe('check-sql-references.mjs actually detects defects', () => {
 });
 
 describe('check-status-vocabulary.mjs actually detects defects', () => {
+  // The checker reads the REAL, shared database, so a sibling suite's fixture
+  // rows are in it while this runs. Three suites inserted employees as
+  // 'active' while every real row is 'Active', and in a parallel full run the
+  // case-drift sweep caught them mid-test: "DRIFT employees.status:
+  // active | Active". Fixtures must use the stored spelling; this keeps them so.
+  test('no integration fixture writes an employee status in a non-canonical spelling', OPTS, () => {
+    const CANONICAL = { active: 'Active', probation: 'Probation', notice: 'Notice', left: 'Left' };
+    const dir = path.join(BACKEND, 'src', '__tests__');
+    const offenders = [];
+    for (const file of fs.readdirSync(dir).filter(f => f.endsWith('.js'))) {
+      const src = fs.readFileSync(path.join(dir, file), 'utf8');
+      for (const insert of src.match(/INSERT INTO employees[\s\S]*?RETURNING/g) || []) {
+        for (const [, value] of insert.matchAll(/'([A-Za-z]+)'/g)) {
+          const canonical = CANONICAL[value.toLowerCase()];
+          if (canonical && value !== canonical) offenders.push(`${file}: '${value}' (stored as '${canonical}')`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
   test('baseline is green', OPTS, () => {
     const { code, stdout } = runChecker('check-status-vocabulary.mjs');
     expect(stdout, stdout).toMatch(/PASS — every status value is covered by statusSets\.js/);

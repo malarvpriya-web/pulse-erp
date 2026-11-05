@@ -8,29 +8,19 @@ import {
 } from 'lucide-react';
 import { fmt } from './travelUtils';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import VocabSelect from '@/components/core/VocabSelect';
 
-const EXPENSE_TYPES = [
-  {
-    group: 'Travel',
-    items: ['Flight', 'Train', 'Metro', 'Bus', 'Taxi', 'Cab', 'Fuel', 'Toll', 'Parking'],
-  },
-  {
-    group: 'Accommodation',
-    items: ['Hotel', 'Guest House', 'Lodging'],
-  },
-  {
-    group: 'Food',
-    items: ['Breakfast', 'Lunch', 'Dinner'],
-  },
-  {
-    group: 'Customer',
-    items: ['Meeting Expense', 'Entertainment'],
-  },
-  {
-    group: 'Site',
-    items: ['Consumables', 'Tools', 'Miscellaneous'],
-  },
-];
+// Expense type and category were a hardcoded two-level array here — one of
+// THREE descriptions of the same domain in this codebase, alongside
+// EmployeeSelfService's lowercase CLAIM_TYPES and the `expense_categories`
+// table (11 curated rows that nothing read). All three are now the EXPENSE_TYPE
+// / EXPENSE_CATEGORY master, cascading via <VocabSelect parent=…>.
+//
+// ⚠ Expense type is a POLICY KEY as well as a vocabulary: the claim path and
+// the policy preview both map Accommodation / Food / Travel to a specific limit
+// column on travel_policy_rules, and everything else to miscellaneous_limit.
+// That fallback is why it is safe to let a user add one — a new type is still
+// checked, against the miscellaneous limit. Do not rename those three.
 
 const STATUS_STEPS = [
   { key: 'Draft',            label: 'Draft' },
@@ -106,7 +96,7 @@ function WorkflowStepper({ status }) {
 
 export default function ExpenseClaims() {
   const toast = useToast();
-  const { user, hasAnyRole } = useAuth();
+  const { user, hasAnyRole, hasPermission } = useAuth();
   const [claims,    setClaims]    = useState([]);
   const [loading,   setLoading]   = useState(true);
   const [showForm,  setShowForm]  = useState(false);
@@ -118,14 +108,17 @@ export default function ExpenseClaims() {
   const [requests,  setRequests]  = useState([]);
   const [policyInfo, setPolicyInfo] = useState(null);
   const [checkingPolicy, setCheckingPolicy] = useState(false);
-  const [deptList,  setDeptList]  = useState([]);
 
   // hasAnyRole, not user.role: `role` is only the PRIMARY role of a many-to-many
   // set, so gating on it alone hid the approval/settlement actions from anyone
   // holding manager/finance as a secondary role. See AuthContext.
-  const isManager  = hasAnyRole('admin', 'super_admin', 'manager', 'hr');
-  const isAccounts = hasAnyRole('admin', 'super_admin', 'finance');
-  const isAdmin    = hasAnyRole('admin', 'super_admin');
+  // Level 1 is decided by the server per claim (reporting manager / delegate /
+  // HR / admin); levels 2 and 3 follow the explicit grants the routes check
+  // (§202). Nobody is offered a decision on their own claim.
+  const isManager  = hasAnyRole('admin', 'super_admin', 'manager', 'hr', 'hr_manager', 'hr_exec');
+  const isAccounts = hasPermission('expense_claims', 'edit');
+  const isAdmin    = hasPermission('expense_claims', 'approve');
+  const isOwnClaim = (c) => c && user?.employee_id != null && String(c.employee_id) === String(user.employee_id);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -140,30 +133,31 @@ export default function ExpenseClaims() {
     api.get('/travel/requests', { params: { limit: 100 } })
       .then(r => setRequests(Array.isArray(r.data) ? r.data : []))
       .catch(() => toast.error('Could not load travel requests'));
-    api.get('/admin/config/departments')
-      .then(r => setDeptList(Array.isArray(r.data) ? r.data.map(d => d.name || d) : []))
-      .catch(() => setDeptList([]));
   }, [load]);
 
   // Category items based on selected expense_type
-  const categoryItems = EXPENSE_TYPES.find(g => g.group === form.expense_type)?.items || [];
-
   const fld = (key, val) => {
     setForm(p => {
       const next = { ...p, [key]: val };
-      if (key === 'expense_type') next.expense_category = EXPENSE_TYPES.find(g => g.group === val)?.items[0] || '';
+      // Changing the type invalidates the category under it. Cleared rather
+      // than guessed at: the old picker auto-selected the new type's FIRST
+      // item, so switching Travel→Food silently turned a Flight into a
+      // Breakfast on a claim someone was mid-way through filling.
+      if (key === 'expense_type') next.expense_category = '';
       return next;
     });
   };
 
   // Policy check when amount or expense_type changes
   useEffect(() => {
-    if (!form.employee_id || !form.amount || !form.expense_type) { setPolicyInfo(null); return; }
+    // A claim is always the signed-in employee's own (the server sets it).
+    const ownId = user?.employee_id;
+    if (!ownId || !form.amount || !form.expense_type) { setPolicyInfo(null); return; }
     const t = setTimeout(async () => {
       setCheckingPolicy(true);
       try {
         const r = await api.post('/travel-policy/check', {
-          employee_id: form.employee_id,
+          employee_id: ownId,
           expense_type: form.expense_type,
           amount: form.amount,
         });
@@ -172,7 +166,7 @@ export default function ExpenseClaims() {
       finally { setCheckingPolicy(false); }
     }, 600);
     return () => clearTimeout(t);
-  }, [form.employee_id, form.amount, form.expense_type]);
+  }, [user?.employee_id, form.amount, form.expense_type]);
 
   const totalAmount = (Number(form.amount) || 0) + (Number(form.gst_amount) || 0);
 
@@ -425,7 +419,7 @@ export default function ExpenseClaims() {
 
             {/* Action buttons based on status and role */}
             <div style={{ marginTop: 24, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-              {isManager && selected.status === 'Submitted' && (
+              {isManager && !isOwnClaim(selected) && selected.status === 'Submitted' && (
                 <>
                   <button onClick={() => handleManagerApprove(selected.id, 'Approved')}
                     style={{ padding: '9px 18px', background: '#10b981', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
@@ -437,7 +431,7 @@ export default function ExpenseClaims() {
                   </button>
                 </>
               )}
-              {isAccounts && selected.status === 'Manager Approved' && (
+              {isAccounts && !isOwnClaim(selected) && selected.status === 'Manager Approved' && (
                 <>
                   <button onClick={() => handleAccountsVerify(selected.id, 'Approved', { gst_verified: true, bill_match_verified: true, duplicate_checked: true })}
                     style={{ padding: '9px 18px', background: '#10b981', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
@@ -449,7 +443,7 @@ export default function ExpenseClaims() {
                   </button>
                 </>
               )}
-              {isAdmin && selected.status === 'Accounts Verified' && (
+              {isAdmin && !isOwnClaim(selected) && selected.status === 'Accounts Verified' && (
                 <>
                   <button onClick={() => handleMgmtApprove(selected.id, 'Approved')}
                     style={{ padding: '9px 18px', background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
@@ -478,16 +472,11 @@ export default function ExpenseClaims() {
             {/* Employee & Commercial Linkage */}
             <div style={{ fontSize: 12, fontWeight: 700, color: '#6B3FDB', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 12 }}>Employee & Commercial</div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 20 }}>
-              <div>
-                <label style={lbl}>Employee Name</label>
-                <input value={form.employee_name} onChange={e => fld('employee_name', e.target.value)} placeholder="Your name" style={inp} />
-              </div>
-              <div>
-                <label style={lbl}>Department</label>
-                <select value={form.department} onChange={e => fld('department', e.target.value)} style={inp}>
-                  <option value="">-- Select Department --</option>
-                  {deptList.map(d => <option key={d} value={d}>{d}</option>)}
-                </select>
+              {/* A claim is filed for the signed-in employee only; the server
+                  takes the name and department from the employee record (§202).
+                  These used to be free-text inputs the server now ignores. */}
+              <div style={{ gridColumn: '1/-1', fontSize: 12, color: '#6b7280' }}>
+                Filed as <strong>{user?.name || 'you'}</strong> — name and department come from your employee record.
               </div>
               <div>
                 <label style={lbl}>Linked Travel Request</label>
@@ -521,15 +510,14 @@ export default function ExpenseClaims() {
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
               <div>
                 <label style={lbl}>Expense Type *</label>
-                <select value={form.expense_type} onChange={e => fld('expense_type', e.target.value)} style={inp}>
-                  {EXPENSE_TYPES.map(g => <option key={g.group} value={g.group}>{g.group}</option>)}
-                </select>
+                <VocabSelect vocab="expense-types" value={form.expense_type}
+                  onChange={v => fld('expense_type', v)} selectStyle={inp} />
               </div>
               <div>
                 <label style={lbl}>Category *</label>
-                <select value={form.expense_category} onChange={e => fld('expense_category', e.target.value)} style={inp}>
-                  {categoryItems.map(c => <option key={c} value={c}>{c}</option>)}
-                </select>
+                <VocabSelect vocab="expense-categories" parent={form.expense_type}
+                  value={form.expense_category}
+                  onChange={v => fld('expense_category', v)} selectStyle={inp} />
               </div>
               <div>
                 <label style={lbl}>Expense Date *</label>

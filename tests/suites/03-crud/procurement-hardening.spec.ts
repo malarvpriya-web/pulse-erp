@@ -24,11 +24,30 @@
  */
 
 import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import path from 'node:path';
 import { test, expect } from '../../fixtures/base';
 import { waitForPageLoad, assertNoErrorBoundary } from '../../helpers/page-helpers';
 
-const BASE = 'http://localhost:5173';
-const API  = 'http://localhost:5000';
+// §220 — this spec creates a requisition, a PO and a GRN (each consumes a
+// document sequence). It runs ONLY under playwright.testdb.config.ts, against
+// the isolated test database. There are no defaults: it used to hardcode the
+// developer frontend (:5173) and backend (:5000) and wrote into company 1.
+const BASE = process.env.PULSE_FRONT_BASE ?? '';
+const API  = process.env.PULSE_API_BASE ?? '';
+const AUTH_FILE = process.env.PULSE_AUTH_FILE ?? '';
+
+// Fail closed, before any test in this file can write: the flag, the bases,
+// and a live proof (scripts/test-db/assert-server.mjs) that the API server is
+// serving the marked test database.
+test.beforeAll(() => {
+  if (process.env.PULSE_TEST_DB !== '1' || !BASE || !API || !AUTH_FILE || /:5000(\/|$)/.test(API) || /:5173(\/|$)/.test(BASE)) {
+    throw new Error('procurement-hardening.spec writes numbered documents: run it with  npx playwright test -c playwright.testdb.config.ts  (isolated test database only).');
+  }
+  execFileSync(process.execPath, ['scripts/test-db/assert-server.mjs', API], {
+    cwd: path.resolve(__dirname, '../../../backend'), stdio: 'inherit', env: process.env,
+  });
+});
 
 /**
  * The session token the setup project minted.
@@ -39,10 +58,10 @@ const API  = 'http://localhost:5000';
  * from `verifyToken` instead of the thing under test.
  */
 function authHeader() {
-  const state = JSON.parse(readFileSync('tests/.auth/user.json', 'utf8'));
+  const state = JSON.parse(readFileSync(AUTH_FILE, 'utf8'));
   const origin = state.origins?.find((o: any) => o.origin === BASE);
   const token = origin?.localStorage?.find((i: any) => i.name === 'token')?.value;
-  if (!token) throw new Error('No token in tests/.auth/user.json — run the setup project first.');
+  if (!token) throw new Error(`No token in ${AUTH_FILE} — run the setup project first.`);
   return { Authorization: `Bearer ${token.replace(/^"|"$/g, '')}` };
 }
 

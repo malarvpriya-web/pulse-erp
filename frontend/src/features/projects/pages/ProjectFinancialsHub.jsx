@@ -2,11 +2,12 @@ import { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
   Calculator, Activity, TrendingUp, List, Layers, IndianRupee,
-  LayoutDashboard,
+  LayoutDashboard, Percent,
 } from 'lucide-react';
 import ProjectCosting from './ProjectCosting';
 import ProjectEVMDashboard from './ProjectEVMDashboard';
 import ProjectProfitabilityDashboard from './ProjectProfitabilityDashboard';
+import ProjectProfitability from './ProjectProfitability';
 import CostTransactions from './CostTransactions';
 import CostCentreTracking from './CostCentreTracking';
 import ProjectRevenueSummary from './ProjectRevenueSummary';
@@ -16,6 +17,11 @@ const TABS = [
   { id: 'costing',       label: 'Project Costing',  icon: Calculator  },
   { id: 'evm',           label: 'EVM Dashboard',     icon: Activity    },
   { id: 'profitability', label: 'Profitability',     icon: TrendingUp  },
+  // Per-project margin table + 'Add Cost Line' (/project-profitability/all,
+  // /cost-lines) — a different page and different endpoints from the
+  // cross-project dashboard above. It was built and routed but linked
+  // nowhere in the app until this tab (2026-09-16).
+  { id: 'margins',       label: 'Margin Analysis',   icon: Percent     },
   { id: 'transactions',  label: 'Transactions',      icon: List        },
   { id: 'cost-centres',  label: 'Cost Centres',      icon: Layers      },
   { id: 'revenue',       label: 'Revenue Summary',   icon: IndianRupee  },
@@ -55,6 +61,7 @@ export default function ProjectFinancialsHub({ setPage }) {
         {active === 'costing'       && <ProjectCosting />}
         {active === 'evm'           && <ProjectEVMDashboard setPage={setPage} />}
         {active === 'profitability' && <ProjectProfitabilityDashboard setPage={setPage} />}
+        {active === 'margins'       && <ProjectProfitability setPage={setPage} />}
         {active === 'transactions'  && <CostTransactions setPage={setPage} />}
         {active === 'cost-centres'  && <CostCentreTracking setPage={setPage} />}
         {active === 'revenue'       && <ProjectRevenueSummary setPage={setPage} />}

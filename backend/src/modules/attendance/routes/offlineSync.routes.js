@@ -12,6 +12,7 @@
 import express from 'express';
 import pool from '../../shared/db.js';
 import { loadPunchProfile, describePunchMode } from '../../../shared/punchMode.js';
+import { getFullDayHours } from '../../../shared/attendanceRules.js';
 
 const router = express.Router();
 
@@ -148,7 +149,8 @@ router.post('/sync', async (req, res) => {
             [timeStr, String(prevIn.rows[0].check_in_time).slice(0,5)]
           ).catch(() => ({ rows: [{ hours: 0 }] }));
           const totalHours = Math.max(0, parseFloat(hoursRes.rows[0]?.hours || 0));
-          const otHours    = Math.max(0, totalHours - 9);
+          // Full day = work + break from Attendance Settings (8.5 h), not a fixed 9.
+          const otHours    = Math.max(0, totalHours - await getFullDayHours(companyId));
           await pool.query(`
             UPDATE attendance_records
                SET check_out_time=$1::time, total_hours=$2, ot_hours=$3, updated_at=NOW()

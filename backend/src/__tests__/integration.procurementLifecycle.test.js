@@ -50,6 +50,9 @@ const { default: prRepo }     = await import('../modules/procurement/repositorie
 const { default: poRepo }     = await import('../modules/procurement/repositories/purchaseOrder.repository.js');
 const { default: grnService } = await import('../modules/procurement/services/grn.service.js');
 const { createThreeWayMatchRecord } = await import('../modules/procurement/routes/procurement.routes.js');
+
+// Static: this helper resolves the pool lazily, on purpose. See its header.
+import { withIqcPolicy, setIqcPolicy } from './helpers/iqcPolicy.js';
 const { resolveVendorParty }  = await import('../modules/procurement/services/vendorIdentity.service.js');
 
 const TAG   = 'ZZLC';
@@ -145,12 +148,17 @@ async function makeApprovedPo({ qty = 10, rate = 100, taxRate = 18, status = 'ap
   finally { client.release(); }
 }
 
-const setIqc = (required) =>
-  pool.query('UPDATE quality_settings SET require_iqc_before_stock = $1 WHERE company_id = $2', [required, CO]);
+const setIqc = (required) => setIqcPolicy(required, CO);
 
 /**
  * Run a test body with the IQC gate forced one way, and put the company's real
  * setting back whatever happens.
+ *
+ * Delegates to helpers/iqcPolicy.js, which adds the half this suite was missing:
+ * the windows below are not only restored per test, they are held under an
+ * advisory lock that integration.procurementReverification also takes. Restoring
+ * per test protects the NEXT run; the lock protects the suite running RIGHT NOW
+ * in another worker against the same database. See that helper for the failure.
  *
  * `require_iqc_before_stock` is a LIVE business policy for company 1, not test
  * scaffolding, and both branches of the receipt path have to be exercised. An
@@ -160,13 +168,7 @@ const setIqc = (required) =>
  * as if it were the truth and restores that. Restoring per test keeps the window
  * to a single `it`.
  */
-async function withIqc(required, fn) {
-  const { rows: [before] } = await pool.query(
-    'SELECT require_iqc_before_stock AS v FROM quality_settings WHERE company_id = $1', [CO]);
-  await setIqc(required);
-  try { return await fn(); }
-  finally { if (before) await setIqc(before.v); }
-}
+const withIqc = (required, fn) => withIqcPolicy(required, CO, fn);
 
 // ═══════════════════════════════════════════════════════════════════════════
 describe('vendor → finance identity is deterministic', () => {
@@ -201,11 +203,14 @@ describe('vendor → finance identity is deterministic', () => {
     // constraint cannot. Uses a party in a company the vendor is not in.
     const { rows: [foreign] } = await pool.query(
       `INSERT INTO parties (party_code, party_type, name, company_id, is_active)
-       VALUES ($1, 'Supplier', $2, 999901, true) RETURNING id`,
+       VALUES ($1, 'Supplier', $2, 999916, true) RETURNING id`,
       [`${TAG}-FGN`, `${TAG} foreign party`]
     );
     await pool.query(
-      `INSERT INTO companies (id, name, code) VALUES (999901, 'ZZLC foreign tenant', 'ZZLCF')
+      // 999916, not 999901: integration.procurementIntegrity already owns
+      // 999901 as 'ZZPROC foreign tenant', so the ON CONFLICT DO NOTHING meant
+      // whichever suite ran first decided whose tenant this was.
+      `INSERT INTO companies (id, name, code) VALUES (999916, 'ZZLC foreign tenant', 'ZZLCF')
        ON CONFLICT (id) DO NOTHING`
     );
     await expect(

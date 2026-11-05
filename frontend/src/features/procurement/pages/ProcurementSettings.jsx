@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef } from 'react';
-import { Settings, CheckCircle, Link2, Hash, Bell, ShoppingBag, Tag, BarChart2, Shield, Globe, Scale, X, Plus } from 'lucide-react';
+import { Settings, CheckCircle, Link2, Hash, Bell, ShoppingBag, Tag, BarChart2, Shield, Globe, Scale, Truck, X, Plus } from 'lucide-react';
 import ModuleSettingsShell, {
   SectionCard, Row, Toggle, inputStyle,
 } from '@/features/_shared/ModuleSettingsShell';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
+import FreightSettingsPanel from '../components/FreightSettingsPanel';
 
 const PURPLE = '#6B3FDB';
 
@@ -33,6 +34,7 @@ const DEFAULT_SETTINGS = {
   l1_approval_limit:            25000,
   l2_approval_limit:            100000,
   cfo_approval_above:           500000,
+  allow_self_approval:          false,
   enforce_3way_match:           false,
   block_payment_on_mismatch:    false,
   allowable_price_variance_pct: 3,
@@ -56,7 +58,6 @@ const DEFAULT_SETTINGS = {
   inspection_sample_pct:        100,
   // Currency
   default_currency:             'INR',
-  enable_multi_currency:        false,
   // Total cost of ownership — mirrors backend TCO_DEFAULTS in
   // modules/procurement/engines/tcoEngine.js. Keep the two in step: the
   // backend is authoritative, these only stop the inputs rendering blank
@@ -73,6 +74,10 @@ const DEFAULT_SETTINGS = {
   single_source_risk_pct:       2,
   service_level_z:              1.65,
   tco_horizon_months:           12,
+  tco_day_count_basis:          365,
+  tco_fx_max_age_days:          30,
+  tco_assumed_freight_enabled:  true,
+  main_receiving_warehouse_id:  null,
 };
 
 const CURRENCIES = ['INR', 'USD', 'EUR', 'GBP', 'SGD', 'AED', 'JPY', 'CNY'];
@@ -87,6 +92,7 @@ const SECTIONS = [
   { id: 'mrp',           label: 'MRP Rules',            icon: BarChart2,   color: '#0284c7' },
   { id: 'quality',       label: 'Quality Rules',        icon: Shield,      color: '#16a34a' },
   { id: 'tco',           label: 'Total Cost of Ownership', icon: Scale,     color: '#0d9488' },
+  { id: 'freight',       label: 'Freight',              icon: Truck,       color: '#0f766e' },
   { id: 'currency',      label: 'Currency',             icon: Globe,       color: '#6d28d9' },
 ];
 
@@ -98,6 +104,12 @@ export default function ProcurementSettings() {
   const [newCat,   setNewCat]   = useState('');
   const original                = useRef(DEFAULT_SETTINGS);
   const toast                   = useToast();
+  const [warehouses, setWarehouses] = useState([]);
+  useEffect(() => {
+    api.get('/inventory/warehouses')
+      .then(r => setWarehouses(Array.isArray(r.data) ? r.data : (r.data?.warehouses || r.data?.data || [])))
+      .catch(() => setWarehouses([]));
+  }, []);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -120,8 +132,12 @@ export default function ProcurementSettings() {
   const handleSave = async () => {
     setSaving(true);
     try {
-      await api.put('/procurement/settings', settings);
-      original.current = { ...settings };
+      const res = await api.put('/procurement/settings', settings);
+      // Show what the server STORED, not what was typed — a field it did not
+      // keep must not look saved.
+      const stored = { ...settings, ...(res.data?.data || {}) };
+      setSettings(stored);
+      original.current = stored;
       setIsDirty(false);
       toast.success('Procurement settings saved');
     } catch (e) {
@@ -216,6 +232,15 @@ export default function ProcurementSettings() {
             </Row>
             <Row label="CFO Approval Above (₹)" desc={`CFO sign-off required above ${fmtINR(S.cfo_approval_above)}`}>
               <NumInput field="cfo_approval_above" step={10000} />
+            </Row>
+            {/* Segregation of duties. The toggle is phrased as the PERMISSION,
+                not the control, so that "on" always reads as the looser state —
+                the same direction as every other switch on this page. */}
+            <Row
+              label="Allow self-approval"
+              desc={`Off (recommended): whoever raises a requisition or purchase order cannot also approve it — it must go to another approver. Requests at or below ${fmtINR(S.auto_approve_below)} need no approval and are unaffected.`}
+            >
+              <Toggle checked={!!S.allow_self_approval} onChange={v => update('allow_self_approval', v)} color="#dc2626" />
             </Row>
             <SaveBar color="#0369a1" />
           </SectionCard>
@@ -382,9 +407,6 @@ export default function ProcurementSettings() {
             <Row label="Rework on a Reject (%)" desc="Handling and replacement cost on top of losing the part, as a % of its landed cost">
               <NumInput field="rework_cost_pct" min={0} step={5} />
             </Row>
-            <Row label="Freight when Unquoted (% of value)" desc="Fallback only — a quoted freight amount, or this vendor's own past freight ratio, always wins">
-              <NumInput field="default_freight_pct" min={0} step={0.5} />
-            </Row>
             <Row
               label="GST Recoverable as Input Credit (%)"
               desc="At 100% GST is excluded from TCO because it is fully reclaimed. Lower it only where input credit is blocked — the non-creditable share then becomes a real cost"
@@ -397,14 +419,55 @@ export default function ProcurementSettings() {
             <Row label="Service Level Factor (z)" desc="Safety-stock cover for lead-time risk. 1.65 ≈ 95% service level, 2.33 ≈ 99%">
               <NumInput field="service_level_z" min={0} step={0.05} />
             </Row>
+            <Row label="Day-Count Basis (days / yr)" desc="One year for every time-based rate: carrying cost, credit terms and early-payment discounts. 365 unless your treasury policy uses 360">
+              <select
+                value={Number(S.tco_day_count_basis) || 365}
+                onChange={e => update('tco_day_count_basis', Number(e.target.value))}
+                style={{ ...inputStyle, width: 100, textAlign: 'center' }}
+              >
+                <option value={365}>365</option>
+                <option value={360}>360</option>
+              </select>
+            </Row>
+            <Row label="Exchange Rate Max Age (days)" desc="An approved Finance rate older than this, on the day of the comparison, is treated as stale: the quote shows “needs exchange rate” and is not ranked">
+              <NumInput field="tco_fx_max_age_days" min={1} step={1} />
+            </Row>
             <SaveBar color="#0d9488" />
+          </SectionCard>
+        );
+
+      case 'freight':
+        return (
+          <SectionCard icon={Truck} color="#0f766e" label="Freight">
+            <Row label="Main Receiving Point" desc="Where freight lanes end. RFQs and purchase orders record no receiving location, so every comparison uses the lane from the vendor to this warehouse">
+              <select
+                aria-label="Main receiving point"
+                value={S.main_receiving_warehouse_id ?? ''}
+                onChange={e => update('main_receiving_warehouse_id', e.target.value ? Number(e.target.value) : null)}
+                style={{ ...inputStyle, width: 240 }}
+              >
+                <option value="">— not designated —</option>
+                {warehouses.map(w => <option key={w.id} value={w.id}>{w.warehouse_name || w.name}</option>)}
+              </select>
+            </Row>
+            <Row
+              label="Use Assumed Freight as a Last Resort"
+              desc="When freight is not quoted, cannot be modelled from weight × distance × an approved rate, and has no history, cost it at the % below and mark the comparison PROVISIONAL (not a verified landed cost). Off: such a vendor is shown as needing freight input and is never ranked"
+            >
+              <Toggle checked={S.tco_assumed_freight_enabled !== false} onChange={v => update('tco_assumed_freight_enabled', v)} color="#0f766e" />
+            </Row>
+            <Row label="Assumed Freight (% of value)" desc="Applied only as the last resort above, and always labelled “Assumed freight”">
+              <NumInput field="default_freight_pct" min={0} step={0.5} />
+            </Row>
+            <SaveBar color="#0f766e" />
+            <FreightSettingsPanel warehouses={warehouses} mainWarehouseId={original.current?.main_receiving_warehouse_id ?? null} />
           </SectionCard>
         );
 
       case 'currency':
         return (
           <SectionCard icon={Globe} color="#6d28d9" label="Currency Settings">
-            <Row label="Default Currency" desc="Base currency used for all purchase orders and invoices">
+            <Row label="Default Currency" desc="The currency every vendor comparison (total cost of ownership, RFQ cost scores, awards) is expressed in. Quotes in other currencies are converted with an approved Finance exchange rate">
               <select
                 value={S.default_currency || 'INR'}
                 onChange={e => update('default_currency', e.target.value)}
@@ -413,8 +476,8 @@ export default function ProcurementSettings() {
                 {CURRENCIES.map(c => <option key={c} value={c}>{c}</option>)}
               </select>
             </Row>
-            <Row label="Enable Multi-Currency POs" desc="Allow purchase orders to be issued in foreign currencies with live exchange rates">
-              <Toggle checked={!!S.enable_multi_currency} onChange={v => update('enable_multi_currency', v)} color="#6d28d9" />
+            <Row label="Exchange Rates" desc="Maintained and approved by Finance under Finance → Forex Management. A comparison uses only an approved rate that is no older than the limit set under Total Cost of Ownership; otherwise the quote shows “needs exchange rate” and is not ranked">
+              <span style={{ fontSize: 12, color: '#6b7280' }}>Finance-approved</span>
             </Row>
             <SaveBar color="#6d28d9" />
           </SectionCard>

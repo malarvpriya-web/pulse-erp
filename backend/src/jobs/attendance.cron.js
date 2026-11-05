@@ -6,6 +6,7 @@
  */
 import cron from 'node-cron';
 import pool from '../modules/shared/db.js';
+import { getFullDayHours } from '../shared/attendanceRules.js';
 import notificationsRepository from '../modules/notifications/repositories/notifications.repository.js';
 
 // ── Helper: write to attendance_audit_logs ──────────────────────────────────
@@ -126,7 +127,8 @@ async function runAutoCheckout() {
           [checkoutTime, String(rec.check_in_time).slice(0,5)]
         ).catch(() => ({ rows: [{ h: 0 }] }));
         const totalHours = Math.max(0, parseFloat(hours.rows[0]?.h || 0));
-        const otHours = Math.max(0, totalHours - 9);
+        // Full day = work + break from Attendance Settings (8.5 h), not a fixed 9.
+        const otHours = Math.max(0, totalHours - await getFullDayHours(rec.company_id ?? cfg.company_id));
 
         await pool.query(`
           UPDATE attendance_records

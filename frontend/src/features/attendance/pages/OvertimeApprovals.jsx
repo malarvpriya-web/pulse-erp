@@ -6,6 +6,7 @@ import {
 import api from '@/services/api/client';
 import { useAuth } from '@/context/AuthContext';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import { localDay, fmtDate } from '@/utils/dateFormatter';
 
 const P     = '#6B3FDB';
 const CARD  = { background: '#fff', borderRadius: 12, border: '1px solid #f0f0f4', padding: 20 };
@@ -141,7 +142,7 @@ function OTRow({ record, selected, onToggleSelect, onApprove, onReject, isManage
       </td>
 
       <td style={{ padding: '10px 14px', color: '#374151', fontSize: 13, whiteSpace: 'nowrap' }}>
-        {record.attendance_date}
+        {fmtDate(record.attendance_date)}
       </td>
 
       <td style={{ padding: '10px 14px' }}>
@@ -201,7 +202,7 @@ function ApproveModal({ record, onConfirm, onClose, loading }) {
   return (
     <Modal
       title="Approve Overtime"
-      subtitle={`${record.emp_name} · ${record.attendance_date}`}
+      subtitle={`${record.emp_name} · ${fmtDate(record.attendance_date)}`}
       onClose={onClose}
     >
       <div style={{ padding: '10px 14px', background: '#f0fdf4', borderRadius: 8, border: '1px solid #bbf7d0', marginBottom: 18, fontSize: 13 }}>
@@ -241,7 +242,7 @@ function RejectModal({ record, onConfirm, onClose, loading }) {
   return (
     <Modal
       title="Reject Overtime"
-      subtitle={`${record.emp_name} · ${record.attendance_date}`}
+      subtitle={`${record.emp_name} · ${fmtDate(record.attendance_date)}`}
       onClose={onClose}
     >
       <div style={{ padding: '10px 14px', background: '#fff7ed', borderRadius: 8, border: '1px solid #ddd6fe', marginBottom: 18, fontSize: 13 }}>
@@ -299,7 +300,7 @@ function BulkApproveModal({ count, onConfirm, onClose, loading }) {
 
 // ─── Request OT modal ─────────────────────────────────────────────────────────
 function RequestOTModal({ isManager, employees, myEmployeeId, onSubmit, onClose, loading }) {
-  const today = new Date().toISOString().split('T')[0];
+  const today = localDay();
   const [form, setForm] = useState({
     employee_id:     isManager ? '' : String(myEmployeeId || ''),
     attendance_date: today,

@@ -685,7 +685,11 @@ async function seedOutboundShipments(c, itemMap) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// §220 — this writes the SCA-REF reference dataset (sales orders, shipments, POs, stock) into a company. It runs ONLY against an isolated test database (scripts/test-db/README.md);
+// against anything else it exits before its first write.
 async function main() {
+  const { guardOrExit } = await import("../test-db/guard.mjs");
+  await guardOrExit(pool, "sca/rebuild-supply-chain-data");
   const c = await pool.connect();
   try {
     await c.query('BEGIN');

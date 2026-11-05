@@ -4,8 +4,11 @@
  */
 import express from 'express';
 import pool from '../../../config/db.js';
+import {
+  nextCommissioningWorkflowNumber, nextCommissioningCertificateNumber, nextWarrantyNumber,
+} from '../../../shared/docNumber.js';
 import { deriveResponseFields } from '../services/voc.service.js';
-import { verifyToken } from '../../../middlewares/auth.middleware.js';
+import { verifyToken, requirePermission } from '../../../middlewares/auth.middleware.js';
 import { logAudit } from '../../../services/AuditService.js';
 import { companyOf } from '../../../shared/scope.js';
 import { dependencyBlocked } from '../../../shared/workflowDependency.js';
@@ -16,24 +19,87 @@ const router = express.Router();
 const cid = req => companyOf(req);
 const uid = req => req.user?.userId ?? req.user?.id ?? null;
 
-// ── Workflow number generator ─────────────────────────────────────────────────
-async function nextWfNo(company_id) {
-  const yr = new Date().getFullYear().toString().slice(-2);
-  const { rows } = await pool.query(
-    `SELECT COUNT(*) AS cnt FROM commissioning_workflows WHERE company_id = $1`,
-    [company_id]
-  );
-  return `CW-${yr}-${String(parseInt(rows[0].cnt, 10) + 1).padStart(4, '0')}`;
+/*
+ * Access control (LEGACY_MIS_TO_PULSE_AUDIT.md, P0 Task 4). Before this every
+ * route here only needed a login: any employee could issue a certificate or
+ * start a warranty, checklist/readings/photos were written by workflow id with
+ * no company check, and PUT could set status straight to signed_off/completed.
+ *  - Permissions come from the `servicedesk` matrix: view to read; add to
+ *    create; edit for field work (check-in, checklist, readings, photos,
+ *    customer sign-off, templates); approve to issue a certificate or start a
+ *    warranty.
+ *  - Everything is limited to the caller's company, including the project,
+ *    equipment and engineer a workflow names, and the parent workflow of every
+ *    checklist item / reading / photo.
+ *  - The workflow order is enforced: check-in only before sign-off; sign-off
+ *    only from in_progress; evidence (checklist, readings, photos) is frozen
+ *    once signed off; a certified workflow cannot be edited.
+ *  - Who did something (checklist completed_by, photo uploaded_by, audit) is
+ *    the logged-in user, never a value from the request.
+ */
+const FROZEN_STATUSES = ['signed_off', 'completed'];
+const PUT_STATUSES = ['pending', 'in_progress', 'cancelled'];
+
+// Every query here filters on company_id = <caller company>; a login with no
+// company would match nothing, and would write rows with no company.
+router.use((req, res, next) => {
+  if (cid(req) == null) return res.status(403).json({ error: 'No company is assigned to this login.' });
+  next();
+});
+
+/** The logged-in user's display name, from the users table (not the request). */
+async function actorName(req) {
+  if (req._actorName !== undefined) return req._actorName;
+  const { rows } = await pool.query(`SELECT name, email FROM users WHERE id = $1`, [uid(req)]);
+  req._actorName = rows[0]?.name || rows[0]?.email || null;
+  return req._actorName;
 }
 
-async function nextCertNo(company_id) {
-  const yr = new Date().getFullYear();
+/** The caller company's workflow, or null. */
+async function workflowOf(req, id) {
+  const wfId = parseInt(id, 10);
+  if (!Number.isInteger(wfId)) return null;
   const { rows } = await pool.query(
-    `SELECT COUNT(*) AS cnt FROM commissioning_workflows WHERE company_id = $1 AND certificate_issued = true`,
-    [company_id]
-  );
-  return `CERT-${yr}-${String(parseInt(rows[0].cnt, 10) + 1).padStart(4, '0')}`;
+    `SELECT * FROM commissioning_workflows WHERE id = $1 AND company_id = $2`, [wfId, cid(req)]);
+  return rows[0] || null;
 }
+
+const isFrozen = wf => FROZEN_STATUSES.includes(wf.status) || wf.certificate_issued === true;
+
+/**
+ * Loads the parent workflow for checklist / readings / photo routes and
+ * refuses another company's (404) or a signed-off one (409). Returns the
+ * workflow, or null after responding.
+ */
+async function editableWorkflow(req, res) {
+  const wf = await workflowOf(req, req.params.id);
+  if (!wf) { res.status(404).json({ error: 'Workflow not found' }); return null; }
+  if (isFrozen(wf)) {
+    res.status(409).json({ error: 'This workflow has been signed off; its checklist, readings and photos can no longer change' });
+    return null;
+  }
+  return wf;
+}
+
+/** Every referenced project / equipment / engineer must belong to the caller company. */
+async function foreignReference(req, { project_id, equipment_id, engineer_id }) {
+  const checks = [
+    ['projects', project_id, 'Project'],
+    ['customer_equipment', equipment_id, 'Equipment'],
+    ['employees', engineer_id, 'Engineer'],
+  ];
+  for (const [table, value, label] of checks) {
+    if (value === undefined || value === null || value === '') continue;
+    const { rows } = await pool.query(
+      `SELECT 1 FROM ${table} WHERE id = $1 AND company_id = $2`, [parseInt(value, 10) || 0, cid(req)]);
+    if (!rows.length) return `${label} not found in your company`;
+  }
+  return null;
+}
+
+// Workflow / certificate / warranty numbers come from global sequences
+// (shared/docNumber.js). They used to be COUNT(*) of the company + 1 against
+// globally unique columns, so a second company's first number collided.
 
 // Default checklist items for new workflows
 const DEFAULT_CHECKLIST = [
@@ -73,7 +139,7 @@ const DEFAULT_READINGS = [
 // =============================================================================
 
 // GET /commissioning — list all workflows
-router.get('/', verifyToken, async (req, res) => {
+router.get('/', verifyToken, requirePermission('servicedesk', 'view'), async (req, res) => {
   try {
     const { status, engineer_id, project_id } = req.query;
     let q = `
@@ -100,7 +166,7 @@ export async function createCommissioningWorkflow(companyId, data) {
     project_id, equipment_id, customer_name, site_name, site_address,
     engineer_id, engineer_name, fat_reference, sat_reference, scheduled_date, notes,
   } = data;
-  const workflow_number = await nextWfNo(companyId);
+  const workflow_number = await nextCommissioningWorkflowNumber();
 
   const { rows } = await pool.query(
     `INSERT INTO commissioning_workflows
@@ -133,11 +199,13 @@ export async function createCommissioningWorkflow(companyId, data) {
 }
 
 // POST /commissioning — create workflow
-router.post('/', verifyToken, async (req, res) => {
+router.post('/', verifyToken, requirePermission('servicedesk', 'add'), async (req, res) => {
   try {
     if (!req.body.customer_name || !req.body.scheduled_date) {
       return res.status(400).json({ error: 'customer_name and scheduled_date are required' });
     }
+    const foreign = await foreignReference(req, req.body);
+    if (foreign) return res.status(400).json({ error: foreign });
     const wf = await createCommissioningWorkflow(cid(req), req.body);
     logAudit({ userId: uid(req), company_id: cid(req), action: 'create', module: 'Commissioning', recordId: wf.id, recordType: 'commissioning_workflow', newData: wf, req });
     res.status(201).json(wf);
@@ -145,7 +213,7 @@ router.post('/', verifyToken, async (req, res) => {
 });
 
 // GET /commissioning/:id — workflow detail with checklist, readings, photos
-router.get('/:id', verifyToken, async (req, res) => {
+router.get('/:id', verifyToken, requirePermission('servicedesk', 'view'), async (req, res) => {
   try {
     const { rows } = await pool.query(
       `SELECT cw.*, ce.equipment_name, ce.equipment_tag, ce.model_number, ce.serial_number, ce.site_location
@@ -179,10 +247,28 @@ router.get('/:id', verifyToken, async (req, res) => {
 });
 
 // PUT /commissioning/:id — update workflow fields
-router.put('/:id', verifyToken, captureBefore('commissioning_workflows'), async (req, res) => {
+router.put('/:id', verifyToken, requirePermission('servicedesk', 'edit'), captureBefore('commissioning_workflows'), async (req, res) => {
   try {
     const { customer_name, site_name, site_address, engineer_id, engineer_name,
             fat_reference, sat_reference, scheduled_date, notes, status } = req.body;
+    const current = await workflowOf(req, req.params.id);
+    if (!current) return res.status(404).json({ error: 'Workflow not found' });
+    // A certificate has been issued against this record; it no longer changes.
+    if (current.certificate_issued) {
+      return res.status(409).json({ error: 'A certified commissioning workflow cannot be edited' });
+    }
+    // signed_off / completed are reached only through sign-off and certificate
+    // issuance, never set by hand; and a signed-off workflow keeps its status.
+    if (status != null && status !== current.status) {
+      if (!PUT_STATUSES.includes(status)) {
+        return res.status(400).json({ error: `Status can only be set to ${PUT_STATUSES.join(', ')} here` });
+      }
+      if (FROZEN_STATUSES.includes(current.status)) {
+        return res.status(409).json({ error: 'A signed-off workflow cannot change status' });
+      }
+    }
+    const foreign = await foreignReference(req, { engineer_id });
+    if (foreign) return res.status(400).json({ error: foreign });
     const { rows } = await pool.query(
       `UPDATE commissioning_workflows
           SET customer_name = COALESCE($1, customer_name),
@@ -210,10 +296,13 @@ router.put('/:id', verifyToken, captureBefore('commissioning_workflows'), async 
 // =============================================================================
 
 // POST /commissioning/:id/checkin
-router.post('/:id/checkin', verifyToken, async (req, res) => {
+router.post('/:id/checkin', verifyToken, requirePermission('servicedesk', 'edit'), async (req, res) => {
   try {
     const { lat, lng, address } = req.body;
     if (!lat || !lng) return res.status(400).json({ error: 'GPS coordinates required' });
+    const current = await workflowOf(req, req.params.id);
+    if (!current) return res.status(404).json({ error: 'Workflow not found' });
+    if (isFrozen(current)) return res.status(409).json({ error: 'This workflow has already been signed off' });
     const { rows } = await pool.query(
       `UPDATE commissioning_workflows
           SET status = 'in_progress', checkin_time = NOW(),
@@ -228,7 +317,7 @@ router.post('/:id/checkin', verifyToken, async (req, res) => {
 });
 
 // POST /commissioning/:id/checkout
-router.post('/:id/checkout', verifyToken, async (req, res) => {
+router.post('/:id/checkout', verifyToken, requirePermission('servicedesk', 'edit'), async (req, res) => {
   try {
     const { rows } = await pool.query(
       `UPDATE commissioning_workflows SET checkout_time = NOW(), updated_at = NOW()
@@ -245,8 +334,10 @@ router.post('/:id/checkout', verifyToken, async (req, res) => {
 // =============================================================================
 
 // PUT /commissioning/:id/checklist/:itemId — mark item complete/incomplete
-router.put('/:id/checklist/:itemId', verifyToken, async (req, res) => {
+router.put('/:id/checklist/:itemId', verifyToken, requirePermission('servicedesk', 'edit'), async (req, res) => {
   try {
+    const wf = await editableWorkflow(req, res);
+    if (!wf) return;
     const { is_completed, remarks } = req.body;
     const { rows } = await pool.query(
       `UPDATE commissioning_checklist_items
@@ -256,7 +347,7 @@ router.put('/:id/checklist/:itemId', verifyToken, async (req, res) => {
               remarks = COALESCE($3, remarks)
         WHERE id = $4 AND workflow_id = $5
         RETURNING *`,
-      [is_completed, req.user?.name || req.user?.email, remarks, req.params.itemId, req.params.id]
+      [is_completed, await actorName(req), remarks, req.params.itemId, wf.id]
     );
     if (!rows.length) return res.status(404).json({ error: 'Checklist item not found' });
     res.json(rows[0]);
@@ -264,14 +355,16 @@ router.put('/:id/checklist/:itemId', verifyToken, async (req, res) => {
 });
 
 // POST /commissioning/:id/checklist — add custom checklist item
-router.post('/:id/checklist', verifyToken, async (req, res) => {
+router.post('/:id/checklist', verifyToken, requirePermission('servicedesk', 'edit'), async (req, res) => {
   try {
     const { category, item_text, is_mandatory = false, sort_order = 99 } = req.body;
     if (!item_text) return res.status(400).json({ error: 'item_text is required' });
+    const wf = await editableWorkflow(req, res);
+    if (!wf) return;
     const { rows } = await pool.query(
       `INSERT INTO commissioning_checklist_items (company_id, workflow_id, category, item_text, is_mandatory, sort_order)
        VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
-      [cid(req), req.params.id, category, item_text, is_mandatory, sort_order]
+      [cid(req), wf.id, category, item_text, is_mandatory, sort_order]
     );
     res.status(201).json(rows[0]);
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -282,8 +375,10 @@ router.post('/:id/checklist', verifyToken, async (req, res) => {
 // =============================================================================
 
 // PUT /commissioning/:id/readings/:readingId
-router.put('/:id/readings/:readingId', verifyToken, async (req, res) => {
+router.put('/:id/readings/:readingId', verifyToken, requirePermission('servicedesk', 'edit'), async (req, res) => {
   try {
+    const wf = await editableWorkflow(req, res);
+    if (!wf) return;
     const { measured_value, status, notes } = req.body;
     const { rows } = await pool.query(
       `UPDATE commissioning_readings
@@ -293,7 +388,7 @@ router.put('/:id/readings/:readingId', verifyToken, async (req, res) => {
               recorded_at = NOW()
         WHERE id = $4 AND workflow_id = $5
         RETURNING *`,
-      [measured_value, status, notes, req.params.readingId, req.params.id]
+      [measured_value, status, notes, req.params.readingId, wf.id]
     );
     if (!rows.length) return res.status(404).json({ error: 'Reading not found' });
     res.json(rows[0]);
@@ -301,14 +396,16 @@ router.put('/:id/readings/:readingId', verifyToken, async (req, res) => {
 });
 
 // POST /commissioning/:id/readings — add custom reading
-router.post('/:id/readings', verifyToken, async (req, res) => {
+router.post('/:id/readings', verifyToken, requirePermission('servicedesk', 'edit'), async (req, res) => {
   try {
     const { parameter, unit, set_value, measured_value, status, notes } = req.body;
     if (!parameter) return res.status(400).json({ error: 'parameter is required' });
+    const wf = await editableWorkflow(req, res);
+    if (!wf) return;
     const { rows } = await pool.query(
       `INSERT INTO commissioning_readings (workflow_id, company_id, parameter, unit, set_value, measured_value, status, notes)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
-      [req.params.id, cid(req), parameter, unit, set_value, measured_value, status || 'ok', notes]
+      [wf.id, cid(req), parameter, unit, set_value, measured_value, status || 'ok', notes]
     );
     res.status(201).json(rows[0]);
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -319,23 +416,29 @@ router.post('/:id/readings', verifyToken, async (req, res) => {
 // =============================================================================
 
 // POST /commissioning/:id/photos
-router.post('/:id/photos', verifyToken, async (req, res) => {
+router.post('/:id/photos', verifyToken, requirePermission('servicedesk', 'edit'), async (req, res) => {
   try {
     const { caption, file_path, phase } = req.body;
     if (!file_path) return res.status(400).json({ error: 'file_path is required' });
+    const wf = await editableWorkflow(req, res);
+    if (!wf) return;
     const { rows } = await pool.query(
       `INSERT INTO commissioning_photos (workflow_id, company_id, caption, file_path, phase, uploaded_by)
        VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
-      [req.params.id, cid(req), caption, file_path, phase || 'general', req.user?.name || req.user?.email]
+      [wf.id, cid(req), caption, file_path, phase || 'general', await actorName(req)]
     );
     res.status(201).json(rows[0]);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // DELETE /commissioning/:id/photos/:photoId
-router.delete('/:id/photos/:photoId', verifyToken, async (req, res) => {
+router.delete('/:id/photos/:photoId', verifyToken, requirePermission('servicedesk', 'edit'), async (req, res) => {
   try {
-    await pool.query(`DELETE FROM commissioning_photos WHERE id = $1 AND workflow_id = $2`, [req.params.photoId, req.params.id]);
+    const wf = await editableWorkflow(req, res);
+    if (!wf) return;
+    const { rowCount } = await pool.query(
+      `DELETE FROM commissioning_photos WHERE id = $1 AND workflow_id = $2`, [parseInt(req.params.photoId, 10) || 0, wf.id]);
+    if (!rowCount) return res.status(404).json({ error: 'Photo not found' });
     res.json({ message: 'Photo deleted' });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -345,16 +448,23 @@ router.delete('/:id/photos/:photoId', verifyToken, async (req, res) => {
 // =============================================================================
 
 // POST /commissioning/:id/signoff
-router.post('/:id/signoff', verifyToken, async (req, res) => {
+router.post('/:id/signoff', verifyToken, requirePermission('servicedesk', 'edit'), async (req, res) => {
   try {
     const { customer_sign_name, customer_sign_data, customer_feedback, customer_rating } = req.body;
     if (!customer_sign_name) return res.status(400).json({ error: 'customer_sign_name is required' });
+
+    // Sign-off follows the on-site check-in, and happens once.
+    const current = await workflowOf(req, req.params.id);
+    if (!current) return res.status(404).json({ error: 'Workflow not found' });
+    if (current.status !== 'in_progress' || current.certificate_issued) {
+      return res.status(409).json({ error: `Customer sign-off needs a checked-in (in progress) workflow; this one is ${current.status}` });
+    }
 
     // Verify all mandatory checklist items are complete
     const { rows: incomplete } = await pool.query(
       `SELECT COUNT(*) AS cnt FROM commissioning_checklist_items
         WHERE workflow_id = $1 AND is_mandatory = true AND is_completed = false`,
-      [req.params.id]
+      [current.id]
     );
     if (parseInt(incomplete[0].cnt) > 0) {
       return res.status(400).json({ error: `${incomplete[0].cnt} mandatory checklist item(s) not completed` });
@@ -366,7 +476,7 @@ router.post('/:id/signoff', verifyToken, async (req, res) => {
               customer_sign_time = NOW(), customer_feedback = $3,
               customer_rating = $4, status = 'signed_off',
               completed_date = CURRENT_DATE, updated_at = NOW()
-        WHERE id = $5 AND company_id = $6 RETURNING *`,
+        WHERE id = $5 AND company_id = $6 AND status = 'in_progress' RETURNING *`,
       [customer_sign_name, customer_sign_data, customer_feedback, customer_rating, req.params.id, cid(req)]
     );
     if (!rows.length) return res.status(404).json({ error: 'Workflow not found' });
@@ -410,7 +520,7 @@ router.post('/:id/signoff', verifyToken, async (req, res) => {
 // =============================================================================
 
 // POST /commissioning/:id/issue-certificate
-router.post('/:id/issue-certificate', verifyToken, async (req, res) => {
+router.post('/:id/issue-certificate', verifyToken, requirePermission('servicedesk', 'approve'), async (req, res) => {
   try {
     const { rows: wf } = await pool.query(
       `SELECT * FROM commissioning_workflows WHERE id = $1 AND company_id = $2`,
@@ -432,12 +542,13 @@ router.post('/:id/issue-certificate', verifyToken, async (req, res) => {
       const { rows: openInstall } = await pool.query(
         `SELECT installation_number FROM installation_requests
           WHERE status NOT IN ('completed','cancelled')
+            AND company_id = $3
             AND (
               ($1::int IS NOT NULL AND equipment_id=$1)
               OR ($1::int IS NULL AND project_id=$2)
             )
           LIMIT 1`,
-        [wf[0].equipment_id, wf[0].project_id]
+        [wf[0].equipment_id, wf[0].project_id, cid(req)]
       );
       if (openInstall.length) {
         return dependencyBlocked(res, {
@@ -447,14 +558,15 @@ router.post('/:id/issue-certificate', verifyToken, async (req, res) => {
       }
     }
 
-    const cert_number = await nextCertNo(cid(req));
+    const cert_number = await nextCommissioningCertificateNumber();
     const { rows } = await pool.query(
       `UPDATE commissioning_workflows
           SET certificate_number = $1, certificate_issued = true, certificate_issued_at = NOW(),
               status = 'completed', updated_at = NOW()
-        WHERE id = $2 AND company_id = $3 RETURNING *`,
+        WHERE id = $2 AND company_id = $3 AND status = 'signed_off' AND certificate_issued IS NOT TRUE RETURNING *`,
       [cert_number, req.params.id, cid(req)]
     );
+    if (!rows.length) return res.status(409).json({ error: 'Certificate already issued' });
 
     logAudit({ userId: uid(req), company_id: cid(req), action: 'update', module: 'Commissioning', recordId: rows[0].id, recordType: 'commissioning_workflow', newData: { certificate_number: cert_number }, req });
 
@@ -501,13 +613,19 @@ export async function activateWarranty(companyId, workflowId, warranty_months, a
   // for the Customer Portal (customer-portal.routes.js reads this directly
   // in 5+ places); the Unified Warranty Engine row below is the source of
   // truth, this stays in sync with it rather than being independent.
-  if (wf[0].equipment_id) {
+  // Only the company's own equipment: a workflow row naming another company's
+  // equipment id must not write to it.
+  const { rows: equip } = wf[0].equipment_id
+    ? await pool.query(`SELECT * FROM customer_equipment WHERE id=$1 AND company_id=$2`, [wf[0].equipment_id, companyId])
+    : { rows: [] };
+  const equipment = equip[0];
+  if (equipment) {
     await pool.query(
       `UPDATE customer_equipment
           SET warranty_status = 'active', warranty_expiry = $1,
               last_service_date = CURRENT_DATE, updated_at = NOW()
-        WHERE id = $2`,
-      [expiryStr, wf[0].equipment_id]
+        WHERE id = $2 AND company_id = $3`,
+      [expiryStr, equipment.id, companyId]
     );
   }
 
@@ -517,14 +635,7 @@ export async function activateWarranty(companyId, workflowId, warranty_months, a
   // commissioning_workflow_id so re-activating (e.g. a retry, or the new
   // certificate-issued event reaction firing alongside a manual call) doesn't
   // create a duplicate row.
-  const { rows: equip } = wf[0].equipment_id
-    ? await pool.query(`SELECT * FROM customer_equipment WHERE id=$1`, [wf[0].equipment_id])
-    : { rows: [] };
-  const equipment = equip[0];
-  const { rows: cnt } = await pool.query(
-    `SELECT COUNT(*) FROM warranty_registrations WHERE company_id=$1`, [companyId]
-  );
-  const warrantyNumber = `WR-${String(parseInt(cnt[0].count) + 1).padStart(5, '0')}`;
+  const warrantyNumber = await nextWarrantyNumber();
   // serial_number is NOT NULL on warranty_registrations — a commissioning
   // workflow with no linked equipment_id (or equipment with no serial number
   // recorded) has no real one to give it. Bug found live while testing the
@@ -550,7 +661,7 @@ export async function activateWarranty(companyId, workflowId, warranty_months, a
           manufacturer_warranty_months, commissioning_date, status, company_id)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10,$11,'Active',$12)`,
       [
-        warrantyNumber, wf[0].project_id, wf[0].id, wf[0].equipment_id,
+        warrantyNumber, wf[0].project_id, wf[0].id, equipment?.id ?? null,
         serialNumber, equipment?.equipment_name || 'Commissioned equipment',
         wf[0].customer_name || 'Unknown',
         startDate.toISOString().split('T')[0], expiryStr, warranty_months,
@@ -565,8 +676,9 @@ export async function activateWarranty(companyId, workflowId, warranty_months, a
   // POST /lifecycle/amc-contracts flow); it can't be auto-created here since
   // pricing/SLA terms need a business decision the system doesn't have.
   const { rows: receivers } = await pool.query(
-    `SELECT id FROM users WHERE is_active = true
-       AND LOWER(role) IN ('admin','super_admin','superadmin','manager','service_manager','sales','sales_manager')`
+    `SELECT id FROM users WHERE is_active = true AND company_id = $1
+       AND LOWER(role) IN ('admin','super_admin','superadmin','manager','service_manager','sales','sales_manager')`,
+    [companyId]
   ).catch(() => ({ rows: [] }));
   for (const r of receivers) {
     await pool.query(
@@ -583,9 +695,12 @@ export async function activateWarranty(companyId, workflowId, warranty_months, a
 }
 
 // POST /commissioning/:id/activate-warranty
-router.post('/:id/activate-warranty', verifyToken, async (req, res) => {
+router.post('/:id/activate-warranty', verifyToken, requirePermission('servicedesk', 'approve'), async (req, res) => {
   try {
-    const { warranty_months = 12 } = req.body;
+    const warranty_months = Number(req.body.warranty_months ?? 12);
+    if (!Number.isInteger(warranty_months) || warranty_months < 1 || warranty_months > 120) {
+      return res.status(400).json({ error: 'warranty_months must be a whole number of months between 1 and 120' });
+    }
     const updated = await activateWarranty(cid(req), req.params.id, warranty_months, uid(req));
     res.json(updated);
   } catch (err) { res.status(err.status || 500).json({ error: err.message }); }
@@ -596,7 +711,7 @@ router.post('/:id/activate-warranty', verifyToken, async (req, res) => {
 // =============================================================================
 
 // GET /commissioning/analytics/summary
-router.get('/analytics/summary', verifyToken, async (req, res) => {
+router.get('/analytics/summary', verifyToken, requirePermission('servicedesk', 'view'), async (req, res) => {
   try {
     const [statusBreakdown, engineerStats, monthly] = await Promise.all([
       pool.query(
@@ -627,7 +742,7 @@ router.get('/analytics/summary', verifyToken, async (req, res) => {
 });
 
 // GET /commissioning/templates — checklist templates
-router.get('/templates/list', verifyToken, async (req, res) => {
+router.get('/templates/list', verifyToken, requirePermission('servicedesk', 'view'), async (req, res) => {
   try {
     const { rows } = await pool.query(
       `SELECT * FROM commissioning_checklist_templates WHERE company_id = $1 ORDER BY name`,
@@ -638,7 +753,7 @@ router.get('/templates/list', verifyToken, async (req, res) => {
 });
 
 // POST /commissioning/templates
-router.post('/templates', verifyToken, async (req, res) => {
+router.post('/templates', verifyToken, requirePermission('servicedesk', 'edit'), async (req, res) => {
   try {
     const { name, category, items, is_default } = req.body;
     if (!name) return res.status(400).json({ error: 'name is required' });

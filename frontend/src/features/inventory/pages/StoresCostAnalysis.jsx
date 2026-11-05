@@ -58,7 +58,11 @@ function exportCSV(items, tabLabel) {
   URL.revokeObjectURL(url);
 }
 
+// The class is the item's company ABC class from the planning classification.
+// An item it could not classify (too little history) has none — shown as a
+// dash, not dressed up as C.
 function AbcBadge({ cat }) {
+  if (!cat) return <span style={{ color: '#9ca3af' }}>—</span>;
   const [bg, color] = ABC_COLORS[cat] || ABC_COLORS.C;
   return (
     <span style={{ fontWeight: 700, color, background: bg, padding: '2px 10px', borderRadius: 8, fontSize: 12 }}>

@@ -24,7 +24,7 @@ const SEARCHABLE_PAGES = [
   { page: 'Announcements',       label: 'Announcements',              category: 'HR' },
   { page: 'Payroll',             label: 'Payroll',                    category: 'HR' },
   { page: 'PayslipViewer',       label: 'Payslip Viewer',             category: 'HR' },
-  { page: 'Probation',           label: 'Probation',                  category: 'HR' },
+  { page: 'Probation',           label: 'Probation Management',       category: 'HR' },
   { page: 'HolidayCalendar',     label: 'Holiday Calendar',           category: 'HR' },
   { page: 'Policies',            label: 'Policies',                   category: 'HR' },
   { page: 'Downloads',           label: 'Downloads',                  category: 'HR' },
@@ -124,7 +124,6 @@ const SEARCHABLE_PAGES = [
   { page: 'SupportDashboard',    label: 'Service Desk Dashboard',     category: 'Service Desk' },
   { page: 'AllTickets',          label: 'All Tickets',                category: 'Service Desk' },
   { page: 'MyTickets',           label: 'My Tickets',                 category: 'Service Desk' },
-  { page: 'FieldService',        label: 'Field Service',              category: 'Service Desk' },
   { page: 'KnowledgeBase',       label: 'Knowledge Base',             category: 'Service Desk' },
   // Operations
   { page: 'WorkflowConfiguration', label: 'Workflow Configuration',  category: 'Operations' },
@@ -147,7 +146,7 @@ const SEARCHABLE_PAGES = [
   { page: 'RolesSetup',          label: 'Roles Setup',                category: 'Admin' },
   { page: 'UserSetup',           label: 'User Setup',                 category: 'Admin' },
   { page: 'DocumentSigning',     label: 'Document Signing',           category: 'Documents' },
-  { page: 'Marketing',           label: 'Marketing Dashboard',        category: 'Marketing' },
+  { page: 'MarketingDashboard',  label: 'Marketing Dashboard',        category: 'Marketing' },
   { page: 'Campaigns',           label: 'Campaigns',                  category: 'Marketing' },
 ];
 

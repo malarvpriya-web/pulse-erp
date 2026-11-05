@@ -12,7 +12,11 @@
 import { NAV_ITEMS } from './routes';
 
 // Sections that can never be restricted (safety — users must keep a way home).
-export const ALWAYS_VISIBLE = new Set(['Home']);
+// 'Approvals' is everyone's: the Approval Center's My Requests tab is where
+// any user tracks what they submitted, and the approver tabs appear only for
+// people who approve something (decided server-side). Being ALWAYS_VISIBLE also
+// keeps it out of the per-role section allowlists and Page Access config.
+export const ALWAYS_VISIBLE = new Set(['Home', 'Approvals']);
 
 // Sections that hold the screens used to undo a bad access change — protected
 // so an admin cannot accidentally lock themselves out of the very screens
@@ -80,17 +84,34 @@ export const EMPLOYEE_RESTRICTED_SECTIONS = new Set([
 export const EMPLOYEE_SELF_SERVICE_PAGES = new Set([
   // HR ('Announcements' intentionally excluded — disabled for employee self-service)
   'Policies', 'Downloads', 'EmployeeSelfService',
-  'EmployeeDocuments', 'EmployeeAssets', 'SkillMatrix',
-  // HR — company phonebook. employee.routes.js's GET /employees/directory
-  // carries only `verifyToken`, no allowRoles: the backend's own
-  // DIRECTORY_PHONE_ROLES set already documents "regular employees" as an
-  // expected caller (they just get `phone` redacted server-side).
-  'EmployeeDirectory',
+  // 'EmployeeDashboard' — the personal dashboard (punch, payslip, leave
+  // balance, tasks). It is the most self-service page in the HR menu; it only
+  // ever showed the caller's own record.
+  'EmployeeDashboard',
+  // EmployeeDocuments is NOT here (§207): it is HR's register, gated on
+  // employee_documents; an employee's own documents are the Self Service vault.
+  'EmployeeAssets', 'SkillMatrix',
+  // The hub that now carries Documents / Assets / Policies / HR Documents
+  // (2026-09-16 IA pass). The four pages stay listed above: TabHub filters its
+  // own tabs through canRoleOpenPage, which reads this very set, so listing the
+  // hub alone would render it with no tabs at all for an employee.
+  'EmployeeRecords',
+  // (EmployeeDirectory used to be listed here because it sat inside the HR menu.
+  // It is now its own section, granted through ROLE_SECTION_ALLOWLIST below, so
+  // this self-service list no longer governs it.)
   // Service Desk ('KnowledgeBase' intentionally excluded — admin-only page)
   'MyTickets',
   // Travel Desk ('TravelPayment'/'TravelAudit' intentionally excluded — finance-only)
   'TravelRequests', 'ExpenseClaims', 'VisitReports', 'TravelCalendar',
   'TravelAdvances', 'TravelBookings', 'TravelEntry',
+  // The three hubs those pages moved into (2026-09-16 IA pass). Each hub drops
+  // the tabs an employee may not open — TravelExpenseCenter shows Claims and
+  // Trip Expenses but never Expense Review or Payment, and TravelVisits shows
+  // Visit Reports but not Customer Visits — because TabHub filters every tab
+  // through canRoleOpenPage, which resolves against this set.
+  'MyTravel', 'TravelExpenseCenter', 'TravelVisits',
+  // Trip expense register, self-service alongside ExpenseClaims.
+  'TravelExpenses',
   // Attendance
   'AttendanceDashboard', 'QRAttendance', 'ShiftCalendar',
   // Leaves
@@ -215,7 +236,16 @@ export const MANAGER_ANALYTICS_SCOPED_PAGES = new Set(['ExecutiveDashboard']);
 // 'manager' as someone who should see the phone field, so the backend already
 // expected managers to reach this page; the section allowlist was the only
 // thing not granting it.
-export const MANAGER_HR_SCOPED_PAGES = new Set(['EmployeeDirectory']);
+// 'EmployeeDashboard' is the manager's own personal dashboard, not an HR
+// admin screen — without it here, canManagerAccessPage would 403 a manager
+// on their own punch clock and payslips the moment the page got an HR row.
+// (EmployeeDirectory was the other entry; it left the HR menu on 2026-10-20 and
+// is now its own section, so this scoping no longer needs to name it.)
+// 'EmployeeSelfService' for the same reason (2026-10-29): it is the manager's
+// own IT declarations, documents, claims and profile — a manager is an
+// employee too, and was refused the only screen that files them. The backend
+// resolves every call there to the caller's own record.
+export const MANAGER_HR_SCOPED_PAGES = new Set(['EmployeeDashboard', 'EmployeeSelfService']);
 
 // True if the manager role may render `page`. Mirrors canHrAccessPage/
 // canFinanceAccessPage above.
@@ -276,6 +306,11 @@ export function canRoleAccessSuperAdminPage(role, page) {
 // level. super_admin/admin are intentionally absent — they are governed
 // separately (super_admin sees all; admin sees all except SUPER_ADMIN_ONLY).
 // Section names must match NAV_ITEMS `name` values exactly.
+//
+// 'Employee Directory' (2026-10-20) is granted to exactly the six roles that
+// held 'HR' when the phonebook was a row inside it — manager, hr, employee,
+// hr_manager, hr_exec, payroll_admin — so moving it out of HR neither revoked
+// nor widened anyone's access. department_head never had it and still does not.
 export const ROLE_SECTION_ALLOWLIST = {
   // 'Analytics & AI' is scoped to the Executive Dashboard only — see
   // MANAGER_ANALYTICS_SCOPED_PAGES / canManagerAccessPage above.
@@ -302,7 +337,7 @@ export const ROLE_SECTION_ALLOWLIST = {
     'Home', 'Approvals', 'Employees', 'Attendance', 'Leaves', 'Timesheets',
     'Performance', 'Projects', 'Recruitment', 'Reports', 'QR Codes',
     'Notifications', 'Org Chart', 'Analytics & AI', 'Travel Desk', 'HR',
-    'Operations', 'e-Signatures',
+    'Operations', 'e-Signatures', 'Employee Directory',
   ],
   // department_head = manager-tier lead of an operational team (warehouse,
   // production or service), not an office function — manager's baseline plus
@@ -331,16 +366,18 @@ export const ROLE_SECTION_ALLOWLIST = {
   // manager-review) — see travel.routes.js. Not in AUDIT_ROLES, so TravelAudit
   // stays a 403 for hr at the API even though the section is now reachable;
   // that's the same shape as every other shared-section grant in this file.
-  // 'Compliance · More'/'Asset Register · More':
+  // 'Compliance'/'Asset Register':
   // 20260719000001_seed_role_permission_gaps.js granted hr view-only
   // compliance ("HR owns some certification evidence") and view-only assets
   // ("employee asset allocation") — see the procurement_manager comment below
-  // for why these are the orphans' exact names rather than a curated section.
+  // Both are curated NAV_ITEMS sections as of 2026-09-16 (they were
+  // autoRouter.js orphan groups named 'Compliance · More' / 'Asset Register
+  // · More' until then); this list was renamed in lockstep.
   hr: [
     'Home', 'Approvals', 'Employees', 'HR', 'Learning Center', 'Attendance',
     'Leaves', 'Timesheets', 'Performance', 'Recruitment', 'Reports',
     'QR Codes', 'Notifications', 'Org Chart', 'Analytics & AI', 'Travel Desk',
-    'Compliance · More', 'Asset Register · More',
+    'Compliance', 'Asset Register', 'Employee Directory',
   ],
   // 'Analytics & AI' is scoped to the CFO Dashboard only — see
   // FINANCE_ANALYTICS_SCOPED_PAGES / canFinanceAccessPage above.
@@ -364,6 +401,7 @@ export const ROLE_SECTION_ALLOWLIST = {
   employee: [
     'Home', 'Attendance', 'Leaves', 'Travel Desk', 'Service Desk', 'HR',
     'Timesheets', 'QR Codes', 'Performance', 'Notifications', 'Org Chart',
+    'Employee Directory',
   ],
   // Phase-42 granular HR seats (20260529000001_phase42_security_roles.js).
   // Scoped from what role_permissions actually grants each code: hr_manager
@@ -377,7 +415,7 @@ export const ROLE_SECTION_ALLOWLIST = {
   hr_manager: [
     'Home', 'Approvals', 'HR', 'Learning Center', 'Recruitment',
     'Attendance', 'Leaves', 'Timesheets', 'Performance', 'Reports',
-    'Notifications', 'Org Chart', 'QR Codes', 'e-Signatures',
+    'Notifications', 'Org Chart', 'QR Codes', 'e-Signatures', 'Employee Directory',
   ],
   // 'Approvals' REMOVED (2026-07-30, same F16 reasoning as project_manager/
   // sales_manager/service_manager below): hr_exec is not in approvals.authz.js's
@@ -392,11 +430,11 @@ export const ROLE_SECTION_ALLOWLIST = {
   hr_exec: [
     'Home', 'HR', 'Learning Center', 'Recruitment',
     'Attendance', 'Leaves', 'Timesheets', 'Reports',
-    'Notifications', 'Org Chart', 'QR Codes',
+    'Notifications', 'Org Chart', 'QR Codes', 'Employee Directory',
   ],
   payroll_admin: [
     'Home', 'Approvals', 'HR', 'Attendance', 'Leaves', 'Reports',
-    'Notifications', 'Org Chart', 'QR Codes',
+    'Notifications', 'Org Chart', 'QR Codes', 'Employee Directory',
   ],
   // Phase-42 granular finance seats (20260529000001_phase42_security_roles.js).
   // Both hold 'Finance'/'Reports' via the module-permission fallback
@@ -446,10 +484,11 @@ export const ROLE_SECTION_ALLOWLIST = {
   // accounts_exec above. QR Codes/Org Chart (no `module` key on either
   // NAV_ITEMS entry, so unreachable via fallback for any role) added for
   // parity with every other management-tier allowlist in this object.
-  // 'R&D · More': 20260719000001_seed_role_permission_gaps.js granted
+  // 'R&D': 20260719000001_seed_role_permission_gaps.js granted
   // project_manager view-only rd — see the procurement_manager comment below
-  // for why orphan modules from that migration are listed by exact synthetic
-  // name instead of a curated section.
+  // 'R&D' became a curated NAV_ITEMS section 2026-09-16 (it was the orphan
+  // group 'R&D · More'). Kept standalone rather than folded into
+  // Engineering precisely because project_manager holds no 'Engineering'.
   // 'Approvals' REMOVED (F16 role-reconciliation pass, 2026-07-22):
   // project_manager was dropped from approvals.authz.js's APPROVER_ROLES —
   // none of the shared Approval Center pool's categories (leave/
@@ -458,7 +497,7 @@ export const ROLE_SECTION_ALLOWLIST = {
   // Unauthorized. Same shape as l2_approver having no Approvals section.
   project_manager: [
     'Home', 'Projects', 'Timesheets', 'Reports',
-    'Notifications', 'Org Chart', 'QR Codes', 'R&D · More',
+    'Notifications', 'Org Chart', 'QR Codes', 'R&D',
   ],
   // Phase-42 granular sales seats (20260529000001_phase42_security_roles.js).
   // CRM/Sales/Marketing are the one curated group with NO `module` key on their
@@ -481,22 +520,19 @@ export const ROLE_SECTION_ALLOWLIST = {
   // project_manager comment above for why.
   // 'e-Signatures' (F17 pass): permission-less, see the manager comment
   // above; sales_manager owns sales-contract signing.
-  // 'Tenders · More' (F17 pass): TenderWorkspace.jsx is an autoRouter.js
-  // orphan carrying `module: 'crm'` through from FOLDER_CONFIG —
-  // tenders.routes.js is gated on that same `crm` permission ("a tender IS
-  // an opportunity"). sales_manager/sales_exec already hold FULL/VAE crm
-  // respectively, but — same as every other orphan — the module-permission
-  // fallback never fires for an allowlisted role unless the exact orphan
-  // name is also listed here.
+  // 'Tenders · More' REMOVED 2026-09-16: TenderWorkspace is now a row inside
+  // the curated 'CRM' submenu (tenders.routes.js is gated on the same `crm`
+  // permission — "a tender IS an opportunity"), and both roles already hold
+  // 'CRM', so the fold cost neither of them access.
   sales_manager: [
     'Home', 'CRM', 'Sales', 'Marketing', 'Reports',
-    'Notifications', 'Org Chart', 'QR Codes', 'e-Signatures', 'Tenders · More',
+    'Notifications', 'Org Chart', 'QR Codes', 'e-Signatures',
   ],
   // 'Approvals' REMOVED (2026-07-30, same F16/hr_exec reasoning — see hr_exec's
   // comment above): sales_exec is not in approvals.authz.js's APPROVER_ROLES.
   sales_exec: [
     'Home', 'CRM', 'Sales',
-    'Notifications', 'Org Chart', 'QR Codes', 'Tenders · More',
+    'Notifications', 'Org Chart', 'QR Codes',
   ],
   // Phase-42 granular procurement seats (20260529000001_phase42_security_roles.js).
   // procurement_manager holds FULL procurement, view/add/edit/delete/approve
@@ -506,9 +542,9 @@ export const ROLE_SECTION_ALLOWLIST = {
   // notifications_grants.js], so also Approvals VAEP/Notifications VAE.
   // procurement_exec is VAE procurement + view-only inventory/warehouse, no
   // reports — EXEC_TIER (Approvals VA/Notifications V).
-  // 'Asset Register · More' (both): AssetRegister.jsx has no curated NAV_ITEMS
-  // entry, so it only exists as an autoRouter.js orphan group under this exact
-  // synthetic name (module: 'assets' carried through from FOLDER_CONFIG).
+  // 'Asset Register' (both): a curated NAV_ITEMS section as of 2026-09-16
+  // (previously the autoRouter.js orphan group 'Asset Register · More').
+  // Left standalone: hr holds it too but holds no 'Inventory'.
   // 20260719000001_seed_role_permission_gaps.js seeded real 'assets'
   // permissions for procurement_manager/procurement_exec/store_keeper two days
   // later than that migration's own dating suggests, but none of the three
@@ -520,7 +556,7 @@ export const ROLE_SECTION_ALLOWLIST = {
   // qc_* roles that hold no 'assets' permission and would get a 403 link.
   procurement_manager: [
     'Home', 'Approvals', 'Procurement', 'Inventory', 'Reports',
-    'Notifications', 'Org Chart', 'QR Codes', 'Asset Register · More',
+    'Notifications', 'Org Chart', 'QR Codes', 'Asset Register',
   ],
   // 'Approvals' REMOVED from procurement_exec (2026-07-30, same F16/hr_exec
   // reasoning — see hr_exec's comment above): unlike procurement_manager
@@ -528,18 +564,18 @@ export const ROLE_SECTION_ALLOWLIST = {
   // procurement_exec holds no APPROVER_ROLES membership at all.
   procurement_exec: [
     'Home', 'Procurement', 'Inventory',
-    'Notifications', 'Org Chart', 'QR Codes', 'Asset Register · More',
+    'Notifications', 'Org Chart', 'QR Codes', 'Asset Register',
   ],
   // store_keeper (20260529000001_...): view/add/edit/export inventory,
   // view/add/edit warehouse, view-only procurement (GRN receipt), and —
   // unlike procurement_exec — VONLY reports. EXEC_TIER (Approvals VA/
-  // Notifications V). 'Asset Register · More' — see procurement_manager above.
+  // Notifications V). 'Asset Register' — see procurement_manager above.
   // 'Approvals' REMOVED (2026-07-30, same F16/hr_exec reasoning — see
   // hr_exec's comment above): store_keeper is not in approvals.authz.js's
   // APPROVER_ROLES.
   store_keeper: [
     'Home', 'Inventory', 'Procurement', 'Reports',
-    'Notifications', 'Org Chart', 'QR Codes', 'Asset Register · More',
+    'Notifications', 'Org Chart', 'QR Codes', 'Asset Register',
   ],
   // Phase-42 granular production seats. production_manager holds FULL
   // production+bom (bom has no top-level section), view/add/edit/approve/
@@ -547,19 +583,19 @@ export const ROLE_SECTION_ALLOWLIST = {
   // inventory/warehouse, VEXP reports, view-only timesheets — APPROVER_TIER.
   // production_engineer is VAE production, view-only engineering/quality/
   // inventory, VAE timesheets, no reports — EXEC_TIER.
-  // 'IoT Fleet · More'/'R&D · More'/'Compliance · More'/'Asset Register ·
-  // More': same 20260719000001_seed_role_permission_gaps.js migration as
+  // 'IoT Fleet'/'R&D'/'Compliance'/'Asset Register':
+  // same 20260719000001_seed_role_permission_gaps.js migration as
   // procurement_manager's Asset Register grant above — production_manager
   // holds FULL iot, VAEPX rd, VAEDP compliance and view-only assets;
   // production_engineer holds VAE iot/rd/compliance and view-only assets.
-  // These four modules have no curated NAV_ITEMS entry (FleetMonitor.jsx/
-  // RDHub.jsx/ComplianceRegister.jsx/AssetRegister.jsx are autoRouter.js
+  // These four had no curated NAV_ITEMS entry until 2026-09-16 (FleetMonitor.jsx/
+  // RDHub.jsx/ComplianceRegister.jsx/AssetRegister.jsx were autoRouter.js
   // orphans), so they're unreachable via the module-permission fallback for
   // any allowlisted role unless listed here by exact orphan name.
   production_manager: [
     'Home', 'Approvals', 'Production', 'Engineering', 'Quality', 'Inventory',
     'Reports', 'Timesheets', 'Notifications', 'Org Chart', 'QR Codes',
-    'IoT Fleet · More', 'R&D · More', 'Compliance · More', 'Asset Register · More',
+    'IoT Fleet', 'R&D', 'Compliance', 'Asset Register',
   ],
   // 'Approvals' REMOVED from production_engineer (2026-07-30, same F16/
   // hr_exec reasoning — see hr_exec's comment above): unlike
@@ -568,7 +604,7 @@ export const ROLE_SECTION_ALLOWLIST = {
   production_engineer: [
     'Home', 'Production', 'Engineering', 'Quality', 'Inventory',
     'Timesheets', 'Notifications', 'Org Chart', 'QR Codes',
-    'IoT Fleet · More', 'R&D · More', 'Compliance · More', 'Asset Register · More',
+    'IoT Fleet', 'R&D', 'Compliance', 'Asset Register',
   ],
   // Phase-42 granular QC seats. qc_manager holds FULL quality + view-only
   // engineering/production/inventory + VEXP reports — APPROVER_TIER.
@@ -580,7 +616,7 @@ export const ROLE_SECTION_ALLOWLIST = {
   qc_manager: [
     'Home', 'Approvals', 'Quality', 'Engineering', 'Production', 'Inventory',
     'Reports', 'Notifications', 'Org Chart', 'QR Codes',
-    'IoT Fleet · More', 'R&D · More', 'Compliance · More', 'Asset Register · More',
+    'IoT Fleet', 'R&D', 'Compliance', 'Asset Register',
   ],
   // 'Approvals' REMOVED from qc_engineer (2026-07-30, same F16/hr_exec
   // reasoning — see hr_exec's comment above): unlike qc_manager
@@ -588,7 +624,7 @@ export const ROLE_SECTION_ALLOWLIST = {
   // APPROVER_ROLES membership at all.
   qc_engineer: [
     'Home', 'Quality', 'Production', 'Inventory',
-    'Notifications', 'Org Chart', 'QR Codes', 'Compliance · More',
+    'Notifications', 'Org Chart', 'QR Codes', 'Compliance',
   ],
   // design_engineer (20260529000001_...): view/add/edit/delete engineering +
   // VAE bom (no top-level section) + view-only quality/production, no
@@ -598,7 +634,7 @@ export const ROLE_SECTION_ALLOWLIST = {
   // reasoning — see hr_exec's comment above): not in APPROVER_ROLES.
   design_engineer: [
     'Home', 'Engineering', 'Quality', 'Production',
-    'Notifications', 'Org Chart', 'QR Codes', 'IoT Fleet · More', 'R&D · More',
+    'Notifications', 'Org Chart', 'QR Codes', 'IoT Fleet', 'R&D',
   ],
   // Phase-42 granular service seats. service_manager holds FULL servicedesk +
   // VEXP reports. service_engineer is VAE servicedesk only, no reports —
@@ -616,14 +652,14 @@ export const ROLE_SECTION_ALLOWLIST = {
   // only, same shape as the F16 pass.
   service_manager: [
     'Home', 'Service Desk', 'Complaints', 'Reports',
-    'Notifications', 'Org Chart', 'QR Codes', 'IoT Fleet · More',
+    'Notifications', 'Org Chart', 'QR Codes', 'IoT Fleet',
   ],
   // 'Approvals' REMOVED (2026-07-30, same F16/hr_exec reasoning — see
   // hr_exec's comment above): service_engineer is not in approvals.authz.js's
   // APPROVER_ROLES.
   service_engineer: [
     'Home', 'Service Desk', 'Complaints',
-    'Notifications', 'Org Chart', 'QR Codes', 'IoT Fleet · More',
+    'Notifications', 'Org Chart', 'QR Codes', 'IoT Fleet',
   ],
   // l2_approver (20260721000003_seed_l2_approver_role.js): dedicated
   // second-level leave-approval seat — LeaveApprovals.jsx's L2 tab already
@@ -654,8 +690,35 @@ export function canRoleSeeSection(role, sectionName) {
 // no approval authority (unlike ApprovalCenter, which is shaped for approvers
 // and would show empty/broken bulk-action controls to a plain requester), so
 // it is safe to leave reachable regardless of the caller's section allowlist.
+// 'EmployeeDashboard' is the caller's own dashboard — it reads
+// /attendance/today/<self>, /leaves/balance, /payroll/employee/<self> and
+// nothing else. It now sits in the 'HR' submenu for discoverability, but most
+// allowlisted roles (sales_exec, store_keeper, qc_engineer, l2_approver, …)
+// hold no 'HR' section; listing it here keeps the route open to all of them,
+// exactly as it was when the page belonged to no section at all.
 export const PERSONAL_PAGES = new Set([
-  'ProfileSettings', 'UserPreferences', 'NotificationCenter', 'MyRequests',
+  'ProfileSettings', 'UserPreferences', 'NotificationCenter', 'MyRequests', 'ApprovalCenter',
+  'EmployeeDashboard',
+  // NOT 'EmployeeSelfService' (management decision, 2026-10-29, §202): the
+  // portal is for the roles that hold the HR menu, by menu AND by URL, so it is
+  // governed by the section allowlist like any HR row. The server enforces the
+  // same boundary with the self_service grant, seeded for exactly those roles.
+  // A mentor can sit in any department and any role. The route is open to every
+  // role; the API admits only the intern's current mentor, and the page tells
+  // anyone else it is for assigned mentors. The menu entry is drawn only for a
+  // current mentor (NAV_ITEMS `mentorOnly`, decided in Sidebar.jsx).
+  'MyInternEvaluations',
+  // Same arrangement for department heads: open to every role by URL, the API
+  // admits only the review's assigned head, and the page shows anyone else a
+  // notice. The menu entry is `probationReviewerOnly` (Sidebar.jsx).
+  'MyProbationReviews',
+  // The reader's side of HR Announcements — where the bell sends every role.
+  // GET /announcements/active returns only the caller's company and audience, so
+  // opening the page grants nothing; it is NOT the HR administration page
+  // (Announcements), which employees still cannot open. No menu row: Home's
+  // Announcements card is where people see them; this page is where the bell
+  // opens one in full and records the read.
+  'MyAnnouncements',
 ]);
 
 // Route-level guard for allowlisted roles: a page whose section is NOT in the
@@ -684,7 +747,9 @@ export function canRoleAccessPageBySection(role, page) {
 // honored here exactly as it is in the sidebar and at the route.
 export function canRoleOpenPage(role, page, { menuAccess } = {}) {
   const section = getSectionForPage(page);
-  const override = section && menuAccess ? menuAccess(section) : null;
+  // ALWAYS_VISIBLE sections cannot be restricted (see its definition) — the same
+  // rule Sidebar.jsx applies, so a drawn row never resolves to nowhere.
+  const override = section && menuAccess && !ALWAYS_VISIBLE.has(section) ? menuAccess(section) : null;
   if (override === 'hidden') return false;
   if (override === 'view' || override === 'edit') return true;
 
@@ -698,4 +763,111 @@ export function canRoleOpenPage(role, page, { menuAccess } = {}) {
   if (!canRoleAccessPageBySection(role, page)) return false;
 
   return true;
+}
+
+// ── "Would Layout.jsx render this page, or its Access Denied screen?" ───────
+// canRoleOpenPage() above answers a looser question: it is built for search
+// surfaces and lets a Page-Access grant short-circuit everything, while
+// Layout.jsx still applies the employee scoping, the section allowlist and the
+// route's module permission after such a grant. Code that SENDS someone to a
+// page (a redirect, a menu row that stands in for another) needs the stricter
+// answer, or it can land them on Access Denied. This is Layout.jsx's gate, in
+// Layout.jsx's order, and Layout.jsx calls it — so the two cannot drift.
+//
+// `route` is the page's ROUTES entry (its `module` is the permission gate);
+// `hasPermission` and `menuAccess` come from useAuth().
+/**
+ * Does the caller hold the grant a page or menu row asks for? `actions` is the
+ * row's optional `moduleActions` — any ONE of them opens it; default view only.
+ * Used where a page also serves a narrower grant, e.g. Bank Detail Approvals,
+ * which a propose-only `employee_bank:add` holder opens to see just its own
+ * requests (§206).
+ */
+/**
+ * The grant itself, from the /auth/permissions list — NO admin shortcut.
+ * hasPermission() answers true for admin / super_admin on every module, which
+ * is wrong for the few grants the server gives admin no bypass on: payroll
+ * payment is finance_manager only (PC-01 Q1). The list is already the server's
+ * resolution (user override, else the union across roles).
+ */
+export function heldGrant(permissions, module, action) {
+  const row = Array.isArray(permissions) ? permissions.find(p => p?.module === module) : null;
+  return row?.[`can_${action}`] === true;
+}
+
+export function holdsModuleGrant(hasPermission, module, actions) {
+  if (typeof hasPermission !== 'function') return false;
+  const list = Array.isArray(actions) && actions.length ? actions : ['view'];
+  return list.some(a => hasPermission(module, a));
+}
+
+export function canRenderPage(role, page, { route, menuAccess, hasPermission } = {}) {
+  const section = getSectionForPage(page);
+  // ALWAYS_VISIBLE sections (Home, Approvals) cannot be
+  // restricted by Page Access. Sidebar.jsx already draws them regardless; without
+  // this, a stray 'hidden' override would make the drawn row open Access Denied.
+  const sectionAccess = section && menuAccess && !ALWAYS_VISIBLE.has(section) ? menuAccess(section) : null;
+  const granted = sectionAccess === 'view' || sectionAccess === 'edit';
+  const financeRole = role === 'finance' || role === 'finance_manager' || role === 'accounts_exec';
+
+  if (sectionAccess === 'hidden') return false;
+  if (role === 'employee' && !canEmployeeAccessPage(page)) return false;
+  if (role === 'hr' && !granted && !canHrAccessPage(page)) return false;
+  if (financeRole && !granted && !canFinanceAccessPage(page)) return false;
+  if (role === 'hr_exec' && !granted && !canHrExecAccessPage(page)) return false;
+  if (role === 'manager' && !granted && !canManagerAccessPage(page)) return false;
+  if (!canRoleAccessAdminOnlyPage(role, page)) return false;
+  if (!canRoleAccessSuperAdminPage(role, page)) return false;
+  if (!canRoleAccessPageBySection(role, page)) return false;
+  if (route?.module) {
+    const financeSelfService = financeRole && isFinanceSelfServicePage(page);
+    const allowed = role === 'super_admin' || role === 'admin' || financeSelfService ||
+      (typeof hasPermission === 'function' && holdsModuleGrant(hasPermission, route.module, route.moduleActions));
+    if (!allowed) return false;
+  }
+  return true;
+}
+
+// ── One employee list per person ────────────────────────────────────────────
+// All Employees (EmployeesData) is the employee master. The Employee Directory
+// is a read-only phonebook kept for the people who CANNOT open the master —
+// ordinary employees, and the hr_manager / hr_exec / payroll_admin seats, which
+// hold no employees:view. Anyone who can render the master is sent there
+// instead: Sidebar.jsx drops the directory row for them and Layout.jsx
+// redirects /EmployeeDirectory to /EmployeesData. Both ask THIS function, which
+// asks canRenderPage() — so nobody is redirected to a page that would refuse
+// them, and nobody who keeps the phonebook loses it.
+export const EMPLOYEE_MASTER_PAGE = 'EmployeesData';
+export const EMPLOYEE_DIRECTORY_PAGE = 'EmployeeDirectory';
+
+export function canOpenEmployeeMaster(role, { route, menuAccess, hasPermission } = {}) {
+  if (!route) return false;   // no route entry → never redirect into nothing
+  return canRenderPage(role, EMPLOYEE_MASTER_PAGE, { route, menuAccess, hasPermission });
+}
+
+// ── One Payroll destination (2026-10-28) ────────────────────────────────────
+// The payroll pages below are also sections of Payroll Center, which renders
+// the same components. Their own page keys stay routed because other screens
+// and bookmarks open them (Setup Wizard, Settings Center, HR Dashboard,
+// Attendance → Payroll Sync, search). Whoever can render Payroll Center is
+// sent to the matching section instead, so they always land inside the hub.
+// Everyone else is gated on the standalone page exactly as before — this
+// neither grants nor removes access. PayslipViewer is deliberately NOT here:
+// it is My Payslip for every employee, who cannot open Payroll Center.
+export const PAYROLL_HUB_PAGE = 'PayrollCenter';
+export const PAYROLL_HUB_PAGES = {
+  Payroll:          { tab: 'processing' },
+  SalaryStructure:  { tab: 'structures' },
+  PayslipGenerator: { tab: 'payslips', view: 'generator' },
+  PayrollSettings:  { tab: 'settings' },
+  PayrollForm16:    { tab: 'statutory', view: 'form16' },
+  PayrollForm24Q:   { tab: 'statutory', view: 'form138' },
+};
+
+/** The hub URL for a consolidated payroll page, or null when the viewer stays on the page. */
+export function payrollHubRedirect(role, page, { route, menuAccess, hasPermission } = {}) {
+  const target = PAYROLL_HUB_PAGES[page];
+  if (!target || !route) return null;
+  if (!canRenderPage(role, PAYROLL_HUB_PAGE, { route, menuAccess, hasPermission })) return null;
+  return `/${PAYROLL_HUB_PAGE}?${new URLSearchParams(target).toString()}`;
 }

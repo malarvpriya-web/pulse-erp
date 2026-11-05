@@ -18,7 +18,9 @@ jobs:
         env:
           POSTGRES_USER: pulse
           POSTGRES_PASSWORD: pulse_test_pw
-          POSTGRES_DB: pulse_test
+          # §221: the name must match the test-DB guard (pulse_e2e[_x]); the
+          # suite refuses any other database before a single test runs.
+          POSTGRES_DB: pulse_e2e_ci
         options: >-
           --health-cmd pg_isready
           --health-interval 10s
@@ -34,7 +36,10 @@ jobs:
     env:
       NODE_ENV: test
       JWT_SECRET: ci-jwt-secret-minimum-32-characters-long-abc
-      DATABASE_URL: postgresql://pulse:pulse_test_pw@localhost:5432/pulse_test
+      DATABASE_URL: postgresql://pulse:pulse_test_pw@localhost:5432/pulse_e2e_ci
+      # Required by the vitest globalSetup guard (§221) and every guarded tool.
+      # It is NOT trust: the guard still checks the connected name and marker.
+      PULSE_TEST_DB: "1"
       # The CI postgres container refuses SSL handshakes; DATABASE_URL
       # otherwise implies forced SSL and every connection fails.
       DB_SSL: "false"
@@ -58,8 +63,19 @@ jobs:
 
       # tokens.js mints JWTs for userId 1-4; roles are DB-authoritative, so
       # the real-DB tests need those users to exist. Idempotent, test-only.
+      # The marker names this exact database; without it the suite refuses.
+      # mark-ci refuses outside CI, for any other name, and for any database
+      # server other than this job's localhost service container.
+      - name: Mark the isolated test database
+        run: node scripts/test-db/mark-ci.mjs pulse_e2e_ci
+
       - name: Seed test fixtures
         run: node scripts/seed-test-fixtures.mjs
+
+      # Reference data the suite reads (chart of accounts, workflows, masters,
+      # SLA, zones...): baseline-data.sql carries none of it (§221).
+      - name: Seed test reference data
+        run: node scripts/test-db/seed.mjs
 
       # ── Analytics schema-contract gates ──────────────────────────────────
       # These exist because of a defect class that shipped to production and was

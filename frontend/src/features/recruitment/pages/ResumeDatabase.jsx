@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import { openResume } from '../shared/resumeDownload';
 import {
   Search, Upload, User, Briefcase, ExternalLink, Plus, X, Building2,
   Clock, Pencil, UserPlus,
@@ -31,18 +32,87 @@ const STAGE_COLOR = {
   rejected:  { bg: '#fee2e2', color: '#991b1b' },
 };
 
+// Mirrors candidates_qualification_check and CANDIDATE_QUALIFICATIONS in
+// recruitment.schemas.js. A value outside this list is refused by the database,
+// so offering a free-text box here would only produce 400s.
+const QUALIFICATIONS = ['Diploma', 'BE/BTech', 'ME/MTech', 'MBA', 'MCA', 'BCA', 'BSc', 'MSc', 'BCom', 'PhD', 'Other'];
+
 // ── Upload Resume Modal ───────────────────────────────────────────────────────
 function UploadResumeModal({ onClose, onSuccess }) {
   const [form, setForm] = useState({
     name: '', email: '', phone: '', current_company: '',
     current_designation: '', experience_years: '', notice_period_days: '',
-    expected_ctc: '', notes: '', skills: '',
+    expected_ctc: '', notes: '', skills: '', location: '',
+    qualification: '', specialisation: '', institution: '', graduation_year: '',
   });
   const [file, setFile] = useState(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [parsing, setParsing] = useState(false);
+  const [parsed, setParsed] = useState(null);   // { confidence, warnings, duplicate_of, resume_text, parse_source }
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+
+  /**
+   * Read the résumé and pre-fill the form.
+   *
+   * Everything the parser returns is a SUGGESTION. It lands in the ordinary form
+   * fields, which stay editable, and nothing is saved until the recruiter presses
+   * Upload — so a mis-read never reaches the pipeline unseen. Fields the parser
+   * is unsure about are marked; fields it could not find are left blank rather
+   * than filled with a plausible guess.
+   *
+   * Only empty fields are overwritten, so a recruiter who typed something first
+   * does not lose it to the parser.
+   */
+  const handleFile = async (f) => {
+    setFile(f);
+    setParsed(null);
+    setError('');
+    if (!f) return;
+
+    setParsing(true);
+    try {
+      const fd = new FormData();
+      fd.append('resume', f);
+      const res = await api.post('/recruitment/resume/parse', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
+      const d = res.data || {};
+      const got = d.fields || {};
+
+      setForm(prev => {
+        const next = { ...prev };
+        const put = (key, value) => {
+          if (value === null || value === undefined || value === '') return;
+          if (String(next[key] ?? '').trim() !== '') return;   // never clobber typed input
+          next[key] = String(value);
+        };
+        put('name', got.full_name);
+        put('email', got.email);
+        put('phone', got.phone);
+        put('current_company', got.current_company);
+        put('current_designation', got.current_designation);
+        put('experience_years', got.experience_years);
+        put('notice_period_days', got.notice_period_days);
+        put('expected_ctc', got.expected_ctc);
+        put('location', got.location);
+        put('qualification', got.qualification);
+        put('specialisation', got.specialisation);
+        put('institution', got.institution);
+        put('graduation_year', got.graduation_year);
+        if (Array.isArray(got.skills) && got.skills.length && !String(next.skills).trim()) {
+          next.skills = got.skills.join(', ');
+        }
+        return next;
+      });
+      setParsed(d);
+    } catch (err) {
+      // A file that cannot be read is not a failure to upload — the recruiter
+      // can still type the details in and attach it.
+      setParsed({ warnings: [err?.response?.data?.error || 'Could not read this file automatically — please fill the details in by hand.'], confidence: {} });
+    } finally {
+      setParsing(false);
+    }
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -52,6 +122,10 @@ function UploadResumeModal({ onClose, onSuccess }) {
       const fd = new FormData();
       Object.entries(form).forEach(([k, v]) => { if (v !== '') fd.append(k, k === 'skills' ? JSON.stringify(v.split(',').map(s => s.trim()).filter(Boolean)) : v); });
       if (file) fd.append('resume', file);
+      // Carried through so résumé-content search can find this candidate. Sent
+      // from the parse response rather than re-extracted, so the file is read once.
+      if (parsed?.resume_text) fd.append('resume_text', parsed.resume_text);
+      if (parsed?.parse_source) fd.append('parse_source', parsed.parse_source);
       await api.post('/talent/resumes', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
       onSuccess();
     } catch (err) {
@@ -92,6 +166,18 @@ function UploadResumeModal({ onClose, onSuccess }) {
             {inp('Experience (yrs)', 'experience_years', 'number', '5')}
             {inp('Notice Period (days)', 'notice_period_days', 'number', '60')}
             {inp('Expected CTC (₹)', 'expected_ctc', 'number', '1200000')}
+            {inp('Location', 'location', 'text', 'Bengaluru')}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <label style={{ fontSize: 12, fontWeight: 600, color: '#374151' }}>Qualification</label>
+              <select value={form.qualification} onChange={e => set('qualification', e.target.value)}
+                style={{ border: '1px solid #e5e7eb', borderRadius: 8, padding: '8px 10px', fontSize: 13, outline: 'none', background: '#fff' }}>
+                <option value="">—</option>
+                {QUALIFICATIONS.map(q => <option key={q} value={q}>{q}</option>)}
+              </select>
+            </div>
+            {inp('Specialisation', 'specialisation', 'text', 'Electrical Engineering')}
+            {inp('College / University', 'institution', 'text', 'Anna University')}
+            {inp('Graduation Year', 'graduation_year', 'number', '2021')}
           </div>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -109,13 +195,42 @@ function UploadResumeModal({ onClose, onSuccess }) {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             <label style={{ fontSize: 12, fontWeight: 600, color: '#374151' }}>Resume File</label>
             <label style={{ border: '2px dashed #e5e7eb', borderRadius: 8, padding: 16, textAlign: 'center', cursor: 'pointer', background: file ? '#f5f3ff' : '#fafafa' }}>
-              <input type="file" accept=".pdf,.doc,.docx" style={{ display: 'none' }} onChange={e => setFile(e.target.files[0])} />
+              <input type="file" accept=".pdf,.doc,.docx" style={{ display: 'none' }} onChange={e => handleFile(e.target.files[0])} />
               <Upload size={20} color={file ? '#6B3FDB' : '#9ca3af'} style={{ margin: '0 auto 6px' }} />
               <p style={{ fontSize: 12, color: file ? '#6B3FDB' : '#9ca3af', margin: 0 }}>
-                {file ? file.name : 'Click to attach PDF or Word document'}
+                {parsing ? 'Reading the résumé…' : file ? file.name : 'Click to attach PDF or Word document'}
+              </p>
+              <p style={{ fontSize: 11, color: '#9ca3af', margin: '4px 0 0' }}>
+                We will read it and fill in what we can — check it before saving.
               </p>
             </label>
           </div>
+
+          {parsed?.duplicate_of && (
+            <div style={{ background: '#fbf0df', border: '1px solid #ecd4a8', color: '#9a5b06', borderRadius: 8, padding: '9px 12px', fontSize: 12.5 }}>
+              <strong>{parsed.duplicate_of.full_name}</strong> is already in the pipeline with this
+              email address (currently at the {String(parsed.duplicate_of.current_stage || '').replace(/_/g, ' ')} stage).
+              Saving will be refused — open their existing record instead.
+            </div>
+          )}
+
+          {parsed?.warnings?.length > 0 && (
+            <div style={{ background: '#f9fafb', border: '1px solid #e5e7eb', color: '#6b7280', borderRadius: 8, padding: '9px 12px', fontSize: 12.5 }}>
+              {parsed.warnings.map((w, i) => <div key={i}>{w}</div>)}
+            </div>
+          )}
+
+          {parsed?.confidence && Object.values(parsed.confidence).some(c => c === 'low') && (
+            <div style={{ background: '#EFEAFD', border: '1px solid #ddd3fb', color: '#4B2DCE', borderRadius: 8, padding: '9px 12px', fontSize: 12.5 }}>
+              Worth a second look — these were the least certain:{' '}
+              <strong>
+                {Object.entries(parsed.confidence)
+                  .filter(([, c]) => c === 'low')
+                  .map(([k]) => k.replace(/_/g, ' '))
+                  .join(', ')}
+              </strong>
+            </div>
+          )}
 
           <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 4 }}>
             <button type="button" onClick={onClose} style={{ padding: '9px 20px', borderRadius: 8, border: '1px solid #e5e7eb', background: '#fff', fontSize: 13, cursor: 'pointer', color: '#374151' }}>Cancel</button>
@@ -266,12 +381,14 @@ function EditCandidateModal({ candidate, onClose, onSuccess }) {
 }
 
 // ── Candidate Card ────────────────────────────────────────────────────────────
-function CandidateCard({ candidate: c, onAddToPool, onEdit }) {
+function CandidateCard({ candidate: c, onAddToPool, onEdit, onOpenResume }) {
   const sc     = STAGE_COLOR[c?.current_stage] ?? { bg: '#f3f4f6', color: '#374151' };
   const label  = STAGE_LABEL[c?.current_stage] ?? c?.current_stage ?? 'Applied';
   const skills = Array.isArray(c?.skills) ? c.skills : [];
   const pools  = Array.isArray(c?.talent_pools) ? c.talent_pools : [];
-  const resumeUrl = c?.resume_gdrive_url ?? c?.resume_file_url ?? null;
+  // Presence of a file, not a clickable URL — a locally stored résumé is fetched
+  // through the authenticated /files route, never linked to directly.
+  const hasResume = Boolean(c?.resume_gdrive_url || c?.resume_file_url || c?.resume_url);
 
   return (
     <div style={{ background: '#fff', borderRadius: 12, padding: 20, border: '1px solid #f0f0f4', boxShadow: '0 1px 3px rgba(0,0,0,.05)', display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -341,11 +458,11 @@ function CandidateCard({ candidate: c, onAddToPool, onEdit }) {
 
       {/* Actions */}
       <div style={{ display: 'flex', gap: 8, borderTop: '1px solid #f3f4f6', paddingTop: 10, flexWrap: 'wrap' }}>
-        {resumeUrl ? (
-          <a href={resumeUrl} target="_blank" rel="noopener noreferrer"
-            style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: '#6B3FDB', textDecoration: 'none', padding: '5px 10px', border: '1px solid #ede9fe', borderRadius: 6, background: '#faf5ff' }}>
+        {hasResume ? (
+          <button type="button" onClick={() => onOpenResume(c)}
+            style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: '#6B3FDB', textDecoration: 'none', padding: '5px 10px', border: '1px solid #ede9fe', borderRadius: 6, background: '#faf5ff', cursor: 'pointer' }}>
             <ExternalLink size={11} /> View Resume
-          </a>
+          </button>
         ) : (
           <span style={{ fontSize: 11, color: '#d1d5db', padding: '5px 10px', border: '1px dashed #e5e7eb', borderRadius: 6 }}>No resume</span>
         )}
@@ -363,7 +480,9 @@ function CandidateCard({ candidate: c, onAddToPool, onEdit }) {
 }
 
 // ── Main Component ────────────────────────────────────────────────────────────
-export default function ResumeDatabase() {
+// `embedded` is forwarded to PageShell — see CandidatePipeline for why a nested
+// shell breaks the host page's tab strip.
+export default function ResumeDatabase({ embedded = false }) {
   const toast = useToast();
   const [resumes,         setResumes]         = useState([]);
   const [stats,           setStats]           = useState(null);
@@ -377,6 +496,11 @@ export default function ResumeDatabase() {
   const [addToPool,       setAddToPool]       = useState(null);
   const [editCandidate,   setEditCandidate]   = useState(null);
   const searchTimer = useRef(null);
+
+  const handleOpenResume = useCallback(async (candidate) => {
+    const err = await openResume(candidate);
+    if (err) toast.error(err);
+  }, [toast]);
 
   const fetchResumes = useCallback(async (s = search, stage = stageFilter, skill = skillFilter) => {
     setLoading(true);
@@ -417,7 +541,7 @@ export default function ResumeDatabase() {
   };
 
   return (
-    <PageShell dock={
+    <PageShell embedded={embedded} dock={
       <PageHero
         icon={UserPlus}
         eyebrow="Recruitment"
@@ -506,7 +630,7 @@ export default function ResumeDatabase() {
           <p style={{ fontSize: 12, color: '#9ca3af', marginBottom: 12 }}>{resumes.length} candidate{resumes.length !== 1 ? 's' : ''}</p>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 16 }}>
             {resumes.map(c => (
-              <CandidateCard key={c.id} candidate={c} onAddToPool={setAddToPool} onEdit={setEditCandidate} />
+              <CandidateCard key={c.id} candidate={c} onAddToPool={setAddToPool} onEdit={setEditCandidate} onOpenResume={handleOpenResume} />
             ))}
           </div>
         </>

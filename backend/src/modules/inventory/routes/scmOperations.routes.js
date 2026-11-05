@@ -17,6 +17,7 @@ import express from 'express';
 import pool from '../../shared/db.js';
 import { requirePermission } from '../../../middlewares/auth.middleware.js';
 import { companyOf } from '../../../shared/scope.js';
+import { issueRowSql } from '../services/ledgerSemantics.js';
 
 const router = express.Router();
 const cid = (req) => companyOf(req);
@@ -77,8 +78,10 @@ router.get('/excess-obsolete', requirePermission('inventory', 'view'), async (re
     const p = await policyFor(companyId);
     const { rows } = await pool.query(`
       WITH last_out AS (
+        -- Last genuine ISSUE (ledgerSemantics). Any outward row used to count,
+        -- so a bin move or a vendor return kept dead stock off the obsolete list.
         SELECT item_id, MAX(transaction_date) AS last_issue
-          FROM stock_ledger WHERE quantity_out > 0 GROUP BY item_id
+          FROM stock_ledger WHERE ${issueRowSql()} GROUP BY item_id
       )
       SELECT ii.id, ii.item_code, ii.item_name, ii.abc_class,
              COALESCE(ii.current_stock,0)::numeric      AS current_stock,

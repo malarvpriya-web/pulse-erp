@@ -17,6 +17,7 @@ import { Router } from 'express';
 import pool from '../../config/db.js';
 import { requirePermission } from '../../middlewares/auth.middleware.js';
 import { captureBefore } from '../../middlewares/captureBefore.js';
+import { toCsv } from '../../shared/csv.js';
 
 const router = Router();
 
@@ -304,7 +305,7 @@ router.get('/export', requirePermission('quality', 'view'), async (req, res) => 
         r.unit || '', r.duration_ms ?? '', r.event_ts_ist,
         r.created_by_name || '', r.resolved ? 'Yes' : 'No',
         r.resolved_by_name || '', r.notes || '',
-      ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')
+      ]
     );
 
     const csv = [
@@ -313,9 +314,10 @@ router.get('/export', requirePermission('quality', 'view'), async (req, res) => 
       `# Period: last ${days} days`,
       `# Records: ${rows.length}`,
       `#`,
-      headers.join(','),
-      ...csvRows,
-    ].join('\n');
+      // Site names and resolution notes are user-entered; the shared writer
+      // also neutralises a leading = + - @. See shared/csv.js.
+      toCsv(headers, csvRows),
+    ].join('\r\n');
 
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', `attachment; filename="disturbance-events-${dateTag}.csv"`);

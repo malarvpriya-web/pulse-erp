@@ -23,6 +23,7 @@
  */
 
 import { recordEvent } from './deviceEvents.js';
+import { notifyAlert } from './notify.js';
 
 const PRIORITY = { critical: 'High', warning: 'Medium', info: 'Low' };
 
@@ -48,14 +49,22 @@ async function createServiceTicket(db, alert, equipment) {
     `Alert #${alert.id}`,
   ].join('\n');
 
+  // category_id is linked to the ticket-category master the same way every
+  // other ticket's is (LOWER(BTRIM(name)), the master's unique key), so a
+  // rename of 'Breakdown' follows these tickets. The row is seeded by
+  // 20261014000005; if it is ever absent or deactivated the link is simply
+  // NULL — the ticket is still raised, exactly as before.
   const { rows } = await db.query(
     `INSERT INTO support_tickets
        (ticket_number, title, description, category, priority, status, ticket_kind,
         company_id, project_id, serial_number, amc_contract_id, customer_id,
-        service_type, requester_name, channel)
+        service_type, requester_name, channel, category_id)
      VALUES ('IPS-' || LPAD(nextval('seq_ips')::text, 5, '0'),
              $1, $2, 'Breakdown', $3, 'Open', 'service',
-             $4, $5, $6, $7, $8, 'Remote Alert', 'IoT Monitor', 'iot')
+             $4, $5, $6, $7, $8, 'Remote Alert', 'IoT Monitor', 'iot',
+             (SELECT id FROM ticket_categories
+               WHERE LOWER(BTRIM(name)) = 'breakdown' AND is_active = true
+               ORDER BY id LIMIT 1))
      RETURNING id, ticket_number`,
     [title, description, PRIORITY[alert.severity] || 'Medium',
      equipment.company_id, equipment.project_id ?? null, equipment.serial_number ?? null,
@@ -118,34 +127,27 @@ export async function handleAlertOpened(db, payload) {
     }
   }
 
-  // ── notifications ───────────────────────────────────────────────────────────
-  // An alert row is not a notification. Nothing told a human before this.
-  const channels = payload.notify_channels || ['in_app'];
-  if (channels.includes('in_app')) {
-    const recipients = await resolveRecipients(db, {
-      companyId: alert.company_id,
-      roles: payload.notify_roles || [],
-      userIds: payload.notify_user_ids || [],
-    });
-    for (const userId of recipients) {
-      await db.query(
-        `INSERT INTO notifications (user_id, title, message, module_name, reference_id, notification_type, link)
-         VALUES ($1,$2,$3,'iot',$4,$5,$6)`,
-        [userId,
-         `${alert.severity === 'critical' ? 'Critical' : 'Warning'}: ${alert.equipment_name}`,
-         alert.message,
-         alertId,
-         alert.severity === 'critical' ? 'error' : 'warning',
-         `/iot/alert-center?alert=${alertId}`],
-      );
-      out.notified += 1;
-    }
-    await db.query(`UPDATE device_alerts SET notified_at = NOW(), last_notified_at = NOW() WHERE id = $1`, [alertId]);
-  }
-  // email / sms / push are declared on the rule but not delivered here — see
-  // IOT_PHASE4_REPORT.md section L. Recording the intent without delivering it
-  // would be worse than not offering it, so the rule UI marks them as not yet
-  // wired rather than silently accepting them.
+  // ── notifications, across every channel the deployment can deliver ──────────
+  // An alert row is not a notification. Until 2026-09-15 this delivered in-app
+  // only, and a rule asking for SMS on a critical trip did nothing at all.
+  // notify.js now fans out to in-app, push, email and SMS through the senders the
+  // rest of Pulse already uses, and RECORDS each attempt in iot_notification_log
+  // — so "the engineer was not told" is visible rather than assumed.
+  const delivery = await notifyAlert(db, {
+    companyId: alert.company_id,
+    alertId,
+    severity: alert.severity,
+    metric: alert.metric,
+    title: `${alert.severity === 'critical' ? 'Critical' : 'Warning'}: ${alert.equipment_name}`,
+    message: alert.message,
+    link: `/iot/alert-center?alert=${alertId}`,
+    ruleChannels: payload.notify_channels || ['in_app'],
+    ruleRoles: payload.notify_roles || [],
+    ruleUserIds: payload.notify_user_ids || [],
+    escalation: !!payload.escalation,
+  });
+  out.notified = delivery.recipients;
+  out.delivery = delivery;
 
   return out;
 }
@@ -172,31 +174,25 @@ export async function handleAlertResolved(db, payload) {
        `\n\n[IoT ${new Date().toISOString()}] Telemetry recovered: ${alert.metric} returned to a non-breaching value. The alert is resolved; this ticket remains open for the engineer to close.`],
     );
   }
-  return { alert_id: alert.id, ticket_annotated: !!alert.ticket_id };
-}
 
-/**
- * Recipients for an in-app notification.
- *
- * Roles are many-to-many (user_roles), so this unions across the junction table
- * rather than reading users.role — a manager who also holds `employee` must still
- * be reachable.
- */
-async function resolveRecipients(db, { companyId, roles, userIds }) {
-  const set = new Set((userIds || []).filter((n) => Number.isInteger(n)));
-  if (roles?.length) {
-    const { rows } = await db.query(
-      `SELECT DISTINCT u.id
-         FROM users u
-         JOIN user_roles ur ON ur.user_id = u.id
-         JOIN roles r ON r.id = ur.role_id
-         LEFT JOIN user_scope us ON us.user_id = u.id AND us.is_primary = TRUE
-        WHERE LOWER(r.code) = ANY($1) AND u.is_active
-          AND (us.company_id = $2 OR us.company_id IS NULL)`,
-      [roles.map((r) => String(r).toLowerCase()), companyId]);
-    for (const r of rows) set.add(r.id);
-  }
-  return [...set].slice(0, 200);
+  // Tell whoever was told about the breach that it cleared. Without this, an
+  // engineer paged at 02:00 has no way to learn the condition recovered except
+  // by opening the app.
+  const delivery = await notifyAlert(db, {
+    companyId: alert.company_id,
+    alertId: alert.id,
+    severity: alert.severity,
+    metric: alert.metric,
+    resolved: true,
+    title: `Resolved: ${alert.equipment_name}`,
+    message: `${alert.metric} returned to normal. ${alert.resolution_reason || ''}`.trim(),
+    link: `/iot/alert-center?alert=${alert.id}`,
+    ruleChannels: ['in_app'],
+    ruleRoles: [],
+    ruleUserIds: [],
+  });
+
+  return { alert_id: alert.id, ticket_annotated: !!alert.ticket_id, notified: delivery.recipients };
 }
 
 export const HANDLERS = {

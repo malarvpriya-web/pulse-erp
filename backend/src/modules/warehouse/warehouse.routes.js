@@ -5,6 +5,9 @@ import { requirePermission } from '../../middlewares/auth.middleware.js';
 import { postStock } from '../production/subcontracting.routes.js';
 import { captureBefore } from '../../middlewares/captureBefore.js';
 import { companyOf } from '../../shared/scope.js';
+import { logAudit } from '../../services/AuditService.js';
+import { respondError } from '../../shared/pgErrors.js';
+import { WorkflowError, lockPickList, applyPicks, cancelPickList, packPickList, unpackPickList, dispatchPickList, diagnosePickListPostings } from './pickListWorkflow.service.js';
 
 const router = Router();
 
@@ -31,14 +34,22 @@ const seedData = async () => {
     const { rows: zones } = await pool.query(
       `SELECT * FROM warehouse_zones WHERE warehouse_id=$1 AND zone_type='storage' LIMIT 1`, [wh.id]
     );
-    if (zones.length) {
+    // Bins go into `warehouse_bins`, which requires a tenant. On a genuinely
+    // fresh database there may not be one yet — in which case the stores and
+    // zones are still seeded and the bins are skipped, rather than a company
+    // being invented so an insert can succeed.
+    const { rows: [co] } = await pool.query('SELECT id FROM companies ORDER BY id LIMIT 1');
+    if (zones.length && co) {
       const zid = zones[0].id;
       for (let row = 1; row <= 3; row++) {
         for (let shelf = 1; shelf <= 4; shelf++) {
           await pool.query(
-            `INSERT INTO bin_locations (zone_id, bin_code, row_no, shelf, level, current_items)
-             VALUES ($1,$2,$3,$4,'1',$5)`,
-            [zid, `R${row}-S${shelf}-L1`, `R${row}`, `S${shelf}`, '[]']
+            `INSERT INTO warehouse_bins
+               (company_id, warehouse_id, zone_id, bin_code, row_code, shelf_code, level_code,
+                status, current_items)
+             VALUES ($1,$2,$3,$4,$5,$6,'1','active','[]'::jsonb)
+             ON CONFLICT (company_id, warehouse_id, bin_code) DO NOTHING`,
+            [co.id, wh.id, zid, `R${row}-S${shelf}-L1`, `R${row}`, `S${shelf}`]
           );
         }
       }
@@ -55,26 +66,69 @@ if (!process.env.VITEST && process.env.NODE_ENV !== 'test') {
   setTimeout(seedData, 2500).unref();
 }
 
-/* ── GET /bins ── */
+/* ── GET /bins ──
+ *
+ * Reads `warehouse_bins`, the canonical bin table, after the cutover in
+ * 20260916000001. This route used to read `bin_locations`, which had no
+ * company_id at all — so `WHERE 1=1` was not sloppiness, it was the only filter
+ * available, and every tenant's bins were listed to every caller. The canonical
+ * table carries the tenant, so the listing is scoped.
+ *
+ * `contents` is DERIVED from the lots actually in the bin. `current_items` is
+ * the legacy hand-maintained blob, carried across so nothing disappears from
+ * the screen, and reported alongside rather than instead of — the same
+ * separation current_stock needed before it was derived from the ledger. Where
+ * the two disagree, the derived figure is the one with a foreign key behind it.
+ */
 router.get('/bins', requirePermission('inventory', 'view'), async (req, res) => {
   try {
+    const cid = companyOf(req);
     const { zone_id } = req.query;
+    const params = [cid];
     let q = `
-      SELECT b.*, z.name as zone_name, z.zone_type, w.name as warehouse_name
-      FROM bin_locations b
-      JOIN warehouse_zones z ON z.id = b.zone_id
-      JOIN warehouses w ON w.id = z.warehouse_id
-      WHERE 1=1
+      SELECT b.id, b.bin_code, b.row_code, b.shelf_code, b.level_code,
+             b.zone_id, b.warehouse_id, b.company_id, b.capacity, b.current_qty,
+             b.max_weight_kg, b.status, b.item_id, b.current_items,
+             b.legacy_bin_location_id,
+             -- kept under their old names so existing callers do not break
+             b.row_code  AS row_no,
+             b.shelf_code AS shelf,
+             b.level_code AS level,
+             z.name AS zone_name, z.zone_type,
+             w.name AS warehouse_name,
+             COALESCE((
+               SELECT json_agg(json_build_object(
+                        'batch_id', ib.id, 'batch_number', ib.batch_number,
+                        'item_id', ib.item_id, 'item', i.item_name,
+                        'item_code', i.item_code,
+                        'qty', ib.quantity_available, 'unit', i.unit_of_measure)
+                      ORDER BY ib.received_date NULLS LAST)
+                 FROM inventory_batches ib
+                 LEFT JOIN inventory_items i ON i.id = ib.item_id
+                WHERE ib.bin_id = b.id AND COALESCE(ib.quantity_available,0) > 0
+             ), '[]'::json) AS contents
+        FROM warehouse_bins b
+        LEFT JOIN warehouse_zones z ON z.id = b.zone_id
+        LEFT JOIN warehouses w      ON w.id = b.warehouse_id
+       WHERE ($1::int IS NULL OR b.company_id = $1)
     `;
-    const params = [];
-    if (zone_id) { params.push(zone_id); q += ` AND b.zone_id=$${params.length}`; }
-    q += ' ORDER BY b.row_no, b.shelf, b.level';
+    if (zone_id) { params.push(zone_id); q += ` AND b.zone_id = $${params.length}`; }
+    q += ' ORDER BY w.name, b.row_code, b.shelf_code, b.bin_code';
+
     const { rows } = await pool.query(q, params);
     const enriched = rows.map(b => {
-      const items = Array.isArray(b.current_items) ? b.current_items : [];
-      const totalQty = items.reduce((s, i) => s + (i.qty || 0), 0);
-      return { ...b, item_count: items.length, total_qty: totalQty,
-               occupancy: totalQty > 0 ? 'partial' : 'empty' };
+      const lots = Array.isArray(b.contents) ? b.contents : [];
+      const legacy = Array.isArray(b.current_items) ? b.current_items : [];
+      const lotQty = lots.reduce((s, l) => s + (Number(l.qty) || 0), 0);
+      const totalQty = lots.length ? lotQty : legacy.reduce((s, i) => s + (Number(i.qty) || 0), 0);
+      return {
+        ...b,
+        item_count: lots.length || legacy.length,
+        total_qty: totalQty,
+        lot_qty: lotQty,
+        contents_source: lots.length ? 'lots' : (legacy.length ? 'legacy_current_items' : 'empty'),
+        occupancy: totalQty > 0 ? 'partial' : 'empty',
+      };
     });
     res.json(enriched);
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -85,7 +139,7 @@ router.get('/zones', requirePermission('inventory', 'view'), async (req, res) =>
   try {
     const { rows } = await pool.query(`
       SELECT z.*, w.name as warehouse_name,
-        (SELECT COUNT(*) FROM bin_locations WHERE zone_id=z.id) as bin_count
+        (SELECT COUNT(*) FROM warehouse_bins WHERE zone_id=z.id) as bin_count
       FROM warehouse_zones z
       JOIN warehouses w ON w.id = z.warehouse_id
       ORDER BY w.name, z.name
@@ -227,7 +281,7 @@ router.delete('/zones/:id', requirePermission('inventory', 'delete'), async (req
     // caller is told WHICH link is holding the zone instead of getting a 500
     // carrying a constraint name.
     const { rows: [dep] } = await pool.query(
-      `SELECT (SELECT COUNT(*) FROM bin_locations       WHERE zone_id = $1)::int AS bins,
+      `SELECT (SELECT COUNT(*) FROM warehouse_bins      WHERE zone_id = $1)::int AS bins,
               (SELECT COUNT(*) FROM cycle_count_headers WHERE zone_id = $1)::int AS counts`,
       [req.params.id]
     );
@@ -262,14 +316,26 @@ router.post('/bins', requirePermission('inventory', 'add'), async (req, res) => 
       return res.status(422).json({ error: 'max_weight_kg must be a positive number' });
     }
 
-    // current_items is left at its '[]' default. A bin is created empty and
-    // filled through /bins/assign, which is the only path that also keeps the
-    // occupancy figures on the read side consistent.
+    // A bin is created empty and filled by a put-away, which is the only path
+    // that also writes the lot's location. `warehouse_bins` requires the tenant
+    // and the store, both resolved from the zone rather than taken from the
+    // request — a bin that names a different company's store is a location that
+    // reads as real and is not.
+    const { rows: [zoneStore] } = await pool.query(
+      `SELECT w.id AS warehouse_id, w.company_id
+         FROM warehouse_zones z JOIN warehouses w ON w.id = z.warehouse_id
+        WHERE z.id = $1`, [zone_id]);
+    if (!zoneStore) return res.status(404).json({ error: 'Zone is not attached to a store' });
+
     const { rows } = await pool.query(
-      `INSERT INTO bin_locations (zone_id, bin_code, row_no, shelf, level, max_weight_kg)
-       VALUES ($1, $2, $3, $4, $5, COALESCE($6, 500))
-       RETURNING *`,
+      `INSERT INTO warehouse_bins
+         (company_id, warehouse_id, zone_id, bin_code, row_code, shelf_code, level_code,
+          max_weight_kg, status, current_items)
+       VALUES ($1, $2, $3, $4, COALESCE($5,'-'), COALESCE($6,'-'), $7, COALESCE($8, 500), 'active', '[]'::jsonb)
+       RETURNING *, row_code AS row_no, shelf_code AS shelf, level_code AS level`,
       [
+        zoneStore.company_id,
+        zoneStore.warehouse_id,
         zone_id,
         bin_code.trim().toUpperCase(),
         row_no?.trim() || null,
@@ -288,7 +354,7 @@ router.post('/bins', requirePermission('inventory', 'add'), async (req, res) => 
 });
 
 /* ── PUT /bins/:id ── edit a bin's identity, never its contents ── */
-router.put('/bins/:id', requirePermission('inventory', 'edit'), captureBefore('bin_locations'), async (req, res) => {
+router.put('/bins/:id', requirePermission('inventory', 'edit'), captureBefore('warehouse_bins'), async (req, res) => {
   const { bin_code, row_no, shelf, level, max_weight_kg } = req.body;
   if (bin_code !== undefined && !bin_code?.trim()) {
     return res.status(422).json({ error: 'Bin code cannot be blank' });
@@ -296,10 +362,8 @@ router.put('/bins/:id', requirePermission('inventory', 'edit'), captureBefore('b
   try {
     const companyId = companyOf(req);
     const { rows: [bin] } = await pool.query(
-      `SELECT b.id, w.company_id
-         FROM bin_locations b
-         JOIN warehouse_zones z ON z.id = b.zone_id
-         JOIN warehouses w      ON w.id = z.warehouse_id
+      `SELECT b.id, b.company_id
+         FROM warehouse_bins b
         WHERE b.id = $1`,
       [req.params.id]
     );
@@ -316,9 +380,11 @@ router.put('/bins/:id', requirePermission('inventory', 'edit'), captureBefore('b
     const vals = [];
     const push = (col, val) => { vals.push(val); sets.push(`${col} = $${vals.length}`); };
     if (bin_code !== undefined) push('bin_code', bin_code.trim().toUpperCase());
-    if (row_no   !== undefined) push('row_no',   row_no?.trim() || null);
-    if (shelf    !== undefined) push('shelf',    shelf?.trim()  || null);
-    if (level    !== undefined) push('level',    level?.trim()  || null);
+    // Canonical column names. The API keeps the old field names, so the
+    // warehouse screen's payload is unchanged by the merge.
+    if (row_no   !== undefined) push('row_code',   row_no?.trim() || '-');
+    if (shelf    !== undefined) push('shelf_code', shelf?.trim()  || '-');
+    if (level    !== undefined) push('level_code', level?.trim()  || null);
     if (max_weight_kg !== undefined) {
       const w = max_weight_kg === '' ? null : Number(max_weight_kg);
       if (w !== null && (isNaN(w) || w < 0)) {
@@ -330,7 +396,8 @@ router.put('/bins/:id', requirePermission('inventory', 'edit'), captureBefore('b
 
     vals.push(req.params.id);
     const { rows } = await pool.query(
-      `UPDATE bin_locations SET ${sets.join(', ')} WHERE id = $${vals.length} RETURNING *`,
+      `UPDATE warehouse_bins SET ${sets.join(', ')} WHERE id = $${vals.length}
+         RETURNING *, row_code AS row_no, shelf_code AS shelf, level_code AS level`,
       vals
     );
     const items = Array.isArray(rows[0].current_items) ? rows[0].current_items : [];
@@ -350,10 +417,10 @@ router.delete('/bins/:id', requirePermission('inventory', 'delete'), async (req,
   try {
     const companyId = companyOf(req);
     const { rows: [bin] } = await pool.query(
-      `SELECT b.id, b.bin_code, b.current_items, w.company_id
-         FROM bin_locations b
-         JOIN warehouse_zones z ON z.id = b.zone_id
-         JOIN warehouses w      ON w.id = z.warehouse_id
+      `SELECT b.id, b.bin_code, b.current_items, b.company_id,
+              (SELECT COALESCE(SUM(ib.quantity_available),0)
+                 FROM inventory_batches ib WHERE ib.bin_id = b.id) AS lot_qty
+         FROM warehouse_bins b
         WHERE b.id = $1`,
       [req.params.id]
     );
@@ -365,8 +432,12 @@ router.delete('/bins/:id', requirePermission('inventory', 'delete'), async (req,
     // ⚠ current_items IS the stock record for this shelf. Deleting a bin that
     // still lists stock destroys the only record of where that stock is — the
     // row is not recoverable, since there is no deleted_at on this table.
+    // Both records are consulted: the lots actually assigned to this bin, and
+    // the legacy blob carried over by the merge. Either being non-empty blocks
+    // the delete — trusting only whichever one happens to be maintained is how
+    // the other one's stock gets destroyed.
     const items = Array.isArray(bin.current_items) ? bin.current_items : [];
-    const totalQty = items.reduce((s, i) => s + (i.qty || 0), 0);
+    const totalQty = items.reduce((s, i) => s + (i.qty || 0), 0) + Number(bin.lot_qty || 0);
     if (totalQty > 0) {
       return res.status(409).json({
         error: 'This bin still holds stock. Move or clear its contents before deleting it.',
@@ -374,8 +445,8 @@ router.delete('/bins/:id', requirePermission('inventory', 'delete'), async (req,
     }
 
     const { rows: [dep] } = await pool.query(
-      `SELECT (SELECT COUNT(*) FROM pick_list_lines   WHERE bin_location_id = $1)::int AS picks,
-              (SELECT COUNT(*) FROM cycle_count_lines WHERE bin_location_id = $1)::int AS counts`,
+      `SELECT (SELECT COUNT(*) FROM pick_list_lines   WHERE bin_id = $1)::int AS picks,
+              (SELECT COUNT(*) FROM cycle_count_lines WHERE bin_id = $1)::int AS counts`,
       [req.params.id]
     );
     if (dep.picks > 0 || dep.counts > 0) {
@@ -384,7 +455,7 @@ router.delete('/bins/:id', requirePermission('inventory', 'delete'), async (req,
       });
     }
 
-    await pool.query('DELETE FROM bin_locations WHERE id = $1', [req.params.id]);
+    await pool.query('DELETE FROM warehouse_bins WHERE id = $1', [req.params.id]);
     res.json({ success: true, deleted: Number(req.params.id), bin_code: bin.bin_code });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -393,7 +464,7 @@ router.delete('/bins/:id', requirePermission('inventory', 'delete'), async (req,
 router.post('/bins/assign', requirePermission('inventory', 'edit'), async (req, res) => {
   try {
     const { bin_id, item_name, qty, unit } = req.body;
-    const { rows: [bin] } = await pool.query('SELECT * FROM bin_locations WHERE id=$1', [bin_id]);
+    const { rows: [bin] } = await pool.query('SELECT * FROM warehouse_bins WHERE id=$1', [bin_id]);
     if (!bin) return res.status(404).json({ error: 'Bin not found' });
     const items = Array.isArray(bin.current_items) ? [...bin.current_items] : [];
     const existing = items.findIndex(i => i.item === item_name);
@@ -403,7 +474,7 @@ router.post('/bins/assign', requirePermission('inventory', 'edit'), async (req, 
       items.push({ item: item_name, qty: parseFloat(qty), unit });
     }
     const { rows } = await pool.query(
-      'UPDATE bin_locations SET current_items=$1 WHERE id=$2 RETURNING *',
+      'UPDATE warehouse_bins SET current_items=$1 WHERE id=$2 RETURNING *',
       [JSON.stringify(items), bin_id]
     );
     res.json(rows[0]);
@@ -420,7 +491,7 @@ router.post('/inward', requirePermission('inventory', 'add'), async (req, res) =
     let warehouseId = null;
     if (bin_id) {
       const { rows: [loc] } = await client.query(
-        `SELECT z.warehouse_id FROM bin_locations b
+        `SELECT b.warehouse_id FROM warehouse_bins b
            JOIN warehouse_zones z ON z.id = b.zone_id
          WHERE b.id = $1`, [bin_id]
       );
@@ -429,12 +500,12 @@ router.post('/inward', requirePermission('inventory', 'add'), async (req, res) =
 
     for (const item of items) {
       if (bin_id) {
-        const { rows: [bin] } = await client.query('SELECT current_items FROM bin_locations WHERE id=$1', [bin_id]);
+        const { rows: [bin] } = await client.query('SELECT current_items FROM warehouse_bins WHERE id=$1', [bin_id]);
         const existing = Array.isArray(bin?.current_items) ? [...bin.current_items] : [];
         const idx = existing.findIndex(i => i.item === item.name);
         if (idx >= 0) { existing[idx].qty += parseFloat(item.qty); }
         else { existing.push({ item: item.name, qty: parseFloat(item.qty), unit: item.unit }); }
-        await client.query('UPDATE bin_locations SET current_items=$1 WHERE id=$2', [JSON.stringify(existing), bin_id]);
+        await client.query('UPDATE warehouse_bins SET current_items=$1 WHERE id=$2', [JSON.stringify(existing), bin_id]);
       }
 
       if (!inspection_required && warehouseId) {
@@ -480,6 +551,17 @@ router.post('/inward', requirePermission('inventory', 'add'), async (req, res) =
 });
 
 /* ── GET /pick-lists ── */
+/* ── GET /pick-lists/stock-reconciliation ──
+   READ-ONLY. Compares each pick list with the stock the ledger attributes to
+   it — the evidence for remediating lists over-posted by the pre-2026-10-22
+   pick route or cancelled without their stock returned. Writes nothing (runs
+   in a READ ONLY transaction); ?all=1 includes the rows that agree. */
+router.get('/pick-lists/stock-reconciliation', requirePermission('inventory', 'view'), async (req, res) => {
+  try {
+    res.json(await diagnosePickListPostings(pool, companyOf(req), { includeOk: req.query.all === '1' }));
+  } catch (e) { respondError(res, e); }
+});
+
 router.get('/pick-lists', requirePermission('inventory', 'view'), async (req, res) => {
   try {
     const { status } = req.query;
@@ -509,17 +591,54 @@ router.get('/pick-lists', requirePermission('inventory', 'view'), async (req, re
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-/* ── POST /pick-lists ── */
+/* ── POST /pick-lists ──
+   The sales order, every item and every bin must be the caller's own. They
+   used to be taken on trust, so a pick list could name another company's order
+   (and pack / dispatch would then stamp that order and its serials) or another
+   company's item (and picking it would post that item's stock under this
+   company). Header and lines are one transaction: a bad line no longer leaves
+   a half-built list behind. */
 router.post('/pick-lists', requirePermission('inventory', 'add'), async (req, res) => {
+  const client = await pool.connect();
   try {
-    const { sales_order_id, sales_order_ref, lines = [], notes, priority } = req.body;
-    const { rows: [pl] } = await pool.query(
+    const { sales_order_id, sales_order_ref, lines = [], notes, priority } = req.body || {};
+    const cid = companyOf(req);
+    await client.query('BEGIN');
+    if (sales_order_id != null && sales_order_id !== '') {
+      // FOR SHARE: a concurrent order cancellation (which holds FOR UPDATE)
+      // either finishes first — and this sees 'cancelled' — or waits for this
+      // list to exist, and then refuses because it does.
+      const { rows: [so] } = await client.query(
+        `SELECT id, order_status FROM sales_orders WHERE id = $1 AND deleted_at IS NULL AND ($2::int IS NULL OR company_id = $2)
+          FOR SHARE`,
+        [sales_order_id, cid]);
+      if (!so) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Sales order not found' }); }
+      if (String(so.order_status || '').toLowerCase() === 'cancelled') {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: 'A cancelled order cannot be picked.', code: 'ORDER_CANCELLED' });
+      }
+    }
+    for (const line of lines) {
+      if (line.item_id != null) {
+        const { rows: [it] } = await client.query(
+          `SELECT id FROM inventory_items WHERE id = $1 AND deleted_at IS NULL AND ($2::int IS NULL OR company_id = $2)`,
+          [line.item_id, cid]);
+        if (!it) { await client.query('ROLLBACK'); return res.status(404).json({ error: `Item ${line.item_id} not found` }); }
+      }
+      if (line.bin_location_id != null) {
+        const { rows: [bin] } = await client.query(
+          `SELECT id FROM warehouse_bins WHERE id = $1 AND ($2::int IS NULL OR company_id = $2)`,
+          [line.bin_location_id, cid]);
+        if (!bin) { await client.query('ROLLBACK'); return res.status(404).json({ error: `Bin ${line.bin_location_id} not found` }); }
+      }
+    }
+    const { rows: [pl] } = await client.query(
       `INSERT INTO pick_lists (sales_order_id, sales_order_ref, notes, company_id, priority)
        VALUES ($1,$2,$3,$4,COALESCE($5,'normal')) RETURNING *`,
-      [sales_order_id, sales_order_ref, notes, companyOf(req), priority || null]
+      [sales_order_id || null, sales_order_ref, notes, cid, priority || null]
     );
     for (const line of lines) {
-      await pool.query(
+      await client.query(
         `INSERT INTO pick_list_lines
            (pick_list_id, item_id, item_name, bin_location_id, bin_code, required_qty,
             batch_id, sales_order_item_id)
@@ -528,88 +647,60 @@ router.post('/pick-lists', requirePermission('inventory', 'add'), async (req, re
          line.batch_id ?? null, line.sales_order_item_id ?? null]
       );
     }
-    res.status(201).json(pl);
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-/* ── PUT /pick-lists/:id/pick ── */
-router.put('/pick-lists/:id/pick', requirePermission('inventory', 'edit'), async (req, res) => {
-  const { lines = [] } = req.body;
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-
-    for (const line of lines) {
-      const pickedQty = parseFloat(line.picked_qty) || 0;
-
-      await client.query(
-        `UPDATE pick_list_lines
-            SET picked_qty = $1,
-                status = CASE WHEN $1 >= required_qty THEN 'completed' ELSE 'partial' END
-          WHERE id = $2`,
-        [pickedQty, line.line_id]
-      );
-
-      if (line.bin_location_id && pickedQty > 0) {
-        const { rows: [bin] } = await client.query(
-          'SELECT current_items FROM bin_locations WHERE id=$1', [line.bin_location_id]
-        );
-        if (bin) {
-          const binItems = Array.isArray(bin.current_items) ? [...bin.current_items] : [];
-          const idx = binItems.findIndex(i => i.item === line.item_name);
-          if (idx >= 0) {
-            binItems[idx].qty = Math.max(0, binItems[idx].qty - pickedQty);
-            if (binItems[idx].qty === 0) binItems.splice(idx, 1);
-            await client.query('UPDATE bin_locations SET current_items=$1 WHERE id=$2',
-              [JSON.stringify(binItems), line.bin_location_id]);
-          }
-        }
-
-        if (line.item_id) {
-          const { rows: [loc] } = await client.query(
-            `SELECT z.warehouse_id FROM bin_locations b
-               JOIN warehouse_zones z ON z.id = b.zone_id
-             WHERE b.id = $1`, [line.bin_location_id]
-          );
-          const warehouseId = loc?.warehouse_id ?? null;
-          if (warehouseId) {
-            // Same hand-rolled-vs-shared-helper gap as /inward above — this
-            // never updated inventory_items.current_stock either.
-            await postStock(client, {
-              itemId: line.item_id,
-              warehouseId,
-              outQty: pickedQty,
-              txnType: 'dispatch',
-              refType: 'pick_list',
-              refId: req.params.id,
-              remarks: `Pick List ${req.params.id}: ${line.item_name}`,
-              createdBy: req.user?.employee_id ?? null,
-              companyId: req.scope?.company_id ?? null,
-            });
-          }
-        }
-      }
-    }
-
-    const { rows: [summary] } = await client.query(
-      `SELECT COUNT(*) FILTER (WHERE status='completed') AS done, COUNT(*) AS total
-         FROM pick_list_lines WHERE pick_list_id = $1`, [req.params.id]
-    );
-    const newStatus = parseInt(summary.done) === parseInt(summary.total) ? 'completed' : 'in-progress';
-    const completedAt = newStatus === 'completed' ? ', completed_at = NOW()' : '';
-    await client.query(
-      `UPDATE pick_lists SET status = $1${completedAt} WHERE id = $2`,
-      [newStatus, req.params.id]
-    );
-
     await client.query('COMMIT');
-    res.json({ success: true, ...summary });
+    res.status(201).json(pl);
   } catch (e) {
-    await client.query('ROLLBACK');
-    res.status(500).json({ error: e.message });
+    await client.query('ROLLBACK').catch(() => {});
+    respondError(res, e);
   } finally {
     client.release();
   }
+});
+
+/**
+ * Run one pick-list workflow step: lock the caller's list, do the step, commit,
+ * and only then answer. A WorkflowError is the step refusing (4xx, nothing
+ * written); anything else rolls back and is a 500.
+ */
+async function runPickListStep(req, res, listId, step, { audit = null } = {}) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const pl = await lockPickList(client, listId, companyOf(req));
+    const result = await step(client, pl);
+    await client.query('COMMIT');
+    if (audit) {
+      logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'inventory', recordId: pl.id,
+                 recordType: 'pick_list', action: audit, oldData: pl, newData: result, req,
+                 company_id: pl.company_id });
+    }
+    return { pl, result };
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    if (e instanceof WorkflowError) {
+      res.status(e.status).json({ error: e.message, ...(e.code ? { code: e.code } : {}), ...(e.blockers ? { blockers: e.blockers } : {}) });
+    } else {
+      console.error('[warehouse/pick-list]', e);
+      respondError(res, e);
+    }
+    return null;
+  } finally {
+    client.release();
+  }
+}
+
+/* ── PUT /pick-lists/:id/pick ──
+   Stock leaves the warehouse HERE, once — packing and dispatch move none. The
+   ledger is reconciled to the pick list rather than posted per request (see
+   pickListWorkflow.service.js): this used to post the full picked quantity on
+   every call while storing picked_qty as an absolute value, so the Warehouse
+   screen — which re-submits every line on each Save — deducted (and counted as
+   demand) the same units again and again. */
+router.put('/pick-lists/:id/pick', requirePermission('inventory', 'edit'), async (req, res) => {
+  const { lines = [] } = req.body || {};
+  const done = await runPickListStep(req, res, req.params.id,
+    (client, pl) => applyPicks(client, pl, lines, req));
+  if (done) res.json({ success: true, ...done.result.summary });
 });
 
 /* ── POST /pack ── build a package from picked lines ──────────────────────────
@@ -617,150 +708,42 @@ router.put('/pick-lists/:id/pick', requirePermission('inventory', 'edit'), async
    or carton entity, and the carton_count that dispatch accepted was discarded.
    Recording WHICH LOT went into WHICH CARTON is also the last link in the
    traceability chain — it is what lets a batch be traced to the customer who
-   received it. */
+   received it. The step itself lives in pickListWorkflow.service.js. */
 router.post('/pack', requirePermission('inventory', 'edit'), async (req, res) => {
-  const client = await pool.connect();
-  try {
-    const { pick_list_id, package_type, gross_weight_kg, length_cm, width_cm, height_cm, lines = [], notes } = req.body || {};
-    if (!pick_list_id) return res.status(400).json({ error: 'pick_list_id is required' });
-    await client.query('BEGIN');
+  const { pick_list_id } = req.body || {};
+  if (!pick_list_id) return res.status(400).json({ error: 'pick_list_id is required' });
+  const done = await runPickListStep(req, res, pick_list_id,
+    (client, pl) => packPickList(client, pl, req.body, req));
+  if (!done) return;
+  const { rows: pkgLines } = await pool.query(`SELECT * FROM package_lines WHERE package_id = $1`, [done.result.id]);
+  // A retry with nothing left to pack created nothing: 200 with the package it already has.
+  res.status(done.result.already_packed ? 200 : 201).json({ ...done.result, lines: pkgLines });
+});
 
-    const cid = companyOf(req);
-    const { rows: [pl] } = await client.query(
-      `SELECT * FROM pick_lists WHERE id = $1 AND ($2::int IS NULL OR company_id = $2)`, [pick_list_id, cid]);
-    if (!pl) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Pick list not found' }); }
-
-    const { rows: [seq] } = await client.query(
-      `SELECT COALESCE(MAX(NULLIF(regexp_replace(package_no, '\\D', '', 'g'), '')::bigint), 0) + 1 AS n
-         FROM packages WHERE ($1::int IS NULL OR company_id = $1)`, [cid]);
-    const packageNo = `PKG-${String(seq.n).padStart(6, '0')}`;
-
-    const { rows: [pkg] } = await client.query(`
-      INSERT INTO packages
-        (company_id, package_no, pick_list_id, sales_order_id, package_type, gross_weight_kg,
-         length_cm, width_cm, height_cm, status, packed_by, packed_by_name, packed_at, notes)
-      VALUES ($1,$2,$3,$4,COALESCE($5,'carton'),$6,$7,$8,$9,'packed',$10,$11,NOW(),$12) RETURNING *`,
-      [cid, packageNo, pl.id, pl.sales_order_id, package_type, gross_weight_kg ?? null,
-       length_cm ?? null, width_cm ?? null, height_cm ?? null,
-       req.user?.id ?? null, req.user?.name || req.user?.username || null, notes ?? null]);
-
-    // Default to everything picked on this list when no explicit contents given.
-    let contents = lines;
-    if (!contents.length) {
-      const { rows } = await client.query(
-        `SELECT id AS pick_list_line_id, item_id, item_name, batch_id, picked_qty AS quantity
-           FROM pick_list_lines WHERE pick_list_id = $1 AND COALESCE(picked_qty,0) > 0`, [pl.id]);
-      contents = rows;
-    }
-    for (const l of contents) {
-      await client.query(`
-        INSERT INTO package_lines
-          (package_id, company_id, item_id, item_name, batch_id, serial_id, pick_list_line_id, quantity, uom)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-        [pkg.id, cid, l.item_id ?? null, l.item_name ?? null, l.batch_id ?? null, l.serial_id ?? null,
-         l.pick_list_line_id ?? null, l.quantity ?? 0, l.uom ?? null]);
-    }
-    await client.query(`UPDATE pick_lists SET status = 'packed' WHERE id = $1`, [pl.id]);
-
-    await client.query('COMMIT');
-    const { rows: pkgLines } = await pool.query(`SELECT * FROM package_lines WHERE package_id = $1`, [pkg.id]);
-    res.status(201).json({ ...pkg, lines: pkgLines });
-  } catch (e) {
-    await client.query('ROLLBACK'); res.status(500).json({ error: e.message });
-  } finally { client.release(); }
+/* ── POST /pick-lists/:id/unpack ── undo the packs of a packed list ──────────
+   Restores each packed serial to the exact state packing recorded and keeps the
+   packages as 'unpacked' history; moves no stock. Refused (409, nothing
+   written) when that state cannot be restored exactly — see unpackPickList.
+   A packed list can only be cancelled after this. */
+router.post('/pick-lists/:id/unpack', requirePermission('inventory', 'edit'), async (req, res) => {
+  const done = await runPickListStep(req, res, req.params.id,
+    (client, pl) => unpackPickList(client, pl, req), { audit: 'unpack' });
+  if (done) res.json({ success: true, ...done.result });
 });
 
 /* ── POST /dispatch ── pick list → shipment ───────────────────────────────────
    This used to accept courier, tracking_number, carton_count and weight_kg,
    store NONE of them, write no shipment row, and return a DSP-<timestamp>
    reference that was never persisted and could never be looked up again.
-   Picking and shipping were two disconnected islands.
-
    A dispatch now CREATES the shipment, carries the packages onto it, moves the
-   order forward, and returns a reference that exists in the database. Final
-   inspection gates it: quality_settings.fat_dispatch_gate was a stored setting
-   that no dispatch code ever read, so a failed final QC could not stop a
-   shipment. */
+   order forward, and returns a reference that exists in the database — behind
+   the final-inspection gate (pickListWorkflow.service.js). */
 router.post('/dispatch', requirePermission('inventory', 'edit'), async (req, res) => {
-  const client = await pool.connect();
-  try {
-    const { pick_list_id, courier, carrier_id, tracking_number, weight_kg,
-            expected_delivery, freight_cost, from_address, to_address, notes } = req.body || {};
-    if (!pick_list_id) return res.status(400).json({ error: 'pick_list_id is required' });
-    await client.query('BEGIN');
-
-    const cid = companyOf(req);
-    const { rows: [pl] } = await client.query(
-      `SELECT * FROM pick_lists WHERE id = $1 AND ($2::int IS NULL OR company_id = $2) FOR UPDATE`,
-      [pick_list_id, cid]);
-    if (!pl) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Pick list not found' }); }
-    if (pl.status === 'dispatched') {
-      await client.query('ROLLBACK');
-      return res.status(409).json({ error: 'This pick list has already been dispatched.' });
-    }
-
-    // ── Quality gate ────────────────────────────────────────────────────────
-    const { rows: [qs] } = await client.query(
-      `SELECT fat_dispatch_gate FROM quality_settings WHERE company_id = $1`, [cid]);
-    const gateOn = qs ? qs.fat_dispatch_gate !== false : true;
-    if (gateOn && pl.sales_order_id) {
-      const { rows: [fail] } = await client.query(`
-        SELECT COUNT(*)::int AS failed
-          FROM quality_tests qt
-          JOIN production_orders po ON po.id = qt.production_order_id
-         WHERE po.sales_order_id = $1 AND qt.result = 'fail'
-           AND COALESCE(qt.status,'') <> 'cancelled'`, [pl.sales_order_id]);
-      if (fail && fail.failed > 0) {
-        await client.query('ROLLBACK');
-        return res.status(409).json({
-          error: `Dispatch blocked: ${fail.failed} failed quality test(s) on this order. Close them or disable the final-inspection dispatch gate in Quality Settings.`,
-          code: 'FAT_GATE',
-        });
-      }
-    }
-
-    const { rows: [seq] } = await client.query(
-      `SELECT COALESCE(MAX(NULLIF(regexp_replace(dispatch_ref, '\\D', '', 'g'), '')::bigint), 0) + 1 AS n
-         FROM shipments WHERE ($1::int IS NULL OR company_id = $1)`, [cid]);
-    const dispatchRef = `DSP-${String(seq.n).padStart(6, '0')}`;
-
-    const { rows: pkgs } = await client.query(
-      `SELECT id, gross_weight_kg FROM packages WHERE pick_list_id = $1`, [pl.id]);
-    const packedWeight = pkgs.reduce((s, p) => s + parseFloat(p.gross_weight_kg || 0), 0);
-    const totalWeight = weight_kg ?? (packedWeight > 0 ? packedWeight : null);
-
-    const { rows: [so] } = await client.query(
-      `SELECT customer_name, promised_date, delivery_date FROM sales_orders WHERE id = $1`, [pl.sales_order_id]);
-
-    const { rows: [shipment] } = await client.query(`
-      INSERT INTO shipments
-        (company_id, reference_type, reference_id, sales_order_id, pick_list_id, carrier_id,
-         courier_partner, tracking_number, dispatch_ref, package_count, status, direction,
-         dispatch_date, expected_delivery, promised_date, weight_kg, freight_cost,
-         from_address, to_address, notes, dispatched_by, dispatched_by_name)
-      VALUES ($1,'sales_order',$2,$2,$3,$4,$5,$6,$7,$8,'in_transit','outbound',
-              CURRENT_DATE,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING *`,
-      [cid, pl.sales_order_id, pl.id, carrier_id ?? null, courier ?? null, tracking_number ?? null,
-       dispatchRef, pkgs.length, expected_delivery || null,
-       so?.promised_date || so?.delivery_date || null, totalWeight, freight_cost ?? null,
-       from_address ?? null, to_address ?? null, notes ?? null,
-       req.user?.id ?? null, req.user?.name || req.user?.username || null]);
-
-    await client.query(`UPDATE packages SET shipment_id = $2, status = 'shipped' WHERE pick_list_id = $1`,
-      [pl.id, shipment.id]);
-    await client.query(`UPDATE pick_lists SET status = 'dispatched', completed_at = NOW() WHERE id = $1`, [pl.id]);
-    if (pl.sales_order_id) {
-      await client.query(
-        `UPDATE sales_orders SET order_status = 'dispatched', dispatched_at = NOW(), updated_at = NOW()
-          WHERE id = $1 AND LOWER(COALESCE(order_status,'')) NOT IN ('delivered','completed','cancelled')`,
-        [pl.sales_order_id]);
-    }
-
-    await client.query('COMMIT');
-    res.json({ success: true, dispatch_ref: dispatchRef, shipment, packages: pkgs.length });
-  } catch (e) {
-    await client.query('ROLLBACK'); console.error('[warehouse/dispatch]', e); res.status(500).json({ error: e.message });
-  } finally { client.release(); }
+  const { pick_list_id } = req.body || {};
+  if (!pick_list_id) return res.status(400).json({ error: 'pick_list_id is required' });
+  const done = await runPickListStep(req, res, pick_list_id,
+    (client, pl) => dispatchPickList(client, pl, req.body, req));
+  if (done) res.json({ success: true, ...done.result });
 });
 
 /* ── GET /cycle-count ── */
@@ -811,7 +794,7 @@ router.post('/cycle-count', requirePermission('inventory', 'add'), async (req, r
     );
 
     const { rows: bins } = await client.query(
-      `SELECT * FROM bin_locations WHERE zone_id = $1`, [zone_id]
+      `SELECT * FROM warehouse_bins WHERE zone_id = $1`, [zone_id]
     );
     for (const bin of bins) {
       const binItems = Array.isArray(bin.current_items) ? bin.current_items : [];
@@ -879,7 +862,7 @@ router.post('/cycle-count/:id/submit', requirePermission('inventory', 'approve')
     //
     // The frozen figure is the right one here rather than a live balance: these
     // lines are BIN-level (system_qty is captured from
-    // bin_locations.current_items when the count is raised) while stock_ledger
+    // warehouse_bins.current_items when the count is raised) while stock_ledger
     // is item x warehouse, so re-deriving from the ledger would compare one
     // bin's count against every bin's stock.
     const { rows: bookLines } = await client.query(
@@ -987,10 +970,10 @@ router.post('/cycle-count/:id/submit', requirePermission('inventory', 'approve')
 });
 
 /* ── PUT /bins/:id/clear ── */
-router.put('/bins/:id/clear', requirePermission('inventory', 'edit'), captureBefore('bin_locations'), async (req, res) => {
+router.put('/bins/:id/clear', requirePermission('inventory', 'edit'), captureBefore('warehouse_bins'), async (req, res) => {
   try {
     const { rows } = await pool.query(
-      `UPDATE bin_locations SET current_items = '[]' WHERE id = $1 RETURNING *`,
+      `UPDATE warehouse_bins SET current_items = '[]'::jsonb WHERE id = $1 RETURNING *`,
       [req.params.id]
     );
     if (!rows[0]) return res.status(404).json({ error: 'Bin not found' });
@@ -1101,18 +1084,209 @@ router.get('/cycle-count/:id/lines', requirePermission('inventory', 'view'), asy
 });
 
 /* ── PATCH /pick-lists/:id/status ── */
-router.patch('/pick-lists/:id/status', requirePermission('inventory', 'edit'), captureBefore('pick_lists'), async (req, res) => {
-  const { status } = req.body;
+/* ── PATCH /pick-lists/:id/status ──
+   This wrote any of 'packed' / 'dispatched' / 'cancelled' straight onto the
+   row, for any company's list: a list could be dispatched with no shipment and
+   no quality gate, packed with no package, or cancelled with its picked stock
+   still out. Each status now runs the same workflow step its own route runs:
+
+     packed      the default pack (one package of everything picked) — what the
+                 Warehouse screen's "Mark packed" means; already packed = no-op
+     dispatched  the full dispatch: quality gate, shipment, order update
+     cancelled   returns every unit the list still has out, then cancels;
+                 already cancelled = no-op */
+router.patch('/pick-lists/:id/status', requirePermission('inventory', 'edit'), async (req, res) => {
+  const { status } = req.body || {};
   const valid = ['packed', 'dispatched', 'cancelled'];
   if (!valid.includes(status)) return res.status(400).json({ error: `status must be one of: ${valid.join(', ')}` });
+  const step = {
+    packed: async (client, pl) => {
+      if (String(pl.status).toLowerCase() === 'packed') return { status: 'packed', already: true };
+      const pkg = await packPickList(client, pl, {}, req);
+      return { status: 'packed', package_id: pkg.id, package_no: pkg.package_no };
+    },
+    dispatched: (client, pl) => dispatchPickList(client, pl, req.body, req),
+    cancelled: (client, pl) => cancelPickList(client, pl, req),
+  }[status];
+  const done = await runPickListStep(req, res, req.params.id, step, { audit: `status:${status}` });
+  if (!done) return;
+  const { rows: [row] } = await pool.query(`SELECT * FROM pick_lists WHERE id = $1`, [done.pl.id]);
+  res.json({ ...row, workflow: done.result });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PUT-AWAY
+// ─────────────────────────────────────────────────────────────────────────────
+/*
+ * Receipt created stock in a WAREHOUSE. Nothing recorded moving it to a BIN.
+ *
+ * That is why `inventory_batches.bin_id` was NULL on every row and why the
+ * traceability answer to "where is this lot" stopped at the building: Pulse had
+ * a bin master, a bin column on the batch, and no operation that ever wrote one.
+ *
+ * A put-away task is that operation. Raising it is a decision (which bin);
+ * completing it is a movement, so it writes the ledger through the same shared
+ * helper every other movement uses rather than touching quantities directly.
+ */
+
+/* GET /warehouse/storage-bins — bins in put-away shape.
+ *
+ * Pulse used to have TWO bin tables: `bin_locations` behind GET /warehouse/bins,
+ * and `warehouse_bins`, which `inventory_batches.bin_id`, `stock_ledger`'s bin
+ * columns and genealogy all reference. The bins a user could see were therefore
+ * not the bins the system stored against, and a put-away had no way to offer a
+ * valid destination.
+ *
+ * They are now one table. `bin_locations` was materialised into
+ * `warehouse_bins` by 20260915000017 and retired by 20260916000001, and every
+ * reader in this file was repointed in the same change.
+ *
+ * This route stays because it answers a different question from GET /bins: it
+ * lists bins flat, with free capacity and lot counts, which is what choosing a
+ * put-away destination needs. GET /bins remains zone-shaped for the warehouse
+ * map.
+ */
+router.get('/storage-bins', requirePermission('inventory', 'view'), async (req, res) => {
   try {
-    const { rows } = await pool.query(
-      `UPDATE pick_lists SET status = $1, updated_at = NOW() WHERE id = $2 RETURNING *`,
-      [status, req.params.id]
-    );
-    if (!rows[0]) return res.status(404).json({ error: 'Pick list not found' });
-    res.json(rows[0]);
+    const cid = companyOf(req);
+    const { rows } = await pool.query(`
+      SELECT b.*, w.name AS warehouse_name, i.item_code, i.item_name,
+             (SELECT COUNT(*)::int FROM inventory_batches ib WHERE ib.bin_id = b.id) AS batch_count
+        FROM warehouse_bins b
+        LEFT JOIN warehouses      w ON w.id = b.warehouse_id
+        LEFT JOIN inventory_items i ON i.id = b.item_id
+       WHERE ($1::int IS NULL OR b.company_id = $1)
+         AND ($2::int IS NULL OR b.warehouse_id = $2)
+       ORDER BY w.name, b.row_code, b.shelf_code, b.bin_code`,
+      [cid, req.query.warehouse_id ? Number(req.query.warehouse_id) : null]);
+    res.json(rows.map(b => ({
+      ...b,
+      label: [b.row_code, b.shelf_code, b.bin_code].filter(Boolean).join(' / '),
+      free_capacity: b.capacity != null ? Number(b.capacity) - Number(b.current_qty || 0) : null,
+    })));
   } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+/* GET /warehouse/put-away?status= */
+router.get('/put-away', requirePermission('inventory', 'view'), async (req, res) => {
+  try {
+    const cid = companyOf(req);
+    const vals = [cid];
+    let where = `($1::int IS NULL OR t.company_id = $1)`;
+    if (req.query.status) { vals.push(req.query.status); where += ` AND LOWER(t.status) = LOWER($${vals.length})`; }
+    const { rows } = await pool.query(`
+      SELECT t.*, i.item_code, i.item_name, b.batch_number,
+             w.name AS to_warehouse_name,
+             bin.bin_code, bin.row_code, bin.shelf_code
+        FROM put_away_tasks t
+        LEFT JOIN inventory_items   i   ON i.id = t.item_id
+        LEFT JOIN inventory_batches b   ON b.id = t.batch_id
+        LEFT JOIN warehouses        w   ON w.id = t.to_warehouse_id
+        LEFT JOIN warehouse_bins    bin ON bin.id = t.to_bin_id
+       WHERE ${where}
+       ORDER BY t.status, t.created_at DESC
+       LIMIT 500`, vals);
+    res.json({ tasks: rows, open: rows.filter(r => r.status === 'open').length });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+/* POST /warehouse/put-away — raise a task for received stock */
+router.post('/put-away', requirePermission('inventory', 'edit'), async (req, res) => {
+  try {
+    const cid = companyOf(req);
+    const { batch_id, item_id, quantity, to_warehouse_id, to_bin_id, grn_id, mhe_id, notes } = req.body || {};
+    if (!item_id || !quantity) return res.status(400).json({ error: 'item_id and quantity required' });
+
+    // A bin belongs to a warehouse; putting stock in another warehouse's bin is
+    // the kind of mistake that makes a location column worse than no column.
+    if (to_bin_id) {
+      const { rows: [bin] } = await pool.query(
+        `SELECT warehouse_id FROM warehouse_bins WHERE id = $1 AND ($2::int IS NULL OR company_id = $2)`,
+        [to_bin_id, cid]);
+      if (!bin) return res.status(404).json({ error: 'Bin not found' });
+      if (to_warehouse_id && Number(bin.warehouse_id) !== Number(to_warehouse_id)) {
+        return res.status(422).json({ error: 'Bin does not belong to the destination warehouse' });
+      }
+    }
+
+    const { rows: [seq] } = await pool.query(
+      `SELECT COALESCE(MAX(id),0) + 1 AS n FROM put_away_tasks`);
+    const { rows: [row] } = await pool.query(`
+      INSERT INTO put_away_tasks
+        (company_id, task_no, grn_id, batch_id, item_id, quantity,
+         from_warehouse_id, to_warehouse_id, to_bin_id, mhe_id, status, notes)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'open',$11) RETURNING *`,
+      [cid, `PA-${String(seq.n).padStart(6, '0')}`, grn_id || null, batch_id || null,
+       item_id, quantity, req.body?.from_warehouse_id || null, to_warehouse_id || null,
+       to_bin_id || null, mhe_id || null, notes || null]);
+    res.status(201).json(row);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+/* POST /warehouse/put-away/:id/complete — perform the move */
+router.post('/put-away/:id/complete', requirePermission('inventory', 'edit'), async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const cid = companyOf(req);
+    const a = { id: req.user?.userId || req.user?.id || null, name: req.user?.name || req.user?.email || 'System' };
+    await client.query('BEGIN');
+
+    const { rows: [task] } = await client.query(
+      `SELECT * FROM put_away_tasks WHERE id = $1 AND ($2::int IS NULL OR company_id = $2) FOR UPDATE`,
+      [req.params.id, cid]);
+    if (!task) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Task not found' }); }
+    if (task.status === 'done') { await client.query('ROLLBACK'); return res.status(409).json({ error: 'Task already completed' }); }
+
+    const binId = req.body?.to_bin_id || task.to_bin_id;
+    if (!binId) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'to_bin_id required to complete a put-away' }); }
+
+    // The batch is the thing that has a location. Writing it here is what makes
+    // "store / location" answerable on the trace.
+    if (task.batch_id) {
+      await client.query(
+        `UPDATE inventory_batches SET bin_id = $2, updated_at = NOW()
+          WHERE id = $1 AND ($3::int IS NULL OR company_id = $3)`, [task.batch_id, binId, cid]);
+    }
+    await client.query(
+      `UPDATE warehouse_bins SET current_qty = COALESCE(current_qty,0) + $2, item_id = COALESCE(item_id, $3)
+        WHERE id = $1`, [binId, task.quantity, task.item_id]);
+
+    // A put-away moves stock WITHIN a warehouse: the ledger records the bin
+    // change, not a quantity change, so total on-hand is untouched. Posting an
+    // in and an out here would double the movement history for no gain.
+    await client.query(`
+      INSERT INTO stock_ledger
+        (item_id, warehouse_id, transaction_type, quantity_in, quantity_out, balance_qty,
+         reference_type, reference_id, transaction_date, remarks, created_by, company_id,
+         batch_id, to_bin_id)
+      VALUES ($1,$2,'put_away',0,0,
+              COALESCE((SELECT SUM(COALESCE(quantity_in,0) - COALESCE(quantity_out,0))
+                          FROM stock_ledger WHERE item_id = $1), 0),
+              'put_away_task',$3,CURRENT_DATE,$4,$5,$6,$7,$8)`,
+      [task.item_id, task.to_warehouse_id, task.id,
+       `Put away ${task.quantity} to bin ${binId}`, req.user?.employee_id ?? null, cid,
+       task.batch_id || null, binId]);
+
+    const { rows: [done] } = await client.query(`
+      UPDATE put_away_tasks
+         SET status = 'done', to_bin_id = $2, completed_at = NOW(),
+             put_away_by = $3, put_away_by_name = $4
+       WHERE id = $1 RETURNING *`, [task.id, binId, a.id, a.name]);
+
+    // Releasing the equipment is part of finishing the job, not a separate
+    // chore someone has to remember.
+    if (task.mhe_id) {
+      await client.query(
+        `UPDATE mhe_equipment SET status = 'available' WHERE id = $1`,
+        [task.mhe_id]).catch(() => {});
+    }
+
+    await client.query('COMMIT');
+    res.json({ success: true, task: done });
+  } catch (e) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: e.message });
+  } finally { client.release(); }
 });
 
 export default router;

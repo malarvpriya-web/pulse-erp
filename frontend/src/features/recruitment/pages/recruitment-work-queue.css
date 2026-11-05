@@ -1,0 +1,212 @@
+/* RecruitmentWorkQueue — §23. Prefix: `.wq`.
+ *
+ * There is deliberately no chart CSS in this file. §25: the first screen a
+ * recruiter sees is for acting, not reading.
+ */
+
+.wq { display: flex; flex-direction: column; gap: 14px; }
+
+/* ── Greeting ──────────────────────────────────────────────────────────── */
+
+.wq-hello h2 {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 800;
+  color: #111827;
+  letter-spacing: -.01em;
+}
+.wq-hello p { margin: 3px 0 0; font-size: 13px; color: #64748b; }
+
+/* ── Tiles ─────────────────────────────────────────────────────────────── */
+
+.wq-tiles {
+  display: grid;
+  /* 220px floor: enough for a two-digit number plus a label that does not wrap
+     mid-word at 1366, which is §33's smallest target. */
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 10px;
+}
+
+.wq-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 13px 14px;
+  background: #fff;
+  border: 1px solid #ecedf3;
+  border-left: 3px solid #e5e7eb;
+  border-radius: 10px;
+  text-align: left;
+  cursor: pointer;
+  font-family: inherit;
+  transition: border-color .12s, transform .12s, box-shadow .12s;
+}
+.wq-tile:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 14px rgba(15, 23, 42, .07);
+}
+
+.wq-tile-icon { color: #94a3b8; margin-bottom: 3px; }
+
+.wq-tile-n {
+  font-size: 27px;
+  font-weight: 800;
+  line-height: 1;
+  color: #111827;
+  font-variant-numeric: tabular-nums;
+}
+
+.wq-tile-label { font-size: 12.5px; font-weight: 700; color: #334155; }
+
+/* The one-line explanation of what the number counts. Present on every tile,
+   because a number a recruiter cannot define is a number they will not trust —
+   and this module has shipped a "days waiting" figure that meant something else. */
+.wq-tile-detail { font-size: 10.5px; color: #94a3b8; line-height: 1.4; margin-top: 2px; }
+
+/* Tone is the left border only. Filling ten tiles with ten colours is the wall of
+   noise §25 rules out; one coloured edge is enough to say "this one is urgent". */
+.wq-tile--act   { border-left-color: #6C47FF; }
+.wq-tile--act   .wq-tile-icon { color: #6C47FF; }
+.wq-tile--warn  { border-left-color: #D97706; }
+.wq-tile--warn  .wq-tile-icon { color: #D97706; }
+.wq-tile--warn  .wq-tile-n { color: #92400E; }
+.wq-tile--today { border-left-color: #2563EB; }
+.wq-tile--today .wq-tile-icon { color: #2563EB; }
+.wq-tile--go    { border-left-color: #059669; }
+.wq-tile--go    .wq-tile-icon { color: #059669; }
+.wq-tile--keep  { border-left-color: #0E7490; }
+.wq-tile--keep  .wq-tile-icon { color: #0E7490; }
+.wq-tile--route { border-left-color: #4B2DCE; }
+.wq-tile--route .wq-tile-icon { color: #4B2DCE; }
+
+/* A zero that is still shown reads as calm, not as an alert. */
+.wq-tile.is-zero { border-left-color: #e5e7eb; }
+.wq-tile.is-zero .wq-tile-n { color: #b6bfcc; }
+.wq-tile.is-zero .wq-tile-icon { color: #cbd5e1; }
+
+.wq-quiet {
+  margin: 0;
+  font-size: 11.5px;
+  color: #94a3b8;
+  line-height: 1.5;
+  padding: 0 2px;
+}
+
+/* ── My work ───────────────────────────────────────────────────────────── */
+
+.wq-mine {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  background: #F5F3FF;
+  border: 1px solid #ddd3fb;
+  border-radius: 10px;
+}
+
+.wq-mine-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  background: #fff;
+  border: 1px solid #ddd3fb;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #4B2DCE;
+  cursor: pointer;
+  font-family: inherit;
+}
+.wq-mine-btn:hover { background: #EFEAFD; }
+.wq-mine-btn strong { font-size: 13.5px; font-weight: 800; }
+
+.wq-mine-note { font-size: 11.5px; color: #6b46c1; }
+
+/* ── Panels ────────────────────────────────────────────────────────────── */
+
+.wq-panel {
+  background: #fff;
+  border: 1px solid #ecedf3;
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+
+.wq-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding-bottom: 9px;
+  border-bottom: 1px solid #f4f5f9;
+  color: #0E7490;
+}
+.wq-panel-head h3 { margin: 0; font-size: 12.5px; font-weight: 800; color: #1f2937; }
+
+.wq-panel-link {
+  margin-left: auto;
+  background: none;
+  border: 0;
+  padding: 0;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: #0E7490;
+  cursor: pointer;
+  font-family: inherit;
+}
+.wq-panel-link:hover { text-decoration: underline; }
+
+.wq-rows { display: flex; flex-direction: column; gap: 5px; }
+
+.wq-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+  border: 1px solid #f0f0f6;
+  border-radius: 8px;
+}
+.wq-row-main { min-width: 0; }
+
+.wq-row-name {
+  background: none;
+  border: 0;
+  padding: 0;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: #4B2DCE;
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+}
+.wq-row-name:hover { text-decoration: underline; }
+
+.wq-row-sub { display: block; font-size: 11px; color: #94a3b8; margin-top: 1px; }
+
+.wq-row-acts { display: flex; align-items: center; gap: 7px; flex: none; }
+
+.wq-row-link { font-size: 11.5px; font-weight: 600; color: #334155; text-decoration: none; }
+.wq-row-link:hover { text-decoration: underline; }
+
+.wq-row-btn {
+  padding: 5px 11px;
+  background: #0E7490;
+  border: 1px solid #0E7490;
+  border-radius: 7px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+  cursor: pointer;
+  font-family: inherit;
+}
+.wq-row-btn:hover { background: #0b5d73; }
+
+@media (max-width: 640px) {
+  .wq-tiles { grid-template-columns: 1fr 1fr; }
+  .wq-tile-n { font-size: 22px; }
+  .wq-tile-detail { display: none; }
+  .wq-row { align-items: flex-start; }
+}

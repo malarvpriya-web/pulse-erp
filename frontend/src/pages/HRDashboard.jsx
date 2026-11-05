@@ -11,6 +11,7 @@ import {
   ResponsiveContainer, Cell, PieChart, Pie, AreaChart, Area,
 } from 'recharts';
 import api from '@/services/api/client';
+import { runApprovalAction, actionError } from '@/features/approvals/approvalActions';
 import {
   getHeadcount, getAttrition, getOfferAcceptance, getAbsenteeism,
   getAttritionTrend, getHiringTrend, getGenderDist, getDeptWorkforce,
@@ -139,8 +140,13 @@ const TABS = [
 const HR_ROLES = new Set(['hr', 'hr_manager', 'hr_admin', 'admin', 'super_admin']);
 
 export default function HRDashboard({ setPage }) {
-  const { role } = useAuth();
+  const { role, hasPermission } = useAuth();
   const canManage = HR_ROLES.has(String(role || '').toLowerCase());
+  // Salary bands are compensation data: the API requires payroll:view, as the
+  // Payroll module does. Without it the request is not made and the chart is not
+  // shown — otherwise an HR user without payroll access saw "No salary data yet"
+  // plus a "Salary bands" failure for what is really an access decision.
+  const canViewSalary = hasPermission('payroll', 'view');
 
   const [activeTab,   setActiveTab]   = useState('overview');
 
@@ -233,7 +239,7 @@ export default function HRDashboard({ setPage }) {
       getHeadcount(fp), getAttrition(fp), getOfferAcceptance(fp), getAbsenteeism(fp),
       getAttritionTrend(fp), getHiringTrend(fp), getGenderDist(fp), getDeptWorkforce(fp),
       getProductivity(fp), getTopPerformers(fp), getHRInsights(fp),
-      getHeadcountTrend(fp), getSalaryBands(fp), getTimeToHire(fp), getSatisfaction(fp),
+      getHeadcountTrend(fp), canViewSalary ? getSalaryBands(fp) : Promise.resolve([]), getTimeToHire(fp), getSatisfaction(fp),
     ]);
     if (hc.status  === 'fulfilled') setHeadcount(hc.value);
     if (at.status  === 'fulfilled') setAttrition(at.value);
@@ -257,7 +263,8 @@ export default function HRDashboard({ setPage }) {
       ['Headcount', hc], ['Attrition', at], ['Offer acceptance', oa], ['Absenteeism', ab],
       ['Attrition trend', atT], ['Hiring trend', hiT], ['Gender split', gd],
       ['Department strength', dw], ['Productivity', pr], ['Top performers', tp],
-      ['Insights', ins], ['Headcount trend', hcT], ['Salary bands', sb],
+      ['Insights', ins], ['Headcount trend', hcT],
+      ...(canViewSalary ? [['Salary bands', sb]] : []),
       ['Time to hire', tth], ['Satisfaction', sat],
     ];
     const failures = named
@@ -272,7 +279,7 @@ export default function HRDashboard({ setPage }) {
     setALoading(false);
     setLastRefresh(new Date().toLocaleTimeString());
     analyticsLoadedRef.current = true;
-  }, [filterParams]);
+  }, [filterParams, canViewSalary]);
 
   useEffect(() => { loadOverview(); }, [loadOverview]);
 
@@ -294,19 +301,34 @@ export default function HRDashboard({ setPage }) {
 
   // ── Overview derived ────────────────────────────────────────────────────────
   const s              = analytics.summary;
-  const attritionRate  = s.total > 0 ? Math.round((s.left / s.total) * 100) : 0;
+  // The server computes this now (exits in the window / average headcount in
+  // the window) and the Employees Dashboard reads the same field, so the two
+  // pages cannot report different attrition for the same company on the same
+  // day. This used to be all-time-exits / current-headcount here and
+  // all-time-exits / (current + all-time-exits) there — two formulas, one
+  // label, neither an attrition rate for any period.
+  const attritionRate  = Math.round(s.attritionRate ?? 0);
   const pendingLeaves  = approvals.filter(a => !dismissed.has(a.id)).length;
   const probationEnding= hrAlerts.filter(a => a.type === 'probation').length;
-  const newHires       = analytics.newHiresMonthly?.at(-1)?.hires || s.newHires || 0;
+  // ?? not ||: the hires series is continuous now, so the current month is
+  // present with hires: 0 in a month with no joiners. `0 || s.newHires` would
+  // substitute the whole financial year's 27 hires under a "This month" label.
+  const newHires       = analytics.newHiresMonthly?.at(-1)?.hires ?? s.newHires ?? 0;
 
   const insights = useMemo(() => generateHRInsights({
     total: s.total, attritionRate, newHires, pendingLeaves, probationEnding,
   }), [s.total, attritionRate, newHires, pendingLeaves, probationEnding]);
 
-  const trendData = (analytics.newHiresMonthly || []).map(h => {
-    const ex = (analytics.attritionMonthly || []).find(a => a.month === h.month);
-    return { month: (h.month || '').replace(' 24','').replace(' 25',''), hires: h.hires || 0, exits: ex?.exits || 0 };
-  });
+  // `hiringTrend` already pairs hires and exits on one row per month, so there
+  // is nothing to match up. The old version matched on the formatted label and
+  // then stripped the year with `.replace(' 24','').replace(' 25','')` — two
+  // hardcoded years that silently stopped working in 2026 and would have
+  // collapsed two same-named months from different years onto one tick.
+  const trendData = (analytics.hiringTrend || []).map(m => ({
+    month: m.month,
+    hires: m.hires || 0,
+    exits: m.exits || 0,
+  }));
 
   const visibleApprovals = approvals.filter(a => !dismissed.has(a.id));
 
@@ -327,16 +349,34 @@ export default function HRDashboard({ setPage }) {
     }
   };
 
-  async function handleApprove(item) {
-    try { await api.post(`/approvals/${item.id}/approve`); } catch { /**/ }
-    setDismissed(prev => new Set([...prev, item.id]));
-    showToast(`Approved ${item.type || 'request'} for ${item.employee || item.employee_name}`);
+  // These rows are leave applications. The buttons used to POST the LEAVE id to
+  // /approvals/:id/approve — an id in a different table — swallow the error and
+  // report success regardless. The Approval Center hands back the leave
+  // module's own action for the leave's current level (manager / L2 / HR), so
+  // run that; if this user cannot decide the leave, say so.
+  async function decideLeave(item, kind) {
+    const who = item.employee || item.employee_name || 'employee';
+    let comment;
+    if (kind === 'reject') {
+      comment = window.prompt(`Reason for rejecting ${who}'s leave (shown to them):`)?.trim();
+      if (!comment) return;
+    }
+    try {
+      const { data } = await api.get('/approvals/pending');
+      const row = (Array.isArray(data) ? data : []).find(r => r.id === `leave:${item.id}`);
+      if (!row?.actions?.[kind]) {
+        showToast('This leave is not awaiting your decision — open it in the Approval Center.', 'error');
+        return;
+      }
+      await runApprovalAction(row.actions[kind], { comment });
+      setDismissed(prev => new Set([...prev, item.id]));
+      showToast(`${kind === 'approve' ? 'Approved' : 'Rejected'} leave for ${who}`, kind === 'approve' ? 'success' : 'error');
+    } catch (err) {
+      showToast(actionError(err, 'Could not update the leave.'), 'error');
+    }
   }
-  async function handleReject(item) {
-    try { await api.post(`/approvals/${item.id}/reject`); } catch { /**/ }
-    setDismissed(prev => new Set([...prev, item.id]));
-    showToast(`Rejected ${item.type || 'request'} for ${item.employee || item.employee_name}`, 'error');
-  }
+  const handleApprove = (item) => decideLeave(item, 'approve');
+  const handleReject  = (item) => decideLeave(item, 'reject');
 
   const INSIGHT_STYLE = {
     success: { bg:'#f0fdf4', border:'#bbf7d0', text:'#166534' },
@@ -694,7 +734,7 @@ export default function HRDashboard({ setPage }) {
               <div style={{ display:'flex', flexDirection:'column', gap:7 }}>
                 {[
                   { label:'Add Employee',      page:'AddEmployee',         color:'#10b981', icon:Plus,        hrOnly: true  },
-                  { label:'Employee Records',  page:'EmployeesData',       color:P,         icon:Users,       hrOnly: false },
+                  { label:'All Employees',     page:'EmployeesData',       color:P,         icon:Users,       hrOnly: false },
                   { label:'Leave Approvals',   page:'LeaveApprovals',      color:'#d97706', icon:CheckCircle, hrOnly: false },
                   { label:'Attendance',        page:'AttendanceDashboard', color:'#3b82f6', icon:UserCheck,   hrOnly: false },
                   { label:'Payroll',           page:'Payroll',             color:'#7c3aed', icon:Briefcase,   hrOnly: false },
@@ -755,10 +795,10 @@ export default function HRDashboard({ setPage }) {
             <HeadcountTrendChart data={hcTrend}    loading={aLoading} />
             <AttritionTrendChart data={attrTrend}  loading={aLoading} />
           </div>
-          {/* Row 3: Hires vs Exits + Salary bands */}
-          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginBottom:12 }}>
+          {/* Row 3: Hires vs Exits + Salary bands (payroll:view only) */}
+          <div style={{ display:'grid', gridTemplateColumns: canViewSalary ? '1fr 1fr' : '1fr', gap:12, marginBottom:12 }}>
             <HiringTrendChart  data={hireTrend}  loading={aLoading} />
-            <SalaryBandChart   data={salaryBands} loading={aLoading} />
+            {canViewSalary && <SalaryBandChart data={salaryBands} loading={aLoading} />}
           </div>
           {/* Row 4: Gender + Dept strength */}
           <div style={{ display:'grid', gridTemplateColumns:'1fr 2fr', gap:12, marginBottom:12 }}>

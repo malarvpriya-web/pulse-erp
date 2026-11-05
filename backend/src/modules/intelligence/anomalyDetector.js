@@ -80,8 +80,15 @@ export async function detectAnomalies(companyId = null) {
     const { rows } = await pool.query(`
       SELECT e.id,e.name,e.department,
              COUNT(a.id) FILTER (WHERE LOWER(a.status)='present') AS pdays, COUNT(a.id) AS tdays
-      FROM employees e LEFT JOIN attendance a ON a.employee_id=e.id
-        AND DATE_TRUNC('month',a.date)=DATE_TRUNC('month',CURRENT_DATE)
+      -- attendance_records, not attendance. The old table is frozen: no writer
+      -- anywhere in the repo and no row newer than 2026-03-29, so a
+      -- DATE_TRUNC month window matched nothing and the HAVING COUNT(a.id)>0
+      -- below could never be satisfied -- this detector had never once fired.
+      -- Column map: date -> attendance_date, and rows are soft-deleted.
+      -- (No backticks in here: this comment sits inside a JS template literal.)
+      FROM employees e LEFT JOIN attendance_records a ON a.employee_id=e.id
+        AND a.deleted_at IS NULL
+        AND DATE_TRUNC('month',a.attendance_date)=DATE_TRUNC('month',CURRENT_DATE)
       WHERE ${isIn('e.status', EMPLOYEE_ACTIVE)}
         AND ($1::int IS NULL OR e.company_id = $1)
       GROUP BY e.id,e.name,e.department
@@ -147,7 +154,7 @@ export async function detectAnomalies(companyId = null) {
              ROUND(pr.annual_tax / 12.0, 2) AS computed_tds
       FROM payroll_runs pr
       JOIN employees e ON e.id = pr.employee_id
-      WHERE pr.annual_tax > 0
+      WHERE pr.is_test = false AND pr.annual_tax > 0
         AND ABS(pr.tds - (pr.annual_tax / 12.0)) / (pr.annual_tax / 12.0) > 0.10
         AND make_date(pr.year, pr.month, 1) >= date_trunc('month', NOW() - INTERVAL '1 month')
         AND ($1::int IS NULL OR e.company_id = $1)

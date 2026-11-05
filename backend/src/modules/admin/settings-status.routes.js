@@ -1,11 +1,102 @@
 import express from 'express';
 import pool from '../../config/db.js';
 import { companyOf } from '../../shared/scope.js';
-import { requirePermission } from '../../middlewares/auth.middleware.js';
+import { requirePermission, can } from '../../middlewares/auth.middleware.js';
 import { logAudit } from '../../services/AuditService.js';
 import {
   INTEGRATION_FIELDS, validateFields, saveConfig, readStored, maskSecrets, resolveStatus,
 } from '../integrations/integrationConfig.js';
+import { normalizeForSave, normalizePayrollSettings, validatePayCycle } from '../payroll/payrollSettings.js';
+import { getPlanningSettings, updatePlanningSettings } from '../inventory/services/inventoryPlanning.service.js';
+
+/**
+ * ── Inventory: the ABC thresholds live in ONE place ──────────────────────────
+ *
+ * Inventory Settings shows "ABC — A/B Class Cutoff (%)" and used to save them
+ * into this module's company_settings blob as abc_a_threshold / abc_b_threshold.
+ * Nothing read them: the classification engine reads
+ * inventory_planning_settings.abc_a/b_threshold_pct. A company could type 80/95
+ * here, see it saved, and keep being classified at 70/90.
+ *
+ * inventory_planning_settings is the single source. On GET those two fields are
+ * answered FROM it, so the form shows what the engine uses; on POST they are
+ * validated and written TO it in the same transaction as the rest of the blob,
+ * and are not stored in the blob again. A company's old unapplied blob values
+ * are not adopted silently — they stay in the blob, untouched, until the next
+ * save from this screen (where the user saves the values they are shown), and
+ * GET /inventory/planning/settings reports them under legacy_inventory_settings.
+ */
+const INVENTORY_THRESHOLD_FIELDS = {
+  abc_a_threshold: 'abc_a_threshold_pct',
+  abc_b_threshold: 'abc_b_threshold_pct',
+};
+
+async function overlayInventoryThresholds(settings, companyId) {
+  if (companyId == null) return settings;
+  const ps = await getPlanningSettings(companyId);
+  const out = { ...settings };
+  for (const [blobKey, col] of Object.entries(INVENTORY_THRESHOLD_FIELDS)) out[blobKey] = Number(ps[col]);
+  return out;
+}
+
+/**
+ * Payroll settings that only payroll_statutory_config:edit may change (PC-01 Q3):
+ * the CTC-mode switch and the statutory switches — jurisdiction, PT local body,
+ * PF / ESI / PT on-off. Compared after normalisation (both key families), plus
+ * the Setup Wizard's raw PT state, which the release gate checks against
+ * statutory_state. Returns the keys whose value would change.
+ */
+export const STATUTORY_PAYROLL_KEYS = ['ctc_mode', 'statutory_state', 'pt_local_body', 'pt_local_body_name',
+  'pf_enabled', 'esi_enabled', 'professional_tax'];
+export function changedStatutoryPayrollKeys(before, after) {
+  const b = normalizePayrollSettings(before || {}).settings;
+  const a = normalizePayrollSettings(after || {}).settings;
+  const changed = STATUTORY_PAYROLL_KEYS.filter(k => JSON.stringify(b[k] ?? null) !== JSON.stringify(a[k] ?? null));
+  if (JSON.stringify(before?.pt?.state ?? null) !== JSON.stringify(after?.pt?.state ?? null)) changed.push('pt.state');
+  return changed;
+}
+
+async function saveInventorySettings(req, res, oldSettings) {
+  const cid = companyOf(req);
+  const body = { ...(req.body || {}) };
+  const patch = {};
+  for (const [blobKey, col] of Object.entries(INVENTORY_THRESHOLD_FIELDS)) {
+    if (body[blobKey] !== undefined) patch[col] = body[blobKey];
+    delete body[blobKey];
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const before = await getPlanningSettings(cid, client);
+    const after = await updatePlanningSettings(cid, patch, client);
+    await client.query(
+      `INSERT INTO company_settings (company_id, module, settings, updated_at)
+       VALUES ($1, 'inventory', $2::JSONB, NOW())
+       ON CONFLICT (company_id, module)
+       DO UPDATE SET settings = EXCLUDED.settings, updated_at = NOW()`,
+      [cid, JSON.stringify(body)]);
+    await client.query('COMMIT');
+    // Both records explicitly: logAudit marks the request as audited, which
+    // stands auditMutations down, so the blob would otherwise go unrecorded.
+    const userId = req.user?.userId ?? req.user?.id;
+    logAudit({ userId, module: 'settings', recordId: cid, recordType: 'company_settings:inventory',
+               action: 'update', oldData: oldSettings, newData: body, req, company_id: cid });
+    if (Object.keys(patch).length) {
+      logAudit({ userId, module: 'inventory', recordId: cid,
+                 recordType: 'inventory_planning_settings', action: 'update',
+                 oldData: before, newData: after, req, company_id: cid });
+    }
+    return res.json({ success: true });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    if (err.status === 400) {
+      return res.status(400).json({ success: false, message: err.message, errors: err.errors });
+    }
+    return res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+}
 
 const router = express.Router();
 
@@ -45,8 +136,19 @@ const SETTINGS_KEY_ALIAS = {
   integrations:     'admin',
 };
 
+// Keys owned by a dedicated, validating endpoint. The generic writer would let
+// anyone with the matching permission (or PERMISSION_FAIL_OPEN) forge them —
+// for loan_gl_mapping that includes Finance's approval stamp.
+const RESERVED_SETTINGS_KEYS = {
+  loan_gl_mapping: 'Loan account mapping is set by Finance at /finance/accounting/loan-gl-mapping',
+  payment_gl_mapping: 'Payment account mapping is set by Finance at /finance/accounting/payment-gl-mapping',
+};
+
 const settingsGate = (action) => (req, res, next) => {
   const key = String(req.params.module ?? '');
+  if (action !== 'view' && RESERVED_SETTINGS_KEYS[key]) {
+    return res.status(403).json({ error: 'Forbidden', code: 'SETTINGS_KEY_RESERVED', message: RESERVED_SETTINGS_KEYS[key] });
+  }
   const permissionModule = SETTINGS_KEY_ALIAS[key] ?? key;
   return requirePermission(permissionModule, action)(req, res, next);
 };
@@ -444,7 +546,12 @@ async function saveWizardIntegrations(req, res) {
   }
 }
 
-// GET /settings/:module — read module settings (falls back to {} if not saved)
+// GET /settings/:module — read module settings.
+//   no row saved yet  → 200 {}   (a genuinely empty configuration)
+//   the read failed   → 500 SETTINGS_READ_FAILED
+// The failure used to answer 200 {} as well, which a settings screen cannot
+// tell from "never saved": it showed its defaults as the company's settings,
+// and saving them overwrote the real ones (manual §200).
 router.get('/:module', settingsGate('view'), async (req, res) => {
   const { module } = req.params;
   const cid = companyOf(req) ?? 0;
@@ -458,9 +565,12 @@ router.get('/:module', settingsGate('view'), async (req, res) => {
       `SELECT settings FROM company_settings WHERE company_id = $1 AND module = $2 LIMIT 1`,
       [cid, module]
     );
-    res.json(rows[0]?.settings || {});
-  } catch {
-    res.json({});
+    const settings = rows[0]?.settings || {};
+    if (module === 'inventory') return res.json(await overlayInventoryThresholds(settings, companyOf(req)));
+    res.json(settings);
+  } catch (err) {
+    console.error(`[settings/${module}] read failed:`, err.message);
+    res.status(500).json({ success: false, code: 'SETTINGS_READ_FAILED', message: 'Saved settings could not be read' });
   }
 });
 
@@ -468,32 +578,60 @@ router.get('/:module', settingsGate('view'), async (req, res) => {
 router.post('/:module', settingsGate('edit'), async (req, res) => {
   const { module } = req.params;
   const cid = companyOf(req) ?? 0;
-  const uid = req.user?.userId ?? req.user?.id ?? null;
 
   if (module === 'integrations') return saveWizardIntegrations(req, res);
 
   try {
-    // Fetch old value for audit diff
+    // Fetch old value for audit diff — and, for payroll, the blob the request
+    // is merged onto (normalizeForSave keeps keys the request did not send).
+    // A failed read used to be swallowed as "nothing saved", so the save went
+    // ahead merged onto {} and dropped those keys. Now it fails the request
+    // (outer catch → 500) and nothing is written.
     const { rows: existing } = await pool.query(
       `SELECT settings FROM company_settings WHERE company_id = $1 AND module = $2 LIMIT 1`,
       [cid, module]
-    ).catch(() => ({ rows: [] }));
+    );
     const oldSettings = existing[0]?.settings ?? null;
+
+    if (module === 'inventory' && companyOf(req) != null) return saveInventorySettings(req, res, oldSettings);
+
+    // Payroll: two screens write this blob under different keys (Payroll
+    // Settings vs Setup Wizard) and they had drifted — PT off on one, on in the
+    // other. Write both key families with ONE value, and refuse a pay cycle
+    // whose attendance cutoff falls on or after the pay day.
+    let toSave = req.body;
+    if (module === 'payroll') {
+      toSave = normalizeForSave(req.body, oldSettings || {});
+      // PC-01 Q3 (04 Nov 26): the CTC switch and the statutory switches need
+      // payroll_statutory_config:edit (admin, super_admin, payroll_admin), not
+      // just payroll:edit. Compared on NORMALISED values, so the Setup Wizard's
+      // key family (pt.enabled, pf.enabled, …) cannot route around it. Checked
+      // before anything is written; other payroll settings are unaffected.
+      const changed = changedStatutoryPayrollKeys(oldSettings || {}, toSave);
+      if (changed.length && !(await can(req, 'payroll_statutory_config', 'edit'))) {
+        return res.status(403).json({
+          success: false, code: 'STATUTORY_CONFIG_PERMISSION', keys: changed,
+          message: `Changing ${changed.join(', ')} needs the payroll statutory-configuration permission.`,
+        });
+      }
+      const errors = validatePayCycle(normalizePayrollSettings(toSave).settings);
+      if (errors.length) return res.status(400).json({ success: false, message: errors.join(' '), errors });
+    }
 
     await pool.query(
       `INSERT INTO company_settings (company_id, module, settings, updated_at)
        VALUES ($1, $2, $3::JSONB, NOW())
        ON CONFLICT (company_id, module)
        DO UPDATE SET settings = EXCLUDED.settings, updated_at = NOW()`,
-      [cid, module, JSON.stringify(req.body)]
+      [cid, module, JSON.stringify(toSave)]
     );
 
-    // Write audit log (best-effort — never fail the save on audit error)
-    pool.query(
-      `INSERT INTO audit_log (company_id, user_id, action, entity_type, old_value, new_value, created_at)
-       VALUES ($1, $2, 'UPDATE', $3, $4::JSONB, $5::JSONB, NOW())`,
-      [cid || null, uid, `settings:${module}`, JSON.stringify(oldSettings), JSON.stringify(req.body)]
-    ).catch(() => {});
+    // Before-image for the audit trail. This used to INSERT into `audit_log`,
+    // a table that does not exist, inside a swallowed .catch — so every
+    // settings change (payroll pay day, PT, PF switches included) was recorded
+    // by auditMutations WITHOUT the value it replaced. auditMutations writes
+    // req._auditBefore as old_data (the captureBefore contract).
+    req._auditBefore = oldSettings;
 
     // Sync SLA settings → sla_policies table so SLA Policies tab stays in-sync
     if (module === 'servicedesk') {

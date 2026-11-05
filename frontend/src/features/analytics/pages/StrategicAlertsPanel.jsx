@@ -5,6 +5,7 @@ import {
   AlertTriangle, CheckCircle, Bell, Users, Package,
   Briefcase, IndianRupee, FileText, RefreshCw, Shield,
 } from 'lucide-react';
+import { drillProps, toEntity } from './drillThrough';
 
 const C = {
   primary: '#6B3FDB', green: '#16a34a', red: '#dc2626',
@@ -25,7 +26,11 @@ const SEVERITY_CFG = {
   amber: { bg: '#f5f3ff', border: '#c4b5fd', color: '#5b21b6', dot: C.amber, label: 'Warning' },
 };
 
-function AlertCard({ alert, onAck, isAcknowledged }) {
+function AlertCard({ alert, onAck, isAcknowledged, onNavigate }) {
+  // Only the NAME navigates. The card carries an Acknowledge button, and a click
+  // handler on the whole card would swallow it. `target` is null when the alert
+  // resolves to no record, and the name then renders as plain text.
+  const target = onNavigate ? toEntity(alert.entity_kind, alert.entity_id) : null;
   const sevCfg = SEVERITY_CFG[alert.severity] || SEVERITY_CFG.amber;
   const catCfg = CATEGORY_CFG[alert.category] || { icon: Bell, label: alert.category, color: C.primary };
   const CatIcon = catCfg.icon;
@@ -68,7 +73,10 @@ function AlertCard({ alert, onAck, isAcknowledged }) {
 
           {/* Entity + message */}
           <div style={{ fontSize: 12, color: '#374151' }}>
-            <strong>{alert.name}</strong> — {alert.message}
+            <strong
+              {...drillProps(target ? () => onNavigate(...target) : null, alert.name)}
+              style={target ? { color: C.primary, textDecoration: 'underline', textUnderlineOffset: 2, cursor: 'pointer' } : undefined}
+            >{alert.name}</strong> — {alert.message}
           </div>
         </div>
 
@@ -95,7 +103,7 @@ function AlertCard({ alert, onAck, isAcknowledged }) {
   );
 }
 
-export default function StrategicAlertsPanel({ data, onRefresh }) {
+export default function StrategicAlertsPanel({ data, onRefresh, onNavigate }) {
   const [acknowledged, setAcknowledged] = useState(new Set());
   const [filter, setFilter] = useState('all'); // all | red | amber | unacked
 
@@ -182,11 +190,11 @@ export default function StrategicAlertsPanel({ data, onRefresh }) {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           {/* Red alerts first */}
           {filtered.filter(a => a.severity === 'red').map(a => (
-            <AlertCard key={a.id} alert={a} onAck={ack} isAcknowledged={acknowledged.has(a.id)} />
+            <AlertCard key={a.id} alert={a} onAck={ack} isAcknowledged={acknowledged.has(a.id)} onNavigate={onNavigate} />
           ))}
           {/* Then amber */}
           {filtered.filter(a => a.severity === 'amber').map(a => (
-            <AlertCard key={a.id} alert={a} onAck={ack} isAcknowledged={acknowledged.has(a.id)} />
+            <AlertCard key={a.id} alert={a} onAck={ack} isAcknowledged={acknowledged.has(a.id)} onNavigate={onNavigate} />
           ))}
         </div>
       ) : alerts.length === 0 ? (

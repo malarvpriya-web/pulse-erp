@@ -18,6 +18,7 @@ import dotenv from 'dotenv';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import bcrypt from 'bcryptjs';
+import { FIXTURE_CODE_SQL } from '../../src/shared/employeeCode.js';
 
 const BACKEND = path.resolve(import.meta.dirname, '..', '..');
 dotenv.config({ path: path.join(BACKEND, '.env'), quiet: true });
@@ -98,9 +99,9 @@ async function up() {
   const cid = company.id;
 
   const { rows: [emp] } = await pool.query(
-    `INSERT INTO employees (first_name, last_name, company_email, department, designation,
+    `INSERT INTO employees (office_id, first_name, last_name, company_email, department, designation,
                             status, joining_date, basic_salary, company_id)
-     VALUES ($1::text,'TenantB',$2,'ZZDeptB','ZZRoleB','Active',
+     VALUES (${FIXTURE_CODE_SQL}, $1::text,'TenantB',$2,'ZZDeptB','ZZRoleB','Active',
              CURRENT_DATE - 200, 123456, $3) RETURNING id`,
     [MARK, B_EMAIL, cid]);
 

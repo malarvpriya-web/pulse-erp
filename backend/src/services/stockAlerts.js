@@ -1,4 +1,5 @@
 import pool from '../config/db.js';
+import { suggestedOrderQuantity } from '../modules/inventory/services/inventoryPlanning.service.js';
 
 // Checks an item's current stock against its reorder level and creates
 // a low_stock alert if needed. Idempotent — skips if an active alert already
@@ -8,12 +9,13 @@ export async function checkAndCreateAlerts(itemId, warehouseId) {
     if (!itemId || !warehouseId) return;
 
     const itemRes = await pool.query(
-      `SELECT reorder_level, min_order_qty FROM inventory_items WHERE id = $1`,
+      `SELECT reorder_level, min_order_qty, max_order_qty, lot_size_qty, eoq
+         FROM inventory_items WHERE id = $1`,
       [itemId]
     );
     if (!itemRes.rows.length) return;
-    const reorderLevel = parseFloat(itemRes.rows[0].reorder_level) || 0;
-    const minOrderQty  = parseFloat(itemRes.rows[0].min_order_qty) || 0;
+    const item = itemRes.rows[0];
+    const reorderLevel = parseFloat(item.reorder_level) || 0;
 
     const stockRes = await pool.query(
       `SELECT COALESCE(SUM(quantity_in - quantity_out), 0) AS current_stock
@@ -54,11 +56,11 @@ export async function checkAndCreateAlerts(itemId, warehouseId) {
       [itemId, warehouseId]
     );
     if (!existingSuggestion.rows.length) {
-      const suggestedQty = Math.max(
-        (reorderLevel * 2) - currentStock,
-        minOrderQty,
-        reorderLevel || 1
-      );
+      // Was `max(reorderLevel*2 - stock, minOrderQty, reorderLevel)` — a third
+      // independent reinvention of the order quantity, owing nothing to demand,
+      // ordering cost or holding cost while inventory_items.eoq sat unread.
+      // One service decides it now, and returns the basis with it.
+      const { quantity: suggestedQty } = suggestedOrderQuantity(item, currentStock, 0);
       const priority = currentStock <= 0 ? 'high' : (currentStock <= reorderLevel / 2 ? 'medium' : 'low');
       await pool.query(
         `INSERT INTO purchase_suggestions

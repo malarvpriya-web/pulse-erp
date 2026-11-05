@@ -48,6 +48,7 @@ const { default: qualityRoutes } = await import('../modules/quality/quality.rout
 const { default: healthSvc }     = await import('../modules/procurement/services/vendorHealth.service.js');
 const { default: poRepo }        = await import('../modules/procurement/repositories/purchaseOrder.repository.js');
 const engine                     = (await import('../modules/procurement/engines/vendorHealthEngine.js')).default;
+const { syncPrimaryRole }        = await import('../services/userRoles.js');
 
 const TAG = 'LOOPPROOF';
 
@@ -85,6 +86,9 @@ const app = (() => {
 let token, receipt;
 const api = (verb) => (p) => request(app)[verb](p).set('Authorization', `Bearer ${token}`);
 const createdNcrIds = [];
+
+/** This suite's OWN login — see beforeAll. Removed by sweep() with the tenant. */
+const ACTOR_EMAIL = 'looproof.admin@test.invalid';
 
 /**
  * Remove anything a previous run of this file left behind.
@@ -127,6 +131,8 @@ async function sweep() {
   // it broke integration.procurementReverification's own teardown, whose file
   // then errored on every run while still reporting its tests as passed.
   await pool.query(`DELETE FROM interview_questions WHERE company_id = $1`, [CO]).catch(() => {});
+  // The suite's own actor (user_roles / user_scope cascade with it), before its tenant.
+  await pool.query(`DELETE FROM users WHERE email = $1`, [ACTOR_EMAIL]);
   await pool.query(`DELETE FROM companies WHERE id = $1`, [CO]).catch(() => {});
 }
 
@@ -139,13 +145,17 @@ beforeAll(async () => {
     `INSERT INTO companies (id, name, code) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING`,
     [CO, `${TAG} supplier-loop tenant`, TAG]);
 
+  // ⚠ THIS SUITE'S OWN ADMIN, in its own tenant (§223). It used to borrow "any
+  // active admin" with LIMIT 1 and no ORDER BY, and the plan could hand back a
+  // transient admin that another suite's fixture had created. When that suite
+  // tore its user down mid-run, verifyToken (which re-reads the user) answered
+  // 401 auth_inactive and the NCR test failed for a reason outside this file.
   const { rows: [actor] } = await pool.query(
-    `SELECT u.id, u.email, u.employee_id FROM users u
-       JOIN user_roles ur ON ur.user_id = u.id
-       JOIN roles r ON r.id = ur.role_id
-      WHERE r.code IN ('admin','super_admin') AND u.is_active = true
-      LIMIT 1`);
-  if (!actor) throw new Error('No active admin account — cannot drive the quality router.');
+    `INSERT INTO users (name, email, password_hash, role, is_active, company_id)
+     VALUES ($1, $2, 'no-password-token-only', 'admin', true, $3)
+     RETURNING id, email, employee_id`, [`${TAG} admin`, ACTOR_EMAIL, CO]);
+  await pool.query(`INSERT INTO user_scope (user_id, company_id, is_primary) VALUES ($1, $2, true)`, [actor.id, CO]);
+  await syncPrimaryRole(actor.id, 'admin', CO);
   token = jwt.sign(
     { userId: actor.id, email: actor.email, employee_id: actor.employee_id, company_id: CO, role: 'admin', name: TAG },
     process.env.JWT_SECRET, { expiresIn: '10m' });

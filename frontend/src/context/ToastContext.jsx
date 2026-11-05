@@ -53,9 +53,20 @@ function ToastContainer({ toasts, onDismiss }) {
           to   { opacity: 1; transform: translateX(0); }
         }
       `}</style>
+      {/* Anchored BOTTOM-right, not top-right (changed 2026-09-16).
+          At `top: 20` the stack lands squarely on the PageHero action row —
+          and since the IA consolidation that row carries each hub's TAB STRIP.
+          The container is pointer-events:none, but each toast card is
+          pointer-events:all, so a visible toast physically swallowed clicks on
+          the tabs underneath it: measured with elementFromPoint on BOMCenter,
+          ServiceCustomerCenter and ProductionPlanningHub, where the tab centres
+          resolved to the toast div instead of the button (§148 is the same
+          class of bug from a different overlay). Bottom-right clears every
+          page's hero controls and is where the rest of the app's transient
+          feedback already reads from. */}
       <div style={{
-        position: 'fixed', top: 20, right: 20, zIndex: 99999,
-        display: 'flex', flexDirection: 'column', gap: 10,
+        position: 'fixed', bottom: 20, right: 20, zIndex: 99999,
+        display: 'flex', flexDirection: 'column-reverse', gap: 10,
         pointerEvents: 'none',
       }}>
         {toasts.map(t => (

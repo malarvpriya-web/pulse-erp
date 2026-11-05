@@ -9,8 +9,12 @@ const PURPLE = '#6B3FDB';
 const LIGHT  = '#f5f3ff';
 const BORDER = '#e9e4ff';
 
+// Only Sales Return and Quantity Correction can give invoiced quantity back;
+// every other reason credits price only (Phase 3H — the API and database
+// enforce it). A Quantity Correction names the invoice lines it corrects.
 const REASON_LABELS = {
   sales_return: 'Sales Return',
+  quantity_correction: 'Quantity Correction (billed in error)',
   price_revision: 'Price Revision',
   deficiency_of_service: 'Service Deficiency',
   post_sale_discount: 'Post-Sale Discount',
@@ -22,6 +26,58 @@ const STATUS_COLORS = {
   issued:    ['#dcfce7', '#15803d'],
   cancelled: ['#fee2e2', '#dc2626'],
 };
+
+/* The invoice lines a quantity correction corrects: pick the original
+   invoice, then the quantity billed in error on each shipped-goods line. The
+   credited quantity IS the quantity released to be invoiced again. */
+function QuantityCorrectionLines({ invoiceId, onInvoice, qty, onQty }) {
+  const [invoices, setInvoices] = useState([]);
+  const [lines, setLines] = useState([]);
+  const [error, setError] = useState(null);
+  useEffect(() => {
+    api.get('/finance/invoices').then(r => {
+      const list = Array.isArray(r.data) ? r.data : (r.data?.data || r.data?.invoices || []);
+      setInvoices(list);
+    }).catch(e => setError(e?.response?.data?.error || 'Could not load invoices'));
+  }, []);
+  useEffect(() => {
+    if (!invoiceId) { setLines([]); return; }
+    api.get(`/finance/invoices/${invoiceId}`).then(r => {
+      setLines((r.data?.items || []).filter(l => l.pick_list_line_id != null));
+    }).catch(e => setError(e?.response?.data?.error || 'Could not load the invoice'));
+  }, [invoiceId]);
+  return (
+    <div style={{ gridColumn: '1 / -1' }}>
+      <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#374151', marginBottom: 4 }}>Original invoice *</label>
+      <select aria-label="Original invoice" value={invoiceId} onChange={e => onInvoice(e.target.value)}
+        style={{ width: '100%', padding: '8px 10px', borderRadius: 7, border: `1px solid ${BORDER}`, fontSize: 13 }}>
+        <option value="">Select the invoice that over-billed…</option>
+        {invoices.map(i => <option key={i.id} value={i.id}>{i.invoice_number} — {i.party_name || i.customer_name || ''}</option>)}
+      </select>
+      {error && <div role="alert" style={{ color: '#dc2626', fontSize: 12, marginTop: 6 }}>{error}</div>}
+      {invoiceId && !lines.length && (
+        <div style={{ fontSize: 12, color: '#6b7280', marginTop: 8 }}>This invoice has no shipped-goods lines, so there is no quantity to correct.</div>
+      )}
+      {lines.length > 0 && (
+        <table style={{ width: '100%', fontSize: 12, marginTop: 10, borderCollapse: 'collapse' }}>
+          <thead><tr style={{ color: '#6b7280', textAlign: 'left' }}><th>Line</th><th style={{ textAlign: 'right' }}>Billed</th><th>Billed in error</th></tr></thead>
+          <tbody>
+            {lines.map(l => (
+              <tr key={l.id}>
+                <td>{l.description || `Line ${l.id}`}</td>
+                <td style={{ textAlign: 'right' }}>{Number(l.quantity)}</td>
+                <td>
+                  <input type="number" min={0} max={Number(l.quantity)} step="any" aria-label={`Quantity to correct, line ${l.id}`}
+                    value={qty[l.id] ?? ''} onChange={e => onQty({ ...qty, [l.id]: e.target.value })}
+                    style={{ width: 100, padding: '6px 8px', borderRadius: 7, border: `1px solid ${BORDER}`, fontSize: 13 }} />
+                </td>
+              </tr>))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
 
 export default function CreditNotes({ setPage }) {
   const [notes, setNotes] = useState([]);
@@ -37,6 +93,8 @@ export default function CreditNotes({ setPage }) {
     total_amount: '', notes: '', credit_note_date: new Date().toISOString().split('T')[0],
   });
   const [submitting, setSubmitting] = useState(false);
+  const [qcInvoice, setQcInvoice] = useState('');
+  const [qcQty, setQcQty] = useState({});
   const toast = useToast();
 
   const load = useCallback(async () => {
@@ -65,12 +123,22 @@ export default function CreditNotes({ setPage }) {
     if (!form.party_name || !form.taxable_value) {
       toast.error('Party name and taxable value are required'); return;
     }
+    let body = form;
+    if (form.reason === 'quantity_correction') {
+      const entries = Object.entries(qcQty).filter(([, v]) => v !== '' && Number(v) > 0);
+      if (!qcInvoice || !entries.length) {
+        toast.error('Choose the original invoice and the quantity billed in error on at least one line'); return;
+      }
+      body = { ...form, original_invoice_id: Number(qcInvoice),
+               items: entries.map(([id, v]) => ({ original_item_id: Number(id), quantity: Number(v), released_qty: Number(v) })) };
+    }
     setSubmitting(true);
     try {
-      await api.post('/finance/credit-notes', form);
+      await api.post('/finance/credit-notes', body);
       toast.success('Credit note created');
       setShowForm(false);
       setForm({ party_name: '', party_gstin: '', reason: 'sales_return', taxable_value: '', cgst: '', sgst: '', igst: '', total_amount: '', notes: '', credit_note_date: new Date().toISOString().split('T')[0] });
+      setQcInvoice(''); setQcQty({});
       await load();
     } catch (err) {
       toast.error(err.response?.data?.error || 'Failed to create');
@@ -82,16 +150,33 @@ export default function CreditNotes({ setPage }) {
       await api.post(`/finance/credit-notes/${id}/issue`);
       toast.success('Credit note issued');
       await load();
-    } catch { toast.error('Failed to issue'); }
+    } catch (e) { toast.error(e?.response?.data?.error || 'Failed to issue'); }
   };
 
-  const cancel = async (id) => {
-    if (!confirm('Cancel this credit note?')) return;
+  // A draft cancels outright. An issued note not yet filed in GSTR-1 cancels
+  // with a reason: the server posts a journal reversing its own and takes back
+  // any quantity it released (refused if that quantity was invoiced again).
+  const cancel = async (cn) => {
+    let reason = '';
+    if (cn.status === 'issued') {
+      reason = (window.prompt(`Cancel issued credit note ${cn.credit_note_number}? Its journal will be reversed. Reason:`) || '').trim();
+      if (!reason) return;
+    } else if (!confirm('Cancel this credit note?')) return;
     try {
-      await api.post(`/finance/credit-notes/${id}/cancel`);
-      toast.success('Credit note cancelled');
+      await api.post(`/finance/credit-notes/${cn.id}/cancel`, reason ? { reason } : {});
+      toast.success(cn.status === 'issued' ? 'Credit note cancelled and its journal reversed' : 'Credit note cancelled');
       await load();
-    } catch { toast.error('Failed to cancel'); }
+    } catch (e) { toast.error(e?.response?.data?.error || 'Failed to cancel'); }
+  };
+
+  // Recording the GSTR-1 filing is one-way: a filed note can no longer be cancelled here.
+  const markFiled = async (cn) => {
+    if (!confirm(`Mark ${cn.credit_note_number} as filed in GSTR-1? It can no longer be cancelled afterwards.`)) return;
+    try {
+      await api.post(`/finance/credit-notes/${cn.id}/mark-gstr1-filed`);
+      toast.success('Marked as filed in GSTR-1');
+      await load();
+    } catch (e) { toast.error(e?.response?.data?.error || 'Failed to mark as filed'); }
   };
 
   const fmt = v => v ? `₹${parseFloat(v).toLocaleString('en-IN', { minimumFractionDigits: 2 })}` : '₹0.00';
@@ -136,6 +221,10 @@ export default function CreditNotes({ setPage }) {
                 {Object.entries(REASON_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
               </select>
             </div>
+            {form.reason === 'quantity_correction' && (
+              <QuantityCorrectionLines invoiceId={qcInvoice} onInvoice={(v) => { setQcInvoice(v); setQcQty({}); }}
+                                       qty={qcQty} onQty={setQcQty} />
+            )}
             <div style={{ gridColumn: '1 / -1' }}>
               <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#374151', marginBottom: 4 }}>Internal Notes</label>
               <textarea value={form.notes} onChange={e => setForm(p => ({ ...p, notes: e.target.value }))} rows={2}
@@ -199,14 +288,23 @@ export default function CreditNotes({ setPage }) {
                     <span style={{ padding: '2px 8px', borderRadius: 8, fontSize: 11, fontWeight: 700, background: bg, color: col }}>
                       {cn.status}
                     </span>
+                    {cn.gstr1_filed && cn.status === 'issued' && (
+                      <span style={{ marginLeft: 6, padding: '2px 8px', borderRadius: 8, fontSize: 11, fontWeight: 700, background: '#e0e7ff', color: '#3730a3' }}>
+                        GSTR-1 filed
+                      </span>
+                    )}
                   </td>
                   <td style={{ padding: '10px 12px' }}>
                     <div style={{ display: 'flex', gap: 6 }}>
                       {cn.status === 'draft' && (
                         <button onClick={() => issue(cn.id)} style={{ padding: '4px 10px', borderRadius: 6, background: '#dcfce7', color: '#15803d', fontWeight: 600, fontSize: 11, border: 'none', cursor: 'pointer' }}>Issue</button>
                       )}
-                      {cn.status !== 'cancelled' && (
-                        <button onClick={() => cancel(cn.id)} style={{ padding: '4px 10px', borderRadius: 6, background: '#fee2e2', color: '#dc2626', fontWeight: 600, fontSize: 11, border: 'none', cursor: 'pointer' }}>Cancel</button>
+                      {/* A filed note is never cancelled here — that is a GSTR-1 amendment. */}
+                      {cn.status === 'issued' && !cn.gstr1_filed && (
+                        <button onClick={() => markFiled(cn)} style={{ padding: '4px 10px', borderRadius: 6, background: '#e0e7ff', color: '#3730a3', fontWeight: 600, fontSize: 11, border: 'none', cursor: 'pointer' }}>Mark filed</button>
+                      )}
+                      {(cn.status === 'draft' || (cn.status === 'issued' && !cn.gstr1_filed)) && (
+                        <button onClick={() => cancel(cn)} style={{ padding: '4px 10px', borderRadius: 6, background: '#fee2e2', color: '#dc2626', fontWeight: 600, fontSize: 11, border: 'none', cursor: 'pointer' }}>Cancel</button>
                       )}
                     </div>
                   </td>

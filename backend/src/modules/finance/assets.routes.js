@@ -206,15 +206,16 @@ router.post('/', requirePermission('finance', 'add'), async (req, res) => {
           ]
         );
         await client.query(
-          `INSERT INTO journal_lines (entry_id, account_id, account_code, account_name, debit, credit, narration)
-           VALUES ($1,$2,$3,$4,$5,0,$6),
-                  ($1,$7,$8,$9,0,$5,$6)`,
+          `INSERT INTO journal_lines (entry_id, account_id, account_code, account_name, debit, credit, narration, company_id)
+           VALUES ($1,$2,$3,$4,$5,0,$6,$10),
+                  ($1,$7,$8,$9,0,$5,$6,$10)`,
           [
             je.id,
             acctMap[assetAcctCode].id, assetAcctCode, acctMap[assetAcctCode].name,
             cost,
             `Asset purchase — ${name}`,
             acctMap[creditAcctCode].id, creditAcctCode, acctMap[creditAcctCode].name,
+            companyId,
           ]
         );
       }
@@ -377,10 +378,10 @@ router.post('/:id/dispose', requirePermission('finance', 'approve'), async (req,
 
     for (const l of lines) {
       await client.query(
-        `INSERT INTO journal_lines (entry_id, account_id, account_code, account_name, debit, credit, narration)
-         VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+        `INSERT INTO journal_lines (entry_id, account_id, account_code, account_name, debit, credit, narration, company_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
         [jeRow.id, l.account_id, l.account_code, l.account_name, l.debit, l.credit,
-         `Asset disposal — ${asset.asset_code}`]
+         `Asset disposal — ${asset.asset_code}`, companyId]
       );
     }
 

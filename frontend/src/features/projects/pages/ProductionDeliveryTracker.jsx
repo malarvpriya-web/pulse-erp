@@ -8,14 +8,21 @@ import { fmtDate } from '@/utils/dateFormatter';
 import { useAuth } from '@/context/AuthContext';
 import { getProject } from '../services/projectsService';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import VocabSelect from '@/components/core/VocabSelect';
+import {
+  PROJECT_STAGES, UNAVAILABLE, STAGE_META, projectStageOf, lifecycleErrorMessage,
+} from '../shared/projectStage';
 
-// Canonical Manifest SST/HVDC production pipeline, full lifecycle order. Mirrors
-// PRODUCTION_STAGES in the backend deliveryTracker.routes.js and STAGES in
-// ProjectPipelineBoard.jsx — keep all three in sync. Legacy values were
-// remapped onto this set in migration 20260715000003.
-const STAGES = ['created', 'handover', 'dr_approval', 'procurement', 'production', 'clearing', 'dispatched'];
-// Manifest project-type categories (mirrors PROJECT_TYPES in the backend deliveryTracker.routes.js).
-const PROJECT_TYPES = ['EPC', 'HVDC', 'STATCOM', 'SST', 'AMC', 'Installation', 'Commissioning', 'O&M', 'Supply', 'Turnkey'];
+// The stage column is DERIVED by the backend from each project's lifecycle
+// (shared/projectStage.js); it is displayed and filtered here, never edited.
+// "Unavailable stage" selects projects with no lifecycle, so they stay findable.
+const STAGE_FILTERS = [...PROJECT_STAGES, UNAVAILABLE];
+// PROJECT_TYPES was the same ten-item array in three pages. `projects.project_type`
+// is free text and already held a value none of the three offered, which renders as
+// a blank Type and is wiped by the next save. It now comes from the project-type
+// master — backend/src/modules/master/vocabularies.js.
+// ⚠ deliveryTracker.routes.js keeps its own PROJECT_TYPES for validation; a type
+// added here is accepted by the master but may still be rejected there.
 // Product Type is now the product_lines master ("ASTRA - 415V"), loaded from
 // /projects/product-lines — not the bare LV/MV/HV class it used to be. The class
 // still exists as product_lines.voltage_class and legacy projects fall back to it
@@ -34,15 +41,6 @@ const BILLING_TYPES = [
 const STATUSES = ['planning', 'active', 'on_hold', 'completed', 'cancelled'];
 const PAGE_SIZES = [10, 20, 50, 100];
 
-const STAGE_COLORS = {
-  created:     { bg: '#f3f4f6', color: '#6b7280' },
-  handover:    { bg: '#dbeafe', color: '#2563eb' },
-  dr_approval: { bg: '#ede9fe', color: '#7c3aed' },
-  procurement: { bg: '#ede9fe', color: '#6d28d9' },
-  production:  { bg: '#e0e7ff', color: '#4338ca' },
-  clearing:    { bg: '#e0f2fe', color: '#0891b2' },
-  dispatched:  { bg: '#d1fae5', color: '#16a34a' },
-};
 const STATUS_COLORS = {
   'Won':         { bg: '#dbeafe', color: '#2563eb' },
   'In Progress': { bg: '#ede9fe', color: '#6d28d9' },
@@ -72,7 +70,7 @@ const COLS = [
   { key: 'project_type',       label: 'Project Type' },
   { key: 'product_type',       label: 'Product Type' },
   { key: 'zone',               label: 'Zone' },
-  { key: 'production_stage',   label: 'Status' },
+  { key: 'production_stage',   label: 'Stage' },
   { key: 'target_date',        label: 'Target Date' },
   { key: 'forecast_date',      label: 'Forecast Date' },
   { key: 'warranty_start_date', label: 'Warranty Start' },
@@ -85,15 +83,18 @@ const EXPORT_COLS = COLS.filter(c => c.key !== '_expand');
 const emptyForm = () => ({
   project_code: '', project_name: '', description: '', customer_name: '',
   opportunity_id: '', project_type: 'EPC', product_line_id: '', zone: '', billing_type: 'fixed',
-  production_stage: '', status: 'planning', target_date: '', forecast_date: '',
+  status: 'planning', target_date: '', forecast_date: '',
   start_date: new Date().toISOString().slice(0, 10), end_date: '',
   budget_amount: '', project_manager_id: '',
 });
+
+const stageText = (row) => projectStageOf(row).label;
 
 export default function ProductionDeliveryTracker({ setPage }) {
   const { hasPermission } = useAuth();
   const canAdd  = hasPermission('projects', 'add');
   const canEdit = hasPermission('projects', 'edit');
+  const canViewLifecycle = hasPermission('servicedesk', 'view');
 
   const [rows, setRows]       = useState([]);
   const [total, setTotal]     = useState(0);
@@ -127,6 +128,7 @@ export default function ProductionDeliveryTracker({ setPage }) {
   const [form, setForm]         = useState(emptyForm());
   const [saving, setSaving]     = useState(false);
   const [formError, setFormError] = useState('');
+  const [editingStage, setEditingStage] = useState(null);   // the edited row's derived stage (read-only)
 
   // Help + Activity modals.
   const [helpOpen, setHelpOpen] = useState(false);
@@ -211,7 +213,7 @@ export default function ProductionDeliveryTracker({ setPage }) {
       const cells = EXPORT_COLS.map(c => {
         let v = r[c.key] ?? '';
         if (DATE_KEYS.has(c.key)) v = dateFmt(r[c.key]);
-        else if (c.key === 'production_stage') v = cap(r[c.key]);
+        else if (c.key === 'production_stage') v = stageText(r);
         const s = String(v).replace(/"/g, '""');
         return /[",\n]/.test(s) ? `"${s}"` : s;
       });
@@ -240,7 +242,7 @@ export default function ProductionDeliveryTracker({ setPage }) {
       const tds = EXPORT_COLS.map(c => {
         let v = r[c.key] ?? '';
         if (DATE_KEYS.has(c.key)) v = fmtDMY(r[c.key]);
-        else if (c.key === 'production_stage') v = cap(r[c.key]);
+        else if (c.key === 'production_stage') v = stageText(r);
         return `<td>${String(v).replace(/</g, '&lt;')}</td>`;
       }).join('');
       return `<tr>${tds}</tr>`;
@@ -269,6 +271,7 @@ export default function ProductionDeliveryTracker({ setPage }) {
     try { const r = await api.get('/projects/projects/next-code'); f.project_code = r.data?.code || ''; } catch { /* leave blank */ }
     setForm(f);
     setEditingId(null);
+    setEditingStage(null);
     setFormError('');
     setDrawer(true);
   };
@@ -277,6 +280,7 @@ export default function ProductionDeliveryTracker({ setPage }) {
     if (!row) return;
     setFormError('');
     setEditingId(row.project_id);
+    setEditingStage(row);
     // Prefill from the grid row, then hydrate the fields the grid doesn't carry.
     setForm({
       ...emptyForm(),
@@ -290,13 +294,13 @@ export default function ProductionDeliveryTracker({ setPage }) {
       product_line_id: row.product_line_id ?? '',
       zone: row.zone || '',
       billing_type: 'fixed',
-      production_stage: row.production_stage || '',
       target_date: row.target_date ? String(row.target_date).slice(0, 10) : '',
       forecast_date: row.forecast_date ? String(row.forecast_date).slice(0, 10) : '',
     });
     setDrawer(true);
     try {
       const p = await getProject(row.project_id);
+      if (p) setEditingStage(st => ({ ...st, ...p }));
       if (p) setForm(f => ({
         ...f,
         project_name: p.project_name || '',
@@ -312,7 +316,6 @@ export default function ProductionDeliveryTracker({ setPage }) {
         product_line_id: p.product_line_id ?? f.product_line_id,
         zone: p.zone ?? f.zone,
         billing_type: p.billing_type ?? f.billing_type,
-        production_stage: p.production_stage ?? f.production_stage,
         target_date: p.target_date ? String(p.target_date).slice(0, 10) : f.target_date,
         forecast_date: p.forecast_date ? String(p.forecast_date).slice(0, 10) : f.forecast_date,
       }));
@@ -334,7 +337,8 @@ export default function ProductionDeliveryTracker({ setPage }) {
       product_line_id: nn(form.product_line_id),
       zone: nn(form.zone),
       billing_type: nn(form.billing_type),
-      production_stage: nn(form.production_stage),
+      // No production_stage: it is derived from the lifecycle and the server
+      // ignores it, so the form never sends one.
       status: form.status || 'planning',
       target_date: nn(form.target_date),
       forecast_date: nn(form.forecast_date),
@@ -358,8 +362,7 @@ export default function ProductionDeliveryTracker({ setPage }) {
       showToast(editingId ? 'Project updated' : 'Project created');
       load();
     } catch (err) {
-      const d = err?.response?.data;
-      setFormError(d?.errors?.[0]?.message || d?.error || d?.message || 'Save failed. Please try again.');
+      setFormError(lifecycleErrorMessage(err, editingId ? 'edit this project' : 'create projects'));
     } finally { setSaving(false); }
   };
 
@@ -424,15 +427,15 @@ export default function ProductionDeliveryTracker({ setPage }) {
         {/* Status multi-select */}
         <div ref={stageBoxRef} style={{ position: 'relative' }}>
           <button onClick={() => setStageOpen(o => !o)} style={{ ...inputStyle, display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', minWidth: 150 }}>
-            <span style={{ flex: 1, textAlign: 'left' }}>{pendingStages.length ? `${pendingStages.length} selected` : 'All Statuses'}</span>
+            <span style={{ flex: 1, textAlign: 'left' }}>{pendingStages.length ? `${pendingStages.length} selected` : 'All Stages'}</span>
             <ChevronDown size={14} />
           </button>
           {stageOpen && (
             <div style={{ position: 'absolute', top: '100%', left: 0, marginTop: 4, background: 'var(--color-background-primary)', border: '0.5px solid var(--color-border-tertiary)', borderRadius: 8, boxShadow: '0 8px 24px rgba(0,0,0,0.12)', zIndex: 30, minWidth: 190, padding: 6 }}>
-              {STAGES.map(s => (
+              {STAGE_FILTERS.map(s => (
                 <label key={s} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', fontSize: 13, cursor: 'pointer', borderRadius: 6, color: 'var(--color-text-primary)' }}>
                   <input type="checkbox" checked={pendingStages.includes(s)} onChange={() => toggleStage(s)} />
-                  {cap(s)}
+                  {STAGE_META[s].label}
                 </label>
               ))}
               {pendingStages.length > 0 && (
@@ -443,10 +446,9 @@ export default function ProductionDeliveryTracker({ setPage }) {
         </div>
 
         {/* Project type */}
-        <select value={pendingType} onChange={e => setPendingType(e.target.value)} style={{ ...inputStyle, cursor: 'pointer' }}>
-          <option value="">All Project Types</option>
-          {PROJECT_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-        </select>
+        <VocabSelect vocab="project-types" allowAdd={false} value={pendingType}
+          onChange={v => setPendingType(v)} placeholder="All Project Types"
+          selectStyle={{ ...inputStyle, cursor: 'pointer' }} />
 
         <button onClick={applyFilter} style={{ ...primaryBtn, padding: '7px 18px' }}>Load</button>
         <button onClick={recentUpdate} title="Sort by most recently updated" style={toolBtn}><Clock size={14} /> Recent Update</button>
@@ -501,7 +503,7 @@ export default function ProductionDeliveryTracker({ setPage }) {
                   const id = r.project_id ?? i;
                   const isActive = activeRow === id;
                   const isOpen = expandedId === id;
-                  const stg = STAGE_COLORS[r.production_stage] || {};
+                  const stg = projectStageOf(r);
                   const stc = STATUS_COLORS[r.status] || {};
                   return (
                     <Fragment key={id}>
@@ -529,9 +531,7 @@ export default function ProductionDeliveryTracker({ setPage }) {
                         <td style={{ padding: '10px 12px', color: 'var(--color-text-secondary)' }}>{r.product_type || '—'}</td>
                         <td style={{ padding: '10px 12px', color: 'var(--color-text-secondary)' }}>{r.zone || '—'}</td>
                         <td style={{ padding: '10px 12px' }}>
-                          {r.production_stage
-                            ? <span style={{ padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 600, background: stg.bg, color: stg.color }}>{cap(r.production_stage)}</span>
-                            : '—'}
+                          <span data-testid="stage-badge" title={stg.why} style={{ padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 600, background: stg.bg, color: stg.color, whiteSpace: 'nowrap' }}>{stg.label}</span>
                         </td>
                         <td style={{ padding: '10px 12px', color: 'var(--color-text-secondary)', whiteSpace: 'nowrap' }}>{fmtDate(r.target_date)}</td>
                         <td style={{ padding: '10px 12px', color: 'var(--color-text-secondary)', whiteSpace: 'nowrap' }}>{fmtDate(r.forecast_date)}</td>
@@ -553,16 +553,27 @@ export default function ProductionDeliveryTracker({ setPage }) {
                               <Detail label="Project Type" value={r.project_type} />
                               <Detail label="Product Type" value={r.product_type} />
                               <Detail label="Zone" value={r.zone} />
-                              <Detail label="Production Stage" value={cap(r.production_stage)} />
+                              <Detail label="Stage (from lifecycle)" value={stg.label} />
+                              <Detail label="Lifecycle" value={r.lifecycle_id ? `${cap(r.lifecycle_stage)} · ${cap(r.lifecycle_status)}` : 'None'} />
                               <Detail label="Target Date" value={fmtDate(r.target_date)} />
                               <Detail label="Forecast Date" value={fmtDate(r.forecast_date)} />
                               <Detail label="Warranty Start" value={fmtDate(r.warranty_start_date)} />
                               <Detail label="Order Won Date" value={fmtDate(r.order_won_date)} />
                               <Detail label="Last Updated" value={fmtDate(r.updated_at)} />
                             </div>
-                            {canEdit && (
-                              <button onClick={(e) => { e.stopPropagation(); setActiveRow(id); openEdit(r); }} style={{ ...primaryBtn, marginTop: 12, padding: '6px 14px', fontSize: 12 }}><Pencil size={12} /> Edit this project</button>
-                            )}
+                            <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+                              {canEdit && (
+                                <button onClick={(e) => { e.stopPropagation(); setActiveRow(id); openEdit(r); }} style={{ ...primaryBtn, padding: '6px 14px', fontSize: 12 }}><Pencil size={12} /> Edit this project</button>
+                              )}
+                              {r.lifecycle_id ? (
+                                <button onClick={(e) => { e.stopPropagation(); setPage && setPage('LifecycleTracker', { lifecycleId: r.lifecycle_id }); }}
+                                  disabled={!canViewLifecycle}
+                                  title={canViewLifecycle ? 'Change the stage through the lifecycle' : 'Viewing lifecycles needs Service Desk view access'}
+                                  style={canViewLifecycle ? { ...toolBtn, padding: '6px 14px', fontSize: 12 } : { ...toolBtn, padding: '6px 14px', fontSize: 12, opacity: 0.5, cursor: 'not-allowed' }}>Open lifecycle to change stage</button>
+                              ) : (
+                                <span style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>No lifecycle — the stage is unavailable until one is started.</span>
+                              )}
+                            </div>
                           </td>
                         </tr>
                       )}
@@ -630,9 +641,8 @@ export default function ProductionDeliveryTracker({ setPage }) {
                 </div>
                 <div>
                   <label style={fieldLbl}>Project Type</label>
-                  <select value={form.project_type} onChange={e => setF('project_type', e.target.value)} style={fieldInput}>
-                    {PROJECT_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-                  </select>
+                  <VocabSelect vocab="project-types" value={form.project_type}
+                    onChange={v => setF('project_type', v)} selectStyle={fieldInput} />
                 </div>
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
@@ -661,11 +671,11 @@ export default function ProductionDeliveryTracker({ setPage }) {
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
                 <div>
-                  <label style={fieldLbl}>Production Stage</label>
-                  <select value={form.production_stage} onChange={e => setF('production_stage', e.target.value)} style={fieldInput}>
-                    <option value="">— Select —</option>
-                    {STAGES.map(s => <option key={s} value={s}>{cap(s)}</option>)}
-                  </select>
+                  <span style={fieldLbl}>Production Stage</span>
+                  <div data-testid="stage-readonly" title="Set by the project's lifecycle; change it by advancing the lifecycle"
+                    style={{ ...fieldInput, color: 'var(--color-text-secondary)' }}>
+                    {editingId ? projectStageOf(editingStage).label : 'Set by the lifecycle (starts at Handover)'}
+                  </div>
                 </div>
                 <div>
                   <label style={fieldLbl}>Status</label>
@@ -729,14 +739,14 @@ export default function ProductionDeliveryTracker({ setPage }) {
             <div style={{ fontSize: 13, color: 'var(--color-text-secondary)', lineHeight: 1.7 }}>
               <p style={{ margin: '0 0 10px' }}>This grid is the single source of truth for the production/delivery record. Each row is an <b>IPP</b> project, optionally linked back to the originating <b>IPM</b> pursuit.</p>
               <ul style={{ margin: '0 0 10px', paddingLeft: 18 }}>
-                <li><b>Status</b> multi-select + <b>Project Type</b> filter the grid; press <b>Load</b> to apply.</li>
+                <li><b>Stage</b> multi-select (including <b>Unavailable stage</b>) + <b>Project Type</b> filter the grid; press <b>Load</b> to apply.</li>
                 <li><b>Recent Update</b> orders by the most recently changed project.</li>
                 <li><b>New</b> / <b>Edit</b> create and maintain the project record. Select a row first to Edit.</li>
                 <li><b>Activity</b> shows the audit trail for the selected project (admin/HR/manager).</li>
                 <li><b>Date Excel</b> exports with DD/MM/YYYY dates; <b>Excel</b> uses ISO dates; <b>PDF</b> prints the grid.</li>
                 <li>Click the <b>chevron</b> to expand a row for the full record.</li>
               </ul>
-              <p style={{ margin: 0 }}>Production stages: {STAGES.map(cap).join(' → ')}.</p>
+              <p style={{ margin: 0 }}>Stages ({PROJECT_STAGES.map(s => STAGE_META[s].label).join(' → ')}) come from each project's lifecycle and cannot be edited here — open the lifecycle and advance it through its gates. A project with no lifecycle shows <b>Unavailable stage</b>.</p>
             </div>
           </div>
         </>

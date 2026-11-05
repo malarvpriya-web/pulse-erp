@@ -1,0 +1,282 @@
+/* ──────────────────────────────────────────────────────────────────────────────
+   Background Verification — module page + employee BGV page.
+
+   ⚠ Every selector is prefixed `.bgv-`. Two prefixes in this app are already
+   spoken for and collided app-wide when reused: `.tb-` is Topbar's and loads on
+   every page ([[project_recruitment_redesign_2026-09-27]]), and a bare
+   `.form-grid div > div` rule on a page stylesheet reached INTO a shared
+   component and broke MasterSelect's popup on three pages
+   ([[project_add_employee_dropdown_rootcause]]). Nothing here is unprefixed and
+   nothing here is a descendant selector that can escape into a child component.
+
+   Colours come from the canonical `--color-*` tokens in global-overrides.css.
+   ────────────────────────────────────────────────────────────────────────────── */
+
+.bgv-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--color-border, #e5e7eb);
+  margin-bottom: 20px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.bgv-tabs::-webkit-scrollbar { display: none; }
+
+.bgv-tab {
+  appearance: none;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 10px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #6b7280;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.bgv-tab:hover { color: var(--color-primary, #6B3FDB); }
+.bgv-tab.is-active {
+  color: var(--color-primary, #6B3FDB);
+  border-bottom-color: var(--color-primary, #6B3FDB);
+}
+
+/* ── Cards ─────────────────────────────────────────────────────────────────── */
+.bgv-card {
+  background: #fff;
+  border: 1px solid var(--color-border, #e5e7eb);
+  border-radius: 12px;
+  padding: 16px 18px;
+}
+.bgv-card + .bgv-card { margin-top: 16px; }
+
+.bgv-card-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #374151;
+  margin: 0 0 12px;
+}
+
+.bgv-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 16px;
+}
+
+/* ── KPI cards. Buttons, because clicking one filters the list. ──────────── */
+.bgv-kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+  margin-bottom: 20px;
+}
+.bgv-kpi {
+  appearance: none;
+  text-align: left;
+  background: #fff;
+  border: 1px solid var(--color-border, #e5e7eb);
+  border-radius: 12px;
+  padding: 14px 16px;
+  cursor: pointer;
+  transition: box-shadow .15s, transform .15s;
+}
+.bgv-kpi:hover {
+  box-shadow: 0 4px 14px rgba(17, 24, 39, .08);
+  transform: translateY(-1px);
+}
+.bgv-kpi-val { display: block; font-size: 26px; font-weight: 800; color: #111827; line-height: 1.1; }
+.bgv-kpi-label {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: #6b7280;
+}
+.bgv-kpi.is-active { border-color: var(--color-primary, #6B3FDB); box-shadow: 0 0 0 2px rgba(107, 63, 219, .12); }
+
+/* ── Tables ────────────────────────────────────────────────────────────────── */
+.bgv-table-wrap {
+  background: #fff;
+  border: 1px solid var(--color-border, #e5e7eb);
+  border-radius: 12px;
+  overflow: auto;
+}
+.bgv-table { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 860px; }
+.bgv-table th {
+  text-align: left;
+  padding: 10px 12px;
+  background: #f9fafb;
+  border-bottom: 1px solid var(--color-border, #e5e7eb);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: #6b7280;
+  white-space: nowrap;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+.bgv-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid #f3f4f6;
+  color: #374151;
+  vertical-align: middle;
+}
+.bgv-table tbody tr:hover { background: #fbfaff; }
+.bgv-num { text-align: right; font-variant-numeric: tabular-nums; }
+
+.bgv-badge {
+  display: inline-block;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+/* ── Filters ───────────────────────────────────────────────────────────────── */
+.bgv-filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 10px;
+  align-items: end;
+  margin-bottom: 14px;
+}
+.bgv-field { display: flex; flex-direction: column; gap: 4px; }
+.bgv-field > label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .03em;
+  text-transform: uppercase;
+  color: #6b7280;
+}
+.bgv-field > input,
+.bgv-field > select,
+.bgv-field > textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: 1px solid var(--color-border, #d1d5db);
+  border-radius: 8px;
+  font-size: 13px;
+  font: inherit;
+  font-size: 13px;
+  background: #fff;
+  color: #111827;
+}
+.bgv-field > input:focus,
+.bgv-field > select:focus,
+.bgv-field > textarea:focus {
+  outline: none;
+  border-color: var(--color-primary, #6B3FDB);
+  box-shadow: 0 0 0 3px rgba(107, 63, 219, .12);
+}
+
+/* ── Folder view ───────────────────────────────────────────────────────────── */
+.bgv-folder {
+  border: 1px solid var(--color-border, #e5e7eb);
+  border-radius: 10px;
+  overflow: hidden;
+  background: #fff;
+}
+.bgv-folder + .bgv-folder { margin-top: 10px; }
+.bgv-folder-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: #f9fafb;
+  border-bottom: 1px solid var(--color-border, #e5e7eb);
+  font-size: 13px;
+  font-weight: 700;
+  color: #374151;
+}
+.bgv-file {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 14px 9px 36px;
+  font-size: 13px;
+  border-top: 1px solid #f3f4f6;
+}
+.bgv-file:first-of-type { border-top: none; }
+.bgv-file-name {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-primary, #6B3FDB);
+  cursor: pointer;
+  text-align: left;
+}
+.bgv-file-name:hover { text-decoration: underline; }
+.bgv-file-name:disabled { color: #9ca3af; cursor: not-allowed; text-decoration: none; }
+.bgv-file-meta { color: #6b7280; font-size: 12px; }
+.bgv-folder-empty { padding: 12px 14px 12px 36px; font-size: 12px; color: #9ca3af; }
+
+/* ── Bars, for the spend breakdowns ────────────────────────────────────────── */
+.bgv-bar-row { display: grid; grid-template-columns: 1fr 74px; gap: 10px; align-items: center; margin-bottom: 9px; }
+.bgv-bar-label { font-size: 12px; color: #374151; }
+.bgv-bar-track { height: 6px; border-radius: 4px; background: #f3f4f6; margin-top: 4px; overflow: hidden; }
+.bgv-bar-fill { height: 100%; border-radius: 4px; background: var(--color-primary, #6B3FDB); }
+.bgv-bar-val { font-size: 12px; font-weight: 700; color: #111827; text-align: right; font-variant-numeric: tabular-nums; }
+
+/* ── Buttons ───────────────────────────────────────────────────────────────── */
+.bgv-btn, .bgv-btn-primary {
+  appearance: none;
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid var(--color-border, #d1d5db);
+  background: #fff;
+  color: #374151;
+}
+.bgv-btn:hover { background: #f9fafb; }
+.bgv-btn-primary {
+  border-color: var(--color-primary, #6B3FDB);
+  background: var(--color-primary, #6B3FDB);
+  color: #fff;
+}
+.bgv-btn-primary:hover { background: #5B35D5; }
+.bgv-btn:disabled, .bgv-btn-primary:disabled { opacity: .55; cursor: not-allowed; }
+.bgv-btn-sm { padding: 5px 10px; font-size: 12px; }
+
+.bgv-row-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+
+.bgv-empty { padding: 34px 16px; text-align: center; color: #6b7280; font-size: 13px; }
+.bgv-note { font-size: 12px; color: #6b7280; margin: 0 0 12px; }
+.bgv-warn { color: #92400e; font-weight: 600; }
+.bgv-danger { color: #991b1b; font-weight: 600; }
+
+/* ── Modal ─────────────────────────────────────────────────────────────────── */
+.bgv-modal-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(17, 24, 39, .45);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 40px 16px;
+  overflow: auto;
+  z-index: 1200;
+}
+.bgv-modal {
+  background: #fff;
+  border-radius: 14px;
+  width: min(760px, 100%);
+  padding: 22px;
+  box-shadow: 0 20px 60px rgba(17, 24, 39, .28);
+}
+.bgv-modal-title { margin: 0 0 4px; font-size: 17px; font-weight: 700; color: #111827; }
+.bgv-modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 18px; }
+
+@media (max-width: 720px) {
+  .bgv-tab { padding: 9px 11px; font-size: 12px; }
+  .bgv-modal { padding: 16px; }
+}

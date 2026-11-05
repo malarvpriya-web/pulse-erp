@@ -10,6 +10,7 @@ import { companyOf } from '../../../shared/scope.js';
 import { nextProjectCode, nextLifecycleNumber } from '../../../shared/docNumber.js';
 import { resolveAutoAssignee, resolveAssignment } from '../services/leadAssignment.service.js';
 import { convertOpportunityToProject } from '../services/opportunityConversion.service.js';
+import { ProjectSetupError, setupErrorBody } from '../../projects/services/projectCreation.service.js';
 import notificationsRepository from '../../notifications/repositories/notifications.repository.js';
 import { respondError } from '../../../shared/pgErrors.js';
 import {
@@ -25,21 +26,23 @@ import { dispatch as dispatchWorkflows } from '../../../services/workflowEngine.
 import { validate as validateRules } from '../../../services/ValidationEngineService.js';
 import { timelineFor, customerTimeline, TIMELINE_KEYS } from '../services/activityTimeline.service.js';
 import { captureBefore } from '../../../middlewares/captureBefore.js';
+import { toCsv } from '../../../shared/csv.js';
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
 
 // assigned_to on leads/opportunities FKs employees, not users — resolve to a login
-// via users.employee_id (set on every login addEmployee auto-creates), falling back
-// to the company_email <-> email match for accounts predating that column.
+// via users.employee_id (set on every login addEmployee auto-creates). NOT by
+// company_email: that is an editable HR field, and matching on it routed an
+// employee's notifications to whichever account held the address (2026-10-12).
 async function resolveEmployeeUserId(employeeId) {
   if (!employeeId) return null;
   const { rows } = await pool.query(
     `SELECT u.id
        FROM employees e
-       JOIN users u ON (u.employee_id = e.id OR LOWER(u.email) = LOWER(e.company_email))
+       JOIN users u ON u.employee_id = e.id
       WHERE e.id = $1 AND u.is_active = true
-      ORDER BY (u.employee_id = e.id) DESC
+      ORDER BY u.id
       LIMIT 1`,
     [employeeId]
   );
@@ -1548,9 +1551,10 @@ router.get('/opportunities/export', requirePermission('crm', 'view'), async (req
       r.closed_date           ? new Date(r.closed_date).toISOString().split('T')[0] : '',
       r.assigned_to, (r.notes || '').replace(/[\r\n,]/g, ' '),
       new Date(r.created_at).toISOString().split('T')[0],
-    ].map(v => `"${(v ?? '').toString().replace(/"/g, '""')}"`).join(',');
+    ];
 
-    const csv = [headers.join(','), ...rows.map(toRow)].join('\n');
+    // Opportunity and account names are user-entered. See shared/csv.js.
+    const csv = toCsv(headers, rows.map(toRow));
 
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', `attachment; filename="opportunities_${Date.now()}.csv"`);
@@ -1995,7 +1999,6 @@ router.post('/opportunities/:id/create-quotation', requirePermission('sales', 'a
     // Quotation number came from COUNT(*)+1 against a UNIQUE column: it races
     // under concurrency and reuses numbers after a delete (audit C-37). A
     // sequence is monotonic and concurrency-safe.
-    await client.query(`CREATE SEQUENCE IF NOT EXISTS quotation_number_seq`);
     const seqRes = await client.query(`SELECT nextval('quotation_number_seq')::bigint AS n`);
     const seq = String(seqRes.rows[0].n).padStart(4, '0');
     const yr  = new Date().getFullYear();
@@ -2069,6 +2072,8 @@ router.post('/opportunities/:id/convert-to-project', requirePermission('projects
     res.status(201).json({ project: result.project });
   } catch (err) {
     await client.query('ROLLBACK');
+    // 422 OPPORTUNITY_NOT_WON: only a Won opportunity becomes a delivery project.
+    if (err instanceof ProjectSetupError) return res.status(err.status).json(setupErrorBody(err));
     res.status(500).json({ error: err.message });
   } finally { client.release(); }
 });

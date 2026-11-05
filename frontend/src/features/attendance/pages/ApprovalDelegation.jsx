@@ -6,6 +6,7 @@ import {
 import api from '@/services/api/client';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import { localDay } from '@/utils/dateFormatter';
 
 const P    = '#6B3FDB';
 const CARD = { background: '#fff', borderRadius: 12, border: '1px solid #f0f0f4', padding: 24 };
@@ -21,7 +22,7 @@ const DELEGATION_TYPES = [
 const EMPTY = { delegator_id: '', delegate_id: '', from_date: '', to_date: '', delegation_type: 'all', reason: '' };
 
 export default function ApprovalDelegation() {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localDay();
 
   const [delegations, setDelegations] = useState([]);
   const [employees,   setEmployees]   = useState([]);

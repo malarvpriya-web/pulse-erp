@@ -62,6 +62,12 @@ test.describe('Component 360 — TCO comparison', () => {
     // no basis is a guess presented as a costing.
     const badges = page.getByText(/^(Quoted|Observed|Estimated|Assumed)$/);
     expect(await badges.count()).toBeGreaterThan(0);
+
+    // §214: cycle stock is costed whenever the item has a demand rate — the old
+    // guard dropped it when the compared lot covered the whole horizon, which is
+    // the case for a component bought a couple of times a year.
+    await expect(page.getByText('Cycle stock carrying').first()).toBeVisible();
+    await expect(page.getByText(/units \(Q\/2\)/).first()).toBeVisible();
   });
 
   test('changing the comparison quantity re-costs the table', async ({ page }) => {
@@ -184,4 +190,8 @@ test.describe('Procurement Settings — TCO rates', () => {
 
     expect(errors, `page errors: ${errors.join(' | ')}`).toEqual([]);
   });
+
+  // The day-count save/reload test that lived here wrote company 1's live
+  // settings (and restored them). It now runs on a throwaway company in
+  // fx-rates.spec.ts, so this suite only reads live data.
 });

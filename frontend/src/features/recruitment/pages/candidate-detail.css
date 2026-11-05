@@ -1,0 +1,520 @@
+/* CandidateDetail — §5's profile layout. Prefix: `.cd`. */
+
+.cd-blank {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 60px 20px;
+  color: #64748b;
+  font-size: 13px;
+}
+
+/* ── Status strip ──────────────────────────────────────────────────────── */
+
+.cd-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+  padding: 10px 13px;
+  background: #fff;
+  border: 1px solid #ecedf3;
+  border-radius: 10px;
+  margin-bottom: 11px;
+}
+
+.cd-strip-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.cd-strip-field > span {
+  font-size: 9.5px;
+  font-weight: 800;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
+
+.cd-strip-right {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-left: auto;
+  align-items: center;
+}
+
+.cd-contact {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 10px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 7px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #334155;
+  text-decoration: none;
+}
+.cd-contact:hover { background: #F5F3FF; border-color: #ddd3fb; color: #4B2DCE; }
+
+.cd-sel,
+.cd-input,
+.cd-textarea {
+  padding: 6px 9px;
+  border: 1px solid #e5e7eb;
+  border-radius: 7px;
+  font-size: 12px;
+  font-family: inherit;
+  color: #1f2937;
+  background: #fff;
+  max-width: 100%;
+}
+.cd-sel { cursor: pointer; font-weight: 600; }
+.cd-sel--full { width: 100%; font-weight: 400; }
+.cd-sel--sm { font-size: 11px; padding: 4px 7px; flex: none; }
+.cd-input { width: 100%; }
+.cd-textarea { width: 100%; resize: vertical; line-height: 1.55; font-size: 12.5px; }
+.cd-input:focus,
+.cd-textarea:focus,
+.cd-sel:focus { outline: 2px solid #ddd3fb; outline-offset: -1px; border-color: #c4b5fd; }
+
+/* ── Banner ────────────────────────────────────────────────────────────── */
+
+.cd-banner {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex-wrap: wrap;
+  padding: 9px 13px;
+  border-radius: 9px;
+  margin-bottom: 11px;
+  font-size: 12.5px;
+}
+.cd-banner--keep { background: #ECFEFF; border: 1px solid #A5F3FC; color: #0E7490; }
+
+.cd-banner-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+  padding: 5px 11px;
+  background: #0E7490;
+  border: 1px solid #0E7490;
+  border-radius: 7px;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: #fff;
+  cursor: pointer;
+}
+.cd-banner-btn:hover { background: #0b5d73; }
+
+/* ── Main split (§5) ───────────────────────────────────────────────────── */
+
+.cd-main {
+  display: grid;
+  /* The résumé gets the larger share — §5 makes it the "LEFT / LARGE AREA" and
+     §33 requires it to stay readable. At 1366 this is roughly 760/540. */
+  grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+  gap: 13px;
+  align-items: start;
+}
+
+/* Sticky, so the résumé is still on screen when the recruiter is three cards down
+   the rail writing a note about it. */
+.cd-resume { position: sticky; top: 8px; min-width: 0; }
+
+.cd-rail { display: flex; flex-direction: column; gap: 11px; min-width: 0; }
+
+/* ── Rail tabs ─────────────────────────────────────────────────────────── */
+
+.cd-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  background: #f4f5f9;
+  border-radius: 9px;
+}
+
+.cd-tab {
+  flex: 1 1 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 7px 9px;
+  background: none;
+  border: 0;
+  border-radius: 7px;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: #64748b;
+  cursor: pointer;
+  font-family: inherit;
+}
+.cd-tab:hover { color: #4B2DCE; }
+.cd-tab.is-on { background: #fff; color: #4B2DCE; box-shadow: 0 1px 3px rgba(15, 23, 42, .07); }
+
+.cd-tab-n {
+  min-width: 15px;
+  padding: 0 4px;
+  background: #ddd3fb;
+  color: #4B2DCE;
+  border-radius: 20px;
+  font-size: 9px;
+  font-weight: 800;
+}
+
+.cd-pane { display: flex; flex-direction: column; gap: 11px; }
+
+/* ── Cards ─────────────────────────────────────────────────────────────── */
+
+.cd-card {
+  background: #fff;
+  border: 1px solid #ecedf3;
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+
+.cd-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 9px;
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #f4f5f9;
+}
+.cd-card-head h3 { margin: 0; font-size: 11.5px; font-weight: 800; color: #1f2937; }
+.cd-card-action { display: flex; gap: 5px; }
+
+.cd-mini {
+  padding: 4px 9px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  font-size: 10.5px;
+  font-weight: 700;
+  color: #64748b;
+  cursor: pointer;
+  font-family: inherit;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.cd-mini:hover { background: #F5F3FF; border-color: #ddd3fb; color: #4B2DCE; }
+.cd-mini--go { background: #4B2DCE; border-color: #4B2DCE; color: #fff; }
+.cd-mini--go:hover { background: #3f23b5; color: #fff; }
+
+.cd-muted { margin: 0; font-size: 12px; color: #94a3b8; line-height: 1.55; }
+
+/* ── Facts ─────────────────────────────────────────────────────────────── */
+
+.cd-facts {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 12px;
+  margin: 0 0 11px;
+}
+
+.cd-fact { min-width: 0; }
+.cd-fact dt {
+  font-size: 9.5px;
+  font-weight: 700;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+.cd-fact dd {
+  margin: 1px 0 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: #1f2937;
+  overflow-wrap: anywhere;
+}
+.cd-fact dd.is-empty { color: #b6bfcc; font-weight: 500; font-style: italic; }
+
+.cd-relo { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 10px; }
+.cd-relo-note { margin: 0; flex: 1 1 100%; font-size: 11.5px; color: #64748b; line-height: 1.5; }
+
+.cd-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 20px;
+  font-size: 10.5px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.cd-chip--xs { font-size: 9.5px; padding: 1px 6px; }
+.cd-chip--dim { background: #f1f5f9; color: #64748b; }
+.cd-chip--skill { background: #F5F3FF; color: #6C47FF; }
+
+.cd-taglist { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin-top: 8px; }
+.cd-taglist-label {
+  font-size: 9.5px;
+  font-weight: 800;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  margin-right: 3px;
+}
+
+/* ── Edit form ─────────────────────────────────────────────────────────── */
+
+.cd-edit { display: grid; grid-template-columns: 1fr 1fr; gap: 9px 11px; }
+.cd-edit-field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.cd-edit-field--wide { grid-column: 1 / -1; }
+.cd-edit-field > span {
+  font-size: 9.5px;
+  font-weight: 700;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+
+/* ── Applications ──────────────────────────────────────────────────────── */
+
+.cd-app {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 9px;
+  padding: 9px 10px;
+  border: 1px solid #f0f0f6;
+  border-radius: 8px;
+  margin-bottom: 6px;
+}
+.cd-app-main { min-width: 0; }
+.cd-app-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: #1f2937;
+}
+.cd-app-sub { display: block; font-size: 11px; color: #94a3b8; margin-top: 2px; }
+.cd-app-note { margin: 4px 0 0; font-size: 11.5px; color: #64748b; line-height: 1.5; }
+
+.cd-tagline {
+  font-size: 8.5px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  color: #64748b;
+  background: #f1f5f9;
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+.cd-tagline--route { color: #4B2DCE; background: #EFEAFD; }
+
+/* ── Screening ─────────────────────────────────────────────────────────── */
+
+.cd-score {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 9px;
+}
+.cd-score-num { font-size: 26px; font-weight: 800; color: #4B2DCE; line-height: 1; }
+.cd-score-num em { font-size: 12px; font-weight: 600; color: #94a3b8; font-style: normal; }
+.cd-score-side { display: flex; flex-wrap: wrap; gap: 5px; }
+
+.cd-override {
+  margin: 0 0 9px;
+  padding: 8px 10px;
+  background: #FEF3C7;
+  border-left: 3px solid #FDE68A;
+  border-radius: 0 7px 7px 0;
+  font-size: 11.5px;
+  color: #92400E;
+  line-height: 1.5;
+}
+
+.cd-bd { list-style: none; margin: 0 0 10px; padding: 0; }
+.cd-bd li {
+  display: flex;
+  justify-content: space-between;
+  gap: 9px;
+  padding: 3px 0;
+  font-size: 11.5px;
+  color: #334155;
+  border-bottom: 1px solid #fafbfd;
+}
+.cd-bd li.is-unassessed { color: #b6bfcc; }
+.cd-bd li span:last-child { font-weight: 700; font-variant-numeric: tabular-nums; flex: none; }
+
+.cd-ratings { display: flex; flex-direction: column; gap: 4px; margin-bottom: 9px; }
+.cd-rating { display: flex; justify-content: space-between; align-items: center; gap: 9px; font-size: 11.5px; color: #475569; }
+.cd-dots { display: inline-flex; gap: 3px; flex: none; }
+.cd-dots i { width: 8px; height: 8px; border-radius: 50%; background: #e9e5fb; display: block; }
+.cd-dots i.on { background: #6C47FF; }
+
+.cd-quote {
+  margin: 0 0 6px;
+  padding: 8px 10px;
+  background: #fbfbfe;
+  border-left: 3px solid #ddd3fb;
+  border-radius: 0 7px 7px 0;
+  font-size: 12px;
+  color: #475569;
+  line-height: 1.55;
+}
+.cd-quote--bad { background: #FEF2F2; border-left-color: #FECACA; color: #B91C1C; }
+
+/* ── Suitability ───────────────────────────────────────────────────────── */
+
+.cd-suit {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 9px;
+  padding: 9px 10px;
+  border: 1px solid #f0f0f6;
+  border-radius: 8px;
+  margin-bottom: 6px;
+}
+.cd-suit-main { min-width: 0; }
+.cd-suit-dept {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: #1f2937;
+}
+.cd-suit-reason { margin: 4px 0 2px; font-size: 11.5px; color: #475569; line-height: 1.5; }
+.cd-suit-meta { font-size: 10px; color: #b6bfcc; }
+
+/* ── Notes ─────────────────────────────────────────────────────────────── */
+
+.cd-note-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 7px; }
+.cd-kbd-hint { font-size: 10px; color: #b6bfcc; }
+.cd-note-hint { margin: 8px 0 0; font-size: 10.5px; color: #94a3b8; line-height: 1.5; }
+
+.cd-note {
+  background: #fff;
+  border: 1px solid #ecedf3;
+  border-radius: 9px;
+  padding: 10px 12px;
+}
+/* A pinned note is visibly the one the team wanted you to read first. */
+.cd-note.is-pinned { border-color: #FDE68A; background: #FFFDF5; }
+
+.cd-note-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 5px;
+}
+.cd-note-meta { font-size: 10.5px; color: #94a3b8; }
+.cd-note-meta em { font-style: normal; color: #b45309; }
+.cd-note-tools { display: flex; gap: 3px; margin-left: auto; }
+
+.cd-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 5px;
+  color: #94a3b8;
+  cursor: pointer;
+}
+.cd-icon:hover { background: #F5F3FF; border-color: #ddd3fb; color: #4B2DCE; }
+
+.cd-note-body {
+  margin: 0;
+  font-size: 12.5px;
+  color: #334155;
+  line-height: 1.6;
+  white-space: pre-wrap;     /* a recruiter's own line breaks are meaningful */
+  overflow-wrap: anywhere;
+}
+
+/* ── Timeline ──────────────────────────────────────────────────────────── */
+
+.cd-timeline { list-style: none; margin: 0; padding: 0; }
+.cd-timeline li { display: flex; gap: 10px; padding-bottom: 11px; position: relative; }
+/* The connecting rule, drawn on the item rather than as a pseudo-element on the
+   list, so it stops at the last entry instead of trailing into empty space. */
+.cd-timeline li:not(:last-child)::before {
+  content: '';
+  position: absolute;
+  left: 3.5px;
+  top: 13px;
+  bottom: 0;
+  width: 1px;
+  background: #ecedf3;
+}
+.cd-tl-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; margin-top: 4px; z-index: 1; }
+.cd-tl-body { min-width: 0; }
+.cd-tl-summary { margin: 0; font-size: 12px; color: #334155; line-height: 1.5; overflow-wrap: anywhere; }
+.cd-tl-meta { margin: 1px 0 0; font-size: 10.5px; color: #94a3b8; }
+
+/* ── Similar (§20) ─────────────────────────────────────────────────────── */
+
+.cd-similar {
+  padding: 10px 11px;
+  border: 1px solid #f0f0f6;
+  border-radius: 8px;
+  margin-bottom: 7px;
+}
+.cd-similar-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.cd-similar-name {
+  background: none;
+  border: 0;
+  padding: 0;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: #4B2DCE;
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+}
+.cd-similar-name:hover { text-decoration: underline; }
+.cd-similar-sub { margin: 2px 0 6px; font-size: 11px; color: #94a3b8; }
+
+.cd-why { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.cd-why li {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  color: #047857;
+}
+
+/* ── Buttons ───────────────────────────────────────────────────────────── */
+
+.cd-btn {
+  padding: 7px 13px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 7px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #475569;
+  cursor: pointer;
+  font-family: inherit;
+}
+.cd-btn:hover:not(:disabled) { background: #F5F3FF; border-color: #ddd3fb; color: #4B2DCE; }
+.cd-btn:disabled { opacity: .5; cursor: not-allowed; }
+.cd-btn--primary { background: #4B2DCE; border-color: #4B2DCE; color: #fff; }
+.cd-btn--primary:hover:not(:disabled) { background: #3f23b5; color: #fff; }
+
+/* Below ~1240 the two-column split makes the résumé too narrow to read, which
+   defeats the point of having it on the page. Stack instead. */
+@media (max-width: 1240px) {
+  .cd-main { grid-template-columns: minmax(0, 1fr); }
+  .cd-resume { position: static; }
+}
+
+@media (max-width: 700px) {
+  .cd-facts,
+  .cd-edit { grid-template-columns: 1fr; }
+  .cd-strip-right { margin-left: 0; }
+}

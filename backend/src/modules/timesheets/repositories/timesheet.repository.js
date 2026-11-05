@@ -4,9 +4,12 @@ import { pickUpdatable } from '../../../shared/safeUpdate.js';
 const timesheetRepository = {
   async create(data) {
     const { employee_id, project_id, task_id, work_date, hours_worked, description, is_billable, status, company_id } = data;
+    // entry_date is the table's NOT NULL legacy date column (no default, no
+    // trigger); it was never set here, so every create failed with 23502 and
+    // POST /timesheets + clock-out had never saved an entry. It mirrors work_date.
     const result = await pool.query(
-      `INSERT INTO timesheet_entries (employee_id, project_id, task_id, work_date, hours_worked, description, is_billable, status, company_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+      `INSERT INTO timesheet_entries (employee_id, project_id, task_id, work_date, entry_date, hours_worked, description, is_billable, status, company_id)
+       VALUES ($1, $2, $3, $4::date, $4::date, $5, $6, $7, $8, $9) RETURNING *`,
       [employee_id, project_id, task_id, work_date, hours_worked, description, is_billable, status, company_id ?? null]
     );
     return result.rows[0];
@@ -64,7 +67,15 @@ const timesheetRepository = {
     return result.rows;
   },
 
-  async findById(id) {
+  /**
+   * Approved hours drive the project labour-cost rollup, so an unscoped write
+   * here moves another tenant's cost, profit and margin figures. Unlike `tasks`,
+   * timesheet_entries carries its own company_id, so scoping is direct.
+   *
+   * Callers MUST pass the caller's company (cid(req)); the null default is a
+   * genuinely global super-admin scope, not "unknown".
+   */
+  async findById(id, company_id = null) {
     const result = await pool.query(
       `SELECT te.*,
         e.name as employee_name,
@@ -75,13 +86,14 @@ const timesheetRepository = {
        LEFT JOIN employees e ON te.employee_id = e.id
        LEFT JOIN projects p ON te.project_id = p.id
        LEFT JOIN tasks t ON te.task_id = t.id
-       WHERE te.id = $1 AND te.deleted_at IS NULL`,
-      [id]
+       WHERE te.id = $1 AND te.deleted_at IS NULL
+         AND ($2::int IS NULL OR te.company_id = $2)`,
+      [id, company_id ?? null]
     );
     return result.rows[0];
   },
 
-  async update(id, data) {
+  async update(id, data, company_id = null) {
     const fields = [];
     const values = [];
     let paramCount = 1;
@@ -101,52 +113,88 @@ const timesheetRepository = {
 
     // Every key was rejected — don't emit `SET updated_at=…` alone, which would
     // report success for a write that changed nothing.
-    if (!fields.length) return this.findById(id);
+    if (!fields.length) return this.findById(id, company_id);
 
-    fields.push(`updated_at = CURRENT_TIMESTAMP`);
+    // NO `updated_at` here: timesheet_entries genuinely has no such column
+    // (tasks does, which is where this line was copied from). Appending it made
+    // every PUT /timesheets/:id fail with `42703 column "updated_at" ... does
+    // not exist`, so this endpoint has never once updated a row. The
+    // `!fields.length` guard above already stops an empty SET.
     values.push(id);
+    values.push(company_id ?? null);
+    const idParam = paramCount;
+    const cidParam = paramCount + 1;
 
     const result = await pool.query(
-      `UPDATE timesheet_entries SET ${fields.join(', ')} WHERE id = $${paramCount} RETURNING *`,
+      `UPDATE timesheet_entries SET ${fields.join(', ')}
+        WHERE id = $${idParam} AND deleted_at IS NULL
+          AND ($${cidParam}::int IS NULL OR company_id = $${cidParam})
+        RETURNING *`,
       values
     );
     return result.rows[0];
   },
 
-  async delete(id) {
-    await pool.query(`UPDATE timesheet_entries SET deleted_at = CURRENT_TIMESTAMP WHERE id = $1`, [id]);
+  /** True when a row was actually soft-deleted — false for an absent, already
+   *  deleted, or other-tenant id, so the route can answer 404 rather than a
+   *  false "deleted". */
+  async delete(id, company_id = null) {
+    const result = await pool.query(
+      `UPDATE timesheet_entries SET deleted_at = CURRENT_TIMESTAMP
+        WHERE id = $1 AND deleted_at IS NULL
+          AND ($2::int IS NULL OR company_id = $2)
+        RETURNING id`,
+      [id, company_id ?? null]
+    );
+    return result.rowCount > 0;
   },
 
-  async submitWeek(employee_id, week_start, week_end) {
-    await pool.query(
+  async submitWeek(employee_id, week_start, week_end, company_id = null) {
+    const result = await pool.query(
       `UPDATE timesheet_entries 
        SET status = 'submitted', submitted_at = CURRENT_TIMESTAMP
        WHERE employee_id = $1 
          AND work_date BETWEEN $2 AND $3 
-         AND status = 'draft'`,
-      [employee_id, week_start, week_end]
+         AND status = 'draft'
+         AND deleted_at IS NULL
+         AND ($4::int IS NULL OR company_id = $4)`,
+      [employee_id, week_start, week_end, company_id ?? null]
     );
+    return result.rowCount;
   },
 
-  async approveEntries(ids, approved_by) {
-    await pool.query(
+  /** Returns the rows actually approved, so the caller recalculates cost for
+   *  exactly the affected projects rather than reporting success for rows it
+   *  never touched. */
+  async approveEntries(ids, approved_by, company_id = null) {
+    const result = await pool.query(
       `UPDATE timesheet_entries 
        SET status = 'approved', approved_at = CURRENT_TIMESTAMP, approved_by = $1
-       WHERE id = ANY($2)`,
-      [approved_by, ids]
+       WHERE id = ANY($2)
+         AND status = 'submitted'
+         AND deleted_at IS NULL
+         AND ($3::int IS NULL OR company_id = $3)
+       RETURNING id, project_id`,
+      [approved_by, ids, company_id ?? null]
     );
+    return result.rows;
   },
 
-  async rejectEntries(ids, approved_by, reason) {
-    await pool.query(
+  async rejectEntries(ids, approved_by, reason, company_id = null) {
+    const result = await pool.query(
       `UPDATE timesheet_entries 
        SET status = 'rejected', approved_by = $1, rejection_reason = $2
-       WHERE id = ANY($3)`,
-      [approved_by, reason, ids]
+       WHERE id = ANY($3)
+         AND status = 'submitted'
+         AND deleted_at IS NULL
+         AND ($4::int IS NULL OR company_id = $4)
+       RETURNING id, project_id`,
+      [approved_by, reason, ids, company_id ?? null]
     );
+    return result.rows;
   },
 
-  async getWeeklySummary(employee_id, week_start, week_end) {
+  async getWeeklySummary(employee_id, week_start, week_end, company_id = null) {
     const result = await pool.query(`
       SELECT 
         work_date,
@@ -157,13 +205,14 @@ const timesheetRepository = {
       WHERE employee_id = $1 
         AND work_date BETWEEN $2 AND $3
         AND deleted_at IS NULL
+        AND ($4::int IS NULL OR company_id = $4)
       GROUP BY work_date
       ORDER BY work_date
-    `, [employee_id, week_start, week_end]);
+    `, [employee_id, week_start, week_end, company_id ?? null]);
     return result.rows;
   },
 
-  async getUtilization(employee_id, start_date, end_date) {
+  async getUtilization(employee_id, start_date, end_date, company_id = null) {
     const result = await pool.query(`
       SELECT 
         COUNT(DISTINCT work_date) as working_days,
@@ -175,11 +224,12 @@ const timesheetRepository = {
         AND work_date BETWEEN $2 AND $3
         AND status = 'approved'
         AND deleted_at IS NULL
-    `, [employee_id, start_date, end_date]);
+        AND ($4::int IS NULL OR company_id = $4)
+    `, [employee_id, start_date, end_date, company_id ?? null]);
     return result.rows[0];
   },
 
-  async getPendingApprovals(manager_id) {
+  async getPendingApprovals(manager_id, company_id = null) {
     const result = await pool.query(`
       SELECT te.*, 
         e.name as employee_name,
@@ -190,8 +240,9 @@ const timesheetRepository = {
       WHERE te.status = 'submitted'
         AND (p.project_manager_id = $1 OR e.reporting_manager_id = $1)
         AND te.deleted_at IS NULL
+        AND ($2::int IS NULL OR te.company_id = $2)
       ORDER BY te.submitted_at ASC
-    `, [manager_id]);
+    `, [manager_id, company_id ?? null]);
     return result.rows;
   }
 };

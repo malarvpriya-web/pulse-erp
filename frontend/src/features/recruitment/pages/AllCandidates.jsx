@@ -1,9 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { UserPlus } from 'lucide-react';
 import api from '@/services/api/client';
+import { candidateRows, candidateTotal, SELECTABLE_SOURCES, SOURCE_LABELS } from '../shared/constants';
 import useAppStore from '@/store/useAppStore';
 import { fmtDate } from '@/utils/dateFormatter';
-import { matchesSearch } from '../shared/search';
 import DataTable from '@/components/core/DataTable';
 import FilterBar from '@/components/core/FilterBar';
 import { exportCSV } from '@/features/_shared/exportUtils';
@@ -32,35 +32,102 @@ const STATUS_OPTIONS = [
   { value: 'withdrawn', label: 'Withdrawn' },
 ];
 
+// Experience bands rather than two number boxes: "2-5 years" is how a recruiter
+// thinks about it, and each band maps to the min/max the API already accepts.
+const EXPERIENCE_BANDS = [
+  { value: 'all',   label: 'Any experience', min: undefined, max: undefined },
+  { value: '0',     label: 'Fresher',        min: 0,  max: 1 },
+  { value: '0-2',   label: '0-2 years',      min: 0,  max: 2 },
+  { value: '2-5',   label: '2-5 years',      min: 2,  max: 5 },
+  { value: '5-10',  label: '5-10 years',     min: 5,  max: 10 },
+  { value: '10',    label: '10+ years',      min: 10, max: undefined },
+];
+
+const NOTICE_OPTIONS = [
+  { value: 'all', label: 'Any notice period' },
+  { value: '15',  label: 'Within 15 days' },
+  { value: '30',  label: 'Within 30 days' },
+  { value: '60',  label: 'Within 60 days' },
+  { value: '90',  label: 'Within 90 days' },
+];
+
+const RATING_OPTIONS = [
+  { value: 'all', label: 'Any rating' },
+  { value: '3',   label: '3+ stars' },
+  { value: '3.5', label: '3.5+ stars' },
+  { value: '4',   label: '4+ stars' },
+  { value: '4.5', label: '4.5+ stars' },
+];
+
+const SOURCE_OPTIONS = [
+  { value: 'all', label: 'Any source' },
+  ...SELECTABLE_SOURCES.map(v => ({ value: v, label: SOURCE_LABELS[v] })),
+  { value: 'resume_db', label: SOURCE_LABELS.resume_db },
+];
+
 const AllCandidates = ({ setPage }) => {
   const setSelectedCandidateId = useAppStore(s => s.setSelectedCandidateId);
   const [candidates, setCandidates] = useState([]);
   const [search, setSearch] = useState('');
   const [stageFilter, setStageFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState('all');
+  const [sourceFilter, setSourceFilter] = useState('all');
+  const [expBand, setExpBand] = useState('all');
+  const [noticeMax, setNoticeMax] = useState('all');
+  const [minRating, setMinRating] = useState('all');
+  const [location, setLocation] = useState('');
+  const [skills, setSkills] = useState('');
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(false);
 
-  const fetchCandidates = async () => {
+  // Every predicate is sent to the API. Search used to be applied client-side
+  // over whatever the unfiltered request returned, which meant it could only
+  // ever find candidates already on the page — and only by name or email.
+  const fetchCandidates = useCallback(async () => {
+    setLoading(true);
     try {
       const params = new URLSearchParams();
-      if (stageFilter !== 'all') params.append('current_stage', stageFilter);
+      if (stageFilter  !== 'all') params.append('current_stage', stageFilter);
       if (statusFilter !== 'all') params.append('overall_status', statusFilter);
+      if (sourceFilter !== 'all') params.append('source', sourceFilter);
+      if (noticeMax    !== 'all') params.append('notice_period_max', noticeMax);
+      if (minRating    !== 'all') params.append('min_rating', minRating);
+      if (location.trim())        params.append('location', location.trim());
+      if (skills.trim())          params.append('skills', skills.trim());
+      if (search.trim())          params.append('search', search.trim());
+
+      const band = EXPERIENCE_BANDS.find(b => b.value === expBand);
+      if (band?.min !== undefined) params.append('experience_min', String(band.min));
+      if (band?.max !== undefined) params.append('experience_max', String(band.max));
+
       const res = await api.get(`/recruitment/candidates?${params.toString()}`);
-      setCandidates(Array.isArray(res.data) ? res.data : []);
+      const rows = candidateRows(res.data);
+      setCandidates(rows);
+      setTotal(candidateTotal(res.data, rows));
     } catch (error) {
       console.error('Error:', error);
+      setCandidates([]);
+      setTotal(0);
+    } finally {
+      setLoading(false);
     }
-  };
+  }, [stageFilter, statusFilter, sourceFilter, noticeMax, minRating, location, skills, search, expBand]);
 
+  // Debounced so typing in Search / Location / Skills does not fire a request
+  // per keystroke.
   useEffect(() => {
-    fetchCandidates();
-  }, [stageFilter, statusFilter]);
+    const t = setTimeout(fetchCandidates, 300);
+    return () => clearTimeout(t);
+  }, [fetchCandidates]);
 
   const openCandidate = (id) => {
     setSelectedCandidateId(id);
     setPage('CandidateDetail');
   };
 
-  const filteredCandidates = candidates.filter(c => matchesSearch(c, ['full_name', 'email'], search));
+  // No second, narrower client-side pass — the API answered the same question
+  // across more fields and the whole dataset.
+  const filteredCandidates = candidates;
 
   const getStatusColor = (status) => {
     const colors = {
@@ -104,17 +171,36 @@ const AllCandidates = ({ setPage }) => {
 
       <FilterBar
         filters={[
-          { key: 'stage', label: 'Stage', type: 'select', options: STAGE_OPTIONS, defaultValue: 'all' },
-          { key: 'status', label: 'Status', type: 'select', options: STATUS_OPTIONS, defaultValue: 'all' },
-          { key: 'q', label: 'Search', type: 'search', placeholder: 'Search candidates...' },
+          { key: 'stage',    label: 'Stage',      type: 'select', options: STAGE_OPTIONS,      defaultValue: 'all' },
+          { key: 'status',   label: 'Status',     type: 'select', options: STATUS_OPTIONS,     defaultValue: 'all' },
+          { key: 'exp',      label: 'Experience', type: 'select', options: EXPERIENCE_BANDS.map(({ value, label }) => ({ value, label })), defaultValue: 'all' },
+          { key: 'notice',   label: 'Notice',     type: 'select', options: NOTICE_OPTIONS,     defaultValue: 'all' },
+          { key: 'rating',   label: 'Rating',     type: 'select', options: RATING_OPTIONS,     defaultValue: 'all' },
+          { key: 'source',   label: 'Source',     type: 'select', options: SOURCE_OPTIONS,     defaultValue: 'all' },
+          { key: 'location', label: 'Location',   type: 'search', placeholder: 'e.g. Bengaluru' },
+          { key: 'skills',   label: 'Skills',     type: 'search', placeholder: 'e.g. Power Electronics, MATLAB' },
+          { key: 'q',        label: 'Search',     type: 'search', placeholder: 'Name, email, employer, title…' },
         ]}
-        values={{ stage: stageFilter, status: statusFilter, q: search }}
-        onChange={(key, val) => {
-          if (key === 'stage') setStageFilter(val);
-          else if (key === 'status') setStatusFilter(val);
-          else if (key === 'q') setSearch(val);
+        values={{
+          stage: stageFilter, status: statusFilter, exp: expBand, notice: noticeMax,
+          rating: minRating, source: sourceFilter, location, skills, q: search,
         }}
-        onReset={() => { setSearch(''); setStageFilter('all'); setStatusFilter('all'); }}
+        onChange={(key, val) => {
+          if (key === 'stage')         setStageFilter(val);
+          else if (key === 'status')   setStatusFilter(val);
+          else if (key === 'exp')      setExpBand(val);
+          else if (key === 'notice')   setNoticeMax(val);
+          else if (key === 'rating')   setMinRating(val);
+          else if (key === 'source')   setSourceFilter(val);
+          else if (key === 'location') setLocation(val);
+          else if (key === 'skills')   setSkills(val);
+          else if (key === 'q')        setSearch(val);
+        }}
+        onReset={() => {
+          setSearch(''); setStageFilter('all'); setStatusFilter('all');
+          setExpBand('all'); setNoticeMax('all'); setMinRating('all');
+          setSourceFilter('all'); setLocation(''); setSkills('');
+        }}
         onExport={(fmt) => {
           if (fmt !== 'csv') return;
           exportCSV(filteredCandidates, 'candidates', {
@@ -124,7 +210,14 @@ const AllCandidates = ({ setPage }) => {
         }}
       />
       <div className="results-count" style={{ marginBottom: 8 }}>
-        Showing {filteredCandidates.length} candidates
+        {loading
+          ? 'Searching…'
+          : total > filteredCandidates.length
+            // The API caps a page at 200 rows. Saying "showing 200" without
+            // saying "of 340" is how a truncated list gets mistaken for a
+            // complete one.
+            ? `Showing ${filteredCandidates.length} of ${total} candidates — narrow the filters to see the rest`
+            : `${total} candidate${total === 1 ? '' : 's'}`}
       </div>
 
       <DataTable
@@ -178,7 +271,11 @@ const AllCandidates = ({ setPage }) => {
           ) : (
             <>
               <p style={{ fontWeight: 500, marginBottom: 8 }}>No candidates match your filters</p>
-              <button onClick={() => { setSearch(''); setStageFilter('all'); setStatusFilter('all'); }} style={{ background: '#f3f4f6', color: '#374151', border: '1px solid #d1d5db', borderRadius: 6, padding: '7px 14px', cursor: 'pointer' }}>Clear Filters</button>
+              <button onClick={() => {
+                setSearch(''); setStageFilter('all'); setStatusFilter('all');
+                setExpBand('all'); setNoticeMax('all'); setMinRating('all');
+                setSourceFilter('all'); setLocation(''); setSkills('');
+              }} style={{ background: '#f3f4f6', color: '#374151', border: '1px solid #d1d5db', borderRadius: 6, padding: '7px 14px', cursor: 'pointer' }}>Clear Filters</button>
             </>
           )}
         </div>

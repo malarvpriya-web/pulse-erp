@@ -518,9 +518,28 @@ export default function ManagerDashboard({ setPage, hideHeader = false }) {
     }
   };
 
+  // A team announcement: the manager's own department, live today for 7 days
+  // (the HR form's default window). It used to send no dates and no audience, so
+  // the server refused every post; the server now also holds manager-tier
+  // publishers to their own department, whatever is sent.
   const handlePostAnnouncement = async (message) => {
+    if (!dept) {
+      showToast('Your department is not on record, so a team announcement cannot be posted.', 'error');
+      return;
+    }
+    const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    const today = new Date();
+    const escaped = message.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     try {
-      await api.post('/announcements', { title: 'Team Announcement', message, body: message });
+      await api.post('/announcements', {
+        title: 'Team Announcement',
+        message: `<p>${escaped.replace(/\n/g, '<br>')}</p>`,
+        from_date: ymd(today),
+        to_date: ymd(new Date(today.getTime() + 7 * 86400000)),
+        target_type: 'department',
+        target_value: dept,
+        is_active: true,
+      });
       setDrawerOpen(false);
       showToast('Announcement posted successfully!', 'success');
     } catch (err) {

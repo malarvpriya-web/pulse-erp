@@ -15,21 +15,28 @@ const GSTIN_PREFIX_TO_STATE = {
   '25': 'Daman and Diu', '26': 'Dadra and Nagar Haveli', '27': 'Maharashtra',
   '28': 'Andhra Pradesh', '29': 'Karnataka', '30': 'Goa', '31': 'Lakshadweep',
   '32': 'Kerala', '33': 'Tamil Nadu', '34': 'Puducherry', '35': 'Andaman and Nicobar Islands',
-  '36': 'Telangana', '37': 'Andhra Pradesh',
+  '36': 'Telangana', '37': 'Andhra Pradesh', '38': 'Ladakh',
 };
 
-const STATE_TO_PREFIX = Object.fromEntries(
-  Object.entries(GSTIN_PREFIX_TO_STATE).map(([k, v]) => [v, k])
-);
+// A state can own more than one code (Andhra Pradesh = 28 and 37). This was a
+// one-to-one map, so the last code won and a valid 28… GSTIN was rejected.
+const STATE_TO_PREFIXES = Object.entries(GSTIN_PREFIX_TO_STATE).reduce((m, [k, v]) => {
+  (m[v] ||= []).push(k);
+  return m;
+}, {});
+
+// Same pattern as the chk_companies_gstin_format constraint on companies.
+const GSTIN_FORMAT = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;
 
 function validateGSTIN(gstin, selectedState) {
   if (!gstin || gstin.length !== 15) return 'GSTIN must be exactly 15 characters';
   const prefix = gstin.substring(0, 2);
   if (!/^\d{2}$/.test(prefix)) return 'GSTIN must start with a 2-digit state code';
+  if (!GSTIN_FORMAT.test(gstin)) return 'Invalid GSTIN format. Expected: 29AAAAA0000A1Z5';
   if (selectedState) {
-    const expectedPrefix = STATE_TO_PREFIX[selectedState];
-    if (expectedPrefix && prefix !== expectedPrefix) {
-      return `GSTIN code ${prefix} does not match ${selectedState} (expected ${expectedPrefix}...)`;
+    const expected = STATE_TO_PREFIXES[selectedState];
+    if (expected && !expected.includes(prefix)) {
+      return `GSTIN code ${prefix} does not match ${selectedState} (expected ${expected.join(' or ')}...). Correct the GSTIN or the state.`;
     }
   }
   return null;
@@ -55,7 +62,7 @@ const EMPTY = {
   phone: '', email: '', website: '', logo_url: '',
 };
 
-function Field({ label, value, onChange, placeholder, hint, type = 'text', required = false }) {
+function Field({ label, value, onChange, placeholder, hint, type = 'text', required = false, maxLength }) {
   return (
     <div>
       <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#374151', marginBottom: 4 }}>
@@ -65,6 +72,7 @@ function Field({ label, value, onChange, placeholder, hint, type = 'text', requi
         type={type}
         value={value}
         onChange={e => onChange(e.target.value)}
+        maxLength={maxLength}
         placeholder={placeholder || label}
         style={{ width: '100%', padding: '9px 12px', border: '1px solid #e5e7eb', borderRadius: 8, fontSize: 13, outline: 'none', boxSizing: 'border-box' }}
       />
@@ -182,7 +190,7 @@ export default function CompanyProfile() {
         <h2 style={{ fontSize: 15, fontWeight: 700, color: '#1f2937', marginTop: 0, marginBottom: 16 }}>Company Identity</h2>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
           <div style={{ gridColumn: '1/-1' }}>
-            <Field label="Company Name" value={form.name} onChange={set('name')} required placeholder="Manifest Technologies Pvt. Ltd." />
+            <Field label="Company Name" value={form.name} onChange={set('name')} required placeholder="Manifest Technologies Pvt. Ltd." maxLength={255} />
           </div>
           <div>
             <Field
@@ -190,6 +198,7 @@ export default function CompanyProfile() {
               value={form.gstin}
               onChange={handleGSTINChange}
               placeholder="29AAAAA0000A1ZX"
+              maxLength={15}
               hint="15-character GST Identification Number (first 2 digits = state code)"
             />
             {gstinError && (
@@ -201,6 +210,7 @@ export default function CompanyProfile() {
             value={form.pan}
             onChange={v => set('pan')(v.toUpperCase())}
             placeholder="AAAAA0000A"
+            maxLength={10}
             hint="10-character Permanent Account Number"
           />
           <Field
@@ -208,6 +218,7 @@ export default function CompanyProfile() {
             value={form.tan}
             onChange={v => set('tan')(v.toUpperCase())}
             placeholder="AAAA00000A"
+            maxLength={10}
             hint="Tax Deduction and Collection Account Number"
           />
           <Field
@@ -215,6 +226,7 @@ export default function CompanyProfile() {
             value={form.cin}
             onChange={v => set('cin')(v.toUpperCase())}
             placeholder="U72900KA2010PTC123456"
+            maxLength={21}
             hint="Corporate Identification Number (21 characters)"
           />
         </div>
@@ -227,20 +239,26 @@ export default function CompanyProfile() {
           <div style={{ gridColumn: '1/-1' }}>
             <Field label="Street Address" value={form.address} onChange={set('address')} placeholder="Plot No, Street, Area" />
           </div>
-          <Field label="City" value={form.city} onChange={set('city')} />
+          <Field label="City" value={form.city} onChange={set('city')} maxLength={100} />
           <div>
             <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#374151', marginBottom: 4 }}>State</label>
             <select
               value={form.state}
-              onChange={e => set('state')(e.target.value)}
+              onChange={e => {
+                const st = e.target.value;
+                set('state')(st);
+                // Re-check here, not only on save — otherwise a state change
+                // against the stored GSTIN surfaced only as a save error.
+                setGstinError(form.gstin ? validateGSTIN(form.gstin, st) : null);
+              }}
               style={{ width: '100%', padding: '9px 12px', border: '1px solid #e5e7eb', borderRadius: 8, fontSize: 13, outline: 'none' }}
             >
               <option value="">Select State</option>
               {INDIAN_STATES.map(s => <option key={s} value={s}>{s}</option>)}
             </select>
           </div>
-          <Field label="Pincode" value={form.pincode} onChange={set('pincode')} placeholder="560001" />
-          <Field label="Country" value={form.country} onChange={set('country')} />
+          <Field label="Pincode" value={form.pincode} onChange={set('pincode')} placeholder="560001" maxLength={10} />
+          <Field label="Country" value={form.country} onChange={set('country')} maxLength={100} />
         </div>
       </div>
 
@@ -248,10 +266,10 @@ export default function CompanyProfile() {
       <div style={{ background: '#fff', borderRadius: 12, border: '1px solid #f0f0f4', padding: 24, marginBottom: 20 }}>
         <h2 style={{ fontSize: 15, fontWeight: 700, color: '#1f2937', marginTop: 0, marginBottom: 16 }}>Contact Details</h2>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-          <Field label="Phone" value={form.phone} onChange={set('phone')} placeholder="+91 80 1234 5678" />
-          <Field label="Email" value={form.email} onChange={set('email')} type="email" placeholder="info@company.com" />
+          <Field label="Phone" value={form.phone} onChange={set('phone')} placeholder="+91 80 1234 5678" maxLength={20} />
+          <Field label="Email" value={form.email} onChange={set('email')} type="email" placeholder="info@company.com" maxLength={255} />
           <div style={{ gridColumn: '1/-1' }}>
-            <Field label="Website" value={form.website} onChange={set('website')} placeholder="https://www.company.com" />
+            <Field label="Website" value={form.website} onChange={set('website')} placeholder="https://www.company.com" maxLength={255} />
           </div>
           <div style={{ gridColumn: '1/-1' }}>
             <Field label="Logo URL" value={form.logo_url} onChange={set('logo_url')} placeholder="https://..." hint="Paste a public URL to your company logo. Used in payslips and documents." />

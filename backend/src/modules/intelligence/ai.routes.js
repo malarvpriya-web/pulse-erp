@@ -3,6 +3,7 @@ import express from 'express';
 import pool from '../../config/db.js';
 import { narrateKpis } from './kpiNarrator.js';
 import { detectAnomalies } from './anomalyDetector.js';
+import { can } from '../../middlewares/auth.middleware.js';
 import { getSalesDashboard, getServiceDashboard } from '../crm/customerHealth.service.js';
 import { scoreProjectHealth, narrateProjectHealth } from './projectHealthNarrator.js';
 import { narrateTicketThread } from './ticketThreadNarrator.js';
@@ -139,8 +140,9 @@ router.post('/llm-chat', async (req, res) => {
       // multi-tenant deployment the assistant would state another company's
       // approval backlog as if it were the caller's.
       const { rows: pa } = await pool.query(
-        `SELECT COUNT(*) AS cnt FROM leave_requests
-          WHERE ${isIn('status', LEAVE_PENDING)} AND ($1::int IS NULL OR company_id = $1)`,
+        `SELECT COUNT(*) AS cnt FROM leave_applications
+          WHERE deleted_at IS NULL AND ${isIn('status', LEAVE_PENDING)}
+            AND ($1::int IS NULL OR company_id = $1)`,
         [req.scope?.company_id ?? null]
       ).catch(() => ({ rows: [{ cnt: 0 }] }));
       const cnt = parseInt(pa[0]?.cnt || 0);
@@ -265,17 +267,19 @@ router.post('/chat', async (req, res) => {
     // Leave / absence
     if (q.includes('leave') || q.includes('absent') || q.includes('holiday')) {
       const rows = await ask(`
-        SELECT e.name, l.leave_type, l.start_date, l.end_date, l.status
-        FROM leave_requests l
+        SELECT e.name, lt.leave_name AS leave_type, l.start_date, l.end_date, l.status
+        FROM leave_applications l
         JOIN employees e ON e.id = l.employee_id
-        WHERE ${isIn('l.status', LEAVE_APPROVED)} AND l.start_date >= CURRENT_DATE - INTERVAL '7 days'
+        LEFT JOIN leave_types lt ON lt.id = l.leave_type_id
+        WHERE l.deleted_at IS NULL
+          AND ${isIn('l.status', LEAVE_APPROVED)} AND l.start_date >= CURRENT_DATE - INTERVAL '7 days'
           AND ($1::int IS NULL OR l.company_id = $1)
         ORDER BY l.start_date DESC LIMIT 20
       `, [cid]);
-      if (rows === null) return unavailable('Leave records', 'leave_requests JOIN employees');
+      if (rows === null) return unavailable('Leave records', 'leave_applications JOIN employees');
       if (!rows.length)
-        return res.json({ answer: 'No approved leave records found in the last 7 days.', data: [], chart_type: 'table', query_used: 'leave_requests JOIN employees' });
-      return res.json({ answer: `${rows.length} employee(s) on approved leave this week.`, data: rows, chart_type: 'table', query_used: 'leave_requests JOIN employees' });
+        return res.json({ answer: 'No approved leave records found in the last 7 days.', data: [], chart_type: 'table', query_used: 'leave_applications JOIN employees' });
+      return res.json({ answer: `${rows.length} employee(s) on approved leave this week.`, data: rows, chart_type: 'table', query_used: 'leave_applications JOIN employees' });
     }
 
     // Cash / finance
@@ -386,8 +390,9 @@ router.post('/chat', async (req, res) => {
     // Approvals
     if (q.includes('approval') || q.includes('pending') || q.includes('waiting')) {
       const [leavePending, poPending] = await Promise.allSettled([
-        pool.query(`SELECT COUNT(*) AS cnt, MIN(created_at) AS oldest FROM leave_requests
-                     WHERE ${isIn('status', LEAVE_PENDING)} AND ($1::int IS NULL OR company_id = $1)`, [cid]),
+        pool.query(`SELECT COUNT(*) AS cnt, MIN(created_at) AS oldest FROM leave_applications
+                     WHERE deleted_at IS NULL AND ${isIn('status', LEAVE_PENDING)}
+                       AND ($1::int IS NULL OR company_id = $1)`, [cid]),
         pool.query(`SELECT COUNT(*) AS cnt, MIN(created_at) AS oldest FROM purchase_orders
                      WHERE status IN ('pending','draft') AND ($1::int IS NULL OR company_id = $1)`, [cid]),
       ]);
@@ -403,13 +408,18 @@ router.post('/chat', async (req, res) => {
         if (cnt > 0) data.push({ type: 'Purchase Order', count: cnt, oldest_days: row?.oldest ? Math.floor((Date.now() - new Date(row.oldest)) / 86400000) : 0 });
       }
       if (!data.length)
-        return res.json({ answer: 'No pending approvals found.', data: [], chart_type: 'table', query_used: 'leave_requests + purchase_orders pending' });
+        return res.json({ answer: 'No pending approvals found.', data: [], chart_type: 'table', query_used: 'leave_applications + purchase_orders pending' });
       const total = data.reduce((s, r) => s + r.count, 0);
-      return res.json({ answer: `${total} item(s) pending approval across ${data.length} category(s).`, data, chart_type: 'table', query_used: 'leave_requests + purchase_orders pending' });
+      return res.json({ answer: `${total} item(s) pending approval across ${data.length} category(s).`, data, chart_type: 'table', query_used: 'leave_applications + purchase_orders pending' });
     }
 
     // Payroll
     if (q.includes('payroll') || q.includes('salary') || q.includes('payslip')) {
+      // /chat sits on reports:view (store_keeper, sales_manager, … hold it);
+      // payroll totals take the Payroll Center's own bar (PC-01 closure).
+      if (!(await can(req, 'payroll', 'view'))) {
+        return res.json({ answer: 'Payroll figures need payroll access.', data: [], chart_type: 'number', query_used: 'none', status: 'PERMISSION_REQUIRED' });
+      }
       // payroll_runs has none of gross_salary / pf_amount / tds_deducted /
       // net_salary / month_year. The real columns are gross, employee_pf, tds,
       // net_pay, and month + year as separate integers. Every one of the five
@@ -424,7 +434,7 @@ router.post('/chat', async (req, res) => {
           COALESCE(SUM(pr.net_pay), 0)      AS net
         FROM payroll_runs pr
         JOIN employees e ON e.id = pr.employee_id
-        WHERE make_date(pr.year, pr.month, 1) = DATE_TRUNC('month', CURRENT_DATE - INTERVAL '1 month')::date
+        WHERE pr.is_test = false AND make_date(pr.year, pr.month, 1) = DATE_TRUNC('month', CURRENT_DATE - INTERVAL '1 month')::date
           AND ($1::int IS NULL OR e.company_id = $1)
       `, [cid]);
       if (rows === null) return unavailable('Payroll totals', 'payroll_runs aggregate');
@@ -468,7 +478,12 @@ router.post('/chat', async (req, res) => {
 // instead of only surfacing them when someone opens this endpoint.
 router.get('/anomalies', async (req, res) => {
   // Scoped to the caller's company — this used to scan every tenant.
-  const anomalies = await detectAnomalies(req.scope?.company_id ?? null);
+  const detected = await detectAnomalies(req.scope?.company_id ?? null);
+  // A TDS mismatch names the employee with their TDS and annual tax — payroll
+  // data. /anomalies is reports:view, so it is shown to payroll:view only (PC-01).
+  const anomalies = (await can(req, 'payroll', 'view'))
+    ? detected
+    : Object.assign(detected.filter(a => a.type !== 'TDS Mismatch'), { notAssessed: detected.notAssessed });
   const notAssessed = anomalies.notAssessed || [];
   res.json({
     success: true,
@@ -1384,12 +1399,16 @@ router.get('/prescriptive', async (req, res) => {
 
     // 5. Stale pending leave approvals
     // TENANT LEAK (reproduced live: 159 -> 160 when a second company added one
-    // pending request). leave_requests carries company_id; this counted every
+    // pending request). The ledger carries company_id; this counted every
     // tenant's queue and fed the total straight into an AI recommendation.
+    // Reads leave_applications: the 159 this used to report came from the frozen
+    // leave_requests table, so the "stale approvals" nudge fired on a backlog
+    // that no longer existed and could never be cleared.
     pool.query(`
       SELECT COUNT(*) AS cnt, MIN(created_at) AS oldest
-      FROM leave_requests
-      WHERE ${isIn('status', LEAVE_PENDING)}
+      FROM leave_applications
+      WHERE deleted_at IS NULL
+        AND ${isIn('status', LEAVE_PENDING)}
         AND ($1::int IS NULL OR company_id = $1)
     `, [cid]).then(({ rows }) => {
       const cnt = parseInt(rows[0]?.cnt || 0);

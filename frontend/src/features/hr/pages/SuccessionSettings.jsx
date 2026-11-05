@@ -25,11 +25,16 @@ function Spinner() {
   );
 }
 
+// The whole row is one switch. It used to be a <label> with no input inside,
+// and only the 44px track had the click handler, so clicking the label text did
+// nothing; the track was a bare div that the keyboard could not reach.
 function Toggle({ checked, onChange, label, description }) {
   return (
-    <label style={{ display: 'flex', alignItems: 'flex-start', gap: 12, cursor: 'pointer',
-                    padding: '12px 0', borderBottom: '1px solid #f0ebff' }}>
-      <div onClick={onChange}
+    <button type="button" role="switch" aria-checked={!!checked} onClick={onChange}
+      style={{ display: 'flex', alignItems: 'flex-start', gap: 12, cursor: 'pointer', width: '100%',
+               textAlign: 'left', background: 'none', border: 'none', borderBottom: '1px solid #f0ebff',
+               padding: '12px 0', font: 'inherit' }}>
+      <div aria-hidden="true"
         style={{ width: 44, height: 24, borderRadius: 12, flexShrink: 0, marginTop: 2,
                  background: checked ? '#6B3FDB' : '#d1d5db', position: 'relative',
                  transition: 'background .2s', cursor: 'pointer' }}>
@@ -41,7 +46,7 @@ function Toggle({ checked, onChange, label, description }) {
         <div style={{ fontWeight: 600, fontSize: 13, color: '#1f2937' }}>{label}</div>
         {description && <div style={{ fontSize: 12, color: '#6b7280', marginTop: 2 }}>{description}</div>}
       </div>
-    </label>
+    </button>
   );
 }
 
@@ -77,6 +82,7 @@ export default function SuccessionSettings() {
   const [saving,   setSaving]   = useState(false);
   const [msg,      setMsg]      = useState({ text: '', type: '' });
   const [dirty,    setDirty]    = useState(false);
+  const [loadError, setLoadError] = useState('');
 
   const flash = (text, type = 'success') => {
     setMsg({ text, type });
@@ -84,9 +90,11 @@ export default function SuccessionSettings() {
   };
 
   useEffect(() => {
+    // A failed load used to show the defaults as if they were saved, and Save
+    // then wrote them over the real settings. Now it says so and cannot save.
     api.get('/succession/settings')
       .then(r => { setSettings({ ...DEFAULTS, ...r.data }); })
-      .catch(() => setSettings(DEFAULTS))
+      .catch(err => setLoadError(err.response?.data?.message || 'Could not load the saved settings'))
       .finally(() => setLoading(false));
   }, []);
 
@@ -104,7 +112,9 @@ export default function SuccessionSettings() {
   const save = async () => {
     setSaving(true);
     try {
-      await api.put('/succession/settings', settings);
+      const r = await api.put('/succession/settings', settings);
+      // Show what the server stored, not what was sent.
+      setSettings({ ...DEFAULTS, ...r.data });
       flash('Settings saved');
       setDirty(false);
     } catch (err) {
@@ -113,6 +123,12 @@ export default function SuccessionSettings() {
   };
 
   if (loading) return <div style={{ padding: 24 }}><Spinner /></div>;
+  if (loadError) return (
+    <div role="alert" style={{ margin: 24, padding: '10px 16px', borderRadius: 8, fontSize: 14,
+                               background: '#fef2f2', color: '#dc2626', border: '1px solid #fecaca' }}>
+      {loadError}. Nothing can be saved until the settings load.
+    </div>
+  );
 
   return (
     <PageShell dock={
@@ -120,7 +136,7 @@ export default function SuccessionSettings() {
         icon={SlidersHorizontal}
         eyebrow="Human Resources"
         title="Succession Settings"
-        subtitle="Configure alert thresholds, review frequency, and notification preferences"
+        subtitle="Configure alert thresholds and classification thresholds; review frequency and recipients are for reference only"
         actions={<button className="plh-cta" onClick={save} disabled={saving || !dirty}>
             {saving ? 'Saving...' : 'Save Settings'}
           </button>}
@@ -172,7 +188,7 @@ export default function SuccessionSettings() {
           <div>
             <label style={LBL}>Review Frequency</label>
             <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 8 }}>
-              How often talent assessments should be reviewed
+              How often talent assessments should be reviewed (for reference; nothing is scheduled or sent)
             </div>
             <select value={settings.review_frequency}
               onChange={e => update('review_frequency', e.target.value)} style={INP}>
@@ -230,8 +246,11 @@ export default function SuccessionSettings() {
       </Section>
 
       {/* ── Notifications ── */}
+      {/* Nothing reads notify_roles yet: alerts are only listed in the Planning
+          banner, and no message is sent to anyone (§210). The wording used to
+          say these roles "receive" alerts. */}
       <Section title="Notification Recipients"
-        description="Roles that receive succession alerts and review reminders">
+        description="For reference only: the roles responsible for acting on succession alerts. No message is sent to them; alerts appear only in the Planning tab's alert banner.">
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
           {allRoles.map(({ code: role, label }) => {
             const selected = (settings.notify_roles || []).includes(role);
@@ -249,7 +268,7 @@ export default function SuccessionSettings() {
         </div>
         {(settings.notify_roles || []).length === 0 && (
           <div style={{ marginTop: 12, fontSize: 12, color: '#6d28d9', fontWeight: 500 }}>
-            Warning: No roles selected — alerts will not be sent to anyone.
+            No roles selected.
           </div>
         )}
       </Section>
@@ -257,14 +276,15 @@ export default function SuccessionSettings() {
       {/* ── Info box ── */}
       <div style={{ background: '#eff6ff', borderRadius: 10, padding: 16,
                     border: '1px solid #bfdbfe', fontSize: 13, color: '#1d4ed8' }}>
-        <strong>Note:</strong> Succession alerts are generated automatically when:
+        <strong>Note:</strong> When the matching switch above is on, a succession alert is recorded when:
         <ul style={{ margin: '6px 0 0 16px', lineHeight: 2 }}>
           <li>A critical role is created with no successor candidates</li>
-          <li>The last succession candidate is removed from a critical role</li>
-          <li>A candidate is added and the total drops to exactly one successor</li>
+          <li>A role's candidate list is saved with no candidates</li>
+          <li>A role's candidate list is saved with exactly one candidate</li>
         </ul>
-        Alerts can be reviewed in the Bench Strength tab's alert banner.
-        The review frequency setting is informational — it does not trigger automatic notifications in this version.
+        Alerts are listed in the Planning tab's alert banner, where they can be marked read. No email or in-app
+        notification is sent. Review frequency is informational only and triggers nothing. The thresholds decide who
+        is listed as high potential on the Bench Strength tab and which rows the Talent Risk report highlights.
       </div>
     </PageShell>
   );

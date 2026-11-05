@@ -20,7 +20,7 @@
  *
  * Runner: Vitest | npx vitest run src/__tests__/analytics.intelligenceContract.test.js
  */
-import { describe, test, expect, afterAll } from 'vitest';
+import { describe, test, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
@@ -68,7 +68,6 @@ const UNBACKED = [
 
 const app = buildApp(['/api/intelligence', intelligenceRoutes]);
 
-afterAll(async () => { await pool.end().catch(() => {}); });
 
 describe('unbacked intelligence capabilities are short-circuited', () => {
   test.each(UNBACKED)('GET %s returns 501, never reaching its dead SQL', async (prefix) => {

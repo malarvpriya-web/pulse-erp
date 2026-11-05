@@ -32,13 +32,25 @@ import { FY_START_SQL as FY_START } from '../../shared/dashboardFilters.js';
 const _cache    = new Map(); // key → { data, expiresAt }
 const CACHE_TTL = parseInt(process.env.METRICS_CACHE_TTL_MS || '60000');
 
+/**
+ * ⚠ The cache key MUST carry every argument that changes the result. It used to
+ * carry only company_id, which was correct while these metrics were global — but
+ * the moment one takes a date range, a key without the range serves the FIRST
+ * period requested to every period after it, for the whole TTL. That failure is
+ * silent and looks exactly like "the filter does nothing", so `range` is folded
+ * into the key here rather than at each call site where it could be forgotten.
+ */
 function cached(baseKey, fn) {
-  return (company_id = null) => {
-    const key = company_id != null ? `${baseKey}:${company_id}` : baseKey;
+  return (company_id = null, range = null) => {
+    const scope = company_id != null ? `${baseKey}:${company_id}` : baseKey;
+    // An absent range is its own slot, distinct from any concrete window.
+    const key = range && (range.from || range.to)
+      ? `${scope}|${range.from || ''}..${range.to || ''}`
+      : `${scope}|all`;
     const now  = Date.now();
     const hit  = _cache.get(key);
     if (hit && now < hit.expiresAt) return Promise.resolve(hit.data);
-    const p = fn(company_id);
+    const p = fn(company_id, range);
     p.then(data => _cache.set(key, { data, expiresAt: now + CACHE_TTL })).catch(() => {});
     return p;
   };
@@ -144,8 +156,27 @@ export const computeHeadcount = cached('headcount', (company_id) => safeQuery(as
 }, { total:0, active:0, onLeave:0, newHires:0, departures:0, probation:0, by_department:[], by_gender:[], growth:0 }));
 
 /** computeAttrition — rate, voluntary, involuntary, avgTenure, atRisk */
-export const computeAttrition = cached('attrition', (company_id) => safeQuery(async () => {
+/**
+ * `range` windows the DEPARTURE count — an attrition rate is activity over a
+ * window, so it is the one workforce metric that must follow the page filter.
+ * Headcount and tenure stay as-of-today on purpose: they are point-in-time, and
+ * dividing this period's exits by some past period's headcount is not a rate.
+ * With no range the window stays the previous 12 months, as before.
+ */
+export const computeAttrition = cached('attrition', (company_id, range) => safeQuery(async () => {
   const { and, params } = scopeFrags(company_id);
+  const rp = [...params];
+  // Bound the exit window. $n indexes continue after any company_id param, and
+  // each placeholder is always bound — an unreferenced $n is a 42P18 bind error.
+  let exitWindow = `AND COALESCE(updated_at, created_at) >= CURRENT_DATE - INTERVAL '12 months'`;
+  if (range && (range.from || range.to)) {
+    const parts = [];
+    if (range.from) { rp.push(range.from); parts.push(`COALESCE(updated_at, created_at) >= $${rp.length}::date`); }
+    if (range.to)   { rp.push(range.to);   parts.push(`COALESCE(updated_at, created_at) < ($${rp.length}::date + INTERVAL '1 day')`); }
+    exitWindow = parts.length ? 'AND ' + parts.join(' AND ') : '';
+  } else if (range && range.isAll) {
+    exitWindow = '';
+  }
 
   const [hcR, depR, tenureR] = await Promise.all([
     sq(`SELECT COUNT(*) AS total FROM employees WHERE ${isIn('status', EMPLOYEE_ACTIVE)} ${and}`, params),
@@ -154,7 +185,7 @@ export const computeAttrition = cached('attrition', (company_id) => safeQuery(as
           COUNT(*) FILTER (WHERE ${isIn('status', EMPLOYEE_VOLUNTARY_EXIT)}) AS voluntary
         FROM employees
         WHERE ${isIn('status', EMPLOYEE_EXITED)}
-          AND COALESCE(updated_at, created_at) >= CURRENT_DATE - INTERVAL '12 months' ${and}`, params),
+          ${exitWindow} ${and}`, rp),
     // Tenure runs from joining_date, the business start date. created_at is the
     // row's insert timestamp — for anyone migrated in from the old system that
     // is the import date, which reported a multi-year veteran as a new joiner.
@@ -250,8 +281,30 @@ export const computeRevenueMetrics = cached('revenue', (company_id) => safeQuery
  * is now bound, rather than the parameter being accepted and discarded while the
  * cache keyed on it.
  */
-export const computeSalesKPIs = cached('sales-kpis', (company_id) => safeQuery(async () => {
+/**
+ * `range` windows the WON/CLOSED set only — conversion rate and average deal
+ * size are activity and belong to the selected period. `pipelineValue` is
+ * deliberately NOT windowed: open pipeline is a point-in-time balance, and
+ * filtering it to "last 7 days" would report the pipeline as near-empty rather
+ * than reporting what is actually open. Same activity/backlog split the
+ * ceo-intelligence routes already apply.
+ */
+export const computeSalesKPIs = cached('sales-kpis', (company_id, range) => safeQuery(async () => {
   const { and, params } = scopeFrags(company_id);
+  const wp = [...params];
+  let wonWindow = '';
+  if (range && (range.from || range.to)) {
+    const parts = [];
+    // Close-date resolution, verified against information_schema 2026-09-16:
+    // there is NO `actual_close_date` on opportunities. `order_won_date` is the
+    // right column when set but is populated on 0 of 6 rows today, and
+    // `closed_date` on 1 of 6 — so `expected_closing_date` (6/6) carries the
+    // window in practice, with created_at as the last resort.
+    const CLOSE_DT = `COALESCE(order_won_date, closed_date::date, expected_closing_date, created_at::date)`;
+    if (range.from) { wp.push(range.from); parts.push(`${CLOSE_DT} >= $${wp.length}::date`); }
+    if (range.to)   { wp.push(range.to);   parts.push(`${CLOSE_DT} <= $${wp.length}::date`); }
+    wonWindow = parts.length ? 'AND ' + parts.join(' AND ') : '';
+  }
   const [pipR, wonR] = await Promise.all([
     // The stage vocabulary is 'won'/'lost' — that is what crm_pipeline_stages
     // (the per-company stage master, is_won/is_lost flags) defines and what every
@@ -268,7 +321,7 @@ export const computeSalesKPIs = cached('sales-kpis', (company_id) => safeQuery(a
           COUNT(CASE WHEN ${sqlOpportunityWon('stage')} THEN 1 END) AS won,
           COALESCE(SUM(CASE WHEN ${sqlOpportunityWon('stage')} THEN COALESCE(expected_value,0) ELSE 0 END),0) AS won_value
         FROM opportunities
-        WHERE deleted_at IS NULL ${and}`, params),
+        WHERE deleted_at IS NULL ${wonWindow} ${and}`, wp),
   ]);
   const pipelineValue = parseFloat(pipR.rows[0]?.pipeline  || 0);
   const total         = parseInt(wonR.rows[0]?.total        || 0);

@@ -3,9 +3,10 @@ import jwt from 'jsonwebtoken';
 import pool from '../../shared/db.js';
 import attendanceRepository from '../repositories/attendance.repository.js';
 import { clockRateLimit } from '../../../middlewares/attendanceRateLimit.js';
-import { hasRole } from '../../../middlewares/auth.middleware.js';
+import { hasRole, can } from '../../../middlewares/auth.middleware.js';
 import { dimension } from '../../../shared/dashboardFilters.js';
 import { getWeekendDays, dayIsWeekend } from '../../../shared/weekend.js';
+import { getFullDayHours, isPeriodFrozen } from '../../../shared/attendanceRules.js';
 import { loadPunchProfile, assertCanSelfPunch, describePunchMode } from '../../../shared/punchMode.js';
 import {
   requireAttendanceAdmin,
@@ -17,6 +18,8 @@ import {
   assertCanDecideFor,
 } from '../attendance.authz.js';
 import { captureBefore } from '../../../middlewares/captureBefore.js';
+import { toCsv } from '../../../shared/csv.js';
+import { companyOf } from '../../../shared/scope.js';
 
 const router = express.Router();
 
@@ -30,43 +33,10 @@ function scopeCompanyId(req) {
 // which never matches the global (company_id IS NULL) row — every tenant fell
 // through to the hardcoded Sat/Sun default and Attendance Settings had no effect.
 
-// Hours that count as a full day before OT starts accruing. Configurable per
-// company; 9 is the fallback for companies that never opened Attendance Settings.
-// Several capture paths (offline sync, biometric sync, the auto-checkout cron)
-// still hardcode 9 and should be moved onto this helper — see
-// ATTENDANCE_DUPLICATION_FLOW_AUDIT.md §1b.
-async function getFullDayHours(companyId) {
-  try {
-    const { rows } = await pool.query(
-      'SELECT full_day_hours FROM attendance_general_settings WHERE company_id=$1 LIMIT 1',
-      [companyId]
-    );
-    const v = parseFloat(rows[0]?.full_day_hours);
-    return Number.isFinite(v) && v > 0 ? v : 9;
-  } catch {
-    return 9;
-  }
-}
-
-// True when the month containing dateStr has been frozen by a payroll sync.
-// Writing into a frozen month silently changes numbers payroll has already paid
-// on, so every capture path must check before upserting attendance_records.
-async function isPeriodFrozen(dateStr, companyId) {
-  try {
-    const d = new Date(dateStr);
-    const { rows } = await pool.query(`
-      SELECT 1 FROM attendance_records
-       WHERE EXTRACT(MONTH FROM attendance_date) = $1
-         AND EXTRACT(YEAR  FROM attendance_date) = $2
-         AND is_frozen = true AND deleted_at IS NULL
-         AND ($3::integer IS NULL OR company_id = $3)
-       LIMIT 1
-    `, [d.getMonth() + 1, d.getFullYear(), companyId]);
-    return rows.length > 0;
-  } catch {
-    return false;
-  }
-}
+// getFullDayHours (the OT threshold) and isPeriodFrozen (the payroll freeze)
+// now live in shared/attendanceRules.js, so the biometric sync and CSV import
+// apply them too. Offline sync and the auto-checkout cron still hardcode 9 —
+// see ATTENDANCE_DUPLICATION_FLOW_AUDIT.md §1b.
 
 // Returns distance in metres between two GPS coords (Haversine)
 function haversineMeters(lat1, lng1, lat2, lng2) {
@@ -968,7 +938,7 @@ router.post('/clock', clockRateLimit, async (req, res) => {
          RETURNING status, check_in_time AS check_in, check_out_time AS check_out, total_hours
       `, [employee_id, today, time]);
 
-      // Auto-calculate and record OT if > 9 hours
+      // Auto-calculate and record OT beyond the full on-site day (work + break)
       if (prev.rows[0]?.check_in_time && result.rows[0]) {
         // Hoisted out of the OT try/catch below. The comp-off auto-grant is a
         // SIBLING block that reads both of these, so it referenced them from
@@ -976,7 +946,8 @@ router.post('/clock', clockRateLimit, async (req, res) => {
         // clock-out — swallowed whole by its own `catch {}`. Comp off has never
         // actually been auto-granted.
         let totalHours   = 0;
-        let fullDayHours = 9;
+        // On-site hours that make a full day (work + break, Attendance Settings).
+        const fullDayHours = await getFullDayHours(companyId);
         try {
           const hoursResult = await pool.query(
             `SELECT EXTRACT(EPOCH FROM ($1::time - $2::time)) / 3600 AS hours`,
@@ -985,14 +956,6 @@ router.post('/clock', clockRateLimit, async (req, res) => {
           // Cross-midnight shift: Postgres time subtraction goes negative — add 24h to correct
           const rawHours = parseFloat(hoursResult.rows[0]?.hours || 0);
           totalHours = rawHours < 0 ? rawHours + 24 : rawHours;
-          // Read OT threshold from general settings (default 9h)
-          try {
-            const settingsRow = await pool.query(
-              'SELECT full_day_hours FROM attendance_general_settings WHERE company_id=$1 LIMIT 1',
-              [companyId]
-            );
-            if (settingsRow.rows[0]?.full_day_hours) fullDayHours = parseFloat(settingsRow.rows[0].full_day_hours);
-          } catch { /* use default */ }
           const otHours    = Math.max(0, totalHours - fullDayHours);
 
           await pool.query(`
@@ -1776,14 +1739,7 @@ router.put('/regularize/:id/approve', requireAttendanceApprover, async (req, res
             [before.check_out, before.check_in]
           );
           const totalHours = parseFloat(hoursRes.rows[0]?.hours || 0);
-          let fullDayHours = 9;
-          try {
-            const sRow = await pool.query(
-              'SELECT full_day_hours FROM attendance_general_settings WHERE company_id=$1 LIMIT 1',
-              [before.company_id]
-            );
-            if (sRow.rows[0]?.full_day_hours) fullDayHours = parseFloat(sRow.rows[0].full_day_hours);
-          } catch { /* use default */ }
+          const fullDayHours = await getFullDayHours(before.company_id);
           const otHours = Math.max(0, totalHours - fullDayHours);
           await pool.query(
             `UPDATE attendance_records SET total_hours=$3, ot_hours=$4 WHERE employee_id=$1 AND attendance_date=$2`,
@@ -2192,9 +2148,15 @@ router.get('/analytics/department-absenteeism', async (req, res) => {
 });
 
 // Overtime cost analytics
+// OT cost = hours × multiplier × Basic / 26 / 9 per department. A department
+// with one OT earner gives that person's Basic back by division, so the two
+// cost columns are salary data: payroll:view, as the Payroll Center (PC-01
+// closure). Hours and approval counts stay as they were. A login with no
+// company used to read every tenant's.
 router.get('/analytics/overtime-cost', async (req, res) => {
   try {
     const companyId = scopeCompanyId(req);
+    if (companyId == null && !req.scope?.isGlobal) return res.status(403).json({ error: 'No company context for this login' });
     const { month, year } = req.query;
     const m = parseInt(month) || new Date().getMonth() + 1;
     const y = parseInt(year)  || new Date().getFullYear();
@@ -2230,7 +2192,8 @@ router.get('/analytics/overtime-cost', async (req, res) => {
       GROUP BY e.department
       ORDER BY total_ot_hours DESC
     `, [m, y, companyId]).catch(() => ({ rows: [] }));
-    res.json(rows);
+    if (await can(req, 'payroll', 'view')) return res.json(rows);
+    res.json(rows.map(r => ({ ...r, approved_ot_cost: null, total_ot_cost: null, cost_restricted: true })));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -2581,7 +2544,14 @@ router.post('/payroll-sync', requireAttendanceAdmin, async (req, res) => {
     if (!month || !year) return res.status(400).json({ error: 'month and year required' });
     const m         = parseInt(month);
     const y         = parseInt(year);
-    const companyId = scopeCompanyId(req);
+    // One company, always (PAYROLL_DATA_FLOW_AUDIT.md Part 10). scopeCompanyId
+    // returned null for a global super admin or a user with no company, and
+    // every statement below then ran across ALL companies — freezing their
+    // attendance and rewriting their draft payroll runs.
+    const companyId = companyOf(req);
+    if (companyId == null) {
+      return res.status(400).json({ error: 'Company context required — payroll sync acts on one company' });
+    }
     // Optional scoping to specific employees (subset sync)
     const empFilter = Array.isArray(employee_ids) && employee_ids.length > 0
       ? `AND employee_id = ANY(ARRAY[${employee_ids.map(Number).join(',')}]::int[])`
@@ -2719,8 +2689,9 @@ router.post('/payroll-sync', requireAttendanceAdmin, async (req, res) => {
       if (nightShiftDays > 0) {
         await pool.query(`
           UPDATE payroll_runs SET night_shift_days = $2, updated_at = NOW()
-           WHERE employee_id = $1 AND month = $3 AND year = $4 AND status != 'paid'
-        `, [row.employee_id, nightShiftDays, m, y]).catch(() => {});
+           WHERE employee_id = $1 AND month = $3 AND year = $4 AND status IN ('draft', 'pending')
+             AND employee_id IN (SELECT id FROM employees WHERE company_id = $5)  -- drafts only: an approved run is posted to the GL and backs the payslip and payment (PAYROLL_DATA_FLOW_AUDIT.md Part 10)
+        `, [row.employee_id, nightShiftDays, m, y, companyId]).catch(() => {});
       }
 
       lopSummary.push({ employee_id: row.employee_id, lop_days: lopDays });
@@ -2744,8 +2715,9 @@ router.post('/payroll-sync', requireAttendanceAdmin, async (req, res) => {
 
       await pool.query(`
         UPDATE payroll_runs SET lop_days = $2, updated_at = NOW()
-         WHERE employee_id = $1 AND month = $3 AND year = $4 AND status != 'paid'
-      `, [row.employee_id, lopDays, m, y]);
+         WHERE employee_id = $1 AND month = $3 AND year = $4 AND status IN ('draft', 'pending')
+           AND employee_id IN (SELECT id FROM employees WHERE company_id = $5)  -- drafts only: an approved run is posted to the GL and backs the payslip and payment (PAYROLL_DATA_FLOW_AUDIT.md Part 10)
+      `, [row.employee_id, lopDays, m, y, companyId]);
     }
 
     await writeAuditLog({
@@ -3400,9 +3372,10 @@ router.get('/late-arrivals/export', async (req, res) => {
       r.occurrence_rank || '',
     ]);
 
-    const csv = [headers, ...csvRows]
-      .map(row => row.map(v => `"${String(v).replace(/"/g, '""')}"`).join(','))
-      .join('\n');
+    // Employee and department names are free text; the shared writer also
+    // neutralises a leading = + - @ so the export cannot execute.
+    // See shared/csv.js.
+    const csv = toCsv(headers, csvRows);
 
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition',

@@ -28,6 +28,7 @@ import { spawnSync } from 'child_process';
 import fs   from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { resolveDbTarget, pgToolEnv } from '../src/config/dbTarget.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -43,14 +44,8 @@ if (fs.existsSync(dotenvPath)) {
   }
 }
 
-const DB = {
-  host:     process.env.DB_HOST || 'localhost',
-  port:     process.env.DB_PORT || '5432',
-  name:     process.env.DB_NAME || 'Pulse',
-  user:     process.env.DB_USER || 'postgres',
-  password: process.env.DB_PASSWORD || '',
-};
-const env = { ...process.env, PGPASSWORD: DB.password };
+const DB = resolveDbTarget(process.env);
+const env = pgToolEnv(DB, process.env);
 
 const dryRun = process.argv.includes('--dry-run');
 

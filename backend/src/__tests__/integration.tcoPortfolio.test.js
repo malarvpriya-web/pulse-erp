@@ -56,9 +56,35 @@ const { default: pool } = await import('../config/db.js');
 const { loadTcoPortfolio } = await import('../modules/procurement/services/tcoPortfolio.service.js');
 
 const TAG = 'ZZTCOP_';
-const CO = 1;
+
+/**
+ * A DEDICATED tenant, not company 1.
+ *
+ * This suite asserts on company-WIDE aggregates — `realised.decisions` is a
+ * count of every award decision the company has. On company 1 that is a claim
+ * about rows this suite does not own: integration.tcoAward plants its own
+ * decisions for company 1, vitest runs both files in parallel against the one
+ * real database, and the count came back 3 where the arithmetic here expects 2.
+ *
+ * Scoping the tag harder would not fix it — the service counts by company_id,
+ * not by tag, which is the correct behaviour for a savings board. The board has
+ * to be measured on a company whose decisions are all ours.
+ *
+ * `loadTcoPortfolio` filters `d.company_id`/`r.company_id` strictly, and
+ * `loadTcoParams` falls back to defaults for a company with no settings row, so
+ * an otherwise-empty tenant is all this needs. Same convention as CO_B in
+ * integration.procurementReverification.
+ */
+// 999917, not 999907: integration.deliveryFollowupCron seeds its CO_A tenant
+// there, which makes sweepDebris()'s "the tenant is this suite's alone"
+// premise below false — and that sweep deletes BY COMPANY, not by tag.
+const CO = 999917;
 
 async function sweepDebris() {
+  // Company-scoped as well as tag-scoped: the tenant is this suite's alone, so
+  // anything left under it is debris by definition, including a decision whose
+  // tagged RFQ never made it in.
+  await pool.query(`DELETE FROM procurement_award_decisions WHERE company_id = $1`, [CO]);
   await pool.query(
     `DELETE FROM procurement_award_decisions
       WHERE rfq_id IN (SELECT id FROM rfqs WHERE item_description LIKE $1)`, [`${TAG}%`]);
@@ -101,6 +127,9 @@ async function makeDecision(rfqId, { awarded, lowestTco, lowestPrice, followed, 
 }
 
 beforeAll(async () => {
+  await pool.query(
+    `INSERT INTO companies (id, name, code) VALUES ($1, 'ZZTCOP savings-board tenant', 'ZZTCOP')
+       ON CONFLICT (id) DO NOTHING`, [CO]);
   await sweepDebris();
   const { rows: vs } = await pool.query(
     `SELECT id FROM vendors WHERE deleted_at IS NULL ORDER BY id LIMIT 2`);
@@ -109,7 +138,17 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await sweepDebris();
-  await pool.end().catch(() => {});
+  // The tenant ROW stays. Deleting it needs every one of the 52 tables holding
+  // a blocking FK to `companies` cleared first — including `interview_questions`,
+  // which a router's import-time seeder writes for whichever companies exist
+  // when it loads, so the pin appears or not depending on what else the run
+  // imported. That is not a list a single suite can maintain, and when the
+  // delete fails it fails in afterAll, reporting a green suite as red.
+  //
+  // Leaving it is not a leak: the id and code are FIXED, so this is one stable
+  // fixture row, not a new tenant per run. The leaks that filled this database
+  // came from codes carrying a timestamp (ZZGEN_1789390254454), a new company
+  // every run. scripts/audit/purge-leaked-test-tenants.mjs clears both kinds.
 });
 
 describe('an empty board reports absence, not success', () => {

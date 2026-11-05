@@ -1,15 +1,25 @@
-import { useState, useEffect, useRef } from "react";
-import { Users } from 'lucide-react';
+import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import api from "@/services/api/client";
 import './EmployeesData.css';
 import { useToast } from '@/context/ToastContext';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import { openEmployeeFile, downloadEmployeeFile, loadEmployeeImage, probeEmployeeFiles, isExternalUrl, EMPLOYEE_DOC_FIELDS } from '../shared/employeeFiles';
+import PhotoLightbox from '../shared/PhotoLightbox';
+// The same money/date/badge helpers the BGV pages use, so this summary cannot
+// say something the BGV page contradicts.
+import { badgeFor as bgvBadge, money as bgvMoney, shortDate as bgvDate, requiredProgressLabel as bgvProgress } from '../bgv';
 
 const P      = '#6B3FDB';
 const LIGHT  = '#f5f3ff';
 const BORDER = '#e9e4ff';
 
-const BASE_TABS = ['Overview', 'Personal', 'Job', 'Payroll', 'Documents', 'Assets', 'Onboarding', 'History', 'Notes'];
+// ⚠ 'Background Verification' is its OWN tab, not a section bolted onto
+// Documents or Onboarding. The brief was explicit: "Do not overload the existing
+// Overview/Personal/Job/Payroll/Documents/Assets/Onboarding/History/Notes tabs."
+// It is also the right call on its merits — BGV reports are confidential in a way
+// the general Documents tab is not, and this tab is a SUMMARY plus a way in, not
+// a second place to do the work.
+const BASE_TABS = ['Overview', 'Personal', 'Job', 'Payroll', 'Documents', 'Assets', 'Onboarding', 'Background Verification', 'History', 'Notes'];
 
 // NOTE: InfoRow and Card are defined at module scope (not inside the component)
 // so their identity is stable across renders. Defining them inline would make
@@ -133,6 +143,235 @@ function OffboardModal({ employee, onClose, onDone }) {
   );
 }
 
+
+// ── Manage Checklist ──────────────────────────────────────────────────────────
+/**
+ * HR/Admin editor for the onboarding checklist ITEMS (the templates), as
+ * opposed to one employee's completion of them.
+ *
+ * Backed by `hr_onboarding_checklist_templates` — the same table the checklist
+ * has always been generated from. There is no second onboarding system here.
+ *
+ * Two behaviours are the backend's, surfaced rather than reimplemented:
+ *   - renaming an item carries its completion history with it, so nobody's
+ *     ticked box disappears because HR fixed a typo;
+ *   - deleting an item that employees have history against DEACTIVATES it
+ *     instead, and the response says which happened.
+ */
+function ManageChecklistModal({ onClose, onChanged }) {
+  const toast = useToast();
+  const [rows, setRows]       = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy]       = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [draft, setDraft]     = useState({ category: '', item_label: '', default_assignee: 'HR', default_offset_days: 0, sort_order: 0 });
+  const [adding, setAdding]   = useState({ category: '', item_label: '', default_assignee: 'HR', default_offset_days: 0 });
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const r = await api.get('/onboarding/templates', { params: { include_inactive: true } });
+      setRows(Array.isArray(r.data) ? r.data : []);
+    } catch (e) {
+      toast.error(e.response?.data?.message || 'Could not load the checklist');
+    } finally { setLoading(false); }
+  };
+  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // The categories already in use, offered as a datalist so HR reuses the
+  // existing sections (Admin, Documentation, Finance, HR, Induction, IT, …)
+  // instead of quietly creating a near-duplicate by typing "H R".
+  const categories = [...new Set(rows.map(r => r.category).filter(Boolean))].sort();
+
+  const after = async (msg) => { await load(); onChanged?.(); if (msg) toast.success(msg); };
+
+  const add = async () => {
+    const category = adding.category.trim(), item_label = adding.item_label.trim();
+    if (!category || !item_label) { toast.error('Category and item are both required'); return; }
+    setBusy(true);
+    try {
+      await api.post('/onboarding/templates', {
+        category, item_label,
+        default_assignee: adding.default_assignee.trim() || 'HR',
+        default_offset_days: Number(adding.default_offset_days) || 0,
+        // Put a new item at the end of its category rather than the top.
+        sort_order: Math.max(0, ...rows.filter(r => r.category === category).map(r => r.sort_order || 0)) + 1,
+      });
+      setAdding({ category: '', item_label: '', default_assignee: 'HR', default_offset_days: 0 });
+      await after('Checklist item added');
+    } catch (e) {
+      toast.error(e.response?.data?.message || 'Could not add the item');
+    } finally { setBusy(false); }
+  };
+
+  const startEdit = (r) => {
+    setEditingId(r.id);
+    setDraft({
+      category: r.category, item_label: r.item_label,
+      default_assignee: r.default_assignee || 'HR',
+      default_offset_days: r.default_offset_days ?? 0,
+      sort_order: r.sort_order ?? 0,
+    });
+  };
+
+  const saveEdit = async () => {
+    if (!draft.category.trim() || !draft.item_label.trim()) { toast.error('Category and item are both required'); return; }
+    setBusy(true);
+    try {
+      await api.put(`/onboarding/templates/${editingId}`, {
+        category: draft.category.trim(),
+        item_label: draft.item_label.trim(),
+        default_assignee: draft.default_assignee.trim() || 'HR',
+        default_offset_days: Number(draft.default_offset_days) || 0,
+        sort_order: Number(draft.sort_order) || 0,
+      });
+      setEditingId(null);
+      await after('Checklist item updated');
+    } catch (e) {
+      toast.error(e.response?.data?.message || 'Could not save the item');
+    } finally { setBusy(false); }
+  };
+
+  const toggleActive = async (r) => {
+    setBusy(true);
+    try {
+      await api.put(`/onboarding/templates/${r.id}`, { is_active: !r.is_active });
+      await after(r.is_active ? 'Item deactivated' : 'Item reactivated');
+    } catch (e) {
+      toast.error(e.response?.data?.message || 'Could not change the item');
+    } finally { setBusy(false); }
+  };
+
+  const remove = async (r) => {
+    const used = r.usage_count > 0;
+    const question = used
+      ? `"${r.item_label}" is on ${r.usage_count} employee record${r.usage_count === 1 ? '' : 's'}. It will be DEACTIVATED so that history is kept, not deleted. Continue?`
+      : `Delete "${r.item_label}"? Nothing has been recorded against it.`;
+    if (!window.confirm(question)) return;
+    setBusy(true);
+    try {
+      const res = await api.delete(`/onboarding/templates/${r.id}`);
+      await after(res.data?.message || 'Done');
+    } catch (e) {
+      toast.error(e.response?.data?.message || 'Could not remove the item');
+    } finally { setBusy(false); }
+  };
+
+  const inp = { padding: '6px 9px', border: `1px solid ${BORDER}`, borderRadius: 6, fontSize: 12.5, width: '100%', boxSizing: 'border-box' };
+  const byCategory = rows.reduce((acc, r) => { (acc[r.category] ||= []).push(r); return acc; }, {});
+
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.5)', zIndex: 2500, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, width: 880, maxWidth: '100%', maxHeight: '88vh', display: 'flex', flexDirection: 'column', boxShadow: '0 24px 64px rgba(0,0,0,.22)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '20px 24px 12px' }}>
+          <div>
+            <h3 style={{ margin: 0, fontSize: 17, fontWeight: 700, color: '#111827' }}>Manage Onboarding Checklist</h3>
+            <p style={{ margin: '4px 0 0', fontSize: 12, color: '#6b7280' }}>
+              Applies to every new employee. Changes here do not alter what anyone has already completed.
+            </p>
+          </div>
+          <button onClick={onClose} aria-label="Close" style={{ border: 'none', background: 'none', cursor: 'pointer', fontSize: 22, color: '#6b7280', lineHeight: 1 }}>&times;</button>
+        </div>
+
+        {/* Add */}
+        <div style={{ padding: '0 24px 14px' }}>
+          <div style={{ background: LIGHT, border: `1px solid ${BORDER}`, borderRadius: 10, padding: 14 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '190px 1fr 130px 90px auto', gap: 10, alignItems: 'end' }}>
+              <label style={{ fontSize: 11, fontWeight: 600, color: '#6b7280', display: 'flex', flexDirection: 'column', gap: 4 }}>
+                Category *
+                <input list="zzve-ob-categories" value={adding.category} placeholder="e.g. IT Setup"
+                  onChange={e => setAdding(a => ({ ...a, category: e.target.value }))} style={inp} />
+                <datalist id="zzve-ob-categories">
+                  {categories.map(c => <option key={c} value={c} />)}
+                </datalist>
+              </label>
+              <label style={{ fontSize: 11, fontWeight: 600, color: '#6b7280', display: 'flex', flexDirection: 'column', gap: 4 }}>
+                Checklist item *
+                <input value={adding.item_label} placeholder="e.g. Issue laptop and charger"
+                  onChange={e => setAdding(a => ({ ...a, item_label: e.target.value }))} style={inp} />
+              </label>
+              <label style={{ fontSize: 11, fontWeight: 600, color: '#6b7280', display: 'flex', flexDirection: 'column', gap: 4 }}>
+                Owner
+                <input value={adding.default_assignee}
+                  onChange={e => setAdding(a => ({ ...a, default_assignee: e.target.value }))} style={inp} />
+              </label>
+              <label style={{ fontSize: 11, fontWeight: 600, color: '#6b7280', display: 'flex', flexDirection: 'column', gap: 4 }}>
+                Due (days)
+                <input type="number" min="0" value={adding.default_offset_days}
+                  onChange={e => setAdding(a => ({ ...a, default_offset_days: e.target.value }))} style={inp} />
+              </label>
+              <button onClick={add} disabled={busy} style={{ padding: '8px 18px', background: P, color: '#fff', border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: busy ? 'default' : 'pointer', opacity: busy ? .6 : 1, whiteSpace: 'nowrap' }}>
+                Add Item
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* List */}
+        <div style={{ overflowY: 'auto', padding: '0 24px 20px', flex: 1 }}>
+          {loading ? (
+            <div style={{ padding: 30, textAlign: 'center', color: '#9ca3af', fontSize: 13 }}>Loading checklist...</div>
+          ) : rows.length === 0 ? (
+            <div style={{ padding: 30, textAlign: 'center', color: '#9ca3af', fontSize: 13 }}>No checklist items yet. Add the first one above.</div>
+          ) : Object.entries(byCategory).map(([cat, items]) => (
+            <div key={cat} style={{ marginBottom: 14 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: P, margin: '10px 0 6px' }}>{cat}</div>
+              <div style={{ border: `1px solid ${BORDER}`, borderRadius: 10, overflow: 'hidden' }}>
+                {items.map((r, i) => (
+                  <div key={r.id} className="ob-tpl-row" data-item-label={r.item_label}
+                    style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 12px', borderBottom: i < items.length - 1 ? '1px solid #f3f4f6' : 'none', background: r.is_active ? '#fff' : '#fafafa' }}>
+                    {editingId === r.id ? (
+                      <>
+                        <input value={draft.category} list="zzve-ob-categories" onChange={e => setDraft(d => ({ ...d, category: e.target.value }))} style={{ ...inp, width: 150 }} />
+                        <input value={draft.item_label} onChange={e => setDraft(d => ({ ...d, item_label: e.target.value }))} style={{ ...inp, flex: 1 }} />
+                        <input value={draft.default_assignee} onChange={e => setDraft(d => ({ ...d, default_assignee: e.target.value }))} style={{ ...inp, width: 100 }} />
+                        <input type="number" min="0" value={draft.default_offset_days} onChange={e => setDraft(d => ({ ...d, default_offset_days: e.target.value }))} style={{ ...inp, width: 70 }} />
+                        <button onClick={saveEdit} disabled={busy} style={{ padding: '5px 12px', background: P, color: '#fff', border: 'none', borderRadius: 6, fontSize: 11.5, fontWeight: 700, cursor: 'pointer' }}>Save</button>
+                        <button onClick={() => setEditingId(null)} style={{ padding: '5px 10px', background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 6, fontSize: 11.5, cursor: 'pointer' }}>Cancel</button>
+                      </>
+                    ) : (
+                      <>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: 13, color: r.is_active ? '#111827' : '#9ca3af', fontWeight: 500 }}>
+                            {r.item_label}
+                            {!r.is_active && <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 700, color: '#92400e', background: '#fef3c7', borderRadius: 10, padding: '1px 7px' }}>INACTIVE</span>}
+                            {r.company_id == null && <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 700, color: '#374151', background: '#f3f4f6', borderRadius: 10, padding: '1px 7px' }}>SHARED DEFAULT</span>}
+                          </div>
+                          <div style={{ fontSize: 11, color: '#9ca3af' }}>
+                            {r.default_assignee || 'HR'} &middot; due day {r.default_offset_days ?? 0}
+                            {r.usage_count > 0 && ` \u00b7 on ${r.usage_count} employee record${r.usage_count === 1 ? '' : 's'}`}
+                          </div>
+                        </div>
+                        {/* A shared default (company_id NULL) belongs to every
+                            tenant, so this screen does not offer to edit it. */}
+                        {r.company_id != null && (
+                          <>
+                            <button onClick={() => startEdit(r)} disabled={busy} style={{ padding: '4px 11px', background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 6, fontSize: 11.5, fontWeight: 600, color: '#374151', cursor: 'pointer' }}>Edit</button>
+                            <button onClick={() => toggleActive(r)} disabled={busy} style={{ padding: '4px 11px', background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 6, fontSize: 11.5, fontWeight: 600, color: r.is_active ? '#92400e' : '#15803d', cursor: 'pointer' }}>
+                              {r.is_active ? 'Deactivate' : 'Reactivate'}
+                            </button>
+                            <button onClick={() => remove(r)} disabled={busy} style={{ padding: '4px 11px', background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 6, fontSize: 11.5, fontWeight: 600, color: '#b91c1c', cursor: 'pointer' }}>
+                              {r.usage_count > 0 ? 'Retire' : 'Delete'}
+                            </button>
+                          </>
+                        )}
+                      </>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div style={{ borderTop: `1px solid ${BORDER}`, padding: '12px 24px', display: 'flex', justifyContent: 'flex-end' }}>
+          <button onClick={onClose} style={{ padding: '8px 20px', background: P, color: '#fff', border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>Done</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function EmployeeProfile({ employee: employeeProp, setPage, setSelectedEmployee: _setSelectedEmployee, urlParams }) {
   const toast = useToast();
 
@@ -149,8 +388,8 @@ export default function EmployeeProfile({ employee: employeeProp, setPage, setSe
   const [activeTab, setActiveTab] = useState(
     BASE_TABS.includes(urlParams?.tab) ? urlParams.tab : "Overview"
   );
-  const [notesText, setNotesText] = useState("");
   const [notesList, setNotesList] = useState([]);
+  const [notesLoading, setNotesLoading] = useState(false);
   const [showOffboardModal, setShowOffboardModal] = useState(false);
   const [exitData, setExitData] = useState(null);
   const [clearanceData, setClearanceData] = useState(null);
@@ -160,8 +399,23 @@ export default function EmployeeProfile({ employee: employeeProp, setPage, setSe
   const [onboardingData, setOnboardingData] = useState(null);
   const [onboardingLoading, setOnboardingLoading] = useState(false);
   const [onboardingInit, setOnboardingInit] = useState(false);
+  // True only when the progress API answered 403. Kept apart from "no items":
+  // a refused viewer is not looking at an empty checklist, and must not be
+  // offered Initialize as if they were.
+  const [onboardingDenied, setOnboardingDenied] = useState(false);
   const [salaryRevisions, setSalaryRevisions] = useState([]);
   const [salaryLoading, setSalaryLoading] = useState(false);
+  const [photoSrc, setPhotoSrc] = useState(null);
+  const [photoOpen, setPhotoOpen] = useState(false);
+  // stored path -> file is present. `null` while the probe is in flight, so the
+  // table can say "Checking..." rather than asserting either answer.
+  const [filePresence, setFilePresence] = useState(null);
+  // Background verification summary. `undefined` while unfetched, `null` when
+  // the caller is not allowed to see it — the tab then says so instead of
+  // rendering zeroes that read as "no checks run".
+  const [bgv, setBgv] = useState(undefined);
+  const [bgvDenied, setBgvDenied] = useState(false);
+  const [manageChecklist, setManageChecklist] = useState(false);
   const [clearanceSaving, setClearanceSaving] = useState(false);
   const [showExitEdit, setShowExitEdit] = useState(false);
   const [exitEditForm, setExitEditForm] = useState({ separation_type: '', last_working_date: '', exit_reason: '' });
@@ -198,28 +452,18 @@ export default function EmployeeProfile({ employee: employeeProp, setPage, setSe
   }, [employee]);
 
   const fetchNotes = async () => {
+    setNotesLoading(true);
     try {
       const res = await api.get(`/notes/${employee.id}`);
-      setNotesList(Array.isArray(res.data) ? res.data : []);
+      if (isMounted.current) setNotesList(Array.isArray(res.data) ? res.data : []);
     } catch {
-      /* notes fetch failure is non-critical */
-    }
+      /* A notes read failure leaves the list as it was rather than blanking it. */
+    } finally { if (isMounted.current) setNotesLoading(false); }
   };
 
   useEffect(() => {
     if (employee?.id) fetchNotes();
   }, [employee?.id]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const saveNote = async () => {
-    if (!notesText.trim()) return;
-    try {
-      await api.post("/notes", { employeeId: employee.id, noteText: notesText });
-      setNotesText("");
-      fetchNotes();
-    } catch (_err) {
-      toast.error("Failed to save note");
-    }
-  };
 
   const openExitEdit = () => {
     setExitEditForm({
@@ -277,6 +521,28 @@ export default function EmployeeProfile({ employee: employeeProp, setPage, setSe
       .catch(() => {});
   }, [employee?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Load the background-verification summary.
+  //
+  // Fetched from /bgv/employees/:id/summary, which is built from the SAME SQL
+  // (CASE_SELECT) that the BGV list and the BGV page use — so this tab's
+  // "3/5 checks" cannot disagree with the number the BGV page shows. It is not
+  // recomputed here from the checks, because a second calculation is a second
+  // answer waiting to drift.
+  //
+  // A 403 is a real state, not a failure: a role can reach View Employee and
+  // legitimately hold no BGV grant. Recorded separately from an empty case so
+  // the panel says "you cannot see this" rather than "no checks have been run".
+  useEffect(() => {
+    if (!employee?.id || activeTab !== 'Background Verification') return;
+    api.get(`/bgv/employees/${employee.id}/summary`)
+      .then(r => { if (isMounted.current) { setBgv(r.data || null); setBgvDenied(false); } })
+      .catch(err => {
+        if (!isMounted.current) return;
+        if (err.response?.status === 403) { setBgvDenied(true); setBgv(null); }
+        else setBgv(null);
+      });
+  }, [employee?.id, activeTab]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Load employee asset allocations
   useEffect(() => {
     if (!employee?.id || activeTab !== 'Assets') return;
@@ -294,11 +560,57 @@ export default function EmployeeProfile({ employee: employeeProp, setPage, setSe
   useEffect(() => {
     if (!employee?.id || activeTab !== 'Onboarding') return;
     setOnboardingLoading(true);
+    setOnboardingDenied(false);
     api.get(`/onboarding/progress/${employee.id}`)
       .then(r => { if (isMounted.current) setOnboardingData(r.data); })
-      .catch(() => {})
+      .catch((err) => {
+        // 403: the server decided this viewer may not see this checklist
+        // (onboarding.routes.js — HR, self, or a manager of the employee). It
+        // says nothing about whether one exists, and neither does this message.
+        // Any other failure keeps the previous handling.
+        if (isMounted.current && err?.response?.status === 403) {
+          setOnboardingData(null);
+          setOnboardingDenied(true);
+        }
+      })
       .finally(() => { if (isMounted.current) setOnboardingLoading(false); });
   }, [employee?.id, activeTab, onboardingInit]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Confirm the listed documents actually exist before the tab calls them
+  // "On file". These columns are stored paths, not evidence: EMP003 carries
+  // five that point at files which are not on disk.
+  useEffect(() => {
+    if (!employee?.id || activeTab !== 'Documents') return;
+    const paths = [
+      ...EMPLOYEE_DOC_FIELDS.map(d => employee[d.key]),
+      ...docRecords.map(d => d.drive_url || d.file_url),
+    ].filter(Boolean);
+    if (!paths.length) { setFilePresence({}); return; }
+    let cancelled = false;
+    setFilePresence(null);
+    probeEmployeeFiles(paths).then(map => { if (!cancelled && isMounted.current) setFilePresence(map); });
+    return () => { cancelled = true; };
+  }, [employee?.id, activeTab, docRecords]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Load the employee photo. `employees.photo_url` holds a stored path such as
+  // '/uploads/<name>'; the bytes come back through the authenticated file route
+  // as a blob, because an <img src> cannot carry the JWT that route requires.
+  // The object URL is revoked when the photo changes or the page unmounts.
+  useEffect(() => {
+    const stored = employee?.photo_url;
+    if (!stored) { setPhotoSrc(null); return; }
+    let objectUrl = null;
+    let cancelled = false;
+    loadEmployeeImage(stored).then(url => {
+      if (cancelled) { if (url && !isExternalUrl(stored)) URL.revokeObjectURL(url); return; }
+      objectUrl = isExternalUrl(stored) ? null : url;
+      setPhotoSrc(url);
+    });
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [employee?.photo_url]);
 
   // Load salary revisions for History tab
   useEffect(() => {
@@ -309,6 +621,51 @@ export default function EmployeeProfile({ employee: employeeProp, setPage, setSe
       .catch(() => { if (isMounted.current) setSalaryRevisions([]); })
       .finally(() => { if (isMounted.current) setSalaryLoading(false); });
   }, [employee?.id, activeTab]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Derived from `employee`, which can be null while the record loads — hence
+  // the optional chaining. Both of these sit ABOVE the early returns on
+  // purpose: useMemo after a conditional return runs in a different order on
+  // the loading render than on the loaded one, which is a hook-order violation
+  // (eslint react-hooks/rules-of-hooks catches it; React fails at runtime).
+  const initials = `${(employee?.first_name || '?').charAt(0)}${(employee?.last_name || '').charAt(0)}`.toUpperCase();
+
+  // PageHero renders `icon` as a component (<Icon size={22} />), so the avatar
+  // is supplied as one. It is memoised on its own inputs because a component
+  // declared fresh on every render is a NEW TYPE every render, which makes
+  // React unmount and remount the whole subtree — the exact bug that made
+  // AddEmployee lose focus on every keystroke. Falls back to initials, which is
+  // also what every employee without a photo gets.
+  const employeeName = `${employee?.first_name || ''} ${employee?.last_name || ''}`.trim();
+  const AvatarChip = useMemo(() => {
+    // With a photo the chip is a button that opens the full-size viewer; with
+    // no photo it stays a plain span, so the initials fallback cannot open an
+    // empty lightbox.
+    const Chip = () => (
+      photoSrc
+        ? <button
+            type="button"
+            onClick={() => setPhotoOpen(true)}
+            title="View full-size photo"
+            aria-label={`View ${employeeName || 'employee'}'s photo full size`}
+            style={{ width: '100%', height: '100%', padding: 0, border: 'none', background: 'none', cursor: 'zoom-in', display: 'block' }}
+          >
+            <img
+              src={photoSrc}
+              alt={employeeName || 'Employee photo'}
+              style={{ width: '100%', height: '100%', borderRadius: 9, objectFit: 'cover', display: 'block' }}
+            />
+          </button>
+        : <span style={{ fontSize: 14, fontWeight: 800, letterSpacing: '.02em' }}>{initials}</span>
+    );
+    return Chip;
+  }, [photoSrc, initials, employeeName]);
+
+  // Esc is handled inside PhotoLightbox, bound only while it is mounted.
+  const closePhoto = useCallback(() => setPhotoOpen(false), []);
+
+  // A photo that disappears (record reloaded, employee switched) must not leave
+  // a lightbox open over nothing.
+  useEffect(() => { if (!photoSrc) setPhotoOpen(false); }, [photoSrc]);
 
   if (loading) {
     return (
@@ -330,7 +687,6 @@ export default function EmployeeProfile({ employee: employeeProp, setPage, setSe
   const isEx  = isExStatus(employee.status);
   const TABS  = isEx ? [...BASE_TABS, 'Exit Details'] : BASE_TABS;
 
-  const initials = `${(employee.first_name || '?').charAt(0)}${(employee.last_name || '').charAt(0)}`.toUpperCase();
 
   const fmtDate = (d) => d ? new Date(d.split('T')[0] + 'T00:00:00').toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—';
   const yearsFrom = (d) => d ? Math.floor((new Date() - new Date(d.split('T')[0] + 'T00:00:00')) / (365.25 * 24 * 60 * 60 * 1000)) : null;
@@ -346,13 +702,17 @@ export default function EmployeeProfile({ employee: employeeProp, setPage, setSe
   return (
     <PageShell dock={
       <PageHero
-        icon={Users}
+        icon={AvatarChip}
         eyebrow="Employees"
-        title={`${employee.first_name}${employee.last_name}`}
+        // `${first}${last}` with no separator — the header read "MalarNatesh".
+        title={employeeName}
+        subtitle={[employee.office_id, employee.designation, employee.department].filter(Boolean).join(' · ') || null}
+        // NO page-level Back button here. Pulse's standard Back lives in the
+        // Topbar and is on every page; this hero carried a second one ("← Back
+        // to List"), so the screen offered two. Removing the page copy is what
+        // makes this page match the rest of the app — the Topbar's own Back is
+        // untouched, and no per-page suppression is involved.
         actions={<>
-          <button className="plh-cta plh-cta--ghost" onClick={() => setPage(isEx ? 'ExEmployees' : 'EmployeesData')}>
-            ← Back to List
-          </button>
           {!isEx && (
               <button className="plh-cta plh-cta--ghost" onClick={() => setShowOffboardModal(true)}>
                 🚪 Offboard
@@ -413,6 +773,27 @@ export default function EmployeeProfile({ employee: employeeProp, setPage, setSe
             </div>
           </div>
         </div>
+      )}
+
+      {/* Full-size photo viewer — shared with View Intern (shared/PhotoLightbox). */}
+      {photoOpen && photoSrc && (
+        <PhotoLightbox
+          src={photoSrc}
+          name={employeeName}
+          code={employee.office_id}
+          onClose={closePhoto}
+          onDownload={async () => { const err = await downloadEmployeeFile(employee.photo_url); if (err) toast.error(err); }}
+        />
+      )}
+
+      {/* Manage Checklist (HR/Admin) */}
+      {manageChecklist && (
+        <ManageChecklistModal
+          onClose={() => setManageChecklist(false)}
+          // Re-fetch this employee's checklist after any template change, so an
+          // added item appears and a retired one drops out without a reload.
+          onChanged={() => setOnboardingInit(v => !v)}
+        />
       )}
 
       {/* Offboard modal */}
@@ -486,6 +867,15 @@ export default function EmployeeProfile({ employee: employeeProp, setPage, setSe
                 return `${here + prev} years`;
               })()} />
               <InfoRow label="Skill Type" value={employee.skill_type} />
+              {/* Set when this hire was converted from an internship; the intern
+                  record is kept as history (internConversion.js). */}
+              {employee.source_intern_id && (
+                <InfoRow label="Previously an Intern" value={
+                  <button type="button" className="ai-link" onClick={() => setPage('ViewIntern', { id: employee.source_intern_id })}>
+                    {employee.source_intern_code || `Intern #${employee.source_intern_id}`}
+                  </button>
+                } />
+              )}
             </Card>
           </div>
         )}
@@ -567,105 +957,157 @@ export default function EmployeeProfile({ employee: employeeProp, setPage, setSe
           </div>
         )}
 
-        {/* DOCUMENTS */}
-        {activeTab === 'Documents' && (
-          <div style={{ display:'flex', flexDirection:'column', gap:24 }}>
+        {/* DOCUMENTS — READ ONLY.
+            Everything here was captured on Add / Edit Employee. This tab shows
+            what is on file; it does not ask HR to upload the same document a
+            second time. */}
+        {activeTab === 'Documents' && (() => {
+          // The seven file columns Add Employee writes, in the order that page
+          // presents them. `photo_url` is the same column the header avatar
+          // reads — one store, shown in two places, not two stores.
+          const onFile = EMPLOYEE_DOC_FIELDS
+            .map(d => ({ ...d, stored: employee[d.key] }))
+            .filter(d => d.stored);
 
-            {/* Section A: Compliance uploads (stored as employees columns) */}
-            <div>
-              <div style={{ fontSize:13, fontWeight:700, color:P, marginBottom:12 }}>Compliance Uploads</div>
-              <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:12 }}>
-                {[
-                  { key:'photo_url',            label:'Photo',            icon:'📷' },
-                  { key:'resume_file',          label:'Resume',           icon:'📄' },
-                  { key:'offer_letter_file',    label:'Offer Letter',     icon:'📋' },
-                  { key:'pan_file',             label:'PAN Card',         icon:'🪪' },
-                  { key:'aadhaar_file',         label:'Aadhaar',          icon:'🪪' },
-                  { key:'cancelled_cheque_file',label:'Cancelled Cheque', icon:'🏦' },
-                  { key:'bank_statement_file',  label:'Bank Statement',   icon:'📊' },
-                ].filter(d => employee[d.key]).map(doc => (
-                  <div
-                    key={doc.key}
-                    onClick={() => window.open(`${import.meta.env.VITE_API_URL?.replace('/api', '')}${employee[doc.key]}`, '_blank')}
-                    style={{
-                      background:'#fff', border:`1px solid ${BORDER}`, borderRadius:12,
-                      padding:'18px 14px', cursor:'pointer', textAlign:'center',
-                      transition:'all .15s',
-                    }}
-                    onMouseEnter={e => { e.currentTarget.style.borderColor = P; e.currentTarget.style.background = LIGHT; }}
-                    onMouseLeave={e => { e.currentTarget.style.borderColor = BORDER; e.currentTarget.style.background = '#fff'; }}
-                  >
-                    <div style={{ fontSize:28, marginBottom:6 }}>{doc.icon}</div>
-                    <div style={{ fontSize:12, fontWeight:600, color:'#374151' }}>{doc.label}</div>
-                    <div style={{ fontSize:11, color:P, marginTop:3, fontWeight:600 }}>View →</div>
-                  </div>
-                ))}
-                {!['photo_url','resume_file','offer_letter_file','pan_file','aadhaar_file','cancelled_cheque_file','bank_statement_file'].some(k => employee[k]) && (
-                  <div style={{ gridColumn:'1/-1', padding:'24px 0', color:'#9ca3af', fontSize:13 }}>
-                    No compliance documents uploaded
-                  </div>
-                )}
-              </div>
-            </div>
+          const fileName = (stored) => {
+            const raw = String(stored || '').split('/').pop() || '';
+            // Stored as '<epoch>_<original name>'; show the name HR chose.
+            return decodeURIComponent(raw.replace(/^\d+_/, '')) || raw;
+          };
 
-            {/* Section B: HR document records (from employee_documents table) */}
-            <div>
-              <div style={{ fontSize:13, fontWeight:700, color:P, marginBottom:12 }}>
-                HR Document Records
-                {docRecords.length > 0 && (
-                  <span style={{ marginLeft:8, fontWeight:400, color:'#6b7280' }}>({docRecords.length})</span>
-                )}
+          const rows = [
+            ...onFile.map(d => ({
+              id: `emp:${d.key}`,
+              type: d.label,
+              name: fileName(d.stored),
+              icon: d.icon,
+              date: employee.updated_at || employee.created_at || null,
+              source: 'Employee record',
+              stored: d.stored,
+            })),
+            ...docRecords.map(doc => ({
+              id: `rec:${doc.id}`,
+              type: doc.document_type || doc.type || '\u2014',
+              name: doc.document_name || doc.name || fileName(doc.file_url) || '\u2014',
+              icon: '\uD83D\uDCCE',
+              date: doc.uploaded_at || doc.created_at || null,
+              expiry: doc.expiry_date || null,
+              recordStatus: doc.status || (doc.verified ? 'verified' : 'pending'),
+              source: doc.drive_url ? 'Drive' : 'HR record',
+              stored: doc.drive_url || doc.file_url || null,
+            })),
+          ];
+
+          const STATUS_C = { verified:'#15803d', pending:'#5b21b6', rejected:'#dc2626', active:'#15803d', 'On file':'#15803d', Missing:'#b91c1c', Checking:'#6b7280' };
+          const STATUS_B = { verified:'#dcfce7', pending:'#ede9fe', rejected:'#fee2e2', active:'#dcfce7', 'On file':'#dcfce7', Missing:'#fee2e2', Checking:'#f3f4f6' };
+
+          // "On file" is a claim about storage, so it is only made once the
+          // probe has confirmed it. A record whose file is gone says so, and
+          // says it where HR reads the row rather than only when they click.
+          const statusOf = (r) => {
+            if (!r.stored) return 'No file';
+            if (filePresence === null) return 'Checking';
+            if (filePresence[r.stored] === false) return 'Missing';
+            return r.recordStatus || 'On file';
+          };
+          const missingCount = filePresence
+            ? rows.filter(r => r.stored && filePresence[r.stored] === false).length
+            : 0;
+
+          return (
+            <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
+              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', flexWrap:'wrap', gap:8 }}>
+                <div style={{ fontSize:13, fontWeight:700, color:P }}>
+                  Employee Documents
+                  {rows.length > 0 && <span style={{ marginLeft:8, fontWeight:400, color:'#6b7280' }}>({rows.length})</span>}
+                </div>
+                <div style={{ fontSize:11, color:'#9ca3af' }}>
+                  Uploaded on Add / Edit Employee. This tab is read-only.
+                </div>
               </div>
-              {docRecords.length === 0 ? (
-                <div style={{ color:'#9ca3af', fontSize:13, padding:'8px 0' }}>
-                  No supplemental document records. HR can add records from the Employee Documents audit page.
+
+              {missingCount > 0 && (
+                <div style={{ background:'#fef2f2', border:'1px solid #fecaca', borderRadius:10, padding:'10px 14px', fontSize:12, color:'#991b1b' }}>
+                  <strong>{missingCount} document{missingCount === 1 ? ' has' : 's have'} no file in storage.</strong>
+                  {' '}The record still names a file, but nothing is stored against it — it needs to be uploaded again on Edit Employee.
+                </div>
+              )}
+
+              {rows.length === 0 ? (
+                <div style={{ background:'#fff', border:`1px solid ${BORDER}`, borderRadius:12, padding:'40px 24px', textAlign:'center' }}>
+                  <div style={{ fontSize:34, marginBottom:10 }}>{'\uD83D\uDCC4'}</div>
+                  <div style={{ fontWeight:700, color:'#374151', marginBottom:6 }}>No documents on file</div>
+                  <div style={{ color:'#6b7280', fontSize:13 }}>
+                    Documents are attached on <strong>Edit Employee &rarr; Upload Documents</strong>
+                    {' '}(Photo, PAN, Aadhaar, Cheque, Bank Statement, Resume, Offer Letter).
+                  </div>
                 </div>
               ) : (
-                <div style={{ background:'#fff', border:`1px solid ${BORDER}`, borderRadius:12, overflow:'hidden' }}>
+                <div className="emp-profile-table-wrap" style={{ background:'#fff', border:`1px solid ${BORDER}`, borderRadius:12, overflow:'hidden' }}>
                   <table style={{ width:'100%', borderCollapse:'collapse' }}>
                     <thead>
                       <tr style={{ background:'#f9fafb', borderBottom:`1px solid ${BORDER}` }}>
-                        {['Document','Type','Source','Date','Expiry','Status'].map(h => (
-                          <th key={h} style={{ padding:'10px 14px', textAlign:'left', fontSize:11, fontWeight:600, color:'#9ca3af', textTransform:'uppercase', letterSpacing:'.04em' }}>{h}</th>
+                        {['Document Type','File','Source','Uploaded','Expiry','Status',''].map((h, i) => (
+                          <th key={i} style={{ padding:'10px 14px', textAlign: i === 6 ? 'right' : 'left', fontSize:11, fontWeight:600, color:'#9ca3af', textTransform:'uppercase', letterSpacing:'.04em', whiteSpace:'nowrap' }}>{h}</th>
                         ))}
                       </tr>
                     </thead>
                     <tbody>
-                      {docRecords.map(doc => {
-                        const status   = doc.status || (doc.verified ? 'verified' : 'pending');
-                        const viewUrl  = doc.drive_url || doc.file_url || null;
-                        const STATUS_C = { verified:'#15803d', pending:'#5b21b6', rejected:'#dc2626' };
-                        const STATUS_B = { verified:'#dcfce7', pending:'#ede9fe', rejected:'#fee2e2' };
-                        return (
-                          <tr key={doc.id} style={{ borderBottom:`1px solid #f3f4f6` }}>
-                            <td style={{ padding:'10px 14px' }}>
-                              <span
-                                onClick={() => viewUrl && window.open(viewUrl, '_blank', 'noopener,noreferrer')}
-                                style={{ fontSize:13, fontWeight:500, color: viewUrl ? P : '#111827', cursor: viewUrl ? 'pointer' : 'default', textDecoration: viewUrl ? 'underline' : 'none' }}
-                              >
-                                {doc.document_name || doc.name || '—'}
-                              </span>
-                            </td>
-                            <td style={{ padding:'10px 14px', fontSize:12, color:'#6b7280' }}>{doc.document_type || doc.type || '—'}</td>
-                            <td style={{ padding:'10px 14px', fontSize:11, color:'#6b7280' }}>{doc.drive_url ? 'Drive' : doc.file_url ? 'Upload' : '—'}</td>
-                            <td style={{ padding:'10px 14px', fontSize:12, color:'#6b7280' }}>{(doc.uploaded_at || doc.created_at || '').slice(0,10) || '—'}</td>
-                            <td style={{ padding:'10px 14px', fontSize:12, color:'#6b7280' }}>{doc.expiry_date ? doc.expiry_date.slice(0,10) : '—'}</td>
-                            <td style={{ padding:'10px 14px' }}>
-                              <span style={{ fontSize:11, fontWeight:600, padding:'2px 8px', borderRadius:20, background: STATUS_B[status] || '#f3f4f6', color: STATUS_C[status] || '#6b7280' }}>
-                                {(status.charAt(0).toUpperCase() + status.slice(1))}
-                              </span>
-                            </td>
-                          </tr>
-                        );
-                      })}
+                      {rows.map(r => (
+                        <tr key={r.id} style={{ borderBottom:'1px solid #f3f4f6' }}>
+                          <td style={{ padding:'11px 14px', fontSize:13, fontWeight:600, color:'#111827', whiteSpace:'nowrap' }}>
+                            <span style={{ marginRight:8 }}>{r.icon}</span>{r.type}
+                          </td>
+                          <td style={{ padding:'11px 14px', fontSize:12, color:'#6b7280', maxWidth:280, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }} title={r.name}>{r.name}</td>
+                          <td style={{ padding:'11px 14px', fontSize:11, color:'#6b7280', whiteSpace:'nowrap' }}>{r.source}</td>
+                          <td style={{ padding:'11px 14px', fontSize:12, color:'#6b7280', whiteSpace:'nowrap' }}>{fmtDate(r.date)}</td>
+                          <td style={{ padding:'11px 14px', fontSize:12, color:'#6b7280', whiteSpace:'nowrap' }}>{r.expiry ? fmtDate(r.expiry) : '\u2014'}</td>
+                          <td style={{ padding:'11px 14px' }}>
+                            {(() => {
+                              const st = statusOf(r);
+                              return (
+                                <span style={{ fontSize:11, fontWeight:600, padding:'2px 8px', borderRadius:20, whiteSpace:'nowrap', background: STATUS_B[st] || '#f3f4f6', color: STATUS_C[st] || '#6b7280' }}>
+                                  {st.charAt(0).toUpperCase() + st.slice(1)}
+                                </span>
+                              );
+                            })()}
+                          </td>
+                          <td style={{ padding:'11px 14px', textAlign:'right', whiteSpace:'nowrap' }}>
+                            {/* No View/Download on a file we already know is not
+                                there — offering the button only to answer with
+                                an error is the behaviour this replaces. */}
+                            {r.stored && statusOf(r) === 'Missing' ? (
+                              <span style={{ fontSize:11, color:'#b91c1c' }}>File not in storage</span>
+                            ) : r.stored ? (
+                              <>
+                                <button
+                                  onClick={async () => { const e = await openEmployeeFile(r.stored); if (e) toast.error(e); }}
+                                  style={{ border:`1px solid ${BORDER}`, background:'#fff', color:P, borderRadius:6, fontSize:11, fontWeight:700, padding:'4px 12px', cursor:'pointer' }}>
+                                  View
+                                </button>
+                                {/* A Drive link is somebody else's page, not a
+                                    file we hold — there is nothing to stream. */}
+                                {!isExternalUrl(r.stored) && (
+                                  <button
+                                    onClick={async () => { const e = await downloadEmployeeFile(r.stored); if (e) toast.error(e); }}
+                                    style={{ marginLeft:6, border:`1px solid ${BORDER}`, background:'#fff', color:'#374151', borderRadius:6, fontSize:11, fontWeight:600, padding:'4px 12px', cursor:'pointer' }}>
+                                    Download
+                                  </button>
+                                )}
+                              </>
+                            ) : (
+                              <span style={{ fontSize:11, color:'#9ca3af' }}>No file</span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
                     </tbody>
                   </table>
                 </div>
               )}
             </div>
-
-          </div>
-        )}
+          );
+        })()}
 
         {/* ASSETS */}
         {activeTab === 'Assets' && (
@@ -725,8 +1167,26 @@ export default function EmployeeProfile({ employee: employeeProp, setPage, setSe
         {/* ONBOARDING CHECKLIST */}
         {activeTab === 'Onboarding' && (
           <div>
+            {/* Outside the loading/empty branches so the way in to Manage
+                Checklist is there even when this employee has no checklist yet
+                — which is exactly when HR is most likely to want to edit the
+                items the checklist will be built from. */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 14, flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 13, fontWeight: 700, color: P }}>Onboarding Checklist</span>
+              <button
+                onClick={() => setManageChecklist(true)}
+                style={{ padding: '7px 16px', background: '#fff', color: P, border: `1px solid ${BORDER}`, borderRadius: 8, fontSize: 12.5, fontWeight: 700, cursor: 'pointer' }}>
+                &#9881; Manage Checklist
+              </button>
+            </div>
             {onboardingLoading ? (
               <div style={{ padding: 24, textAlign: 'center', color: '#9ca3af' }}>Loading onboarding checklist…</div>
+            ) : onboardingDenied ? (
+              <div role="status" data-testid="onboarding-denied" style={{ background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 12, padding: 32, textAlign: 'center' }}>
+                <div style={{ fontSize: 36, marginBottom: 12 }}>🔒</div>
+                <div style={{ fontWeight: 700, color: '#374151', marginBottom: 6 }}>You don&rsquo;t have access to this onboarding checklist</div>
+                <div style={{ color: '#6b7280', fontSize: 13 }}>Onboarding checklists are visible to HR, the employee, and the employee&rsquo;s managers.</div>
+              </div>
             ) : !onboardingData?.items?.length ? (
               <div style={{ background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 12, padding: 32, textAlign: 'center' }}>
                 <div style={{ fontSize: 36, marginBottom: 12 }}>📋</div>
@@ -777,7 +1237,14 @@ export default function EmployeeProfile({ employee: employeeProp, setPage, setSe
                                 done: !item.done,
                               });
                               setOnboardingInit(v => !v);
-                            } catch { toast.error('Failed to update checklist item'); }
+                            } catch (e) {
+                              // Report what the API actually said. The bare
+                              // "Failed to update checklist item" hid a 500 —
+                              // completed_by's bind parameter was deduced as
+                              // text against an integer column — for as long as
+                              // the feature had existed.
+                              toast.error(e.response?.data?.message || 'Failed to update checklist item');
+                            }
                           }}
                           style={{ fontSize: 20, flexShrink: 0, background: 'none', border: 'none', cursor: 'pointer', padding: 0, lineHeight: 1 }}
                           title={item.done ? 'Mark incomplete' : 'Mark complete'}
@@ -795,6 +1262,30 @@ export default function EmployeeProfile({ employee: employeeProp, setPage, setSe
                     ))}
                   </div>
                 ))}
+
+                {/* Completed items whose checklist entry has since been
+                    retired. The progress row survives a deactivation — this is
+                    where it stays visible, so retiring an item does not erase
+                    what people actually did. Not counted in the percentage
+                    above: it is history, not outstanding work. */}
+                {onboardingData.archived?.length > 0 && (
+                  <div style={{ background: '#fafafa', border: `1px dashed ${BORDER}`, borderRadius: 12, padding: 16, marginBottom: 12 }}>
+                    <div style={{ fontWeight: 700, color: '#6b7280', fontSize: 12, marginBottom: 10 }}>
+                      Completed earlier &middot; item since retired ({onboardingData.archived.length})
+                    </div>
+                    {onboardingData.archived.map((item, i) => (
+                      <div key={item.id || i} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 0', fontSize: 12.5, color: '#6b7280' }}>
+                        <span style={{ color: '#059669' }}>&#10003;</span>
+                        <span style={{ flex: 1 }}>{item.category} &middot; {item.item_label}</span>
+                        {item.completed_at && (
+                          <span style={{ fontSize: 11, whiteSpace: 'nowrap' }}>
+                            {new Date(item.completed_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' })}
+                          </span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -802,62 +1293,203 @@ export default function EmployeeProfile({ employee: employeeProp, setPage, setSe
 
         {/* HISTORY */}
         {activeTab === 'History' && (
-          <div style={{ maxWidth: 700 }}>
+          <div style={{ maxWidth: 980 }}>
             <Card title="Salary Revision History">
               {salaryLoading ? (
-                <div style={{ padding: '24px 0', textAlign: 'center', color: '#9ca3af', fontSize: 13 }}>Loading salary history…</div>
+                <div style={{ padding: '24px 0', textAlign: 'center', color: '#9ca3af', fontSize: 13 }}>Loading salary history...</div>
               ) : salaryRevisions.length === 0 ? (
                 <div style={{ padding: '24px 0', textAlign: 'center', color: '#9ca3af', fontSize: 13 }}>
                   No salary revisions on record yet.
                 </div>
               ) : (
                 <>
-                  {/* Bar chart */}
+                  {/*
+                    The trend chart renders ONLY when there is more than one
+                    revision. It used to render unconditionally, and because the
+                    bars were scaled against the largest value in the set, a
+                    single revision produced one full-height purple block: a
+                    "trend" drawn from one point. Almost every employee in this
+                    database has exactly one assignment, so that was the normal
+                    case, not the edge case.
+                  */}
+                  {/*
+                    A line chart, always rendered, scaled to the data.
+
+                    The bar chart this replaces was scaled against the largest
+                    value in the set, so ONE revision produced one full-height
+                    block: a trend drawn from a single point. Almost every
+                    employee here has exactly one assignment, so that was the
+                    normal case. A line handles both honestly — with one
+                    revision it is a single dot with its value beside it, and
+                    nothing about the drawing implies a movement that is not in
+                    the data.
+
+                    Plots `basic_salary` plus `special_allowance`, both stored
+                    columns; nothing here is derived or assumed. CTC is not on
+                    this record, so it is not on this axis.
+                  */}
                   {(() => {
-                    const maxSalary = Math.max(...salaryRevisions.map(r => Number(r.basic_salary) || 0), 1);
+                    const chrono = salaryRevisions.slice().reverse();          // oldest -> newest
+                    const pts    = chrono.map(r => ({
+                      basic: Number(r.basic_salary) || 0,
+                      gross: (Number(r.basic_salary) || 0) + (Number(r.special_allowance) || 0),
+                      date:  r.effective_from ? r.effective_from.split('T')[0] : null,
+                    }));
+                    const vals = pts.map(p => p.gross);
+                    const max  = Math.max(...vals);
+                    const min  = Math.min(...pts.map(p => p.basic));
+
+                    // Geometry. A viewBox keeps the chart crisp at any width and
+                    // lets the whole thing be one <svg> rather than positioned divs.
+                    const W = 620, H = 170, padL = 58, padR = 16, padT = 22, padB = 30;
+                    const plotW = W - padL - padR, plotH = H - padT - padB;
+
+                    // Pad the value axis so a flat or near-flat series is not a
+                    // line pinned to an edge. A single point sits in the middle.
+                    const span  = max - min;
+                    const lo    = span === 0 ? Math.max(0, max * 0.9) : Math.max(0, min - span * 0.35);
+                    const hi    = span === 0 ? max * 1.1 || 1 : max + span * 0.2;
+                    const y     = v => padT + plotH - ((v - lo) / ((hi - lo) || 1)) * plotH;
+                    // Inset the series from the axis so the first point's value
+                    // label clears the gridline labels on the left.
+                    const inset = 16;
+                    const x     = i => pts.length === 1
+                      ? padL + plotW / 2
+                      : padL + inset + (i / (pts.length - 1)) * (plotW - inset * 2);
+
+                    const money = v => v >= 10000000 ? `\u20B9${(v / 10000000).toFixed(2)}Cr`
+                                     : v >= 100000   ? `\u20B9${(v / 100000).toFixed(2)}L`
+                                     : v >= 1000     ? `\u20B9${(v / 1000).toFixed(0)}k`
+                                     : `\u20B9${v}`;
+                    const label = d => d
+                      ? new Date(d + 'T00:00:00').toLocaleDateString('en-GB', { month: 'short', year: '2-digit' })
+                      : '\u2014';
+
+                    const line = (key) => pts.map((p, i) => `${i === 0 ? 'M' : 'L'}${x(i).toFixed(1)},${y(p[key]).toFixed(1)}`).join(' ');
+
+                    const first = vals[0], last = vals[vals.length - 1];
+                    const pct = pts.length > 1 && first > 0 ? ((last - first) / first) * 100 : null;
+
                     return (
-                      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 12, height: 160, padding: '20px 0 0', marginBottom: 20 }}>
-                        {salaryRevisions.slice().reverse().map((r, i) => {
-                          const val = Number(r.basic_salary) || 0;
-                          const barH = Math.max(8, Math.round((val / maxSalary) * 120));
-                          const label = val >= 100000
-                            ? `₹${(val / 100000).toFixed(1)}L`
-                            : val >= 1000
-                            ? `₹${(val / 1000).toFixed(0)}k`
-                            : `₹${val}`;
-                          const month = r.effective_from ? new Date(r.effective_from).toLocaleDateString('en-IN', { month: 'short', year: '2-digit' }) : `Rev ${i + 1}`;
-                          return (
-                            <div key={r.id || i} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
-                              <span style={{ fontSize: 11, fontWeight: 600, color: '#374151' }}>{label}</span>
-                              <div style={{ width: '100%', borderRadius: '5px 5px 0 0', height: `${barH}px`, background: `linear-gradient(180deg, ${P}, #4f46e5)` }} />
-                              <span style={{ fontSize: 10, color: '#6b7280', textAlign: 'center' }}>{month}</span>
-                            </div>
-                          );
-                        })}
+                      <div style={{ marginBottom: 20 }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', flexWrap: 'wrap', gap: 8, marginBottom: 4 }}>
+                          <span style={{ fontSize: 12, fontWeight: 600, color: '#6b7280' }}>
+                            Salary trend
+                            <span style={{ marginLeft: 10, fontWeight: 500, color: '#9ca3af' }}>
+                              <span style={{ color: P }}>&#9679;</span> Basic + Allowance
+                              <span style={{ marginLeft: 10, color: '#a5b4fc' }}>&#9679;</span> Basic
+                            </span>
+                          </span>
+                          {pct != null && (
+                            <span style={{ fontSize: 12, fontWeight: 700, color: pct >= 0 ? '#15803d' : '#b91c1c' }}>
+                              {pct >= 0 ? '\u25B2' : '\u25BC'} {Math.abs(pct).toFixed(1)}% across {pts.length} revisions
+                            </span>
+                          )}
+                        </div>
+
+                        <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} role="img"
+                          aria-label={pts.length === 1
+                            ? `One salary revision, ${money(vals[0])} effective ${label(pts[0].date)}`
+                            : `Salary from ${money(first)} to ${money(last)} across ${pts.length} revisions`}
+                          style={{ display: 'block', maxWidth: W }}>
+                          {/* value gridlines */}
+                          {[hi, (hi + lo) / 2, lo].map((v, i) => (
+                            <g key={i}>
+                              <line x1={padL} x2={W - padR} y1={y(v)} y2={y(v)} stroke="#f1eefe" strokeWidth="1" />
+                              <text x={padL - 8} y={y(v) + 3.5} textAnchor="end" fontSize="9.5" fill="#9ca3af">{money(Math.round(v))}</text>
+                            </g>
+                          ))}
+
+                          {pts.length > 1 && (
+                            <>
+                              <path d={line('gross')} fill="none" stroke={P} strokeWidth="2.2" strokeLinejoin="round" strokeLinecap="round" />
+                              <path d={line('basic')} fill="none" stroke="#a5b4fc" strokeWidth="1.8" strokeDasharray="4 3" strokeLinejoin="round" strokeLinecap="round" />
+                            </>
+                          )}
+
+                          {pts.map((pt, i) => (
+                            <g key={i}>
+                              <circle cx={x(i)} cy={y(pt.basic)} r="3" fill="#fff" stroke="#a5b4fc" strokeWidth="1.8" />
+                              <circle cx={x(i)} cy={y(pt.gross)} r="4" fill="#fff" stroke={P} strokeWidth="2.2" />
+                              <text x={x(i)} y={y(pt.gross) - 10} textAnchor="middle" fontSize="10" fontWeight="700" fill="#374151">{money(pt.gross)}</text>
+                              <text x={x(i)} y={H - 10} textAnchor="middle" fontSize="9.5" fill="#6b7280">{label(pt.date)}</text>
+                            </g>
+                          ))}
+                        </svg>
+
+                        {pts.length === 1 && (
+                          <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 2 }}>
+                            One revision on record, shown as a single point. A trend line appears once there is a second.
+                          </div>
+                        )}
                       </div>
                     );
                   })()}
-                  {/* Detail table */}
-                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-                    <thead>
-                      <tr style={{ borderBottom: `1px solid ${BORDER}` }}>
-                        {['Effective From', 'Structure', 'Basic Salary', 'Special Allowance', 'Loan Deduction'].map(h => (
-                          <th key={h} style={{ padding: '8px 10px', textAlign: 'left', fontSize: 11, fontWeight: 600, color: '#9ca3af', textTransform: 'uppercase' }}>{h}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {salaryRevisions.map((r, i) => (
-                        <tr key={r.id || i} style={{ borderBottom: `1px solid #f3f4f6` }}>
-                          <td style={{ padding: '9px 10px', color: '#374151' }}>{r.effective_from ? new Date(r.effective_from).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—'}</td>
-                          <td style={{ padding: '9px 10px', color: '#6b7280' }}>{r.structure_name || '—'}</td>
-                          <td style={{ padding: '9px 10px', fontWeight: 600, color: '#111827' }}>{r.basic_salary != null ? `₹${Number(r.basic_salary).toLocaleString('en-IN')}` : '—'}</td>
-                          <td style={{ padding: '9px 10px', color: '#6b7280' }}>{r.special_allowance != null ? `₹${Number(r.special_allowance).toLocaleString('en-IN')}` : '—'}</td>
-                          <td style={{ padding: '9px 10px', color: '#6b7280' }}>{r.loan_deduction != null ? `₹${Number(r.loan_deduction).toLocaleString('en-IN')}` : '—'}</td>
+
+                  {/* The record itself, newest first. This is the primary view. */}
+                  <div className="emp-profile-table-wrap">
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                      <thead>
+                        <tr style={{ borderBottom: `1px solid ${BORDER}` }}>
+                          {[
+                            ['Effective Date', 'left'], ['Salary Structure', 'left'],
+                            ['Basic Salary', 'right'], ['Special Allowance', 'right'],
+                            ['Loan Deduction', 'right'], ['Advance Deduction', 'right'],
+                            ['Basic + Allowance', 'right'],
+                          ].map(([h, align]) => (
+                            <th key={h} style={{ padding: '8px 10px', textAlign: align, fontSize: 11, fontWeight: 600, color: '#9ca3af', textTransform: 'uppercase', whiteSpace: 'nowrap' }}>{h}</th>
+                          ))}
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                      </thead>
+                      <tbody>
+                        {(() => {
+                          // The revision IN FORCE today is the newest one whose
+                          // effective date has already passed — not simply the
+                          // newest row. Booking next April's increment now is
+                          // the normal way to use a revision history, and until
+                          // that date arrives the employee is still on the old
+                          // figure. Calling the future row CURRENT would say the
+                          // opposite of what payroll (correctly) pays.
+                          const today = new Date().toISOString().slice(0, 10);
+                          const inForceIdx = salaryRevisions.findIndex(
+                            x => x.effective_from && x.effective_from.slice(0, 10) <= today);
+                          return salaryRevisions.map((r, i) => {
+                          const money = v => v == null ? '\u2014' : `\u20B9${Number(v).toLocaleString('en-IN')}`;
+                          // Only the sum of the two figures printed on this row.
+                          // Deliberately NOT labelled CTC: employer PF, gratuity
+                          // and the rest of a CTC are not stored on this record,
+                          // so calling it one would be inventing a number.
+                          const gross = (r.basic_salary == null && r.special_allowance == null)
+                            ? null
+                            : (Number(r.basic_salary) || 0) + (Number(r.special_allowance) || 0);
+                          const isCurrent  = i === inForceIdx;
+                          const isUpcoming = !!r.effective_from && r.effective_from.slice(0, 10) > today;
+                          return (
+                            <tr key={r.id || i} style={{ borderBottom: '1px solid #f3f4f6', background: isCurrent ? LIGHT : 'transparent' }}>
+                              <td style={{ padding: '9px 10px', color: '#374151', whiteSpace: 'nowrap' }}>
+                                {r.effective_from ? new Date(r.effective_from.split('T')[0] + 'T00:00:00').toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '\u2014'}
+                                {isCurrent && <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 700, color: P, background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 10, padding: '1px 7px' }}>CURRENT</span>}
+                                {isUpcoming && <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 700, color: '#92400e', background: '#fef3c7', border: '1px solid #fde68a', borderRadius: 10, padding: '1px 7px' }}>SCHEDULED</span>}
+                              </td>
+                              <td style={{ padding: '9px 10px', color: '#6b7280' }}>{r.structure_name || '\u2014'}</td>
+                              <td style={{ padding: '9px 10px', fontWeight: 600, color: '#111827', textAlign: 'right' }}>{money(r.basic_salary)}</td>
+                              <td style={{ padding: '9px 10px', color: '#6b7280', textAlign: 'right' }}>{money(r.special_allowance)}</td>
+                              <td style={{ padding: '9px 10px', color: '#6b7280', textAlign: 'right' }}>{money(r.loan_deduction)}</td>
+                              <td style={{ padding: '9px 10px', color: '#6b7280', textAlign: 'right' }}>{money(r.advance_deduction)}</td>
+                              <td style={{ padding: '9px 10px', fontWeight: 600, color: '#374151', textAlign: 'right' }}>{money(gross)}</td>
+                            </tr>
+                          );
+                          });
+                        })()}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 10, lineHeight: 1.6 }}>
+                    {salaryRevisions.length === 1
+                      ? 'One revision on record.'
+                      : `${salaryRevisions.length} revisions on record, newest first.`}
+                    {' '}&ldquo;Basic + Allowance&rdquo; is the sum of the two columns shown; full CTC is not stored on this record.
+                  </div>
                 </>
               )}
             </Card>
@@ -949,44 +1581,154 @@ export default function EmployeeProfile({ employee: employeeProp, setPage, setSe
           </div>
         )}
 
-        {/* NOTES */}
+        {/* BACKGROUND VERIFICATION — a SUMMARY and a way in, not a second workspace.
+            Every action lives on the BGV page; this tab exists so View Employee
+            answers "has their background been verified?" without HR having to go
+            looking, and so the answer is one click from the record. */}
+        {activeTab === 'Background Verification' && (
+          <div style={{ maxWidth: 820, display: 'flex', flexDirection: 'column', gap: 16 }}>
+            <Card title="Background Verification">
+              {bgvDenied && (
+                <div style={{ padding: '14px 0', color: '#9ca3af', fontSize: 13 }}>
+                  Your role cannot view background verification records.
+                </div>
+              )}
+              {!bgvDenied && bgv === undefined && (
+                <div style={{ padding: '14px 0', color: '#9ca3af', fontSize: 13 }}>Loading…</div>
+              )}
+              {!bgvDenied && bgv === null && (
+                <div style={{ padding: '14px 0', color: '#9ca3af', fontSize: 13 }}>
+                  Background verification details could not be loaded.
+                </div>
+              )}
+              {!bgvDenied && bgv && (
+                <>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginTop: 8 }}>
+                    <span style={{
+                      display: 'inline-block', padding: '4px 12px', borderRadius: 999,
+                      fontSize: 12, fontWeight: 700,
+                      background: bgvBadge(bgv.bgv_status).bg, color: bgvBadge(bgv.bgv_status).color,
+                    }}>{bgv.bgv_status}</span>
+                    <span style={{ fontSize: 14, color: '#374151', fontWeight: 600 }}>{bgvProgress(bgv)}</span>
+                    <span style={{ fontSize: 14, color: '#374151', fontWeight: 600 }}>
+                      {bgvMoney(bgv.total_cost)} spent
+                    </span>
+                  </div>
+
+                  {Number(bgv.checks_discrepancy) > 0 && (
+                    <div style={{ marginTop: 12, fontSize: 13, color: '#991b1b', fontWeight: 600 }}>
+                      {bgv.checks_discrepancy} check(s) came back with a discrepancy.
+                    </div>
+                  )}
+                  {/* A completed case is not a cleared case. Said out loud here
+                      because this one-line summary is exactly where the two
+                      would otherwise be read as the same thing. */}
+                  {bgv.bgv_status === 'Completed' && Number(bgv.checks_clear) < Number(bgv.applicable_total) && (
+                    <div style={{ marginTop: 12, fontSize: 13, color: '#92400e', fontWeight: 600 }}>
+                      All checks are finished, but only {bgv.checks_clear} of {bgv.applicable_total} applicable
+                      checks came back Clear — open the case for the results.
+                    </div>
+                  )}
+                  {/* ⚠ Counted against APPLICABLE checks, not every check. A
+                      fresher with Employment Verification recorded as Not
+                      Applicable would otherwise always look short of Clear. */}
+                  {Number(bgv.not_applicable) > 0 && (
+                    <div style={{ marginTop: 12, fontSize: 13, color: '#6b7280' }}>
+                      {bgv.not_applicable} check(s) recorded as <strong>Not Applicable</strong> — on file as a
+                      decision, not counted as outstanding work.
+                    </div>
+                  )}
+                  {Number(bgv.reports_missing) > 0 && (
+                    <div style={{ marginTop: 12, fontSize: 13, color: '#92400e', fontWeight: 600 }}>
+                      {bgv.reports_missing} check(s) have no report attached.
+                    </div>
+                  )}
+
+                  <div style={{ marginTop: 16 }}>
+                    <InfoRow label="Verification agency" value={bgv.primary_agency_name} />
+                    <InfoRow label="Started" value={bgvDate(bgv.initiated_on || bgv.first_request_date)} />
+                    <InfoRow label="Last check completed" value={bgvDate(bgv.last_completed_date)} />
+                    <InfoRow label="Unpaid verification cost" value={bgvMoney(bgv.unpaid_cost)} />
+                  </div>
+
+                  <div style={{ marginTop: 16, paddingTop: 14, borderTop: `1px solid ${BORDER}` }}>
+                    <button
+                      onClick={() => setPage('EmployeeBGV', { employee_id: employee.id })}
+                      style={{
+                        background: P, color: '#fff', border: 'none', borderRadius: 8,
+                        padding: '9px 16px', fontSize: 13, fontWeight: 600, cursor: 'pointer',
+                      }}
+                    >
+                      {bgv.case_id ? 'Open full BGV case →' : 'Start background verification →'}
+                    </button>
+                    <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 10 }}>
+                      Checks, reports, contact history and costs are recorded on the
+                      <strong> Background Verification</strong> page. This tab is read-only.
+                    </div>
+                  </div>
+                </>
+              )}
+            </Card>
+          </div>
+        )}
+
+        {/* NOTES — READ ONLY.
+            The employee note is entered and edited on Edit Employee, which is
+            the single writer. This tab used to carry its own Save Note box, so
+            HR had two places to write a note and two stores behind them
+            (`employees.notes`, edited on the form, and the `hr_notes` timeline
+            written from here). The second write box is gone; the timeline is
+            still displayed, because rows already exist in it and an HR note is
+            not something to delete to tidy a screen. */}
         {activeTab === 'Notes' && (
-          <div style={{ maxWidth:720, display:'flex', flexDirection:'column', gap:16 }}>
-            <Card title="Add HR Note">
-              <textarea
-                value={notesText}
-                onChange={e => setNotesText(e.target.value)}
-                placeholder="Write an HR note about this employee…"
-                style={{
-                  width:'100%', minHeight:100, border:`1px solid ${BORDER}`, borderRadius:8,
-                  padding:12, fontSize:14, fontFamily:'inherit', resize:'vertical',
-                  outline:'none', boxSizing:'border-box', marginTop:8,
-                }}
-              />
-              <button
-                onClick={saveNote}
-                style={{
-                  alignSelf:'flex-start', marginTop:10,
-                  padding:'8px 20px', background:P, color:'#fff',
-                  border:'none', borderRadius:8, fontSize:13, fontWeight:700, cursor:'pointer',
-                }}
-              >
-                Save Note
-              </button>
+          <div style={{ maxWidth:760, display:'flex', flexDirection:'column', gap:16 }}>
+
+            <Card title="Employee Note">
+              {employee.notes && String(employee.notes).trim() ? (
+                <div style={{ fontSize:14, color:'#374151', lineHeight:1.6, whiteSpace:'pre-wrap', marginTop:6 }}>
+                  {employee.notes}
+                </div>
+              ) : (
+                <div style={{ padding:'14px 0', color:'#9ca3af', fontSize:13 }}>
+                  No note recorded for this employee.
+                </div>
+              )}
+              <div style={{ fontSize:11, color:'#9ca3af', marginTop:12, paddingTop:10, borderTop:`1px solid ${BORDER}` }}>
+                Notes are added and edited on <strong>Edit Employee &rarr; Notes</strong>. This tab is read-only.
+              </div>
             </Card>
 
-            {notesList.length > 0 && (
-              <Card title="Notes History">
-                {notesList.map(note => (
-                  <div key={note.id} style={{
-                    padding:'12px 0', borderBottom:`1px solid ${BORDER}`,
-                  }}>
-                    <div style={{ fontSize:11, color:'#9ca3af', fontWeight:600, marginBottom:4 }}>
-                      {new Date(note.created_at).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: '2-digit', hour: '2-digit', minute: '2-digit' })}
+            {/* Only rendered when the older timeline actually holds something,
+                so an employee with no hr_notes rows sees one note panel rather
+                than two and the "which box do I type in" question never arises. */}
+            {(notesLoading || notesList.length > 0) && (
+              <Card title={`Earlier HR Notes${notesList.length ? ` (${notesList.length})` : ''}`}>
+                {notesLoading ? (
+                  <div style={{ padding:'14px 0', color:'#9ca3af', fontSize:13 }}>Loading notes...</div>
+                ) : (
+                  <>
+                    {/* Newest first — the API orders by created_at DESC and this
+                        renders in the order it receives. */}
+                    {notesList.map(note => (
+                      <div key={note.id} style={{ padding:'12px 0', borderBottom:`1px solid ${BORDER}` }}>
+                        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', gap:12, marginBottom:5 }}>
+                          <span style={{ fontSize:12, fontWeight:700, color:'#374151' }}>
+                            {note.created_by_name || 'HR'}
+                          </span>
+                          <span style={{ fontSize:11, color:'#9ca3af', fontWeight:600, whiteSpace:'nowrap' }}>
+                            {note.created_at
+                              ? new Date(note.created_at).toLocaleString('en-GB', { day:'2-digit', month:'short', year:'2-digit', hour:'2-digit', minute:'2-digit' })
+                              : '\u2014'}
+                          </span>
+                        </div>
+                        <div style={{ fontSize:14, color:'#374151', lineHeight:1.6, whiteSpace:'pre-wrap' }}>{note.note_text}</div>
+                      </div>
+                    ))}
+                    <div style={{ fontSize:11, color:'#9ca3af', marginTop:10 }}>
+                      Historical entries. New notes go on the employee record above.
                     </div>
-                    <div style={{ fontSize:14, color:'#374151', lineHeight:1.6 }}>{note.note_text}</div>
-                  </div>
-                ))}
+                  </>
+                )}
               </Card>
             )}
           </div>

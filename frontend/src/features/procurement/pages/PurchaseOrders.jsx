@@ -449,11 +449,26 @@ export default function PurchaseOrders() {
                             Advisory only — there are good reasons to buy from a dearer source. This does not block the order.
                           </div>
                         </div>
+                      ) : tcoAdvice.comparison_status === 'incomplete' ? (
+                        // §216: with a vendor's freight unknown, "nothing cheaper"
+                        // is not a finding — say what is missing instead.
+                        <div role="status" style={{ marginTop: 8, color: '#991b1b', fontWeight: 600 }}>
+                          No comparison — freight or exchange-rate inputs are missing for at least one vendor
+                          {(tcoAdvice.lines || []).some(l => l.chosen_completeness === 'incomplete') && ' (including the chosen one)'}.
+                          <div style={{ fontWeight: 400, fontSize: 11.5, marginTop: 4 }}>
+                            Add the item's shipping weight, a freight lane to the main receiving point and an approved rate card under Procurement Settings → Freight.
+                          </div>
+                        </div>
                       ) : (
                         <div style={{ marginTop: 8, color: '#15803d', fontWeight: 600 }}>
                           {tcoAdvice.lines?.some(l => l.alternative_count > 0)
                             ? 'No approved vendor offers a lower total cost for these components.'
                             : 'No alternative vendor is priced for these components, so there is nothing to compare against.'}
+                          {tcoAdvice.comparison_status === 'provisional' && (
+                            <div style={{ fontWeight: 400, fontSize: 11.5, marginTop: 4, color: '#b45309' }}>
+                              Provisional — uses assumed freight for at least one vendor; not a verified landed cost.
+                            </div>
+                          )}
                         </div>
                       )}
                     </>

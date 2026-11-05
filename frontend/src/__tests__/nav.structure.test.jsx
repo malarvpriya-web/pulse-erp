@@ -29,15 +29,15 @@ vi.mock('@/context/AuthContext', () => ({
 
 import Sidebar from '@/components/Sidebar';
 import { NAV_ITEMS } from '@/config/routes';
+import { ORPHAN_NAV_ITEMS, MERGED_ROUTES } from '@/config/autoRouter';
+import { PERSONAL_PAGES, ROLE_SECTION_ALLOWLIST, canRoleOpenPage } from '@/config/menuCatalog';
 
 const BAND_LABELS = NAV_ITEMS.filter(i => i.divider).map(i => i.section);
 
-/** Band labels + submenu separators currently in the DOM. */
+/** Band labels currently in the DOM. Submenu `separator` rows order the
+ *  groups inside a flyout but are not rendered, so there is nothing to read. */
 function renderedLabels(container) {
-  return [
-    ...container.querySelectorAll('.sidebar-band-label'),
-    ...document.querySelectorAll('.nav-section-label'),
-  ].map(el => el.textContent);
+  return [...container.querySelectorAll('.sidebar-band-label')].map(el => el.textContent);
 }
 
 function renderAs(roles) {
@@ -77,11 +77,20 @@ describe('sidebar domain bands', () => {
   });
 });
 
-describe('auto-discovered orphan groups', () => {
-  // Asset Register / Compliance / IoT Fleet / R&D / Tenders have no curated
-  // NAV_ITEMS entry, so Sidebar.jsx appends them from ORPHAN_NAV_ITEMS. They
-  // used to arrive with no `icon` (generic folder fallback) at the very bottom
-  // of the rail, which after banding read as part of 'Administration'.
+describe('curated coverage of every page', () => {
+  // Asset Register / Compliance / IoT Fleet / R&D / Tenders had no curated
+  // NAV_ITEMS entry and were appended by Sidebar.jsx from ORPHAN_NAV_ITEMS,
+  // arriving iconless at the bottom of the rail under a synthetic 'More' band.
+  // All five were folded into the curated menu 2026-09-16 (Tenders into CRM;
+  // the other four promoted to sections of their own), so ORPHAN_NAV_ITEMS is
+  // now empty and the 'More' band is gone. The auto-discovery mechanism stays
+  // in place as the backstop: the first test below fails the moment a NEW page
+  // file lands with no curated home, which is exactly how ~20 pages went
+  // unreachable before.
+  it('leaves no page to the auto-discovered orphan fallback', () => {
+    expect(ORPHAN_NAV_ITEMS.flatMap(g => g.submenu?.map(s => s.page) ?? [])).toEqual([]);
+  });
+
   it('gives every rail row a real icon — no generic folder fallback', () => {
     const container = renderAs(['super_admin']);
     const rows = [...container.querySelectorAll('.sidebar li:not(.sidebar-band)')];
@@ -93,24 +102,17 @@ describe('auto-discovered orphan groups', () => {
     expect(iconless).toEqual([]);
   });
 
-  it('puts orphan groups in their own band, above Administration', () => {
+  it('renders no synthetic "· More" group and keeps Administration last', () => {
     const container = renderAs(['super_admin']);
     const rows = [...container.querySelectorAll('.sidebar li')];
-    const labelAt = i => rows[i].textContent;
 
-    const moreBand = rows.findIndex(li =>
-      li.classList.contains('sidebar-band') && li.textContent === 'More');
+    for (const li of rows) expect(li.textContent).not.toContain('· More');
+    expect(rows.findIndex(li =>
+      li.classList.contains('sidebar-band') && li.textContent === 'More')).toBe(-1);
+
     const adminBand = rows.findIndex(li =>
       li.classList.contains('sidebar-band') && li.textContent === 'Administration');
-
-    expect(moreBand).toBeGreaterThan(-1);
-    expect(adminBand).toBeGreaterThan(moreBand);
-
-    // Everything between the two bands is an orphan module, shown without the
-    // "· More" disambiguation suffix that its permission key still carries.
-    const between = rows.slice(moreBand + 1, adminBand).map((_, i) => labelAt(moreBand + 1 + i));
-    expect(between.length).toBeGreaterThan(0);
-    for (const label of between) expect(label).not.toContain('· More');
+    expect(adminBand).toBeGreaterThan(-1);
 
     // Administration holds two menus. 'User Management' was removed: Users,
     // Roles and Approver Chains are tabs of Settings → Access Control, and the
@@ -118,13 +120,59 @@ describe('auto-discovered orphan groups', () => {
     const admin = rows.slice(adminBand + 1).map(li => li.textContent);
     expect(admin).toEqual(['Settings', 'Audit Logs']);
   });
+
+  it('points every menu row at a page the router can resolve', () => {
+    const rows = NAV_ITEMS.flatMap(item => {
+      if (item.divider) return [];
+      const own = item.page ? [[item.name, item.page]] : [];
+      const subs = (item.submenu || [])
+        .filter(s => !s.separator)
+        .map(s => [`${item.name} > ${s.name}`, s.page]);
+      return [...own, ...subs];
+    });
+    const dead = rows.filter(([, page]) => !page || !MERGED_ROUTES[page]);
+    expect(dead).toEqual([]);
+  });
+
+  it('never lists the same page under two menu rows', () => {
+    const seen = new Map();
+    for (const item of NAV_ITEMS) {
+      if (item.divider) continue;
+      if (item.page && !item.submenu) seen.set(item.page, [...(seen.get(item.page) || []), item.name]);
+      for (const s of item.submenu || []) {
+        if (s.separator || !s.page) continue;
+        seen.set(s.page, [...(seen.get(s.page) || []), `${item.name} > ${s.name}`]);
+      }
+    }
+    expect([...seen].filter(([, where]) => where.length > 1)).toEqual([]);
+  });
+});
+
+describe('personal pages stay open to every role', () => {
+  // A page that belongs to no NAV section is waved through by
+  // canRoleAccessPageBySection ("not part of any section -> defer to other
+  // gates"). Give that page a menu row and it inherits that section's
+  // allowlist, so a role without the section starts getting Unauthorized on
+  // its own profile / requests / dashboard. That is exactly what happened when
+  // EmployeeDashboard moved into the 'HR' submenu, and it is invisible until
+  // you log in as the one role that lost it — hence this test.
+  //
+  // PERSONAL_PAGES covers canRoleAccessPageBySection, but NOT the per-role
+  // section scopings (canEmployeeAccessPage / canManagerAccessPage / …), which
+  // each need the page in their own allowlist. canRoleOpenPage composes all of
+  // them, so asserting through it catches whichever one was missed.
+  it.each([...PERSONAL_PAGES])('%s opens for every allowlisted role', (page) => {
+    const blocked = Object.keys(ROLE_SECTION_ALLOWLIST)
+      .filter(role => !canRoleOpenPage(role, page, { menuAccess: () => null }));
+    expect(blocked).toEqual([]);
+  });
 });
 
 describe('submenu separators', () => {
   // finance keeps only My Attendance + QR Attendance out of the 14-item
-  // Attendance menu (FINANCE_SELF_SERVICE_PAGES) — every one of its four group
-  // headings would otherwise be left labelling nothing.
-  it('strips headings left empty by the finance self-service filter', async () => {
+  // Attendance menu (FINANCE_SELF_SERVICE_PAGES). Separators order the groups
+  // in NAV_ITEMS but are never drawn, so the panel holds pages and nothing else.
+  it('renders only pages — no group headings — under the finance filter', async () => {
     const container = renderAs(['finance']);
     const attendance = [...container.querySelectorAll('.sidebar li')]
       .find(li => li.textContent.includes('Attendance'));
@@ -136,10 +184,10 @@ describe('submenu separators', () => {
     const panel = document.querySelector('.submenu-panel');
     expect(panel).toBeTruthy();
     const items = [...panel.querySelectorAll('.nav-item')].map(b => b.textContent);
-    const heads = [...panel.querySelectorAll('.nav-section-label')].map(b => b.textContent);
 
     expect(items).toEqual(['My Attendance', 'QR Attendance']);
-    expect(heads).toEqual([]);            // no 'Team & Monitoring' / 'Approvals' / …
+    // Headings are not rendered at all — the panel is pages only.
+    expect(panel.querySelectorAll('.nav-section-label')).toHaveLength(0);
     expect(screen.queryByText('Configuration')).toBeNull();
   });
 });

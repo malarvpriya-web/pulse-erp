@@ -9,12 +9,18 @@ import { validate } from '../../../services/ValidationEngineService.js';
 import { evaluateRules } from '../../../services/RuleEngineService.js';
 import { logAudit } from '../../../services/AuditService.js';
 import { recalculateProjectCost } from '../services/projectCostRollup.service.js';
+import { getProjectClosureBlockers as getClosureBlockers } from '../services/projectClosure.service.js';
+import { projectLifecycleJoinSql, projectStageColumnsSql } from '../../../shared/projectStages.js';
 import * as drive from '../../../services/googleDrive.service.js';
 import invoiceService from '../../finance/services/invoice.service.js';
 import { CLOSED_PROJECT_STATUSES } from '../projectStatus.js';
 import { notifyWorkflowEvent } from '../../../services/WorkflowNotificationService.js';
 import { resolveRange, dimension } from '../../../shared/dashboardFilters.js';
 import { captureBefore } from '../../../middlewares/captureBefore.js';
+import { nextWarrantyNumber, peekProjectCode } from '../../../shared/docNumber.js';
+import {
+  ensureProject, ProjectSetupError, setupErrorBody, projectReferenceError,
+} from '../services/projectCreation.service.js';
 // Shared Voice-of-Customer derivation — the project-closure mirror below writes
 // voc_responses, so it must classify the same way servicedesk does. Was used and
 // never imported, which made a project close with a rating answer 500.
@@ -101,17 +107,12 @@ function projectListFilters(req) {
 // projects.created_by / tasks.created_by FK to employees(id) — resolve the
 // acting user's employee id (uid() is a users.id, a different namespace).
 // Returns null when the login isn't linked to an employee (column is nullable).
-async function actingEmployeeId(req) {
-  if (req.user?.employee_id != null) return req.user.employee_id;
-  const email = req.user?.email;
-  if (!email) return null;
-  try {
-    const { rows } = await pool.query(
-      `SELECT id FROM employees WHERE company_email = $1 AND deleted_at IS NULL LIMIT 1`,
-      [email]
-    );
-    return rows[0]?.id ?? null;
-  } catch { return null; }
+//
+// The token's employee_id only. A company_email = login-email lookup used to
+// back this up (unscoped, LIMIT 1), which let an HR edit of someone's company
+// email decide whose name went on records this user created (2026-10-12).
+function actingEmployeeId(req) {
+  return req.user?.employee_id ?? null;
 }
 
 // ── one-time inline DDL (idempotent safety net) ───────────────────────────────
@@ -168,12 +169,40 @@ router.get('/projects/dashboard', requirePermission('projects', 'view'), async (
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.get('/projects/next-code', async (req, res) => {
+// Preview for the create form. Gated like the create it serves, and does NOT
+// consume the number: it used to call nextval() on every drawer open, burning
+// a project code each time. The real code is assigned by POST /projects.
+router.get('/projects/next-code', requirePermission('projects', 'add'), async (req, res) => {
   try {
-    const code = await projectRepository.getNextProjectCode();
-    res.json({ code });
+    res.json({ code: await peekProjectCode() });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
+
+/**
+ * Linked records a project may point at must be in the project's company.
+ * Returns an error message, or null when the links are acceptable.
+ *  - opportunity_id: must be an opportunity of `companyId`.
+ *  - sales_order_ref: free text (it also holds MIS / customer PO references),
+ *    so text that names no order is fine — but it must not name ANOTHER
+ *    company's order, which Order History would then follow.
+ * A null companyId (global caller on a company-less row) checks nothing.
+ */
+async function foreignProjectLink(companyId, { opportunity_id, sales_order_ref } = {}) {
+  if (companyId == null) return null;
+  if (opportunity_id !== undefined && opportunity_id !== null && opportunity_id !== '') {
+    const { rows } = await pool.query(
+      `SELECT 1 FROM opportunities WHERE id = $1 AND company_id = $2`,
+      [parseInt(opportunity_id, 10) || 0, companyId]);
+    if (!rows.length) return 'Opportunity not found in your company';
+  }
+  if (sales_order_ref !== undefined && sales_order_ref !== null && String(sales_order_ref).trim() !== '') {
+    const { rows } = await pool.query(
+      `SELECT 1 FROM sales_orders WHERE order_number = $1 AND company_id IS DISTINCT FROM $2 LIMIT 1`,
+      [String(sales_order_ref).trim(), companyId]);
+    if (rows.length) return 'Sales order not found in your company';
+  }
+  return null;
+}
 
 // Dimension options for the dashboard filter bar. Must stay ABOVE
 // `/projects/:id` — Express matches in declaration order and the param route
@@ -266,11 +295,43 @@ router.post('/projects', requirePermission('projects', 'add'), async (req, res) 
   try {
     const { valid, errors } = await validate('projects', req.body, { partial: false });
     if (!valid) return res.status(422).json({ error: 'Validation failed', code: 'VALIDATION_ERROR', errors });
-    const project = await projectRepository.create({
-      ...req.body,
-      created_by: await actingEmployeeId(req),
-      company_id: cid(req),
-    });
+    const foreign = await foreignProjectLink(cid(req), { opportunity_id: req.body.opportunity_id });
+    if (foreign) return res.status(400).json({ error: foreign });
+    if (cid(req) == null && req.scope?.isGlobal !== true) {
+      return res.status(403).json({ error: 'No company is assigned to this login.' });
+    }
+    // Through the one project creator (projects/services/projectCreation.service.js),
+    // in one transaction with the project's lifecycle. It assigns the code
+    // (a custom code is kept), takes the company from the opportunity or the
+    // caller (a global super admin names one), checks the project manager and
+    // product line belong to it, requires a linked opportunity to be Won, and
+    // refuses (409) a second project for the same opportunity.
+    let project;
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      ({ project } = await ensureProject(client, {
+        opportunityId: req.body.opportunity_id || null,
+        scopeCompanyId: cid(req),
+        requestedCompanyId: req.body.company_id ?? null,
+        attrs: req.body,
+        actor: { userId: uid(req), employeeId: actingEmployeeId(req), name: req.user?.name || req.user?.email || null },
+        onExistingProject: 'conflict',
+      }));
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      if (err instanceof ProjectSetupError) return res.status(err.status).json(setupErrorBody(err));
+      if (err.code === '23505' && err.constraint === 'projects_project_code_key') {
+        return res.status(409).json({ error: `Project code ${req.body.project_code} is already in use` });
+      }
+      throw err;
+    } finally {
+      client.release();
+    }
+    // The same shape as GET /projects/:id, with the stage derived from the
+    // lifecycle created with the project.
+    project = (await projectRepository.findById(project.id, project.company_id)) || project;
     logAudit({ userId: uid(req), module: 'projects', recordId: project.id, recordType: 'project', action: 'create', newData: project, req });
     initiateWorkflow('projects', project.id, 'project', uid(req)).catch(e =>
       console.error('[workflow] project initiation failed:', e.message)
@@ -289,6 +350,37 @@ router.put('/projects/:id', requirePermission('projects', 'edit'), async (req, r
     // (or gone). This previously fell through to an unscoped update — the write
     // landed on the other tenant's row. Fail closed, and scope the update too.
     if (!oldProject) return res.status(404).json({ error: 'Project not found' });
+    // Only links that change are checked, so an unchanged legacy value can
+    // still be saved back by the edit form.
+    const changedLinks = {};
+    if (req.body.opportunity_id !== undefined && String(req.body.opportunity_id ?? '') !== String(oldProject.opportunity_id ?? '')) {
+      changedLinks.opportunity_id = req.body.opportunity_id;
+    }
+    if (req.body.sales_order_ref !== undefined && String(req.body.sales_order_ref ?? '') !== String(oldProject.sales_order_ref ?? '')) {
+      changedLinks.sales_order_ref = req.body.sales_order_ref;
+    }
+    const foreign = await foreignProjectLink(oldProject.company_id ?? cid(req), changedLinks);
+    if (foreign) return res.status(400).json({ error: foreign });
+    // A changed project manager / product line must be in the project's company.
+    const changedRefs = {};
+    for (const k of ['project_manager_id', 'product_line_id']) {
+      if (req.body[k] !== undefined && String(req.body[k] ?? '') !== String(oldProject[k] ?? '')) changedRefs[k] = req.body[k];
+    }
+    const refError = await projectReferenceError(pool, oldProject.company_id ?? null, changedRefs);
+    if (refError) return res.status(400).json({ error: refError });
+    // One project per opportunity: re-pointing this project at an opportunity
+    // that already has another live project would make a duplicate.
+    if (changedLinks.opportunity_id) {
+      const { rows: taken } = await pool.query(
+        `SELECT id, project_code FROM projects
+          WHERE opportunity_id = $1 AND deleted_at IS NULL AND id <> $2 LIMIT 1`,
+        [parseInt(changedLinks.opportunity_id, 10) || 0, oldProject.id]);
+      if (taken.length) {
+        return res.status(409).json({
+          error: `Opportunity already has project ${taken[0].project_code}`, code: 'PROJECT_EXISTS', project_id: taken[0].id,
+        });
+      }
+    }
     if (oldProject.status !== 'completed' && req.body.status === 'completed' && !req.body.force_complete) {
       const blockers = await getProjectClosureBlockers(req.params.id);
       if (blockers.length) {
@@ -334,29 +426,25 @@ router.put('/projects/:id', requirePermission('projects', 'edit'), async (req, r
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Lightweight stage move for the Project Pipeline kanban (drag-drop / arrow
-// buttons). Deliberately NOT the full PUT: it skips validate('projects', …),
-// which requires the whole project shape and would 422 a minimal payload.
-// Company-scoped via findById; auto-stamps actual_delivery_date on 'dispatched'.
-const PIPELINE_STAGES = ['created', 'handover', 'dr_approval', 'procurement', 'production', 'clearing', 'dispatched'];
+// Project Pipeline kanban stage move — retired (P1 Phase 5): a project's stage is its lifecycle's stage, moved only
+// through the gated, audited lifecycle transitions. This free move used to set
+// projects.production_stage directly — any column, either direction, no gate,
+// no history. It now changes nothing and says where the stage lives.
 router.patch('/projects/:id/stage', requirePermission('projects', 'edit'), async (req, res) => {
   try {
-    const { production_stage } = req.body;
-    if (!PIPELINE_STAGES.includes(production_stage)) {
-      return res.status(400).json({ error: 'Invalid production_stage' });
-    }
-    const oldProject = await projectRepository.findById(req.params.id, cid(req));
-    if (!oldProject) return res.status(404).json({ error: 'Project not found' });
-
-    const patch = { production_stage };
-    // Stamp the actual delivery date when a project first reaches the terminal
-    // 'dispatched' stage, unless one was already recorded.
-    if (production_stage === 'dispatched' && !oldProject.actual_delivery_date) {
-      patch.actual_delivery_date = new Date().toISOString().slice(0, 10);
-    }
-    const project = await projectRepository.update(req.params.id, patch, cid(req));
-    logAudit({ userId: uid(req), module: 'projects', recordId: req.params.id, recordType: 'project', action: 'update', oldData: oldProject, newData: project, req });
-    res.json(project);
+    const project = await projectRepository.findById(req.params.id, cid(req));
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+    res.status(409).json({
+      error: 'The project stage follows its lifecycle and cannot be set directly. '
+        + (project.lifecycle_id
+          ? `Advance lifecycle ${project.lifecycle_id} through its gates instead.`
+          : 'This project has no lifecycle yet.'),
+      code: 'STAGE_FOLLOWS_LIFECYCLE',
+      lifecycle_id: project.lifecycle_id ?? null,
+      lifecycle_stage: project.lifecycle_stage ?? null,
+      production_stage: project.production_stage ?? null,
+      stage_source: project.stage_source,
+    });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -373,12 +461,9 @@ router.delete('/projects/:id', requirePermission('projects', 'delete'), async (r
 // ── Tasks ─────────────────────────────────────────────────────────────────────
 router.get('/tasks', async (req, res) => {
   try {
-    const authEmail = req.user?.email;
-    let empId = null;
-    if (authEmail) {
-      const r = await pool.query(`SELECT id FROM employees WHERE company_email=$1 LIMIT 1`, [authEmail]);
-      if (r.rows.length) empId = r.rows[0].id;
-    }
+    // Who the viewer IS comes from the login link, not from matching the login
+    // email against company_email (unscoped, LIMIT 1) — an editable HR field.
+    const empId = await actingEmployeeId(req);
     const viewer = { ...req.user, id: empId };
     const filters = { ...req.query, company_id: cid(req) };
     if (req.query.mine === 'true') {
@@ -426,35 +511,9 @@ async function findClosedProjectStatus(projectId) {
 // 'completed' transition, not 'cancelled' (cancelling is exactly for projects
 // that will never finish their open items, so blocking on the same grounds
 // would be backwards). Pass force_complete:true to close anyway.
-async function getProjectClosureBlockers(projectId) {
-  const [openTasks, unbilledMilestones, pendingTimesheets] = await Promise.all([
-    pool.query(
-      `SELECT COUNT(*)::int AS n FROM tasks WHERE project_id=$1 AND deleted_at IS NULL AND status != 'done'`,
-      [projectId]
-    ),
-    pool.query(
-      `SELECT COUNT(*)::int AS n FROM project_milestones
-       WHERE project_id=$1 AND billing_milestone=TRUE AND COALESCE(invoice_created,false)=FALSE`,
-      [projectId]
-    ),
-    pool.query(
-      `SELECT COUNT(*)::int AS n FROM timesheet_entries
-       WHERE project_id=$1 AND deleted_at IS NULL AND status IN ('draft','submitted')`,
-      [projectId]
-    ),
-  ]);
-  const blockers = [];
-  if (openTasks.rows[0].n > 0) {
-    blockers.push({ type: 'open_tasks', count: openTasks.rows[0].n });
-  }
-  if (unbilledMilestones.rows[0].n > 0) {
-    blockers.push({ type: 'unbilled_milestones', count: unbilledMilestones.rows[0].n });
-  }
-  if (pendingTimesheets.rows[0].n > 0) {
-    blockers.push({ type: 'pending_timesheets', count: pendingTimesheets.rows[0].n });
-  }
-  return blockers;
-}
+// Closure blockers live in services/projectClosure.service.js, shared with the
+// lifecycle's Closure-stage completion (P1 Phase 4).
+const getProjectClosureBlockers = (projectId) => getClosureBlockers(pool, projectId);
 
 router.post('/tasks', requirePermission('projects', 'add'), async (req, res) => {
   try {
@@ -1425,10 +1484,7 @@ router.post('/projects/:id/warranties', requirePermission('projects', 'edit'), a
     const endDate = warranty_end_date
       || new Date(new Date(startDate).setMonth(new Date(startDate).getMonth() + months)).toISOString().slice(0, 10);
     const companyId = cid(req);
-    const { rows: cnt } = await pool.query(
-      `SELECT COUNT(*) FROM warranty_registrations WHERE ($1::int IS NULL OR company_id=$1)`, [companyId]
-    );
-    const warrantyNumber = `WR-${String(parseInt(cnt[0].count) + 1).padStart(5, '0')}`;
+    const warrantyNumber = await nextWarrantyNumber();
     const { rows } = await pool.query(
       `INSERT INTO warranty_registrations AS wr
          (warranty_number, project_id, company_id, serial_number, product_name, customer_name,
@@ -1725,7 +1781,16 @@ router.get('/installation-dashboard/filters', requirePermission('projects', 'vie
 router.get('/projects/:id/status-report', requirePermission('projects', 'view'), async (req, res) => {
   try {
     const [projRes, mileRes, riskRes, costRes] = await Promise.allSettled([
-      pool.query(`SELECT * FROM projects WHERE id=$1 AND ($2::int IS NULL OR company_id=$2)`, [req.params.id, cid(req)]),
+      // The stage comes from the shared derivation (shared/projectStages.js):
+      // the project's open lifecycle, else its latest closed one, in the
+      // project's own company only. The old lookup took any 'active' lifecycle
+      // pointing at the id (another company's included), ignored on-hold ones,
+      // and answered 'N/A' when there was none.
+      pool.query(
+        `SELECT p.*, ${projectStageColumnsSql('p', 'plc')}
+           FROM projects p ${projectLifecycleJoinSql('p', 'plc')}
+          WHERE p.id=$1 AND ($2::int IS NULL OR p.company_id=$2)`,
+        [req.params.id, cid(req)]),
       pool.query(`SELECT name, status, due_date FROM project_milestones WHERE project_id=$1 ORDER BY due_date DESC LIMIT 5`, [req.params.id]),
       // project_risks.probability/impact are VARCHAR level labels ('low'/'medium'/
       // 'high'), never numbers — the previous `probability*impact` threw 42883 on
@@ -1768,15 +1833,17 @@ router.get('/projects/:id/status-report', requirePermission('projects', 'view'),
 
     if (!project) return res.status(404).json({ error: 'Project not found' });
 
-    const liRes = await pool.query(
-      `SELECT current_stage FROM lifecycle_instances WHERE project_id=$1 AND status='active' LIMIT 1`,
-      [req.params.id]
-    ).catch(() => ({ rows: [] }));
-
     res.json({
       report: {
         project_id: req.params.id,
-        current_stage: liRes.rows[0]?.current_stage || project.current_stage || 'N/A',
+        // The representative lifecycle's own stage; null (never a guess) when
+        // the project has no lifecycle in its company — stage_source says so.
+        current_stage: project.lifecycle_stage ?? null,
+        lifecycle_id: project.lifecycle_id ?? null,
+        lifecycle_stage: project.lifecycle_stage ?? null,
+        lifecycle_status: project.lifecycle_status ?? null,
+        production_stage: project.production_stage ?? null,
+        stage_source: project.stage_source,
         progress_percentage: project.progress_percentage || 0,
         budget_utilization: project.budget_amount > 0
           ? Math.round((project.actual_cost || 0) / project.budget_amount * 100)

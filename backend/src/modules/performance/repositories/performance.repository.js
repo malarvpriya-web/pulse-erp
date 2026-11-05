@@ -134,7 +134,10 @@ const performanceRepository = {
     return result.rows[0];
   },
 
-  async updateReview(id, data) {
+  // `status` is not editable here: it moves only through self-review,
+  // manager-review and finalize. The update is limited to one company.
+  async updateReview(id, data, { companyId, db = pool } = {}) {
+    if (companyId == null) throw new Error('updateReview needs a company');
     const fields = [];
     const values = [];
     let n = 1;
@@ -142,7 +145,7 @@ const performanceRepository = {
       'self_rating','self_comments','achievements','challenges','learnings','next_goals',
       'manager_rating','manager_comments','final_rating','calibrated_rating',
       'kra_score','behavioral_score','promotion_recommendation',
-      'salary_revision_percentage','status','review_period','review_type',
+      'salary_revision_percentage','review_period','review_type',
     ];
     for (const key of allowed) {
       if (data[key] !== undefined) {
@@ -152,9 +155,9 @@ const performanceRepository = {
     }
     if (!fields.length) return null;
     fields.push(`updated_at = CURRENT_TIMESTAMP`);
-    values.push(id);
-    const result = await pool.query(
-      `UPDATE performance_reviews SET ${fields.join(', ')} WHERE id = $${n} RETURNING *`,
+    values.push(id, companyId);
+    const result = await db.query(
+      `UPDATE performance_reviews SET ${fields.join(', ')} WHERE id = $${n} AND company_id = $${n + 1} RETURNING *`,
       values
     );
     return result.rows[0];

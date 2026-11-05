@@ -24,7 +24,11 @@ const documentsRepository = {
   },
 
   async findTemplates(filters = {}) {
-    let query = `SELECT * FROM document_templates WHERE deleted_at IS NULL`;
+    // Module-owned rows (owner_module set — e.g. a company's internship
+    // certificate template, 20261013000006) are managed by their module, tenant
+    // scoped and permission gated. These generic routes have neither, so they
+    // never see such rows.
+    let query = `SELECT * FROM document_templates WHERE deleted_at IS NULL AND owner_module IS NULL`;
     const params = [];
     let paramCount = 1;
 
@@ -48,7 +52,7 @@ const documentsRepository = {
 
   async findTemplateById(id) {
     const result = await pool.query(
-      `SELECT * FROM document_templates WHERE id = $1 AND deleted_at IS NULL`,
+      `SELECT * FROM document_templates WHERE id = $1 AND deleted_at IS NULL AND owner_module IS NULL`,
       [id]
     );
     return result.rows[0];
@@ -64,7 +68,7 @@ const documentsRepository = {
     // allows both mass assignment (company_id, created_by, deleted_at) and
     // injection of extra assignments. pickUpdatable validates every key against
     // the live `document_templates` columns minus the protected set.
-    const safe = await pickUpdatable('document_templates', data);
+    const safe = await pickUpdatable('document_templates', data, { protect: ['owner_module', 'template_key'] });
 
     Object.keys(safe).forEach(key => {
       fields.push(`${key} = $${paramCount}`);
@@ -80,14 +84,14 @@ const documentsRepository = {
     values.push(id);
 
     const result = await pool.query(
-      `UPDATE document_templates SET ${fields.join(', ')} WHERE id = $${paramCount} RETURNING *`,
+      `UPDATE document_templates SET ${fields.join(', ')} WHERE id = $${paramCount} AND owner_module IS NULL RETURNING *`,
       values
     );
     return result.rows[0];
   },
 
   async deleteTemplate(id) {
-    await pool.query(`UPDATE document_templates SET deleted_at = CURRENT_TIMESTAMP WHERE id = $1`, [id]);
+    await pool.query(`UPDATE document_templates SET deleted_at = CURRENT_TIMESTAMP WHERE id = $1 AND owner_module IS NULL`, [id]);
   },
 
   async saveGeneratedDocument(data) {

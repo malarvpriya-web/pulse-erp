@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import api from '@/services/api/client';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import { localDay, localDayOf } from '@/utils/dateFormatter';
 
 const P = '#6B3FDB';
 const CARD = { background: '#fff', borderRadius: 12, border: '1px solid #f0f0f4', padding: 24 };
@@ -107,9 +108,9 @@ export default function AttendanceAuditLogs() {
   const [employeeFilter, setEmployeeFilter] = useState('');
   const [fromDate, setFromDate]   = useState(() => {
     const d = new Date(); d.setDate(d.getDate() - 7);
-    return d.toISOString().slice(0, 10);
+    return localDayOf(d);
   });
-  const [toDate, setToDate]       = useState(new Date().toISOString().slice(0, 10));
+  const [toDate, setToDate]       = useState(localDay());
   const isMounted = useRef(true);
 
   useEffect(() => { isMounted.current = true; return () => { isMounted.current = false; }; }, []);

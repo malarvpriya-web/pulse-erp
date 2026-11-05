@@ -19,6 +19,7 @@ import { spawnSync, execFileSync } from 'child_process';
 import fs   from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { resolveDbTarget, pgToolEnv } from '../src/config/dbTarget.js';
 
 const __dirname  = path.dirname(fileURLToPath(import.meta.url));
 const BACKUP_DIR = path.join(__dirname, '../backups');
@@ -30,21 +31,17 @@ if (fs.existsSync(dotenvPath)) {
   const vars = fs.readFileSync(dotenvPath, 'utf8')
     .split('\n')
     .filter(l => l.trim() && !l.startsWith('#') && l.includes('='));
+  // A value already in the environment was supplied on purpose: a backup login must
+  // not be replaced by the application's login from .env.
   for (const line of vars) {
     const [k, ...rest] = line.split('=');
-    process.env[k.trim()] = rest.join('=').trim();
+    if (process.env[k.trim()] === undefined) process.env[k.trim()] = rest.join('=').trim();
   }
 }
 
-const DB = {
-  host:     process.env.DB_HOST     || 'localhost',
-  port:     process.env.DB_PORT     || '5432',
-  name:     process.env.DB_NAME     || 'Pulse',
-  user:     process.env.DB_USER     || 'postgres',
-  password: process.env.DB_PASSWORD || '',
-};
+const DB = resolveDbTarget(process.env);
 
-const env = { ...process.env, PGPASSWORD: DB.password };
+const env = pgToolEnv(DB, process.env);
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function timestamp() {

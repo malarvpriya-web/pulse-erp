@@ -2,17 +2,23 @@ import pool from "../../config/db.js";
 import { notifyWorkflowEvent } from "../../services/WorkflowNotificationService.js";
 import { logAudit } from "../../services/AuditService.js";
 import { canOverride, canClaimCategory, isApproverRole } from "./approvals.authz.js";
-import { assertCanDecideAmount } from "../procurement/procurement.authz.js";
-import { authorizeManagerApproval, DENIED_MESSAGE } from "../../shared/managerApprovalAuthz.js";
-import { assertCanDecideFor } from "../attendance/attendance.authz.js";
-import { getEmployeeApprovals } from "../../home/home.service.js";
+import { isAttendanceApprover } from "../attendance/attendance.authz.js";
 import { triggerEmail } from "../../services/emailTrigger.js";
 import recruitmentRepository from "../recruitment/repositories/recruitment.repository.js";
 import { getOfferValidityDays } from "../recruitment/offerValidity.js";
+import {
+  SOURCES, SOURCE_BY_TYPE, MODULE_DECIDED_TYPES, central,
+  buildContext, loadSlaHours, displayStatus, DEFAULT_SLA_HOURS,
+} from "./approvals.sources.js";
 
-const uid  = (req) => req.user?.userId ?? req.user?.id ?? null;
-const cid  = (req) => req.scope?.company_id ?? null;
-const role = (req) => req.user?.role ?? '';
+// The Approval Center is an inbox over the modules (see approvals.sources.js):
+// it lists what awaits the caller, what the caller submitted, and what the
+// caller decided. Decisions on module records go to the MODULE's endpoint —
+// only requisitions, offers and central `approvals` rows are decided here,
+// because this IS their native path.
+
+const uid = (req) => req.user?.userId ?? req.user?.id ?? null;
+const cid = (req) => req.scope?.company_id ?? null;
 
 // JWT carries employee_id for most logins; legacy/demo users don't, so fall
 // back to the users table (mirrors ownEmployeeId() in the travel routes).
@@ -26,364 +32,145 @@ async function myEmployeeId(req) {
   } catch { return null; }
 }
 
-// ─── helpers ────────────────────────────────────────────────────────────────
-
-function isSupervisor(req) {
-  const r = (role(req) || '').toLowerCase();
-  return ['super_admin', 'admin', 'manager', 'l1_manager', 'l2_manager', 'l3_manager', 'hr'].includes(r);
+function httpError(status, message, extra = {}) {
+  return Object.assign(new Error(message), { statusCode: status, extra });
 }
 
-// Safe query: returns [] instead of throwing when a source table doesn't exist yet.
-// Only silences undefined-table (42P01) errors — column errors (42703) and others still throw,
-// so a missing column in an UPDATE is never silently swallowed.
-async function safeQuery(sql, params) {
-  try {
-    const r = await pool.query(sql, params);
-    return r.rows;
-  } catch (e) {
-    if (e.code === '42P01' || e.code === 'undefined_table') return [];
-    throw e;
+const send = (res, err, fallback) => {
+  // A malformed id (non-numeric requisition, non-uuid offer) is "not found",
+  // not a server error.
+  if (err.code === '22P02') return res.status(404).json({ error: 'Request not found' });
+  if (!err.statusCode) console.error(fallback, err);
+  res.status(err.statusCode || 500).json({ error: err.message, ...(err.extra || {}) });
+};
+
+// ─── read model ──────────────────────────────────────────────────────────────
+
+const hoursSince = (d) => (d ? (Date.now() - new Date(d).getTime()) / 3600000 : 0);
+
+/**
+ * Every pending row in the caller's company, annotated with can_act (does
+ * the module let THIS caller decide it), the module action descriptors, its
+ * SLA and overdue flag. "My Pending Approvals" is the can_act subset.
+ */
+async function collectPending(req, ctx) {
+  const companyId = cid(req);
+  const sla = await loadSlaHours();
+  const all = [...SOURCES, central];
+  const perSource = await Promise.all(all.map(s => s.pending(companyId)));
+
+  const out = [];
+  for (let i = 0; i < all.length; i++) {
+    const s = all[i];
+    for (const r of perSource[i]) {
+      const canAct = !!(await s.canAct(ctx, r));
+      const slaHours = sla[s.type]?.hours ?? DEFAULT_SLA_HOURS;
+      const waiting = hoursSince(r.request_date);
+      out.push({
+        id: String(r.id),
+        type: s.type,
+        module_name: s.type === 'appr' ? r.category : s.type,
+        request_type: s.type === 'appr' ? (r.category || s.label) : s.label,
+        request_title: r.request_title,
+        description: r.description ?? null,
+        requested_by: r.requested_by ?? '—',
+        requester_email: r.requester_email ?? null,
+        department: r.department ?? null,
+        request_date: r.request_date,
+        amount: r.amount != null ? Number(r.amount) : null,
+        amount_unit: r.amount_unit ?? null,
+        priority: r.priority || 'Medium',
+        stage: s.stage(r),
+        sla_hours: slaHours,
+        sla_source: sla[s.type]?.source ?? 'default',
+        waiting_hours: Math.floor(waiting),
+        overdue: waiting > slaHours,
+        link_page: s.page ?? null,
+        can_act: canAct,
+        actions: canAct ? s.actions(r) : {},
+      });
+    }
   }
+  out.sort((a, b) => new Date(a.request_date || 0) - new Date(b.request_date || 0));
+  return out;
 }
 
-// ─── source-table queries (each returns normalized pending rows) ──────────────
+// Central-table history rows written by the old Approval Center for module
+// records carry module_name in one of these spellings.
+const CENTRAL_TO_TYPE = {
+  leave: 'leave', reg: 'reg', regularization: 'reg', ot: 'ot',
+  pr: 'pr', purchase: 'pr', purchase_request: 'pr', exp: 'exp', expense: 'exp',
+  ecn: 'ecn', pay: 'pay', payment: 'pay', requisition: 'requisition', offer: 'offer',
+};
 
-async function pendingLeaves(companyId) {
-  const params  = companyId != null ? [companyId] : [];
-  const cFilter = companyId != null ? `AND e.company_id = $1` : '';
-  const rows = await safeQuery(
-    `SELECT
-       'leave:' || la.id::text          AS id,
-       'leave'                           AS module_name,
-       la.id::text                       AS source_id,
-       'Leave'                           AS request_type,
-       CONCAT(e.first_name, ' ', COALESCE(e.last_name,'')) AS requested_by,
-       NULL::integer                     AS requester_id,
-       e.company_email                   AS requester_email,
-       NULL                              AS department,
-       la.applied_at                     AS request_date,
-       NULL::numeric                     AS amount,
-       'Medium'                          AS priority,
-       'Pending'                         AS status,
-       NULL::integer                     AS approver_id,
-       CONCAT('Leave request from ', e.first_name) AS request_title,
-       la.reason                         AS description,
-       e.company_id                      AS company_id
-     FROM leave_applications la
-     LEFT JOIN employees e ON e.id::text = la.employee_id::text
-     WHERE la.status = 'pending' ${cFilter}
-     ORDER BY la.applied_at ASC`,
-    params
-  );
-  return rows;
+async function collectHistory(ctx) {
+  const sources = SOURCES.filter(s => s.decided);
+  const [perSource, centralRows] = await Promise.all([
+    Promise.all(sources.map(s => s.decided(ctx))),
+    central.decided(ctx),
+  ]);
+
+  const rows = [];
+  const seen = new Set();
+  sources.forEach((s, i) => {
+    for (const r of perSource[i]) {
+      const ref = `${s.type}:${r.source_id}`;
+      seen.add(ref);
+      rows.push({ ...r, ref, key: `${ref}:${r.stage || ''}:${String(r.decision).toLowerCase()}`,
+        type: s.type, request_type: s.label, link_page: s.page });
+    }
+  });
+  for (const r of centralRows) {
+    const t = CENTRAL_TO_TYPE[String(r.category || '').toLowerCase()];
+    // Skip a central shadow row when the module's own record already shows the
+    // same decision by this person; keep it when it is the only trace (e.g. a
+    // leave decided through the old Approval Center path, which wrote no
+    // leave_approval_history row).
+    if (t && r.source_id && seen.has(`${t}:${r.source_id}`)) continue;
+    const src = t ? SOURCE_BY_TYPE[t] : null;
+    rows.push({
+      ...r, key: `appr:${r.id}`, ref: t && r.source_id ? `${t}:${r.source_id}` : String(r.id), type: t || 'appr',
+      request_type: src?.label || r.category || 'Approval', link_page: src?.page ?? null,
+    });
+  }
+  return rows
+    .filter(r => r.decision_date)
+    .map(r => ({
+      id: r.ref,      // the request, e.g. "travel:12" — what the Approval Center links on
+      key: r.key,     // unique per decision (one request can carry several levels)
+      type: r.type,
+      request_type: r.request_type,
+      request_title: r.request_title,
+      requested_by: r.requested_by || '—',
+      request_date: r.request_date,
+      decision: String(r.decision).toLowerCase() === 'rejected' ? 'Rejected' : 'Approved',
+      decision_date: r.decision_date,
+      comments: r.comments || null,
+      stage: r.stage || null,
+      link_page: r.link_page,
+    }))
+    .sort((a, b) => new Date(b.decision_date) - new Date(a.decision_date));
 }
 
-async function pendingRegularizations(companyId) {
-  const params = companyId != null ? [companyId] : [];
-  const cFilter = companyId != null ? `AND arr.company_id = $1` : '';
-  return safeQuery(
-    `SELECT
-       'reg:' || arr.id::text            AS id,
-       'regularization'                  AS module_name,
-       arr.id::text                      AS source_id,
-       'Regularization'                  AS request_type,
-       arr.employee_id::text             AS requested_by,
-       NULL::integer                     AS requester_id,
-       NULL                              AS requester_email,
-       NULL                              AS department,
-       arr.created_at                    AS request_date,
-       NULL::numeric                     AS amount,
-       'Medium'                          AS priority,
-       'Pending'                         AS status,
-       arr.manager_id                    AS approver_id,
-       CONCAT('Attendance regularization for ', arr.date) AS request_title,
-       arr.reason                        AS description,
-       arr.company_id
-     FROM attendance_regularization_requests arr
-     WHERE arr.status = 'pending' ${cFilter}
-     ORDER BY arr.created_at ASC`,
-    params
-  );
-}
-
-async function pendingOT(companyId) {
-  const params = companyId != null ? [companyId] : [];
-  const cFilter = companyId != null ? `AND ot.company_id = $1` : '';
-  return safeQuery(
-    `SELECT
-       'ot:' || ot.id::text              AS id,
-       'ot'                              AS module_name,
-       ot.id::text                       AS source_id,
-       'OT'                              AS request_type,
-       ot.employee_id::text              AS requested_by,
-       ot.employee_id                    AS requester_id,
-       NULL                              AS requester_email,
-       NULL                              AS department,
-       ot.created_at                     AS request_date,
-       ot.ot_hours                       AS amount,
-       'Medium'                          AS priority,
-       'Pending'                         AS status,
-       ot.approved_by                    AS approver_id,
-       CONCAT('Overtime ', ot.ot_hours, 'h on ', ot.attendance_date) AS request_title,
-       ot.reason                         AS description,
-       ot.company_id
-     FROM attendance_ot_records ot
-     WHERE ot.status = 'pending' ${cFilter}
-     ORDER BY ot.created_at ASC`,
-    params
-  );
-}
-
-async function pendingPurchaseRequests(companyId) {
-  const params  = companyId != null ? [companyId] : [];
-  const cFilter = companyId != null ? `AND e.company_id = $1` : '';
-  return safeQuery(
-    `SELECT
-       'pr:' || pr.id::text              AS id,
-       'purchase_request'                AS module_name,
-       pr.id::text                       AS source_id,
-       'Purchase'                        AS request_type,
-       COALESCE(TRIM(e.first_name || ' ' || COALESCE(e.last_name,'')), pr.requested_by_employee_id::text) AS requested_by,
-       pr.requested_by_employee_id       AS requester_id,
-       e.company_email                   AS requester_email,
-       NULL                              AS department,
-       pr.request_date                   AS request_date,
-       NULL::numeric                     AS amount,
-       'High'                            AS priority,
-       'Pending'                         AS status,
-       pr.approved_by                    AS approver_id,
-       CONCAT('Purchase Request ', pr.request_number) AS request_title,
-       pr.notes                          AS description,
-       e.company_id
-     FROM purchase_requests pr
-     LEFT JOIN employees e ON e.id = pr.requested_by_employee_id
-     WHERE pr.status IN ('pending_approval', 'pending') ${cFilter}
-     ORDER BY pr.request_date ASC`,
-    params
-  );
-}
-
-// Job requisitions have a real DB-enforced lifecycle (CHECK constraint:
-// draft -> pending_approval -> approved -> open -> closed) but nothing
-// previously surfaced a 'pending_approval' row anywhere an approver could see
-// or act on it — the only write path was a raw PUT with no role gate at all
-// (see MODULE_FEATURE_CONNECTION_MANUAL.md's Recruitment section, fixed
-// 2026-08-04 alongside this). No `approved_by` column exists on the table, so
-// (like pr/ecn) this stays in the shared unassigned pool — any current
-// APPROVER_ROLES holder can claim it, same as Purchase Requests and ECNs
-// today for roles without a narrower APPROVER_CATEGORY_SCOPE entry.
-async function pendingRequisitions(companyId) {
-  const params  = companyId != null ? [companyId] : [];
-  const cFilter = companyId != null ? `AND jr.company_id = $1` : '';
-  return safeQuery(
-    `SELECT
-       'requisition:' || jr.id::text     AS id,
-       'requisition'                     AS module_name,
-       jr.id::text                       AS source_id,
-       'Requisition'                     AS request_type,
-       COALESCE(TRIM(e.first_name || ' ' || COALESCE(e.last_name,'')), jr.requested_by::text) AS requested_by,
-       jr.requested_by                   AS requester_id,
-       e.company_email                   AS requester_email,
-       jr.department                     AS department,
-       jr.created_at                     AS request_date,
-       NULL::numeric                     AS amount,
-       CASE WHEN jr.number_of_positions >= 3 THEN 'High'
-            WHEN jr.number_of_positions = 2 THEN 'Medium'
-            ELSE 'Low' END                AS priority,
-       'Pending'                         AS status,
-       NULL::integer                     AS approver_id,
-       CONCAT(jr.job_title, ' (', jr.number_of_positions, ' position',
-              CASE WHEN jr.number_of_positions = 1 THEN '' ELSE 's' END, ')') AS request_title,
-       jr.job_description                AS description,
-       jr.company_id
-     FROM job_requisitions jr
-     LEFT JOIN employees e ON e.id = jr.requested_by
-     WHERE jr.status = 'pending_approval' AND jr.deleted_at IS NULL ${cFilter}
-     ORDER BY jr.created_at ASC`,
-    params
-  );
-}
-
-// offer_letters.offer_status has no CHECK constraint (plain VARCHAR) — added
-// 'pending_approval' as a state between draft and sent so that actually
-// sending an offer (a real financial commitment) goes through an approver,
-// same reasoning as pendingRequisitions() above. Like requisitions, no
-// approved_by column exists, so this stays in the shared unassigned pool.
-async function pendingOffers(companyId) {
-  const params  = companyId != null ? [companyId] : [];
-  const cFilter = companyId != null ? `AND ol.company_id = $1` : '';
-  return safeQuery(
-    `SELECT
-       'offer:' || ol.id::text           AS id,
-       'offer'                           AS module_name,
-       ol.id::text                       AS source_id,
-       'Offer Letter'                    AS request_type,
-       c.full_name                       AS requested_by,
-       NULL::integer                     AS requester_id,
-       c.email                           AS requester_email,
-       NULL                              AS department,
-       ol.created_at                     AS request_date,
-       ol.offered_salary                 AS amount,
-       'Medium'                          AS priority,
-       'Pending'                         AS status,
-       NULL::integer                     AS approver_id,
-       CONCAT('Offer: ', c.full_name, ' — ', COALESCE(jo.job_title, jr.job_title, 'Position')) AS request_title,
-       ol.notes                          AS description,
-       ol.company_id
-     FROM offer_letters ol
-     JOIN candidates c ON c.id = ol.candidate_id
-     LEFT JOIN job_openings jo ON jo.id = ol.job_opening_id
-     LEFT JOIN job_requisitions jr ON jr.id = jo.requisition_id
-     WHERE ol.offer_status = 'pending_approval' AND ol.deleted_at IS NULL ${cFilter}
-     ORDER BY ol.created_at ASC`,
-    params
-  );
-}
-
-async function pendingExpenses(companyId) {
-  const params  = companyId != null ? [companyId] : [];
-  const cFilter = companyId != null ? `AND e.company_id = $1` : '';
-  return safeQuery(
-    `SELECT
-       'exp:' || ec.id::text             AS id,
-       'expense'                         AS module_name,
-       ec.id::text                       AS source_id,
-       'Expense'                         AS request_type,
-       COALESCE(TRIM(e.first_name || ' ' || COALESCE(e.last_name,'')), ec.employee_id::text) AS requested_by,
-       ec.employee_id                    AS requester_id,
-       e.company_email                   AS requester_email,
-       NULL                              AS department,
-       ec.claim_date                     AS request_date,
-       ec.total_amount                   AS amount,
-       'Medium'                          AS priority,
-       'Pending'                         AS status,
-       ec.approved_by                    AS approver_id,
-       CONCAT('Expense Claim ', ec.claim_number) AS request_title,
-       ec.notes                          AS description,
-       e.company_id
-     FROM expense_claims ec
-     LEFT JOIN employees e ON e.id = ec.employee_id
-     WHERE ec.status = 'Pending' ${cFilter}
-     ORDER BY ec.claim_date ASC`,
-    params
-  );
-}
-
-async function pendingECNs(companyId) {
-  const params  = companyId != null ? [companyId] : [];
-  const cFilter = companyId != null ? `AND emp.company_id = $1` : '';
-  return safeQuery(
-    `SELECT
-       'ecn:' || ec.id::text             AS id,
-       'ecn'                             AS module_name,
-       ec.id::text                       AS source_id,
-       'ECN'                             AS request_type,
-       COALESCE(ec.requested_by_name, ec.requested_by::text) AS requested_by,
-       ec.requested_by                   AS requester_id,
-       emp.company_email                 AS requester_email,
-       NULL                              AS department,
-       ec.created_at                     AS request_date,
-       NULL::numeric                     AS amount,
-       CASE ec.severity
-         WHEN 'critical' THEN 'High'
-         WHEN 'high'     THEN 'High'
-         WHEN 'medium'   THEN 'Medium'
-         ELSE 'Low'
-       END                               AS priority,
-       'Pending'                         AS status,
-       ec.approved_by                    AS approver_id,
-       CONCAT('[', ec.change_type, '] ', ec.title) AS request_title,
-       ec.reason                         AS description,
-       emp.company_id
-     FROM engineering_changes ec
-     LEFT JOIN employees emp ON emp.id = ec.requested_by
-     WHERE ec.status = 'submitted' ${cFilter}
-     ORDER BY ec.created_at ASC`,
-    params
-  );
-}
-
-async function pendingPaymentBatches(companyId) {
-  return safeQuery(
-    `SELECT
-       'pay:' || pb.id::text             AS id,
-       'payment'                         AS module_name,
-       pb.id::text                       AS source_id,
-       'Payment'                         AS request_type,
-       pb.created_by::text               AS requested_by,
-       pb.created_by                     AS requester_id,
-       NULL                              AS requester_email,
-       NULL                              AS department,
-       pb.batch_date                     AS request_date,
-       pb.total_amount                   AS amount,
-       'High'                            AS priority,
-       'Pending'                         AS status,
-       pb.approved_by                    AS approver_id,
-       CONCAT('Payment Batch ', pb.batch_number) AS request_title,
-       pb.notes                          AS description,
-       NULL::integer                     AS company_id
-     FROM payment_batches pb
-     WHERE pb.status = 'Awaiting_Approval'
-     ORDER BY pb.batch_date ASC`,
-    []
-  );
-}
-
-// Central approvals table rows (existing + probation etc.)
-async function pendingCentral(userId, companyId) {
-  const cidFilter = companyId != null ? `AND company_id = $2` : '';
-  // Exclude module types already handled by dedicated source queries — those source queries
-  // scan the live tables directly, so showing them here too creates phantom duplicates that
-  // persist after the source record is approved.
-  const SOURCE_MODULES = `('leave','regularization','reg','ot','purchase_request','purchase','pr','expense','exp','ecn','payment','pay')`;
-  const rows = await safeQuery(
-    `SELECT
-       id::text                                    AS id,
-       COALESCE(module_name, reference_type)       AS module_name,
-       reference_id::text                          AS source_id,
-       COALESCE(module_name, reference_type)       AS request_type,
-       COALESCE(requester_name, requested_by::text)  AS requested_by,
-       requested_by                                AS requester_id,
-       NULL                                        AS requester_email,
-       NULL                                        AS department,
-       request_date,
-       NULL::numeric                               AS amount,
-       NULL                                        AS priority,
-       status,
-       approver_id,
-       title                                       AS request_title,
-       description,
-       company_id
-     FROM approvals
-     WHERE approver_id = $1 AND status = 'Pending' ${cidFilter}
-     AND COALESCE(module_name, reference_type) NOT IN ${SOURCE_MODULES}
-     ORDER BY request_date ASC`,
-    companyId != null ? [userId, companyId] : [userId]
-  );
-  return rows;
-}
+const sameLocalDay = (d) => d && new Date(d).toDateString() === new Date().toDateString();
 
 // ─── controller functions ────────────────────────────────────────────────────
 
+// Legacy raw listing of the central table. Not used by the Approval Center UI.
 export const getAllApprovals = async (req, res) => {
   if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
   try {
     const userId    = uid(req);
     const companyId = cid(req);
-    const isAdmin   = isSupervisor(req);
     const { status, module_name, limit = 100, offset = 0 } = req.query;
 
     const conditions = ['1=1'];
     const params = [];
-
     if (companyId != null) { params.push(companyId); conditions.push(`company_id = $${params.length}`); }
-    // Non-supervisors only see rows assigned to them — same visibility rule as
-    // getPendingApprovals below. Previously ungated: any authenticated user of
-    // any role could pull every company's approvals via this endpoint.
-    if (!isAdmin) { params.push(userId); conditions.push(`approver_id = $${params.length}`); }
+    if (!canOverride(req)) { params.push(userId); conditions.push(`approver_id = $${params.length}`); }
     if (status)      { params.push(status);      conditions.push(`status = $${params.length}`); }
     if (module_name) { params.push(module_name); conditions.push(`module_name = $${params.length}`); }
-    params.push(parseInt(limit, 10), parseInt(offset, 10));
+    params.push(Math.min(parseInt(limit, 10) || 100, 500), parseInt(offset, 10) || 0);
 
     const result = await pool.query(
       `SELECT * FROM approvals
@@ -394,585 +181,195 @@ export const getAllApprovals = async (req, res) => {
     );
     res.json(result.rows);
   } catch (err) {
-    console.error("Get all approvals error:", err);
-    res.status(500).json({ error: err.message });
+    send(res, err, 'Get all approvals error:');
   }
 };
 
+/**
+ * The caller's My Pending Approvals rows, oldest first. Home's preview card
+ * reads this too, so the card and "View all" can never disagree.
+ */
+export async function myPendingApprovals(req) {
+  const ctx = await buildContext(req);
+  return (await collectPending(req, ctx)).filter(r => r.can_act);
+}
+
+/** My Pending Approvals — only rows the caller can actually decide. */
 export const getPendingApprovals = async (req, res) => {
   if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
   try {
-    const userId    = uid(req);
-    const companyId = cid(req);
-    const isAdmin   = isSupervisor(req);
-    const limit     = Math.min(parseInt(req.query.limit  || '200', 10), 500);
-    const offset    = parseInt(req.query.offset || '0', 10);
-
-    // Fetch from all sources in parallel; each is resilient to missing tables
-    const [central, leaves, regs, ots, prs, exps, ecns, pays, reqs, offers] = await Promise.all([
-      pendingCentral(userId, companyId),
-      pendingLeaves(companyId),
-      pendingRegularizations(companyId),
-      pendingOT(companyId),
-      pendingPurchaseRequests(companyId),
-      pendingExpenses(companyId),
-      pendingECNs(companyId),
-      pendingPaymentBatches(companyId),
-      pendingRequisitions(companyId),
-      pendingOffers(companyId),
-    ]);
-
-    let all = [...central, ...leaves, ...regs, ...ots, ...prs, ...exps, ...ecns, ...pays, ...reqs, ...offers];
-
-    // Non-admins only see items assigned to them or unassigned within their company
-    if (!isAdmin) {
-      all = all.filter(r =>
-        r.approver_id == null || String(r.approver_id) === String(userId)
-      );
-    }
-
-    // `isAdmin` above (isSupervisor: super_admin/admin/manager/hr/...) governs
-    // read VISIBILITY only — it is broader than who can actually act on a row
-    // (canActOnApproval, the write-path guard). Without this, e.g. a `manager`
-    // sees every row including ones assigned to a specific other person, and
-    // the frontend rendered live Approve/Reject buttons on all of them
-    // regardless — clicking one that isn't actually yours 403s. Same story for
-    // roles like `hr_exec`/`procurement_exec`/the engineer grades, which are
-    // visible on unassigned rows here but hold no claim authority at all
-    // (deliberately excluded from APPROVER_ROLES). Annotate the exact same
-    // rule the write path enforces so the frontend can hide/disable instead of
-    // rendering a button that's a guaranteed 403.
-    all = all.map(r => ({
-      ...r,
-      can_act: canOverride(req) || (r.approver_id != null
-        ? String(r.approver_id) === String(userId)
-        : isApproverRole(req) && canClaimCategory(req, r.module_name)),
-    }));
-
-    // Sort by request_date ascending (oldest first), then paginate
-    all.sort((a, b) => new Date(a.request_date) - new Date(b.request_date));
-
-    res.json(all.slice(offset, offset + limit));
+    const mine = await myPendingApprovals(req);
+    const limit  = Math.min(parseInt(req.query.limit || '500', 10) || 500, 1000);
+    const offset = parseInt(req.query.offset || '0', 10) || 0;
+    res.json(mine.slice(offset, offset + limit));
   } catch (err) {
-    console.error("Get pending approvals error:", err);
-    res.status(500).json({ error: err.message });
+    send(res, err, 'Get pending approvals error:');
   }
 };
 
+/** Approval History — decisions the caller made, across every module. */
 export const getApprovalHistory = async (req, res) => {
   if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
   try {
-    const userId    = uid(req);
-    const companyId = cid(req);
-    const cidFilter = companyId != null ? `AND company_id = $2` : '';
-
-    const result = await pool.query(
-      `SELECT *,
-              COALESCE(requester_name, requested_by::text) AS requested_by,
-              COALESCE(module_name, reference_type) AS request_type,
-              title AS request_title
-       FROM approvals
-       WHERE approver_id = $1 AND status IN ('Approved', 'Rejected', 'Escalated') ${cidFilter}
-       ORDER BY decision_date DESC
-       LIMIT 100`,
-      companyId != null ? [userId, companyId] : [userId]
-    );
-    res.json(result.rows);
+    const ctx = await buildContext(req);
+    res.json((await collectHistory(ctx)).slice(0, 200));
   } catch (err) {
-    console.error("Get approval history error:", err);
-    res.status(500).json({ error: err.message });
+    send(res, err, 'Get approval history error:');
   }
 };
 
+/**
+ * KPIs, computed from the SAME rows the tabs show, for the SAME person:
+ *   pending        = rows in My Pending Approvals
+ *   overdue        = those waiting longer than their SLA (configured
+ *                    workflow_steps.sla_hours for the type, else the 48h default)
+ *   approvedToday / rejectedToday = my decisions dated today
+ *   slaCompliance  = % of my decisions in the last 30 days made within SLA;
+ *                    null when I made none — the UI shows "No data", never 100%.
+ */
 export const getApprovalStats = async (req, res) => {
   if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
   try {
-    const userId    = uid(req);
-    const companyId = cid(req);
-    const isAdmin   = isSupervisor(req);
-    const today     = new Date().toISOString().split('T')[0];
-    const cidFilter = companyId != null ? `AND company_id = $2` : '';
-
-    // Central approvals table counts
-    const [centralPending, approvedToday, rejectedToday, centralOverdue] = await Promise.all([
-      pool.query(
-        `SELECT COUNT(*) AS count FROM approvals WHERE approver_id = $1 AND status = 'Pending' ${cidFilter}`,
-        companyId != null ? [userId, companyId] : [userId]
-      ),
-      pool.query(
-        `SELECT COUNT(*) AS count FROM approvals WHERE approver_id = $1 AND status = 'Approved' AND DATE(decision_date) = $2 ${companyId != null ? 'AND company_id = $3' : ''}`,
-        companyId != null ? [userId, today, companyId] : [userId, today]
-      ),
-      pool.query(
-        `SELECT COUNT(*) AS count FROM approvals WHERE approver_id = $1 AND status = 'Rejected' AND DATE(decision_date) = $2 ${companyId != null ? 'AND company_id = $3' : ''}`,
-        companyId != null ? [userId, today, companyId] : [userId, today]
-      ),
-      pool.query(
-        `SELECT COUNT(*) AS count FROM approvals WHERE approver_id = $1 AND status = 'Pending' AND request_date < NOW() - INTERVAL '48 hours' ${cidFilter}`,
-        companyId != null ? [userId, companyId] : [userId]
-      ),
+    const ctx = await buildContext(req);
+    const [pending, history, sla] = await Promise.all([
+      collectPending(req, ctx).then(rows => rows.filter(r => r.can_act)),
+      collectHistory(ctx),
+      loadSlaHours(),
     ]);
 
-    // Reuse source-table functions for user-scoped, company-scoped counts
-    const [leaves, regs, ots, prs, exps, ecns, pays] = await Promise.all([
-      pendingLeaves(companyId),
-      pendingRegularizations(companyId),
-      pendingOT(companyId),
-      pendingPurchaseRequests(companyId),
-      pendingExpenses(companyId),
-      pendingECNs(companyId),
-      pendingPaymentBatches(companyId),
-    ]);
+    const cutoff = Date.now() - 30 * 86400000;
+    const recent = history.filter(h => h.request_date && new Date(h.decision_date).getTime() >= cutoff);
+    const within = recent.filter(h => {
+      const hours = (new Date(h.decision_date) - new Date(h.request_date)) / 3600000;
+      return hours <= (sla[h.type]?.hours ?? DEFAULT_SLA_HOURS);
+    });
 
-    let allSource = [...leaves, ...regs, ...ots, ...prs, ...exps, ...ecns, ...pays];
-    if (!isAdmin) {
-      allSource = allSource.filter(r =>
-        r.approver_id == null || String(r.approver_id) === String(userId)
-      );
-    }
-
-    const overdueSource = allSource.filter(r =>
-      r.request_date && (Date.now() - new Date(r.request_date).getTime()) > 172800000
-    ).length;
-
-    const pendingTotal = parseInt(centralPending.rows[0].count) + allSource.length;
-    const overdueTotal = parseInt(centralOverdue.rows[0].count) + overdueSource;
-
-    // SLA: % of decisions (approved+rejected) made within 48h of submission in last 30 days
-    const slaResult = await safeQuery(
-      `SELECT
-         COUNT(*) FILTER (WHERE EXTRACT(EPOCH FROM (decision_date - request_date)) <= 172800) AS within_sla,
-         COUNT(*) AS total
-       FROM approvals
-       WHERE approver_id = $1
-         AND status IN ('Approved','Rejected')
-         AND decision_date >= NOW() - INTERVAL '30 days'
-         ${cidFilter}`,
-      companyId != null ? [userId, companyId] : [userId]
-    );
-    const slaTotalRows = slaResult[0]?.total ?? 0;
-    const slaWithin    = slaResult[0]?.within_sla ?? 0;
-    const slaCompliance = slaTotalRows > 0
-      ? Math.round((parseInt(slaWithin) / parseInt(slaTotalRows)) * 100)
-      : null;
+    const configured = Object.entries(sla)
+      .filter(([, v]) => v.source === 'configured')
+      .map(([type, v]) => ({ type, label: SOURCE_BY_TYPE[type]?.label || type, hours: v.hours }));
 
     res.json({
-      pending:       pendingTotal,
-      approvedToday: parseInt(approvedToday.rows[0].count),
-      rejectedToday: parseInt(rejectedToday.rows[0].count),
-      overdue:       overdueTotal,
-      slaCompliance,
+      pending:        pending.length,
+      overdue:        pending.filter(r => r.overdue).length,
+      approvedToday:  history.filter(h => h.decision === 'Approved' && sameLocalDay(h.decision_date)).length,
+      rejectedToday:  history.filter(h => h.decision === 'Rejected' && sameLocalDay(h.decision_date)).length,
+      slaCompliance:  recent.length ? Math.round((within.length / recent.length) * 100) : null,
+      slaDecisions:   recent.length,
+      sla: { default_hours: DEFAULT_SLA_HOURS, configured },
+      // Whether to show the approver tabs at all. True for anyone who holds an
+      // approval role/permission, has something to decide, or has decided before.
+      isApprover: pending.length > 0 || history.length > 0
+        || isApproverRole(req) || isAttendanceApprover(req)
+        || !!ctx.perms.leaves?.can_approve || ctx.directReports.size > 0,
     });
   } catch (err) {
-    console.error("Get approval stats error:", err);
-    res.status(500).json({ error: err.message });
+    send(res, err, 'Get approval stats error:');
   }
 };
 
-// My Requests — read-only status/history of what the caller themselves
-// submitted, across every request type an employee can raise. Unlike
-// getPendingApprovals/getApprovalHistory (both scoped to the caller as
-// APPROVER), this is scoped to the caller as REQUESTER and includes resolved
-// (approved/rejected) rows, not just pending ones — there was previously no
-// endpoint that answered "did my leave request get approved yet?" No role
-// gate: every field is derived from the caller's own employee_id, never from
-// client input, so there is nothing here for another person's requests to leak.
-async function mySubmittedRequests(employeeId) {
-  const eid = String(employeeId);
-  const [leaves, expenses, purchases, regs, ots] = await Promise.all([
-    safeQuery(
-      `SELECT 'leave:' || la.id::text AS id, 'Leave' AS request_type,
-              CONCAT(COALESCE(lt.leave_name, 'Leave'), ' (', la.start_date, ' to ', la.end_date, ')') AS request_title,
-              la.applied_at                                AS request_date,
-              la.number_of_days                            AS amount,
-              INITCAP(REPLACE(la.status, '_', ' '))        AS status,
-              COALESCE(la.manager_comments, la.hr_comments) AS comments
-         FROM leave_applications la
-         LEFT JOIN leave_types lt ON lt.id = la.leave_type_id
-        WHERE la.employee_id::text = $1`,
-      [eid]
-    ),
-    safeQuery(
-      `SELECT 'exp:' || ec.id::text AS id, 'Expense' AS request_type,
-              CONCAT('Expense Claim ', ec.claim_number)     AS request_title,
-              ec.claim_date                                 AS request_date,
-              ec.total_amount                                AS amount,
-              INITCAP(REPLACE(ec.status, '_', ' '))         AS status,
-              COALESCE(ec.rejection_reason, ec.notes)       AS comments
-         FROM expense_claims ec
-        WHERE ec.employee_id::text = $1`,
-      [eid]
-    ),
-    safeQuery(
-      `SELECT 'pr:' || pr.id::text AS id, 'Purchase' AS request_type,
-              CONCAT('Purchase Request ', pr.request_number) AS request_title,
-              pr.request_date                                AS request_date,
-              pr.total_amount                                 AS amount,
-              INITCAP(REPLACE(pr.status, '_', ' '))          AS status,
-              pr.notes                                        AS comments
-         FROM purchase_requests pr
-        WHERE pr.requested_by_employee_id::text = $1`,
-      [eid]
-    ),
-    safeQuery(
-      `SELECT 'reg:' || arr.id::text AS id, 'Regularization' AS request_type,
-              CONCAT('Attendance correction — ', arr.date)  AS request_title,
-              arr.created_at                                AS request_date,
-              NULL::numeric                                 AS amount,
-              INITCAP(REPLACE(arr.status, '_', ' '))        AS status,
-              arr.manager_remarks                           AS comments
-         FROM attendance_regularization_requests arr
-        WHERE arr.employee_id::text = $1`,
-      [eid]
-    ),
-    safeQuery(
-      `SELECT 'ot:' || ot.id::text AS id, 'OT' AS request_type,
-              CONCAT('Overtime ', ot.ot_hours, 'h — ', ot.attendance_date) AS request_title,
-              ot.created_at                                  AS request_date,
-              ot.ot_hours                                    AS amount,
-              INITCAP(REPLACE(ot.status, '_', ' '))         AS status,
-              ot.rejection_remarks                           AS comments
-         FROM attendance_ot_records ot
-        WHERE ot.employee_id::text = $1`,
-      [eid]
-    ),
-  ]);
-
-  return [...leaves, ...expenses, ...purchases, ...regs, ...ots]
-    .sort((a, b) => new Date(b.request_date || 0) - new Date(a.request_date || 0));
-}
-
+/**
+ * My Requests — everything the caller submitted in any module, newest first,
+ * with status, current approver and the module page to view/track it on.
+ * Scoped by the caller's own user/employee id, never by client input.
+ */
 export const getMyRequests = async (req, res) => {
   if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
   try {
-    const employeeId = await myEmployeeId(req);
-    if (employeeId == null) return res.json({ awaitingMyAction: [], submitted: [] });
+    const ctx = await buildContext(req);
+    const all = [...SOURCES.filter(s => s.mine), central];
+    const per = await Promise.all(all.map(s => (ctx.employeeId == null && s.type !== 'appr' && s.type !== 'pay' && s.type !== 'adv'
+      ? [] : s.mine(ctx))));
 
-    const userId    = uid(req);
-    const companyId = cid(req);
-    const [myApprovals, submitted] = await Promise.all([
-      getEmployeeApprovals(userId, employeeId, companyId),
-      mySubmittedRequests(employeeId),
-    ]);
-
-    res.json({
-      awaitingMyAction: myApprovals.awaitingMyAction,
-      submitted: submitted.slice(0, 100),
+    const submitted = [];
+    all.forEach((s, i) => {
+      for (const r of per[i]) {
+        submitted.push({
+          id: String(r.id),
+          type: s.type,
+          request_type: s.type === 'appr' ? (r.category || s.label) : s.label,
+          request_title: r.request_title,
+          request_date: r.request_date,
+          amount: r.amount != null ? Number(r.amount) : null,
+          amount_unit: r.amount_unit ?? null,
+          status: displayStatus(r.raw_status),
+          status_detail: r.raw_status,
+          current_approver: r.current_approver ?? null,
+          decided_at: r.decided_at ?? null,
+          comments: r.comments ?? null,
+          link_page: s.myPage ?? null,
+          actions: s.myActions ? s.myActions(r) : {},
+        });
+      }
     });
+    submitted.sort((a, b) => new Date(b.request_date || 0) - new Date(a.request_date || 0));
+    res.json({ submitted: submitted.slice(0, 300) });
   } catch (err) {
-    console.error("Get my requests error:", err);
-    res.status(500).json({ error: err.message });
+    send(res, err, 'Get my requests error:');
   }
 };
 
-// ─── source-table dispatch for approve/reject ───────────────────────────────
+// ─── decisions this module owns: requisition, offer, central rows ───────────
 
-// Shared PR amount-authority gate for the generic Approval Center's 'pr'
-// source type. Delegates to procurement.authz.js's assertCanDecideAmount —
-// the same function purchase-request approve/reject/cancel routes use in
-// procurement.routes.js — instead of re-deriving the role/amount bands here.
-// An earlier version of this file kept its own copy (roles 'senior_manager',
-// 'cfo', 'finance_head' — none of which exist in `roles`, so only
-// admin/super_admin could ever clear one) which had drifted out of sync with
-// the real fix; rejectSourceItem's 'pr' case had no amount check at all,
-// so any APPROVER_ROLES member could reject/cancel a PR of any value even
-// though approving the same PR required L2/L3 authority.
-async function assertCanDecidePR(req, prId, action) {
-  const prRows = await safeQuery(
-    `SELECT pr.company_id,
-            GREATEST(
-              COALESCE(pr.total_amount, 0),
-              COALESCE((SELECT SUM(COALESCE(quantity, 0) * COALESCE(expected_price, 0))
-                        FROM purchase_request_items WHERE pr_id = pr.id), 0)
-            ) AS amount
-       FROM purchase_requests pr WHERE pr.id = $1::integer`,
-    [prId]
-  );
-  const pr = prRows[0];
-  if (!pr) return;
-  const setRows = await safeQuery(
-    `SELECT auto_approve_below, l1_approval_limit, l2_approval_limit, cfo_approval_above
-       FROM procurement_settings WHERE company_id = $1 LIMIT 1`,
-    [pr.company_id]
-  );
-  const decision = assertCanDecideAmount(req, pr.amount, setRows[0] || {}, action);
-  if (decision) {
-    const err = new Error(decision.body.message);
-    err.statusCode = decision.status;
-    throw err;
-  }
+function moduleEndpointError(prefix) {
+  const src = SOURCE_BY_TYPE[prefix];
+  return httpError(409, `${src.label} requests are decided by their own module so its approval levels, `
+    + `balances and checks apply. Use the action provided by GET /approvals/pending.`,
+  { code: 'USE_MODULE_ENDPOINT', type: prefix });
 }
 
-// Same reporting-manager/delegate/HR/admin identity gate leaves.routes.js's L1
-// approval and Travel's manager-review use (shared/managerApprovalAuthz.js).
-// Needed here too because this dispatch function is a SECOND write path to the
-// same leave_applications/expense_claims rows — canActOnApproval only checks
-// that the actor holds an approver role (see approvals.authz.js's own comment:
-// "no ownership record exists to check against" for source pseudo-ids), so
-// without this a manager-role user could bypass the hierarchy check on the
-// primary route entirely by approving through the Approval Center instead.
-async function assertCanActByHierarchy(req, table, sourceId) {
-  const rows = await safeQuery(
-    `SELECT employee_id, delegate_approver_id FROM ${table} WHERE id = $1`,
-    [sourceId]
-  );
-  const row = rows[0];
-  if (!row) return; // let the UPDATE's own WHERE clause no-op as before
-  const auth = await authorizeManagerApproval({
-    actorEmployeeId: await myEmployeeId(req),
-    actorRole: req.user?.role,
-    requesterEmployeeId: row.employee_id,
-    delegateApproverId: row.delegate_approver_id,
-  });
-  if (!auth.authorized) {
-    const err = new Error(DENIED_MESSAGE);
-    err.statusCode = 403;
-    throw err;
-  }
-}
-
-// Same gate the direct PUT /attendance/regularize/:id/approve|reject routes use
-// (assertCanDecideFor, attendance.authz.js) -- needed here for the same reason
-// assertCanActByHierarchy is needed for leave/exp above: the Approval Center is
-// a second write path to the same row. Deliberately reuses assertCanDecideFor
-// rather than managerApprovalAuthz.js's authorizeManagerApproval(): attendance's
-// hierarchy source of truth is org_relationships + attendance_approval_delegations,
-// not employees.reporting_manager_id -- using the wrong one here would silently
-// diverge from what the direct route decides for the same request.
-async function assertCanActOnRegularization(req, sourceId) {
-  const rows = await safeQuery(
-    `SELECT employee_id, company_id FROM attendance_regularization_requests WHERE id = $1`,
-    [sourceId]
-  );
-  const row = rows[0];
-  if (!row) return; // let the UPDATE's own WHERE clause no-op as before
-  const decide = await assertCanDecideFor(pool, req, row.employee_id, row.company_id, 'regularization');
-  if (decide) {
-    const err = new Error(decide.body?.message || decide.body?.error || 'Forbidden');
-    err.statusCode = decide.status;
-    throw err;
-  }
-}
-
-// Overtime needs the same treatment as regularization above, and for the same
-// reason: PUT /attendance/overtime/:id/approve|reject runs assertCanDecideFor
-// plus a pending-state guard, and the Approval Center is a second write path to
-// the same row. It previously ran neither -- canActOnApproval only checks that
-// the caller holds *an* approver role and can claim the 'ot' category, not that
-// they manage this employee -- so any approver-role user could approve any OT
-// record in the company, and could flip an already-rejected one back to
-// approved. See ATTENDANCE_DUPLICATION_FLOW_AUDIT.md §3.
-async function assertCanActOnOvertime(req, sourceId) {
-  const rows = await safeQuery(
-    `SELECT employee_id, company_id, status FROM attendance_ot_records WHERE id = $1`,
-    [sourceId]
-  );
-  const row = rows[0];
-  if (!row) return; // let the UPDATE's own WHERE clause no-op, as the other cases do
-
-  if (row.status !== 'pending') {
-    const err = new Error(`OT record is already ${row.status}`);
-    err.statusCode = 409;
-    throw err;
-  }
-
-  const decide = await assertCanDecideFor(pool, req, row.employee_id, row.company_id, 'overtime');
-  if (decide) {
-    const err = new Error(decide.body?.message || decide.body?.error || 'Forbidden');
-    err.statusCode = decide.status;
-    throw err;
-  }
-}
-
-async function approveSourceItem(modulePrefix, sourceId, userId, req) {
-  switch (modulePrefix) {
-    case 'leave':
-      await assertCanActByHierarchy(req, 'leave_applications', sourceId);
-      await safeQuery(
-        `UPDATE leave_applications SET status = 'approved', manager_status = 'approved', manager_approved_at = NOW() WHERE id = $1::integer`,
-        [sourceId]
-      );
-      break;
-    case 'reg': {
-      await assertCanActOnRegularization(req, sourceId);
-      const regRows = await safeQuery(
-        `SELECT * FROM attendance_regularization_requests WHERE id = $1`,
-        [sourceId]
-      );
-      await safeQuery(
-        `UPDATE attendance_regularization_requests
-            SET status = 'approved', manager_id = $2, manager_actioned_at = NOW(), approval_level = 'done'
-          WHERE id = $1`,
-        [sourceId, userId]
-      );
-      const r = regRows[0];
-      if (r) {
-        // Apply the attendance correction so the record reflects the corrected times
-        await safeQuery(`
-          INSERT INTO attendance_records (employee_id, attendance_date, status, company_id)
-          VALUES ($1, $2, 'present', $3)
-          ON CONFLICT (employee_id, attendance_date) DO UPDATE
-            SET status         = 'present',
-                check_in_time  = COALESCE($4::time, attendance_records.check_in_time),
-                check_out_time = COALESCE($5::time, attendance_records.check_out_time),
-                updated_at     = NOW()
-        `, [r.employee_id, r.date, r.company_id, r.check_in || null, r.check_out || null]);
-        // Notify the employee
-        await safeQuery(`
-          INSERT INTO notifications (user_id, title, message, module_name, reference_id, notification_type)
-          SELECT u.id, 'Regularization Approved',
-                 'Your attendance correction for ' || $2 || ' has been approved.',
-                 'attendance', $3, 'regularization'
-            FROM users u WHERE u.employee_id = $1::integer LIMIT 1
-        `, [r.employee_id, r.date, r.id]);
-      }
-      break;
-    }
-    case 'ot':
-      await assertCanActOnOvertime(req, sourceId);
-      await safeQuery(
-        `UPDATE attendance_ot_records SET status = 'approved', approved_by = $2, approved_at = NOW() WHERE id = $1`,
-        [sourceId, userId]
-      );
-      break;
-    case 'pr':
-      await assertCanDecidePR(req, sourceId, 'approve');
-      // purchase_requests.approved_by FKs employees(id), NOT users(id) — the
-      // same trap as stock_ledger.created_by, already documented and fixed at
-      // the module's own approve route (procurement.routes.js). Passing the
-      // users.id raised a 23503 FK violation for every approver whose users.id
-      // did not coincidentally exist as an employees.id, so the Approval
-      // Center's Approve button 500'd on every Purchase Request. Admin accounts
-      // (employee_id IS NULL) resolve to NULL, which the column accepts; the
-      // caller's logAudit() is the durable record of who approved.
-      await safeQuery(
-        `UPDATE purchase_requests SET status = 'approved', approved_by = $2, approved_at = NOW() WHERE id = $1::integer`,
-        [sourceId, await myEmployeeId(req)]
-      );
-      break;
-    case 'exp':
-      await assertCanActByHierarchy(req, 'expense_claims', sourceId);
-      await safeQuery(
-        `UPDATE expense_claims SET status = 'Approved', approved_by = $2, approved_at = NOW() WHERE id = $1::integer`,
-        [sourceId, userId]
-      );
-      break;
-    case 'ecn':
-      // Same identity mismatch as the pr case above, but silent: this column
-      // has no FK, so a users.id was stored happily AND the sibling
-      // approved_by_name subquery — which looks $2 up in employees — quietly
-      // resolved to NULL. engineering_changes' actor columns are employee ids
-      // (pendingECNs joins employees on ec.requested_by), so both halves of
-      // this statement want the same employee id.
-      await safeQuery(
-        `UPDATE engineering_changes SET status = 'approved', approved_by = $2, approved_by_name = (SELECT CONCAT(first_name,' ',last_name) FROM employees WHERE id = $2 LIMIT 1), approved_at = NOW() WHERE id = $1`,
-        [sourceId, await myEmployeeId(req)]
-      );
-      break;
-    case 'pay':
-      await safeQuery(
-        `UPDATE payment_batches SET status = 'Approved', approved_by = $2, approved_at = NOW() WHERE id = $1::integer`,
-        [sourceId, userId]
-      );
-      break;
+async function approveSourceItem(prefix, sourceId, req) {
+  const companyId = cid(req);
+  switch (prefix) {
     case 'requisition': {
-      // job_requisitions has no approved_by/approved_at column (unlike pr/ecn/
-      // pay above) — status is the only record of the decision. The caller
-      // (approveRequest) already logAudit()s this action, which is where the
-      // "who/when" lives instead.
-      //
       // Segregation of duties: requisition/offer are deliberately NOT narrowed
-      // in APPROVER_CATEGORY_SCOPE (see approvals.authz.js), so any APPROVER_ROLES
-      // member — including manager/department_head, the same roles that can raise
-      // a requisition — could otherwise claim and approve their own request from
-      // the shared unassigned pool. Block that specific case here.
-      const reqRows = await safeQuery(
-        `SELECT requested_by FROM job_requisitions WHERE id = $1::integer`,
-        [sourceId]
-      );
-      const requestedBy = reqRows[0]?.requested_by;
-      if (requestedBy != null) {
-        const actorEmployeeId = await myEmployeeId(req);
-        if (actorEmployeeId != null && String(actorEmployeeId) === String(requestedBy)) {
-          const err = new Error('You cannot approve a requisition you raised yourself. Ask another approver to review it.');
-          err.statusCode = 403;
-          throw err;
-        }
+      // in APPROVER_CATEGORY_SCOPE, so the roles that raise a requisition could
+      // otherwise approve their own from the shared pool.
+      const reqRows = await pool.query(
+        `SELECT requested_by, company_id FROM job_requisitions WHERE id = $1::integer`, [sourceId]);
+      const row = reqRows.rows[0];
+      if (!row || (companyId != null && Number(row.company_id) !== Number(companyId))) {
+        throw httpError(404, 'Requisition not found');
       }
-      // Compare-and-swap on the prior state, matching the central approvals-table
-      // path below (`UPDATE approvals ... WHERE status='Pending' RETURNING *`).
-      // Without the status guard this UPDATE was unconditional, so two approvers
-      // racing the same requisition both "succeeded" — each firing its own audit
-      // entry and notification — and an approve could silently overwrite a
-      // concurrent reject. pendingRequisitions() only ever surfaces
-      // status='pending_approval' rows, so that is the only valid prior state.
-      const reqUpdated = await safeQuery(
+      const actorEmployeeId = await myEmployeeId(req);
+      if (row.requested_by != null && actorEmployeeId != null && String(actorEmployeeId) === String(row.requested_by)) {
+        throw httpError(403, 'You cannot approve a requisition you raised yourself. Ask another approver to review it.');
+      }
+      // Compare-and-swap on the prior state: two approvers racing the same
+      // requisition must not both succeed.
+      const updated = await pool.query(
         `UPDATE job_requisitions SET status = 'approved', updated_at = NOW()
-          WHERE id = $1::integer AND status = 'pending_approval' RETURNING id`,
-        [sourceId]
-      );
-      if (!reqUpdated.length) {
-        const err = new Error('This requisition is no longer pending approval — someone else may have already actioned it.');
-        err.statusCode = 409;
-        throw err;
+          WHERE id = $1::integer AND status = 'pending_approval' RETURNING id`, [sourceId]);
+      if (!updated.rows.length) {
+        throw httpError(409, 'This requisition is no longer pending approval — someone else may have already actioned it.');
       }
-      break;
+      return { requesterEmployeeId: row.requested_by, companyId: row.company_id, label: 'Requisition' };
     }
     case 'offer': {
-      // No approved_by/approved_at column here either — offer_sent_date
-      // doubles as the "when" (also feeds getTimeToHire()'s calc, which
-      // previously only got populated if a caller happened to pass it
-      // explicitly to PUT /offers/:id — the UI's "Send" button never did).
-      // Same compare-and-swap guard as the requisition case above — without it
-      // two approvers racing the same offer both succeeded, each firing a
-      // duplicate candidate-facing 'offer_sent' email below.
-      //
-      // Segregation of duties, matching the requisition case. This was previously
-      // impossible — offer_letters had no created_by column — which left the more
-      // consequential of the two approvals (committing to a salary) as the one
-      // without a self-approval guard. Migration 20260813000002 added the column;
-      // POST /recruitment/offers stamps it server-side from the caller's employee
-      // id. Rows created before that migration, and offers auto-drafted by
-      // autoDraftOfferForCandidate(), have created_by NULL and are treated as
-      // "author unknown, allow" — exactly how the requisition case treats a null
-      // requested_by, rather than locking out approval of historical rows.
-      // Stamp the expiry date at send time from the company's configured
-      // validity. COALESCE so an expiry a recruiter deliberately set on the
-      // draft survives approval rather than being overwritten by the default.
-      // Storing it (rather than deriving it on read, as this used to) is what
-      // makes a one-off extension for a single candidate possible — see
-      // migration 20260813000001.
-      const offerRow = await safeQuery(
-        `SELECT company_id, created_by FROM offer_letters WHERE id = $1::uuid`, [sourceId]
-      );
-      const offerAuthor = offerRow[0]?.created_by;
-      if (offerAuthor != null) {
-        const actorEmployeeId = await myEmployeeId(req);
-        if (actorEmployeeId != null && String(actorEmployeeId) === String(offerAuthor)) {
-          const err = new Error('You cannot approve an offer you raised yourself. Ask another approver to review it.');
-          err.statusCode = 403;
-          throw err;
-        }
+      const offerRow = (await pool.query(
+        `SELECT company_id, created_by FROM offer_letters WHERE id = $1::uuid`, [sourceId])).rows[0];
+      if (!offerRow || (companyId != null && Number(offerRow.company_id) !== Number(companyId))) {
+        throw httpError(404, 'Offer not found');
       }
-      const validityDays = await getOfferValidityDays(offerRow[0]?.company_id ?? null);
-      const offerUpdated = await safeQuery(
+      // created_by is NULL on offers drafted before migration 20260813000002 and
+      // on auto-drafted offers: "author unknown, allow", as for requisitions.
+      const actorEmployeeId = await myEmployeeId(req);
+      if (offerRow.created_by != null && actorEmployeeId != null && String(actorEmployeeId) === String(offerRow.created_by)) {
+        throw httpError(403, 'You cannot approve an offer you raised yourself. Ask another approver to review it.');
+      }
+      // Expiry stamped at send time from the company's validity; COALESCE keeps
+      // an expiry a recruiter deliberately set on the draft.
+      const validityDays = await getOfferValidityDays(offerRow.company_id ?? null);
+      const updated = await pool.query(
         `UPDATE offer_letters
-            SET offer_status = 'sent',
-                offer_sent_date = CURRENT_DATE,
+            SET offer_status = 'sent', offer_sent_date = CURRENT_DATE,
                 offer_expiry_date = COALESCE(offer_expiry_date, (CURRENT_DATE + $2::int)::date),
                 updated_at = NOW()
           WHERE id = $1::uuid AND offer_status = 'pending_approval' RETURNING id`,
-        [sourceId, validityDays]
-      );
-      if (!offerUpdated.length) {
-        const err = new Error('This offer is no longer pending approval — someone else may have already actioned it.');
-        err.statusCode = 409;
-        throw err;
+        [sourceId, validityDays]);
+      if (!updated.rows.length) {
+        throw httpError(409, 'This offer is no longer pending approval — someone else may have already actioned it.');
       }
-      // Candidate-facing "offer sent" email — previously fired from
-      // recruitment.routes.js's PUT /offers/:id handler when offer_status
-      // was set to 'sent' directly; that write path is gone now that
-      // sending requires approval, so the email moves here.
+      // Candidate-facing "offer sent" email — sending requires approval, so it fires here.
       const offer = await recruitmentRepository.findOfferById(sourceId, null);
       if (offer) {
         triggerEmail('offer_sent', {
@@ -983,264 +380,120 @@ async function approveSourceItem(modulePrefix, sourceId, userId, req) {
           ctc:             offer.offered_salary   || '',
         }, offer.company_id);
       }
-      break;
+      return { requesterEmployeeId: offerRow.created_by, companyId: offerRow.company_id, label: 'Offer Letter' };
     }
     default:
-      break;
+      if (MODULE_DECIDED_TYPES.has(prefix)) throw moduleEndpointError(prefix);
+      throw httpError(400, `Unknown request type "${prefix}"`);
   }
 }
 
-async function rejectSourceItem(modulePrefix, sourceId, userId, comment, req) {
-  switch (modulePrefix) {
-    case 'leave':
-      await assertCanActByHierarchy(req, 'leave_applications', sourceId);
-      await safeQuery(
-        `UPDATE leave_applications SET status = 'rejected', manager_status = 'rejected', manager_comments = $2, manager_approved_at = NOW() WHERE id = $1::integer`,
-        [sourceId, comment]
-      );
-      break;
-    case 'reg': {
-      await assertCanActOnRegularization(req, sourceId);
-      await safeQuery(
-        `UPDATE attendance_regularization_requests
-            SET status = 'rejected', manager_remarks = $2, manager_id = $3, manager_actioned_at = NOW()
-          WHERE id = $1`,
-        [sourceId, comment, userId]
-      );
-      // Notify the employee of the rejection
-      await safeQuery(`
-        INSERT INTO notifications (user_id, title, message, module_name, reference_id, notification_type)
-        SELECT u.id, 'Regularization Rejected',
-               'Your attendance correction request for ' || r.date || ' was rejected' ||
-               CASE WHEN $2 <> '' THEN ': ' || $2 ELSE '.' END,
-               'attendance', $1::integer, 'regularization'
-          FROM attendance_regularization_requests r
-          JOIN users u ON u.employee_id = r.employee_id::integer
-         WHERE r.id = $1::integer
-         LIMIT 1
-      `, [sourceId, comment || '']);
-      break;
-    }
-    case 'ot':
-      await assertCanActOnOvertime(req, sourceId);
-      await safeQuery(
-        `UPDATE attendance_ot_records SET status = 'rejected', rejection_remarks = $2 WHERE id = $1`,
-        [sourceId, comment]
-      );
-      break;
-    case 'pr':
-      await assertCanDecidePR(req, sourceId, 'reject');
-      await safeQuery(
-        `UPDATE purchase_requests SET status = 'rejected', rejection_reason = $2, approved_at = NOW() WHERE id = $1::integer`,
-        [sourceId, comment]
-      );
-      break;
-    case 'exp':
-      await assertCanActByHierarchy(req, 'expense_claims', sourceId);
-      await safeQuery(
-        `UPDATE expense_claims SET status = 'Rejected', rejection_reason = $2, approved_at = NOW() WHERE id = $1::integer`,
-        [sourceId, comment]
-      );
-      break;
-    case 'ecn':
-      await safeQuery(
-        `UPDATE engineering_changes SET status = 'rejected' WHERE id = $1`,
-        [sourceId]
-      );
-      break;
-    case 'pay':
-      await safeQuery(
-        `UPDATE payment_batches SET status = 'Rejected', rejection_reason = $2 WHERE id = $1::integer`,
-        [sourceId, comment]
-      );
-      break;
-    case 'requisition': {
-      // No 'rejected' state exists in job_requisitions' status CHECK
-      // constraint (draft/pending_approval/approved/open/closed) and no
-      // rejection-reason column either — bounces back to 'draft' for the
-      // requester to revise and resubmit. The rejection comment is preserved
-      // in the audit log (logAudit in the caller), not on the row itself.
-      // Status-guarded for the same reason as the approve path — otherwise a
-      // reject racing a concurrent approve could bounce an already-approved
-      // requisition back to draft.
-      const reqRejected = await safeQuery(
-        `UPDATE job_requisitions SET status = 'draft', updated_at = NOW()
-          WHERE id = $1::integer AND status = 'pending_approval' RETURNING id`,
-        [sourceId]
-      );
-      if (!reqRejected.length) {
-        const err = new Error('This requisition is no longer pending approval — someone else may have already actioned it.');
-        err.statusCode = 409;
-        throw err;
-      }
-      break;
-    }
-    case 'offer': {
-      // Bounces back to draft for the requester to revise, same pattern as
-      // requisition above. offer_letters has no rejection-reason column —
-      // the comment lives in the audit log only.
-      const offerRejected = await safeQuery(
-        `UPDATE offer_letters SET offer_status = 'draft', updated_at = NOW()
-          WHERE id = $1::uuid AND offer_status = 'pending_approval' RETURNING id`,
-        [sourceId]
-      );
-      if (!offerRejected.length) {
-        const err = new Error('This offer is no longer pending approval — someone else may have already actioned it.');
-        err.statusCode = 409;
-        throw err;
-      }
-      break;
-    }
-    default:
-      break;
+// Reject = send back to draft for the requester to revise and resubmit —
+// neither table has a 'rejected' state (job_requisitions' CHECK constraint is
+// draft/pending_approval/approved/open/closed).
+async function rejectSourceItem(prefix, sourceId, req) {
+  const companyId = cid(req);
+  const tables = {
+    requisition: { sql: `UPDATE job_requisitions SET status = 'draft', updated_at = NOW()
+                          WHERE id = $1::integer AND status = 'pending_approval'
+                            AND ($2::int IS NULL OR company_id = $2) RETURNING requested_by AS author, company_id`,
+                   label: 'Requisition' },
+    offer:       { sql: `UPDATE offer_letters SET offer_status = 'draft', updated_at = NOW()
+                          WHERE id = $1::uuid AND offer_status = 'pending_approval'
+                            AND ($2::int IS NULL OR company_id = $2) RETURNING created_by AS author, company_id`,
+                   label: 'Offer Letter' },
+  };
+  const t = tables[prefix];
+  if (!t) {
+    if (MODULE_DECIDED_TYPES.has(prefix)) throw moduleEndpointError(prefix);
+    throw httpError(400, `Unknown request type "${prefix}"`);
   }
+  const { rows } = await pool.query(t.sql, [sourceId, companyId]);
+  if (!rows.length) {
+    throw httpError(409, `This ${t.label.toLowerCase()} is no longer pending approval — someone else may have already actioned it.`);
+  }
+  return { requesterEmployeeId: rows[0].author, companyId: rows[0].company_id, label: t.label };
 }
 
-// ─── approve / reject / bulk ─────────────────────────────────────────────────
+// History row for a decision made here, so it appears in Approval History and
+// in the requester's "sent back" status. reference_id is an integer column; a
+// uuid offer id goes in the title, which offer.mine() matches on.
+async function recordDecision(prefix, sourceId, status, userId, comment, companyId) {
+  const label = prefix.charAt(0).toUpperCase() + prefix.slice(1);
+  const refId = /^\d+$/.test(sourceId) ? parseInt(sourceId, 10) : null;
+  await pool.query(
+    `INSERT INTO approvals
+       (module_name, reference_id, reference_type, title, requester_name, approver_id,
+        status, decision_date, comments, company_id)
+     VALUES ($1, $2, $3, $4, 'System', $5, $6, NOW(), $7, $8)`,
+    [prefix, refId, label, `${label} #${sourceId}`, userId, status, comment || null, companyId]
+  );
+}
 
-export const approveRequest = async (req, res) => {
+async function decide(req, res, action) {
   if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
   try {
     const { id } = req.params;
+    const comment   = String(req.body?.comment ?? req.body?.comments ?? '').trim();
     const userId    = uid(req);
     const companyId = cid(req);
-    const isSource  = id.includes(':');
+    const Status    = action === 'approve' ? 'Approved' : 'Rejected';
 
-    if (isSource) {
-      const [prefix, sourceId] = id.split(':');
-      await approveSourceItem(prefix, sourceId, userId, req);
-
-      // Close any existing pending central-approval row for the same reference
-      const refId = /^\d+$/.test(sourceId) ? parseInt(sourceId, 10) : null;
-      const updated = await safeQuery(
-        `UPDATE approvals
-           SET status = 'Approved', decision_date = NOW(), approver_id = $1
-         WHERE module_name = $2 AND reference_id = $3 AND status = 'Pending'
-         RETURNING id`,
-        [userId, prefix, refId]
-      );
-
-      // Only insert a history row if no existing row was updated
-      if (!updated.length) {
-        const label = prefix.charAt(0).toUpperCase() + prefix.slice(1);
-        await safeQuery(
-          `INSERT INTO approvals
-             (module_name, reference_id, reference_type, title,
-              requester_name, approver_id, status, decision_date, company_id)
-           VALUES ($1, $2, $3, $4, 'System', $5, 'Approved', NOW(), $6)`,
-          [prefix, refId, label, `${label} #${sourceId}`, userId, companyId]
-        );
-      }
-
-      logAudit({
-        userId, module: 'approvals', recordId: sourceId,
-        recordType: prefix, action: 'approve',
-        oldData: { status: 'Pending' }, newData: { status: 'Approved' }, req,
-      });
-      notifyWorkflowEvent('approved', { module: prefix, recordId: sourceId, submitterUserId: userId });
-      return res.json({ id, status: 'Approved', decision_date: new Date() });
+    if (action === 'reject' && !comment) {
+      return res.status(400).json({ error: 'A reason is required when rejecting or sending back a request.' });
     }
 
-    // Central approvals table
-    const cidFilter = companyId != null ? `AND company_id = $3` : '';
+    if (id.includes(':')) {
+      const [prefix, sourceId] = id.split(':');
+      const result = action === 'approve'
+        ? await approveSourceItem(prefix, sourceId, req)
+        : await rejectSourceItem(prefix, sourceId, req);
+      await recordDecision(prefix, sourceId, Status, userId, comment, result.companyId ?? companyId);
+      logAudit({
+        userId, module: 'approvals', recordId: sourceId, recordType: prefix, action,
+        oldData: { status: 'Pending' }, newData: { status: Status, comment: comment || null }, req,
+      });
+      // Tell the REQUESTER (an employees.id, resolved to their login). The old
+      // code addressed this to the approver's own user id.
+      notifyWorkflowEvent(action === 'approve' ? 'approved' : 'rejected', {
+        module: result.label, recordId: sourceId,
+        recipientIds: [result.requesterEmployeeId].filter(v => v != null),
+        comments: comment,
+      });
+      return res.json({ id, status: Status, decision_date: new Date() });
+    }
+
+    // Central approvals table row.
+    const existing = (await pool.query(
+      `SELECT module_name, reference_id FROM approvals WHERE id = $1 ${companyId != null ? 'AND company_id = $2' : ''}`,
+      companyId != null ? [id, companyId] : [id])).rows[0];
+    if (!existing) return res.status(404).json({ error: 'Approval not found' });
+    const linkedType = CENTRAL_TO_TYPE[String(existing.module_name || '').toLowerCase()];
+    if (linkedType && existing.reference_id != null && MODULE_DECIDED_TYPES.has(linkedType)) {
+      throw moduleEndpointError(linkedType);
+    }
+
     const result = await pool.query(
       `UPDATE approvals
-       SET status = 'Approved', decision_date = NOW(), approver_id = $1
-       WHERE id = $2 AND status = 'Pending' ${cidFilter}
-       RETURNING *`,
-      companyId != null ? [userId, id, companyId] : [userId, id]
+          SET status = $1, decision_date = NOW(), approver_id = $2,
+              comments = COALESCE(NULLIF($3, ''), comments)
+        WHERE id = $4 AND status = 'Pending' ${companyId != null ? 'AND company_id = $5' : ''}
+        RETURNING *`,
+      companyId != null ? [Status, userId, comment, id, companyId] : [Status, userId, comment, id]
     );
     const approval = result.rows[0];
     if (!approval) return res.status(409).json({ error: 'Approval not found or already processed' });
 
-    // Also approve the linked source-table record so it no longer shows as pending
-    if (approval.reference_id && approval.module_name) {
-      await approveSourceItem(approval.module_name, String(approval.reference_id), userId, req);
+    if (linkedType && approval.reference_id != null && !MODULE_DECIDED_TYPES.has(linkedType)) {
+      if (action === 'approve') await approveSourceItem(linkedType, String(approval.reference_id), req);
+      else await rejectSourceItem(linkedType, String(approval.reference_id), req);
     }
 
     logAudit({
-      userId, module: 'approvals', recordId: id,
-      recordType: approval.module_name || 'approval', action: 'approve',
-      oldData: { status: 'Pending' }, newData: { status: 'Approved', decision_date: approval.decision_date }, req,
+      userId, module: 'approvals', recordId: id, recordType: approval.module_name || 'approval', action,
+      oldData: { status: 'Pending' }, newData: { status: Status, comment: comment || null }, req,
     });
-    notifyWorkflowEvent('approved', {
-      module: approval.module_name || 'Approval',
-      recordId: approval.reference_id || approval.id,
-      submitterUserId: approval.requested_by,
-    });
-    res.json(approval);
-  } catch (err) {
-    console.error("Approve request error:", err);
-    res.status(err.statusCode || 500).json({ error: err.message });
-  }
-};
-
-export const rejectRequest = async (req, res) => {
-  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
-  try {
-    const { id } = req.params;
-    const { comment } = req.body;
-    const userId    = uid(req);
-    const companyId = cid(req);
-    const isSource  = id.includes(':');
-
-    if (isSource) {
-      const [prefix, sourceId] = id.split(':');
-      await rejectSourceItem(prefix, sourceId, userId, comment || '', req);
-
-      // Close any existing pending central-approval row for the same reference
-      const refId = /^\d+$/.test(sourceId) ? parseInt(sourceId, 10) : null;
-      const updated = await safeQuery(
-        `UPDATE approvals
-           SET status = 'Rejected', decision_date = NOW(), approver_id = $1, comments = $2
-         WHERE module_name = $3 AND reference_id = $4 AND status = 'Pending'
-         RETURNING id`,
-        [userId, comment || '', prefix, refId]
-      );
-
-      // Only insert a history row if no existing row was updated
-      if (!updated.length) {
-        const label = prefix.charAt(0).toUpperCase() + prefix.slice(1);
-        await safeQuery(
-          `INSERT INTO approvals
-             (module_name, reference_id, reference_type, title,
-              requester_name, approver_id, status, decision_date, comments, company_id)
-           VALUES ($1, $2, $3, $4, 'System', $5, 'Rejected', NOW(), $6, $7)`,
-          [prefix, refId, label, `${label} #${sourceId}`, userId, comment || '', companyId]
-        );
-      }
-
-      logAudit({
-        userId, module: 'approvals', recordId: sourceId,
-        recordType: prefix, action: 'reject',
-        oldData: { status: 'Pending' }, newData: { status: 'Rejected', comment }, req,
-      });
-      notifyWorkflowEvent('rejected', { module: prefix, recordId: sourceId, submitterUserId: userId, comments: comment });
-      return res.json({ id, status: 'Rejected', decision_date: new Date() });
-    }
-
-    const cidFilter = companyId != null ? `AND company_id = $4` : '';
-    const result = await pool.query(
-      `UPDATE approvals
-       SET status = 'Rejected', decision_date = NOW(), approver_id = $1, comments = $2
-       WHERE id = $3 AND status = 'Pending' ${cidFilter}
-       RETURNING *`,
-      companyId != null ? [userId, comment, id, companyId] : [userId, comment, id]
-    );
-    const approval = result.rows[0];
-    if (!approval) return res.status(409).json({ error: 'Approval not found or already processed' });
-
-    // Also reject the linked source-table record so it no longer shows as pending
-    if (approval.reference_id && approval.module_name) {
-      await rejectSourceItem(approval.module_name, String(approval.reference_id), userId, comment || '', req);
-    }
-
-    logAudit({
-      userId, module: 'approvals', recordId: id,
-      recordType: approval.module_name || 'approval', action: 'reject',
-      oldData: { status: 'Pending' }, newData: { status: 'Rejected', comment, decision_date: approval.decision_date }, req,
-    });
-    notifyWorkflowEvent('rejected', {
+    notifyWorkflowEvent(action === 'approve' ? 'approved' : 'rejected', {
       module: approval.module_name || 'Approval',
       recordId: approval.reference_id || approval.id,
       submitterUserId: approval.requested_by,
@@ -1248,320 +501,237 @@ export const rejectRequest = async (req, res) => {
     });
     res.json(approval);
   } catch (err) {
-    console.error("Reject request error:", err);
-    res.status(err.statusCode || 500).json({ error: err.message });
+    send(res, err, `${action} request error:`);
   }
-};
+}
 
-export const bulkApprove = async (req, res) => {
+export const approveRequest = (req, res) => decide(req, res, 'approve');
+export const rejectRequest  = (req, res) => decide(req, res, 'reject');
+
+/**
+ * Bulk endpoints cover only what this module decides itself (requisition,
+ * offer, central rows). Module records are skipped with code
+ * USE_MODULE_ENDPOINT — the UI runs each row's own module action instead.
+ */
+async function bulk(req, res, action) {
   if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
-  try {
-    const { ids } = req.body;
-    if (!Array.isArray(ids) || ids.length === 0)
-      return res.status(400).json({ error: 'ids must be a non-empty array' });
+  const { ids } = req.body || {};
+  if (!Array.isArray(ids) || ids.length === 0) return res.status(400).json({ error: 'ids must be a non-empty array' });
+  const comment = String(req.body?.comment ?? '').trim();
+  if (action === 'reject' && !comment) return res.status(400).json({ error: 'A reason is required when rejecting.' });
 
-    const userId    = uid(req);
-    const companyId = cid(req);
-    const cidFilter = companyId != null ? `AND company_id = $3` : '';
-
-    const sourceIds  = ids.filter(i => String(i).includes(':'));
-    const centralIds = ids.filter(i => !String(i).includes(':'));
-    const results    = [];
-
-    // Process source items. Category-scoped roles (APPROVER_CATEGORY_SCOPE)
-    // may only claim their own domain here — same rule canActOnApproval
-    // enforces on the single-item route. Denied ids are simply skipped (not
-    // pushed to results), surfacing in the `skipped` list below.
-    for (const id of sourceIds) {
-      const [prefix, sourceId] = String(id).split(':');
-      if (!canClaimCategory(req, prefix)) continue;
-      await approveSourceItem(prefix, sourceId, userId, req);
-      const refId = /^\d+$/.test(sourceId) ? parseInt(sourceId, 10) : null;
-      await safeQuery(
-        `UPDATE approvals SET status = 'Approved', decision_date = NOW(), approver_id = $1
-         WHERE module_name = $2 AND reference_id = $3 AND status = 'Pending'`,
-        [userId, prefix, refId]
-      );
-      logAudit({ userId, module: 'approvals', recordId: sourceId, recordType: prefix, action: 'approve', oldData: { status: 'Pending' }, newData: { status: 'Approved', bulk: true }, req });
-      results.push({ id, status: 'Approved' });
-    }
-
-    // Process central items
-    if (centralIds.length > 0) {
-      // Ownership filter, matching the single-item path in approvals.authz.js.
-      // Without it, holding any approver role let you bulk-approve items assigned
-      // to a DIFFERENT approver — e.g. a sales_manager clearing a purchase request
-      // routed to finance. The route-level guard only checks that you may approve
-      // *something*; this restricts it to items that are actually yours.
-      // Rows that fail the filter are simply not updated and are reported as skipped.
-      const ownFilter = canOverride(req) ? '' : `AND (approver_id = $1 OR approver_id IS NULL)`;
-      const r = await pool.query(
-        `UPDATE approvals SET status = 'Approved', decision_date = NOW(), approver_id = $1
-         WHERE id = ANY($2::int[]) AND status = 'Pending' ${cidFilter} ${ownFilter} RETURNING *`,
-        companyId != null ? [userId, centralIds.map(Number), companyId] : [userId, centralIds.map(Number)]
-      );
-      for (const approval of r.rows) {
-        if (approval.reference_id && approval.module_name) {
-          await approveSourceItem(approval.module_name, String(approval.reference_id), userId, req);
-        }
-        logAudit({ userId, module: 'approvals', recordId: approval.id, recordType: approval.module_name || 'approval', action: 'approve', oldData: { status: 'Pending' }, newData: { status: 'Approved', bulk: true }, req });
-        notifyWorkflowEvent('approved', { module: approval.module_name || 'Approval', recordId: approval.reference_id || approval.id, submitterUserId: approval.requested_by });
-        results.push(approval);
+  const results = [];
+  const skipped = [];
+  for (const raw of ids) {
+    const id = String(raw);
+    const prefix = id.includes(':') ? id.split(':')[0] : null;
+    if (prefix && MODULE_DECIDED_TYPES.has(prefix)) { skipped.push({ id, code: 'USE_MODULE_ENDPOINT' }); continue; }
+    if (prefix && !canClaimCategory(req, prefix)) { skipped.push({ id, code: 'APPROVAL_NOT_YOURS' }); continue; }
+    if (!prefix && !canOverride(req)) {
+      const own = (await pool.query(`SELECT approver_id FROM approvals WHERE id = $1`, [id])).rows[0];
+      if (own && own.approver_id != null && String(own.approver_id) !== String(uid(req))) {
+        skipped.push({ id, code: 'APPROVAL_NOT_YOURS' }); continue;
       }
     }
-
-    // Surface anything the ownership filter withheld, so the caller sees a
-    // partial success rather than silently believing all ids were approved.
-    const done    = new Set(results.map(r => String(r.id ?? r)));
-    const skipped = ids.filter(i => !done.has(String(i)));
-    res.json({
-      count: results.length,
-      approvals: results,
-      ...(skipped.length ? {
-        skipped,
-        message: 'Some items were not approved: already processed, or assigned to a different approver.',
-      } : {}),
-    });
-  } catch (err) {
-    console.error("Bulk approve error:", err);
-    res.status(err.statusCode || 500).json({ error: err.message });
+    // Re-use the single-item path through a captured response.
+    let status = 200; let body = null;
+    const fakeRes = { status(c) { status = c; return this; }, json(b) { body = b; return this; } };
+    await decide({ ...req, params: { id }, body: { comment } }, fakeRes, action);
+    if (status >= 400) skipped.push({ id, code: body?.code || status, error: body?.error });
+    else results.push({ id, status: action === 'approve' ? 'Approved' : 'Rejected' });
   }
-};
+  res.json({
+    count: results.length, approvals: results,
+    ...(skipped.length ? { skipped, message: 'Some items were not processed — see `skipped`.' } : {}),
+  });
+}
 
-export const bulkReject = async (req, res) => {
-  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
-  try {
-    const { ids, comment } = req.body;
-    if (!Array.isArray(ids) || ids.length === 0)
-      return res.status(400).json({ error: 'ids must be a non-empty array' });
+export const bulkApprove = (req, res) => bulk(req, res, 'approve');
+export const bulkReject  = (req, res) => bulk(req, res, 'reject');
 
-    const userId    = uid(req);
-    const companyId = cid(req);
-    const cidFilter = companyId != null ? `AND company_id = $4` : '';
-
-    const sourceIds  = ids.filter(i => String(i).includes(':'));
-    const centralIds = ids.filter(i => !String(i).includes(':'));
-    const results    = [];
-
-    // See the matching comment in bulkApprove: category-scoped roles may only
-    // claim their own domain here.
-    for (const id of sourceIds) {
-      const [prefix, sourceId] = String(id).split(':');
-      if (!canClaimCategory(req, prefix)) continue;
-      await rejectSourceItem(prefix, sourceId, userId, comment || '', req);
-      const refId = /^\d+$/.test(sourceId) ? parseInt(sourceId, 10) : null;
-      await safeQuery(
-        `UPDATE approvals SET status = 'Rejected', decision_date = NOW(), approver_id = $1, comments = $2
-         WHERE module_name = $3 AND reference_id = $4 AND status = 'Pending'`,
-        [userId, comment || '', prefix, refId]
-      );
-      logAudit({ userId, module: 'approvals', recordId: sourceId, recordType: prefix, action: 'reject', oldData: { status: 'Pending' }, newData: { status: 'Rejected', comment, bulk: true }, req });
-      results.push({ id, status: 'Rejected' });
-    }
-
-    if (centralIds.length > 0) {
-      // Ownership filter — see the matching comment in bulkApprove.
-      const ownFilter = canOverride(req) ? '' : `AND (approver_id = $1 OR approver_id IS NULL)`;
-      const r = await pool.query(
-        `UPDATE approvals SET status = 'Rejected', decision_date = NOW(), approver_id = $1, comments = $2
-         WHERE id = ANY($3::int[]) AND status = 'Pending' ${cidFilter} ${ownFilter} RETURNING *`,
-        companyId != null ? [userId, comment || '', centralIds.map(Number), companyId] : [userId, comment || '', centralIds.map(Number)]
-      );
-      for (const approval of r.rows) {
-        if (approval.reference_id && approval.module_name) {
-          await rejectSourceItem(approval.module_name, String(approval.reference_id), userId, comment || '', req);
-        }
-        logAudit({ userId, module: 'approvals', recordId: approval.id, recordType: approval.module_name || 'approval', action: 'reject', oldData: { status: 'Pending' }, newData: { status: 'Rejected', comment: comment || '', bulk: true }, req });
-        notifyWorkflowEvent('rejected', { module: approval.module_name || 'Approval', recordId: approval.reference_id || approval.id, submitterUserId: approval.requested_by, comments: comment });
-        results.push(approval);
-      }
-    }
-
-    res.json({ count: results.length, approvals: results });
-  } catch (err) {
-    console.error("Bulk reject error:", err);
-    res.status(500).json({ error: err.message });
-  }
-};
-
+/**
+ * Escalation of module records is automatic (workflowEscalation.cron.js,
+ * leave.cron.js) and follows each module's SLA — there is no manual
+ * "escalate" state in those modules. For a central row, escalation means
+ * reassigning it to a named approver in the same company: it stays Pending.
+ * (It used to flip the row to 'Escalated' with no new approver, which removed
+ * it from every queue.)
+ */
 export const escalateRequest = async (req, res) => {
   if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
   try {
     const { id } = req.params;
-    const { approver_user_id } = req.body;
-    const userId    = uid(req);
-    const companyId = cid(req);
-    const isSource  = String(id).includes(':');
-
-    if (isSource) {
-      logAudit({ userId, module: 'approvals', recordId: id, recordType: 'escalation', action: 'escalate', oldData: { status: 'Pending' }, newData: { status: 'Escalated', escalated_to: approver_user_id ?? null }, req });
-      return res.json({ id, status: 'Escalated' });
+    if (String(id).includes(':')) {
+      return res.status(400).json({
+        error: 'This request escalates automatically under its module\'s SLA rules; it cannot be escalated manually.',
+        code: 'ESCALATION_IS_AUTOMATIC',
+      });
     }
-
-    const cidFilter = companyId != null ? `AND company_id = $2` : '';
+    const target = Number(req.body?.approver_user_id);
+    if (!Number.isInteger(target)) return res.status(400).json({ error: 'approver_user_id is required' });
+    const companyId = cid(req);
+    if (!(await isActiveUserInCompany(target, companyId))) {
+      return res.status(400).json({ error: 'The escalation target must be an active user in your company.' });
+    }
     const result = await pool.query(
-      `UPDATE approvals SET status = 'Escalated', decision_date = NOW()
-       WHERE id = $1 AND status = 'Pending' ${cidFilter} RETURNING *`,
-      companyId != null ? [id, companyId] : [id]
+      `UPDATE approvals
+          SET approver_id = $1,
+              comments = CONCAT_WS(' ', comments, '[Escalated by user ' || $2::text || ']')
+        WHERE id = $3 AND status = 'Pending' ${companyId != null ? 'AND company_id = $4' : ''}
+        RETURNING *`,
+      companyId != null ? [target, uid(req), id, companyId] : [target, uid(req), id]
     );
     if (!result.rows.length) return res.status(404).json({ error: 'Approval not found or not in Pending status' });
-
     const approval = result.rows[0];
-    logAudit({ userId, module: 'approvals', recordId: id, recordType: approval.module_name || 'approval', action: 'escalate', oldData: { status: 'Pending' }, newData: { status: 'Escalated', escalated_to: approver_user_id ?? null }, req });
-    if (approver_user_id) notifyWorkflowEvent('escalated', { module: approval.module_name || 'Approval', recordId: approval.reference_id || approval.id, approverUserId: approver_user_id });
+    logAudit({ userId: uid(req), module: 'approvals', recordId: id, recordType: approval.module_name || 'approval', action: 'escalate',
+      oldData: { status: 'Pending' }, newData: { approver_id: target }, req });
+    notifyWorkflowEvent('escalated', { module: approval.module_name || 'Approval', recordId: approval.reference_id || approval.id, approverUserId: target });
     res.json(approval);
   } catch (err) {
-    console.error("Escalate error:", err);
-    res.status(500).json({ error: err.message });
+    send(res, err, 'Escalate error:');
   }
 };
 
+async function isActiveUserInCompany(userId, companyId) {
+  const { rows } = await pool.query(
+    `SELECT 1 FROM users u LEFT JOIN employees e ON e.id = u.employee_id
+      WHERE u.id = $1 AND u.is_active = TRUE
+        AND ($2::int IS NULL OR COALESCE(e.company_id, u.company_id) = $2)`,
+    [userId, companyId]);
+  return rows.length > 0;
+}
+
+/**
+ * Colleagues a request can be delegated to. Returns BOTH ids: module
+ * delegation routes take an employees.id (delegate_employee_id); a central
+ * approvals row's approver_id is a users.id. Only employees with an active
+ * login are listed — a delegate who cannot sign in cannot decide anything.
+ */
 export const getDelegateUsers = async (req, res) => {
   if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
   try {
     const companyId = cid(req);
-    const q = (req.query.q || '').trim();
-    const params = [];
-    let cFilter = '';
-    if (companyId != null) { params.push(companyId); cFilter = `AND e.company_id = $${params.length}`; }
-    if (q) { params.push(`%${q}%`); cFilter += ` AND (e.first_name ILIKE $${params.length} OR e.last_name ILIKE $${params.length} OR e.company_email ILIKE $${params.length})`; }
-    params.push(50); // limit
-    const rows = await safeQuery(
-      `SELECT e.id, TRIM(COALESCE(e.first_name,'') || ' ' || COALESCE(e.last_name,'')) AS name,
+    const qtext = String(req.query.q || '').trim();
+    const params = [companyId];
+    let filter = '';
+    if (qtext) {
+      params.push(`%${qtext}%`);
+      filter = `AND (e.first_name ILIKE $2 OR e.last_name ILIKE $2 OR e.company_email ILIKE $2)`;
+    }
+    const { rows } = await pool.query(
+      `SELECT DISTINCT ON (e.id) e.id, u.id AS user_id,
+              TRIM(COALESCE(e.first_name, '') || ' ' || COALESCE(e.last_name, '')) AS name,
               e.company_email AS email, e.designation, e.department
-       FROM employees e
-       WHERE e.id IS NOT NULL
-         AND LOWER(e.status) IN ('active', 'probation', 'notice')
-         ${cFilter}
-       ORDER BY e.first_name
-       LIMIT $${params.length}`,
-      params
+         FROM employees e
+         JOIN users u ON u.employee_id = e.id AND u.is_active = TRUE
+        WHERE LOWER(e.status) IN ('active', 'probation', 'notice')
+          AND ($1::int IS NULL OR e.company_id = $1)
+          AND e.id IS DISTINCT FROM $${params.length + 1}::int
+          ${filter}
+        ORDER BY e.id, u.id
+        LIMIT 50`,
+      [...params, await myEmployeeId(req)]
     );
+    rows.sort((a, b) => a.name.localeCompare(b.name));
     res.json(rows);
   } catch (err) {
-    console.error("Get delegate users error:", err);
-    res.status(500).json({ error: err.message });
+    send(res, err, 'Get delegate users error:');
   }
 };
 
-async function delegateSourceItem(prefix, sourceId, newApproverId) {
-  switch (prefix) {
-    case 'reg':
-      await safeQuery(
-        `UPDATE attendance_regularization_requests SET manager_id = $2 WHERE id = $1`,
-        [sourceId, newApproverId]
-      );
-      return true;
-    case 'ot':
-      await safeQuery(
-        `UPDATE attendance_ot_records SET approved_by = $2 WHERE id = $1`,
-        [sourceId, newApproverId]
-      );
-      return true;
-    case 'leave':
-      await safeQuery(
-        `UPDATE leave_applications SET delegate_approver_id = $2 WHERE id = $1`,
-        [sourceId, newApproverId]
-      );
-      return true;
-    case 'pr':
-      await safeQuery(
-        `UPDATE purchase_requests SET approved_by = $2 WHERE id = $1`,
-        [sourceId, newApproverId]
-      );
-      return true;
-    case 'pay':
-      await safeQuery(
-        `UPDATE payment_batches SET approved_by = $2 WHERE id = $1`,
-        [sourceId, newApproverId]
-      );
-      return true;
-    case 'exp':
-      await safeQuery(
-        `UPDATE expense_claims SET approved_by = $2 WHERE id = $1`,
-        [sourceId, newApproverId]
-      );
-      return true;
-    case 'ecn':
-      await safeQuery(
-        `UPDATE engineering_changes SET approved_by = $2 WHERE id = $1`,
-        [sourceId, newApproverId]
-      );
-      return true;
-    default:
-      // Unknown source-item type — do NOT report success for a no-op.
-      return false;
-  }
-}
-
+/**
+ * Delegate central approvals rows to another login. Module records are
+ * delegated through each module's own per-record delegation route (leave,
+ * expense, travel) — the row's `actions.delegate` descriptor — because those
+ * routes check that the caller is entitled to hand the decision on and write
+ * the module's delegate column. The old code wrote an employees.id into
+ * approved_by columns, which made a pending PR look "approved by" the delegate.
+ */
 export const delegateApprovals = async (req, res) => {
   if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
   try {
-    const { ids, delegate_to_user_id } = req.body;
-    if (!Array.isArray(ids) || ids.length === 0)
-      return res.status(400).json({ error: 'ids must be a non-empty array' });
-    if (!delegate_to_user_id)
-      return res.status(400).json({ error: 'delegate_to_user_id is required' });
-
-    const userId    = uid(req);
+    const { ids, delegate_to_user_id } = req.body || {};
+    if (!Array.isArray(ids) || ids.length === 0) return res.status(400).json({ error: 'ids must be a non-empty array' });
+    const target = Number(delegate_to_user_id);
+    if (!Number.isInteger(target)) return res.status(400).json({ error: 'delegate_to_user_id is required' });
+    const userId = uid(req);
     const companyId = cid(req);
-    const cidFilter = companyId != null ? `AND company_id = $3` : '';
-
-    const sourceIds  = ids.filter(i => String(i).includes(':'));
-    const centralIds = ids.filter(i => !String(i).includes(':'));
-    const results    = [];
-
-    // For source table items: re-assign at source table level is complex;
-    // we log the delegation intent and note it in the audit trail
-    for (const id of sourceIds) {
-      const [prefix, sourceId] = String(id).split(':');
-      const applied = await delegateSourceItem(prefix, sourceId, delegate_to_user_id);
-      if (!applied) {
-        results.push({ id, delegated: false, error: `Unsupported item type "${prefix}" — delegation was not applied` });
-        continue;
-      }
-      logAudit({ userId, module: 'approvals', recordId: sourceId, recordType: prefix, action: 'delegate', oldData: { approver_id: userId }, newData: { approver_id: delegate_to_user_id }, req });
-      results.push({ id, delegated: true });
+    if (String(target) === String(userId)) return res.status(400).json({ error: 'You cannot delegate to yourself.' });
+    if (!(await isActiveUserInCompany(target, companyId))) {
+      return res.status(400).json({ error: 'The delegate must be an active user in your company.' });
     }
 
-    if (centralIds.length > 0) {
+    const results = [];
+    const centralIds = [];
+    for (const raw of ids) {
+      const id = String(raw);
+      if (id.includes(':')) {
+        results.push({ id, delegated: false, code: 'USE_MODULE_ENDPOINT',
+          error: 'Delegate this request from its row — it uses the module\'s own delegation.' });
+      } else if (/^\d+$/.test(id)) centralIds.push(Number(id));
+    }
+
+    if (centralIds.length) {
+      // Only rows the caller owns (or may override) can be handed on.
+      const own = canOverride(req) ? '' : 'AND (approver_id = $3 OR approver_id IS NULL)';
+      const params = [target, centralIds, ...(own ? [userId] : [])];
+      const cFilter = companyId != null ? `AND company_id = $${params.length + 1}` : '';
+      if (companyId != null) params.push(companyId);
       const r = await pool.query(
         `UPDATE approvals
-         SET approver_id = $1,
-             comments = CONCAT(COALESCE(comments, ''), ' [Delegated from user ', approver_id::text, ']')
-         WHERE id = ANY($2::int[]) AND status = 'Pending' ${cidFilter}
-         RETURNING *`,
-        companyId != null ? [delegate_to_user_id, centralIds.map(Number), companyId] : [delegate_to_user_id, centralIds.map(Number)]
-      );
+            SET approver_id = $1,
+                comments = CONCAT_WS(' ', comments, '[Delegated from user ' || COALESCE(approver_id::text, 'pool') || ']')
+          WHERE id = ANY($2::int[]) AND status = 'Pending' ${own} ${cFilter}
+          RETURNING *`, params);
       for (const approval of r.rows) {
-        logAudit({ userId, module: 'approvals', recordId: approval.id, recordType: approval.module_name || 'approval', action: 'delegate', oldData: { approver_id: userId }, newData: { approver_id: delegate_to_user_id }, req });
-        results.push(approval);
+        logAudit({ userId, module: 'approvals', recordId: approval.id, recordType: approval.module_name || 'approval', action: 'delegate',
+          oldData: { approver_id: userId }, newData: { approver_id: target }, req });
+        notifyWorkflowEvent('escalated', { module: approval.module_name || 'Approval', recordId: approval.reference_id || approval.id, approverUserId: target });
+        results.push({ id: String(approval.id), delegated: true });
+      }
+      for (const cidv of centralIds) {
+        if (!r.rows.some(a => a.id === cidv)) results.push({ id: String(cidv), delegated: false, error: 'Not found, already decided, or not yours to delegate' });
       }
     }
 
-    res.json({ count: results.length, delegate_to_user_id, approvals: results });
+    res.json({ count: results.filter(r => r.delegated).length, delegate_to_user_id: target, approvals: results });
   } catch (err) {
-    console.error("Delegate error:", err);
-    res.status(500).json({ error: err.message });
+    send(res, err, 'Delegate error:');
   }
 };
 
+// Company each chain-bearing source belongs to — the chain is only returned
+// for a record in the caller's company.
+const CHAIN_COMPANY_SQL = {
+  leave: `SELECT e.company_id FROM leave_applications la JOIN employees e ON e.id = la.employee_id WHERE la.id = $1::integer`,
+  exp:   `SELECT e.company_id FROM expense_claims c JOIN employees e ON e.id = c.employee_id WHERE c.id = $1::integer`,
+  ecn:   `SELECT company_id FROM engineering_changes WHERE id = $1::integer`,
+};
+
+/** Approval chain / level trail for a request (leave levels, expense levels, ECN parallel approvers, central chain). */
 export const getApprovalChain = async (req, res) => {
+  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
   try {
     const { id } = req.params;
-    // Source items don't have chain entries yet; return empty gracefully
-    if (String(id).includes(':')) return res.json([]);
-
-    const result = await pool.query(
-      `SELECT approver_name, approver, status, decision_date, comment
-       FROM approval_chain WHERE approval_id = $1 ORDER BY step_order ASC`,
-      [id]
-    );
-    res.json(result.rows);
-  } catch (err) {
-    if (!err.message?.includes('does not exist')) {
-      console.error('[approvals] getApprovalChain error:', err.message);
+    const companyId = cid(req);
+    if (String(id).includes(':')) {
+      const [prefix, sourceId] = String(id).split(':');
+      const src = SOURCE_BY_TYPE[prefix];
+      if (!src?.chain || !/^\d+$/.test(sourceId)) return res.json([]);
+      const own = (await pool.query(CHAIN_COMPANY_SQL[prefix], [sourceId])).rows[0];
+      if (!own || (companyId != null && Number(own.company_id) !== Number(companyId))) return res.json([]);
+      return res.json(await src.chain(sourceId));
     }
-    res.json([]);
+    const { rows } = await pool.query(
+      `SELECT c.step_order AS step, c.approver_name, c.approver, c.status, c.decision_date, c.comment
+         FROM approval_chain c JOIN approvals a ON a.id = c.approval_id
+        WHERE c.approval_id = $1 ${companyId != null ? 'AND a.company_id = $2' : ''}
+        ORDER BY c.step_order ASC`,
+      companyId != null ? [id, companyId] : [id]
+    );
+    res.json(rows);
+  } catch (err) {
+    if (err.code === '42P01' || err.code === '22P02') return res.json([]);
+    send(res, err, 'Get approval chain error:');
   }
 };

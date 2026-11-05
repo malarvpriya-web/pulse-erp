@@ -4,6 +4,8 @@ import {
   Star, Award, UserPlus,
 } from 'lucide-react';
 import api from '@/services/api/client';
+import { sourceOptions, candidateRows } from '../shared/constants';
+import useRecruitmentSettings from '../shared/useRecruitmentSettings';
 import { useToast } from '@/context/ToastContext';
 import useAppStore from '@/store/useAppStore';
 import './CandidatePipeline.css';
@@ -42,9 +44,15 @@ const emptyForm = () => ({
 
 const ALLOWED_RESUME_EXTS = '.pdf,.doc,.docx';
 
-export default function CandidatePipeline({ setPage: _setPage }) {
+// `embedded` is forwarded to PageShell. Rendered as a tab of the Candidates hub
+// this page sits INSIDE another shell, and a nested shell is a known fault here:
+// the inner -20px gutters make the panel wider than its host and the inner sticky
+// dock freezes over the host's tab strip and eats its clicks. See PageShell's own
+// `embedded` note.
+export default function CandidatePipeline({ setPage: _setPage, embedded = false }) {
   const selectedJobId  = useAppStore(s => s.selectedJobId);
   const setSelectedJobId = useAppStore(s => s.setSelectedJobId);
+  const settings = useRecruitmentSettings();
   const [openings,     setOpenings]     = useState([]);
   const [candidates,   setCandidates]   = useState([]);
   const [agencies,     setAgencies]     = useState([]);
@@ -82,8 +90,7 @@ export default function CandidatePipeline({ setPage: _setPage }) {
 
     try {
       const res = await api.get('/recruitment/candidates', { params: { applied_job_id: selJob } });
-      const raw = res.data?.candidates || res.data || [];
-      setCandidates(Array.isArray(raw) ? raw : []);
+      setCandidates(candidateRows(res.data));
     } catch (err) {
       showToast(`Failed to load candidates: ${err?.response?.data?.message || err.message}`, 'error');
       setCandidates([]);
@@ -151,7 +158,7 @@ export default function CandidatePipeline({ setPage: _setPage }) {
   const setF = (k, v) => setForm(f => ({ ...f, [k]: v }));
 
   return (
-    <PageShell dock={
+    <PageShell embedded={embedded} dock={
       <PageHero
         icon={UserPlus}
         eyebrow="Recruitment"
@@ -289,9 +296,12 @@ export default function CandidatePipeline({ setPage: _setPage }) {
               </div>
               <div className="cp-field">
                 <label>Source</label>
+                {/* Was a hardcoded array that duplicated (and drifted from)
+                    SELECTABLE_SOURCES and ignored the company's channel
+                    toggles entirely. One list, honouring the settings. */}
                 <select value={form.source} onChange={e => setF('source', e.target.value)}>
-                  {['manual','website','linkedin','referral','job_portal','campus','agency'].map(s => (
-                    <option key={s} value={s}>{s.replace('_', ' ').replace(/\b\w/g, c => c.toUpperCase())}</option>
+                  {sourceOptions(settings).map(o => (
+                    <option key={o.value} value={o.value}>{o.label}</option>
                   ))}
                 </select>
               </div>

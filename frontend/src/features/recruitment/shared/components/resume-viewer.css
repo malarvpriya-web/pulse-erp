@@ -1,0 +1,231 @@
+/* ResumeViewer — see ResumeViewer.jsx for why this component exists.
+ *
+ * Every rule is prefixed `.rv`. That is the project's page-CSS convention for a
+ * reason recorded in the manual: an unprefixed `.toolbar` or `.frame` in a file
+ * that any page can import will win against a page's own rules somewhere and the
+ * damage shows up on an unrelated screen weeks later.
+ */
+
+.rv {
+  display: flex;
+  flex-direction: column;
+  background: #f8f9fb;
+  border: 1px solid #ecedf3;
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+/* Full screen is a fixed overlay rather than the Fullscreen API: the API takes
+   the whole monitor and hides the rest of Pulse, and a recruiter reading a
+   résumé still wants the browser chrome and their tabs. Esc closes it (bound in
+   the component). */
+.rv--fullscreen {
+  position: fixed;
+  inset: 12px;
+  z-index: 1200;
+  min-height: 0;
+  box-shadow: 0 18px 60px rgba(15, 23, 42, 0.28);
+}
+
+/* ── Toolbar ───────────────────────────────────────────────────────────── */
+
+.rv-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  background: #fff;
+  border-bottom: 1px solid #ecedf3;
+  flex-wrap: wrap;
+  /* The toolbar must never be pushed out of view by a long filename, which is
+     what a nowrap row does at 1366px. */
+  min-height: 40px;
+}
+
+.rv-toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;          /* lets the filename ellipsis actually apply */
+  flex: 1 1 140px;
+}
+
+.rv-toolbar-icon { color: #6C47FF; flex: none; }
+
+.rv-filename {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #1f2937;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rv-toolbar-mid {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+
+.rv-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  margin-left: auto;
+}
+
+.rv-tool {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-width: 28px;
+  height: 28px;
+  padding: 0 7px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  color: #475569;
+  cursor: pointer;
+  font-size: 11.5px;
+  font-weight: 600;
+  transition: background .12s, border-color .12s, color .12s;
+}
+.rv-tool:hover { background: #f5f3ff; border-color: #ddd3fb; color: #4B2DCE; }
+.rv-tool.is-on { background: #EFEAFD; border-color: #ddd3fb; color: #4B2DCE; }
+.rv-tool--text { min-width: 0; }
+
+.rv-zoom-label {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #475569;
+  min-width: 62px;        /* stops the row jittering as the label changes width */
+  text-align: center;
+}
+
+.rv-sep {
+  width: 1px;
+  height: 18px;
+  background: #e5e7eb;
+  margin: 0 3px;
+}
+
+/* ── Body ──────────────────────────────────────────────────────────────── */
+
+.rv-body {
+  flex: 1 1 auto;
+  min-height: 0;          /* without this the iframe refuses to shrink in a flex column */
+  display: flex;
+  position: relative;
+}
+
+.rv-frame {
+  flex: 1 1 auto;
+  width: 100%;
+  border: 0;
+  background: #f8f9fb;
+  /* An explicit minimum: a 0-height iframe in a flex column renders blank and
+     looks like a failed load. */
+  min-height: 420px;
+}
+
+.rv-scroll {
+  flex: 1 1 auto;
+  overflow: auto;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 12px;
+}
+
+.rv-image {
+  display: block;
+  background: #fff;
+  box-shadow: 0 2px 10px rgba(15, 23, 42, .08);
+  transform-origin: center top;
+}
+
+/* ── Empty / error / loading ───────────────────────────────────────────── */
+
+.rv-empty {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  padding: 40px 24px;
+  text-align: center;
+  color: #94a3b8;
+  min-height: 300px;
+}
+
+.rv-empty-title {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 700;
+  color: #334155;
+}
+
+.rv-empty-sub {
+  margin: 0;
+  font-size: 12px;
+  color: #64748b;
+  max-width: 420px;
+  line-height: 1.55;
+  /* A stored path can be a long unbroken string; without this it widens the
+     whole panel and forces a horizontal scrollbar on the page. */
+  overflow-wrap: anywhere;
+}
+
+.rv-icon-bad { color: #dc2626; }
+
+.rv-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  padding: 7px 14px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 7px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #475569;
+  cursor: pointer;
+}
+.rv-btn:hover { background: #f8f9fb; }
+
+.rv-btn--primary {
+  background: #4B2DCE;
+  border-color: #4B2DCE;
+  color: #fff;
+}
+.rv-btn--primary:hover { background: #3f23b5; border-color: #3f23b5; }
+
+.rv-spinner {
+  width: 26px;
+  height: 26px;
+  border: 2.5px solid #e9e5fb;
+  border-top-color: #6C47FF;
+  border-radius: 50%;
+  animation: rv-spin .7s linear infinite;
+}
+
+@keyframes rv-spin { to { transform: rotate(360deg); } }
+
+/* Respect a reduced-motion preference rather than spinning regardless. */
+@media (prefers-reduced-motion: reduce) {
+  .rv-spinner { animation-duration: 2s; }
+}
+
+/* 1366×768 is the smallest of §33's three target sizes and the one where a
+   two-column profile squeezes the viewer hardest. Drop the zoom cluster's text
+   buttons to icons-only rather than letting the toolbar wrap to three rows and
+   eat the reading area. */
+@media (max-width: 1400px) {
+  .rv-zoom-label { min-width: 54px; font-size: 11px; }
+  .rv-tool--text { padding: 0 6px; font-size: 11px; }
+}

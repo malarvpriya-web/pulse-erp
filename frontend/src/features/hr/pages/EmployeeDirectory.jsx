@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Search, X, Users, Mail, Phone, Building2,
   LayoutGrid, List, Download, ChevronDown,
-  Cake, Star, BriefcaseMedical, MapPin,
+  Cake, Star, BriefcaseMedical, MapPin, UserRound, CalendarDays,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import { usePagination } from '@/features/_shared/usePagination';
@@ -10,11 +11,6 @@ import Pagination from '@/features/_shared/Pagination';
 import { PageHero, PageShell } from '@/components/pulse-ui';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
-
-const EX_STATUSES = new Set([
-  'left', 'terminated', 'resigned', 'inactive',
-  'ex-employee', 'notice_period', 'notice period',
-]);
 
 const STATUS_CFG = {
   active:    { bg: '#dcfce7', color: '#15803d', chipBg: '#dcfce7', chipBorder: '#bbf7d0', label: 'Active'    },
@@ -286,6 +282,79 @@ function ListTable({ employees, onSelect }) {
   );
 }
 
+// ── Read-only detail panel ────────────────────────────────────────────────────
+// Shows ONLY what /employees/directory already returned for this row: no extra
+// request, so it can never show more than the phonebook itself. Portalled to
+// <body> so no page or modal stacking context can draw over it.
+function DirectoryDetail({ emp, onClose }) {
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  const name  = emp.name || `${emp.first_name || ''} ${emp.last_name || ''}`.trim() || '?';
+  const email = emp.company_email || '';
+  const sc    = statusCfg(emp.status);
+  const rows = [
+    { icon: Building2,    label: 'Department',        value: emp.department },
+    { icon: Mail,         label: 'Work email',        value: email, href: email ? `mailto:${email}` : null },
+    { icon: Phone,        label: 'Phone',             value: emp.phone, href: emp.phone ? `tel:${emp.phone}` : null },
+    { icon: MapPin,       label: 'Location',          value: emp.location },
+    { icon: UserRound,    label: 'Reporting manager', value: emp.reporting_manager },
+    { icon: CalendarDays, label: 'Joined',            value: emp.joining_date ? fmtDate(emp.joining_date) : null },
+  ].filter(r => r.value);
+
+  return createPortal(
+    <div
+      onClick={onClose}
+      style={{ position: 'fixed', inset: 0, background: 'rgba(17,24,39,0.35)', zIndex: 10000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '16px' }}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="dir-detail-name"
+        onClick={e => e.stopPropagation()}
+        style={{ background: '#fff', borderRadius: '14px', width: '100%', maxWidth: '420px', boxShadow: '0 20px 50px rgba(0,0,0,0.2)', padding: '22px' }}
+      >
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: '14px', marginBottom: '16px' }}>
+          <Avatar name={name} photoUrl={emp.photo_url} size={56} />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div id="dir-detail-name" style={{ fontWeight: 700, fontSize: '16px', color: '#111827' }}>{name}</div>
+            <div style={{ fontSize: '13px', color: '#6b7280' }}>{emp.designation || '—'}</div>
+            <div style={{ display: 'flex', gap: '6px', alignItems: 'center', marginTop: '6px', fontSize: '11px', color: '#9ca3af' }}>
+              {emp.office_id && <span>{emp.office_id}</span>}
+              <span style={{ background: sc.bg, color: sc.color, padding: '2px 8px', borderRadius: '20px', fontWeight: 500 }}>{sc.label}</span>
+            </div>
+          </div>
+          <button aria-label="Close" onClick={onClose}
+            style={{ border: 'none', background: 'none', cursor: 'pointer', color: '#9ca3af', padding: '2px' }}>
+            <X size={16} />
+          </button>
+        </div>
+
+        <dl style={{ margin: 0, display: 'flex', flexDirection: 'column', gap: '10px' }}>
+          {rows.map(({ icon: Icon, label, value, href }) => (
+            <div key={label} style={{ display: 'flex', gap: '10px', alignItems: 'flex-start', fontSize: '13px' }}>
+              <Icon size={14} color="#9ca3af" style={{ marginTop: '2px', flexShrink: 0 }} />
+              <dt style={{ width: '128px', color: '#6b7280', flexShrink: 0 }}>{label}</dt>
+              <dd style={{ margin: 0, color: '#111827', wordBreak: 'break-word' }}>
+                {href ? <a href={href} style={{ color: '#4338ca' }}>{value}</a> : value}
+              </dd>
+            </div>
+          ))}
+        </dl>
+
+        <Badges emp={emp} />
+        <p style={{ margin: '16px 0 0', fontSize: '11px', color: '#9ca3af' }}>
+          Company directory — read-only. Contact HR to change these details.
+        </p>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
 // ── Status chip filter bar ────────────────────────────────────────────────────
 function StatusChips({ employees, current, onChange }) {
   const counts = useMemo(() => {
@@ -335,7 +404,7 @@ function StatusChips({ employees, current, onChange }) {
 }
 
 // ── Main component ────────────────────────────────────────────────────────────
-export default function EmployeeDirectory({ setPage }) {
+export default function EmployeeDirectory() {
   const [employees, setEmployees] = useState([]);
   const [loading,   setLoading]   = useState(false);
   const [error,     setError]     = useState(null);
@@ -345,6 +414,7 @@ export default function EmployeeDirectory({ setPage }) {
   const [sortKey,   setSortKey]   = useState('name_asc');
   const [viewMode,  setViewMode]  = useState(() => localStorage.getItem('dir_view') || 'cards');
   const [showSort,  setShowSort]  = useState(false);
+  const [selected,  setSelected]  = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -353,19 +423,14 @@ export default function EmployeeDirectory({ setPage }) {
       const res = await api.get('/employees/directory');
       const raw = res.data?.employees || res.data || [];
       setEmployees(Array.isArray(raw) ? raw : []);
-    } catch {
-      // Fallback: full /employees with client-side ex-employee filter
-      try {
-        const r2  = await api.get('/employees');
-        const raw2 = r2.data?.employees || r2.data || [];
-        setEmployees(
-          (Array.isArray(raw2) ? raw2 : [])
-            .filter(e => !EX_STATUSES.has((e.status || '').toLowerCase()))
-        );
-      } catch (err2) {
-        setEmployees([]);
-        setError(err2.message || 'Failed to load employees');
-      }
+    } catch (err) {
+      // No fallback to GET /employees. That is the employee MASTER read: a wider
+      // projection than this phonebook's, and for most callers it still carries
+      // the personal phone /employees/directory deliberately withholds — which
+      // this page would then have drawn on every card and written into the CSV.
+      // A phonebook that cannot load says so; it does not borrow a bigger list.
+      setEmployees([]);
+      setError(err?.response?.data?.error || err?.message || 'Failed to load the employee directory');
     } finally {
       setLoading(false);
     }
@@ -405,11 +470,13 @@ export default function EmployeeDirectory({ setPage }) {
 
   const currentSort = SORT_OPTIONS.find(o => o.value === sortKey) || SORT_OPTIONS[0];
 
-  function handleSelect(emp) {
-    sessionStorage.setItem('selectedEmployeeId', emp.id);
-    sessionStorage.setItem('selectedEmployee', JSON.stringify(emp));
-    if (setPage) setPage('EmployeeProfile');
-  }
+  // A card opens a read-only panel drawn from the row already loaded — the
+  // directory's own safe projection — and never the full Employee Profile.
+  // That page is route-gated on employees:view, so hr_manager / hr_exec /
+  // payroll_admin (who hold none) were sent from here straight to Access
+  // Denied; and anyone who CAN open it is redirected to All Employees before
+  // this page renders, so nobody here needs it.
+  function handleSelect(emp) { setSelected(emp); }
 
   const hasFilters = search || fDept || fStatus !== 'all';
 
@@ -555,6 +622,8 @@ export default function EmployeeDirectory({ setPage }) {
           </div>
         </>
       )}
+
+      {selected && <DirectoryDetail emp={selected} onClose={() => setSelected(null)} />}
     </PageShell>
   );
 }

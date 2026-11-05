@@ -1,28 +1,26 @@
 import { Router } from 'express';
 import pool from '../../config/db.js';
 import { allowRoles } from '../../middlewares/auth.middleware.js';
+import { companyOf } from '../../shared/scope.js';
+import { GSTIN_STATE_CODES } from '../../shared/gstinStates.js';
 
 const router = Router();
 
 const ADMIN_ROLES = ['super_admin', 'admin'];
 const READ_ROLES  = ['super_admin', 'admin', 'hr_manager', 'finance_manager', 'accounts_exec'];
 
-// GSTIN first 2 digits → Indian state name
-const GSTIN_STATE_CODES = {
-  '01': 'Jammu & Kashmir',   '02': 'Himachal Pradesh',  '03': 'Punjab',
-  '04': 'Chandigarh',        '05': 'Uttarakhand',        '06': 'Haryana',
-  '07': 'Delhi',              '08': 'Rajasthan',          '09': 'Uttar Pradesh',
-  '10': 'Bihar',              '11': 'Sikkim',             '12': 'Arunachal Pradesh',
-  '13': 'Nagaland',           '14': 'Manipur',            '15': 'Mizoram',
-  '16': 'Tripura',            '17': 'Meghalaya',          '18': 'Assam',
-  '19': 'West Bengal',        '20': 'Jharkhand',          '21': 'Odisha',
-  '22': 'Chhattisgarh',       '23': 'Madhya Pradesh',     '24': 'Gujarat',
-  '26': 'Dadra & Nagar Haveli and Daman & Diu',
-  '27': 'Maharashtra',        '28': 'Andhra Pradesh',     '29': 'Karnataka',
-  '30': 'Goa',                '31': 'Lakshadweep',        '32': 'Kerala',
-  '33': 'Tamil Nadu',         '34': 'Puducherry',         '35': 'Andaman & Nicobar Islands',
-  '36': 'Telangana',          '37': 'Andhra Pradesh (New)',
-};
+// GSTIN first 2 digits → Indian state name (shared with the payroll release gate)
+
+// The page's state list spells some states differently from GSTIN_STATE_CODES
+// ("Jammu and Kashmir" vs "Jammu & Kashmir", "Andhra Pradesh" vs "Andhra
+// Pradesh (New)" for code 37), which made a correct GSTIN fail the state check.
+const normState = (s) => String(s || '').toLowerCase()
+  .replace(/\(new\)/g, '').replace(/&/g, ' and ').replace(/[^a-z]+/g, ' ').trim();
+
+// VARCHAR limits on companies — reported as a 400 naming the field instead of
+// a raw "value too long for type character varying(20)" 500.
+const MAX_LEN = { gstin: 15, pan: 10, tan: 10, cin: 21, phone: 20, pincode: 10, city: 100, state: 100, country: 100, email: 255, website: 255, name: 255 };
+const LABEL   = { gstin: 'GSTIN', pan: 'PAN', tan: 'TAN', cin: 'CIN', phone: 'Phone', pincode: 'Pincode', city: 'City', state: 'State', country: 'Country', email: 'Email', website: 'Website', name: 'Company name' };
 
 // Ensure companies table has all required columns
 (async () => {
@@ -50,7 +48,7 @@ router.get('/', allowRoles(...READ_ROLES), async (req, res) => {
               address, city, state, country, pincode,
               phone, email, website, logo_url, is_active,
               created_at, updated_at
-       FROM companies ORDER BY id LIMIT 1`
+       FROM companies WHERE id = $1`, [companyOf(req)]
     );
     if (!rows.length) {
       return res.json(null);
@@ -72,17 +70,40 @@ router.put('/', allowRoles(...ADMIN_ROLES), async (req, res) => {
   if (!name || !name.trim()) {
     return res.status(400).json({ error: 'Company name is required' });
   }
+  for (const [field, max] of Object.entries(MAX_LEN)) {
+    const v = req.body[field];
+    if (v != null && String(v).trim().length > max) {
+      return res.status(400).json({ error: `${LABEL[field]} must be at most ${max} characters` });
+    }
+  }
 
   // Derive state from GSTIN prefix (e.g. "29" → "Karnataka")
   const gstinClean   = (gstin || '').toUpperCase().trim();
   const derivedState = gstinClean.length >= 2
     ? (GSTIN_STATE_CODES[gstinClean.substring(0, 2)] ?? null)
     : null;
-  const state = stateInput || derivedState;
-
   try {
-    // Check if any company record exists
-    const { rows: existing } = await pool.query('SELECT id FROM companies ORDER BY id LIMIT 1');
+    // The caller's company (PAYROLL_DATA_FLOW_AUDIT.md Part 9). This used to be
+    // "the first row of companies", so an admin of any company edited company 1
+    // — the legal name, GSTIN and the state payroll's PT/LWF follow.
+    const cid = companyOf(req);
+    const { rows: existing } = cid == null
+      ? { rows: [] }
+      : await pool.query('SELECT id, state FROM companies WHERE id = $1', [cid]);
+    const { rows: [anyCompany] } = await pool.query('SELECT 1 AS x FROM companies LIMIT 1');
+    if (!existing.length && anyCompany) {
+      return res.status(400).json({ error: 'Company context required — the profile is saved for your own company only' });
+    }
+
+    // An explicit state wins. Without one (the Setup Wizard's company step sends
+    // none) the STORED state is kept; the GSTIN prefix only fills a blank state.
+    // It used to overwrite the stored state on every save, so a corrected state
+    // reverted to the GSTIN's (29 → Karnataka for company 1's placeholder GSTIN).
+    const state = stateInput || existing[0]?.state || derivedState;
+    // Same rule as the Company Profile page: a GSTIN registers ONE state.
+    if (stateInput && derivedState && normState(derivedState) !== normState(stateInput)) {
+      return res.status(422).json({ error: `GSTIN code ${gstinClean.substring(0, 2)} is registered in ${derivedState}, but the state given is ${stateInput}. Correct the GSTIN or the state.` });
+    }
 
     let savedRow;
     if (existing.length) {
@@ -142,8 +163,8 @@ router.put('/', allowRoles(...ADMIN_ROLES), async (req, res) => {
     // Auto-sync Finance Settings GST state from GSTIN (fire-and-forget).
     // This fixes "Finance Settings defaulting to Maharashtra" when company
     // is in Karnataka (GSTIN prefix 29).
-    if (derivedState) {
-      const cid = req.scope?.company_id ?? null;
+    if (derivedState && savedRow?.id != null) {
+      const cid = savedRow.id;
       pool.query(
         `INSERT INTO company_settings (company_id, module, settings, updated_at)
          VALUES ($1, 'finance', $2::JSONB, NOW())
@@ -155,6 +176,9 @@ router.put('/', allowRoles(...ADMIN_ROLES), async (req, res) => {
   } catch (e) {
     if (e.message.includes('chk_companies_gstin_format')) {
       return res.status(400).json({ error: 'Invalid GSTIN format. Expected: 29AAAAA0000A1Z5' });
+    }
+    if (e.code === '22001') {
+      return res.status(400).json({ error: 'One of the fields is too long — shorten it and save again' });
     }
     res.status(500).json({ error: e.message });
   }

@@ -310,10 +310,15 @@ export default function StockSummary() {
             <tbody>
               {pageRows.map((item, idx) => {
                 const val    = (parseFloat(item.balance) || 0) * (parseFloat(item.avg_rate) || 0);
+                // /inventory/stock/summary returns one row per item PER
+                // WAREHOUSE, so `item.id` (the item) repeats whenever stock sits
+                // in more than one place — keying on it alone gave React
+                // duplicate keys and let it drop or swap rows on re-render.
+                // Composite key; `idx` only backstops a row with no id at all.
                 const status = STOCK_STATUS(item.balance, item.reorder_level);
                 const typCfg = TYPE_CFG[item.item_type] || { label: item.item_type || '—', color: '#6b7280', bg: '#f3f4f6' };
                 return (
-                  <tr key={item.id || idx} className={`ss-row ss-row-${status.key}`}>
+                  <tr key={item.id != null ? `${item.id}-${item.warehouse_id ?? 'all'}` : idx} className={`ss-row ss-row-${status.key}`}>
                     <td className="ss-code">{item.item_code}</td>
                     <td className="ss-name">
                       <span className="ss-item-name">{item.item_name}</span>

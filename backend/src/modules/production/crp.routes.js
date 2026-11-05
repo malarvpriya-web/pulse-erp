@@ -8,7 +8,7 @@
 import { Router } from 'express';
 import pool from '../../config/db.js';
 import { requirePermission } from '../../middlewares/auth.middleware.js';
-import { runCRP } from './crpEngine.service.js';
+import { runCRP, UNDER_UTILISED_PCT } from './crpEngine.service.js';
 import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = Router();
@@ -137,7 +137,29 @@ router.get('/dashboard', requirePermission('production', 'view'), async (req, re
          ORDER BY peak_load_pct DESC`, [last.id]);
       workCentres = rows;
     }
-    res.json({ last_run: last || null, work_centres: workCentres });
+
+    // Both ends of the load distribution, named.
+    //
+    // "Bottleneck identification" and "under-utilisation identification" were
+    // both described as derivable from the load percentages on this screen. They
+    // were — and nobody derived them, which is the difference between a table of
+    // numbers and an answer. UNDER_UTILISED_PCT is the same threshold the engine
+    // flags with, imported rather than re-stated so the screen and the engine
+    // cannot drift apart.
+    const bottlenecks = workCentres
+      .filter(w => Number(w.peak_load_pct) >= 100)
+      .map(w => ({ ...w, reason: `peaks at ${Number(w.peak_load_pct)}% across ${w.overloaded_buckets} bucket(s)` }));
+    const underUtilised = workCentres
+      .filter(w => Number(w.peak_load_pct) < 100 && Number(w.avg_load_pct) < UNDER_UTILISED_PCT)
+      .map(w => ({ ...w, reason: `averages ${Number(w.avg_load_pct)}% against a ${UNDER_UTILISED_PCT}% floor` }));
+
+    res.json({
+      last_run: last || null,
+      work_centres: workCentres,
+      bottlenecks,
+      under_utilised: underUtilised,
+      under_utilised_threshold_pct: UNDER_UTILISED_PCT,
+    });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

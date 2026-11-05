@@ -5,6 +5,7 @@ import {
 } from 'recharts';
 import { IndianRupee, Clock, AlertTriangle, CheckCircle, FileText, Activity } from 'lucide-react';
 import { Stat } from '@/components/pulse-ui';
+import { drillProps, toCustomer } from './drillThrough';
 
 const fmtL = (n) => {
   const v = parseFloat(n || 0);
@@ -21,6 +22,14 @@ const C = {
   amber: '#6d28d9', blue: '#2563eb', border: '#e9e4ff', cyan: '#0891b2',
 };
 
+// Not-due is a bucket, not a gap. Before 2026-09-16 the API returned only the
+// four OVERDUE buckets while total_outstanding counted every open invoice, so a
+// customer whose balance was not yet due rendered as a row of zeros under a
+// non-zero Outstanding — and the four cards never added up to the headline.
+// It is coloured green because money arriving on time is not a collections risk.
+const NOT_DUE_CFG = { key: 'bucket_not_due', label: 'Not Due', color: C.green };
+
+// The four OVERDUE buckets. Everything the collections team can chase today.
 const BUCKET_CFG = [
   { key: 'bucket_0_30',  label: '0–30 Days',  color: C.amber },
   { key: 'bucket_31_60', label: '31–60 Days', color: '#7c5cf0' },
@@ -41,7 +50,7 @@ function KpiCard({ label, value, sub, color, icon: Icon, warn }) {
   return <Stat label={label} value={value} sub={sub} color={color} icon={Icon} warn={warn} />;
 }
 
-export default function CollectionRiskPanel({ data, serviceData }) {
+export default function CollectionRiskPanel({ data, serviceData, onNavigate }) {
   const summary  = data?.summary  || {};
   const aging    = data?.aging    || [];
   const amc      = serviceData?.amc     || {};
@@ -49,7 +58,7 @@ export default function CollectionRiskPanel({ data, serviceData }) {
   const expiring = serviceData?.expiring_contracts || [];
 
   // Aging bar chart
-  const agingChartData = BUCKET_CFG.map(b => ({
+  const agingChartData = [NOT_DUE_CFG, ...BUCKET_CFG].map(b => ({
     bucket: b.label,
     value: parseFloat(summary[b.key] || 0),
     color: b.color,
@@ -68,8 +77,13 @@ export default function CollectionRiskPanel({ data, serviceData }) {
         <div style={{ fontSize: 18, fontWeight: 800, color: '#111827', marginBottom: 16 }}>Collections Center</div>
 
         {/* Aging Buckets KPIs */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 12, marginBottom: 20 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12, marginBottom: 20 }}>
+          {/* These three tie: Outstanding = Not Due + Overdue. Total Overdue is
+              the collections target; Total Outstanding is not, because it
+              includes invoices that are not yet payable. */}
           <KpiCard label="Total Outstanding" value={fmtL(summary.total_outstanding)} color={C.primary} icon={IndianRupee} warn={summary.total_outstanding > 0} />
+          <KpiCard label={NOT_DUE_CFG.label} value={fmtL(summary.bucket_not_due)} color={NOT_DUE_CFG.color} />
+          <KpiCard label="Total Overdue" value={fmtL(summary.total_overdue)} color={C.red} warn={summary.total_overdue > 0} />
           {BUCKET_CFG.map(b => (
             <KpiCard key={b.key} label={b.label} value={fmtL(summary[b.key])} color={b.color} />
           ))}
@@ -101,7 +115,7 @@ export default function CollectionRiskPanel({ data, serviceData }) {
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
                 <thead>
                   <tr style={{ background: '#f9fafb' }}>
-                    {['Customer', 'Outstanding', '0–30', '31–60', '61–90', '90+', 'Max OD Days', 'Risk'].map(h => (
+                    {['Customer', 'Outstanding', 'Not Due', '0–30', '31–60', '61–90', '90+', 'Max OD Days', 'Risk'].map(h => (
                       <th key={h} style={{ padding: '8px 12px', textAlign: 'left', fontWeight: 600, color: '#6b7280', fontSize: 11, textTransform: 'uppercase' }}>{h}</th>
                     ))}
                   </tr>
@@ -110,9 +124,14 @@ export default function CollectionRiskPanel({ data, serviceData }) {
                   {topDefaulters.map((r, i) => {
                     const riskCfg = RISK_CFG[r.risk] || RISK_CFG.Low;
                     return (
-                      <tr key={r.customer_id} style={{ borderBottom: '1px solid #f3f4f6', background: r.risk === 'Critical' ? '#fff8f8' : i % 2 === 0 ? '#fff' : '#fafafa' }}>
+                      <tr
+                        key={r.customer_id}
+                        {...drillProps(onNavigate && r.customer_id ? () => onNavigate(...toCustomer(r.customer_id)) : null, r.customer)}
+                        style={{ borderBottom: '1px solid #f3f4f6', background: r.risk === 'Critical' ? '#fff8f8' : i % 2 === 0 ? '#fff' : '#fafafa', cursor: onNavigate && r.customer_id ? 'pointer' : 'default' }}
+                      >
                         <td style={{ padding: '8px 12px', fontWeight: 700, color: '#111827' }}>{r.customer}</td>
                         <td style={{ padding: '8px 12px', fontWeight: 700, color: C.red }}>{fmtL(r.total_outstanding)}</td>
+                        <td style={{ padding: '8px 12px', color: r.bucket_not_due > 0 ? C.green : '#9ca3af' }}>{fmtL(r.bucket_not_due)}</td>
                         <td style={{ padding: '8px 12px', color: r.bucket_0_30 > 0 ? C.amber : '#9ca3af' }}>{fmtL(r.bucket_0_30)}</td>
                         <td style={{ padding: '8px 12px', color: r.bucket_31_60 > 0 ? '#7c5cf0' : '#9ca3af' }}>{fmtL(r.bucket_31_60)}</td>
                         <td style={{ padding: '8px 12px', color: r.bucket_61_90 > 0 ? C.red : '#9ca3af' }}>{fmtL(r.bucket_61_90)}</td>

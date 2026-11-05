@@ -34,8 +34,11 @@
  */
 import pool from '../../shared/db.js';
 import { resolveModel, benchmark, rankBids, RFX_MODELS } from '../engines/rfxScoringEngine.js';
-import { computeTco } from '../engines/tcoEngine.js';
-import { loadTcoParams, loadAnnualDemand } from './tco.service.js';
+import { computeTco, parsePaymentTerms } from '../engines/tcoEngine.js';
+import {
+  loadTcoParams, loadAnnualDemand, loadFxForCurrencies, fxFieldsFor, TcoParamsUnavailableError, quoteFreightFields,
+} from './tco.service.js';
+import { loadFreightInputs } from './freight.service.js';
 import { resolveGstRate } from '../../../shared/gstRate.js';
 
 const num = (v, fallback = null) => {
@@ -53,11 +56,13 @@ const round1 = (n) => (n == null ? null : Math.round((n + Number.EPSILON) * 10) 
  */
 export const HEALTH_COVERAGE_IS_CONTEXT_ONLY = true;
 
-/** "Net 45" → 45. Payment terms are free text on rfq_quotes. */
+/**
+ * "Net 45" → 45. Payment terms are free text on rfq_quotes. This used to take
+ * the FIRST number, so "2/10, net 30" scored as 2 days of credit; it now uses
+ * the engine's parser (§214), the same one the TCO itself uses.
+ */
 function parseTermsDays(v) {
-  if (v == null) return null;
-  const m = String(v).match(/(\d+)/);
-  return m ? Number(m[1]) : null;
+  return parsePaymentTerms(v)?.net_days ?? null;
 }
 
 // ── Loaders ───────────────────────────────────────────────────────────────────
@@ -100,6 +105,9 @@ async function loadBids(companyId, rfqId) {
             q.payment_terms, q.warranty_months, q.moq, q.currency, q.valid_until,
             q.freight_amount, q.insurance_amount, q.duty_amount, q.packaging_amount,
             q.other_charges, q.tooling_cost, q.tax_pct, q.is_winner,
+            q.fx_rate_override, q.fx_override_reason, q.fx_override_by_user_id, q.fx_override_at,
+            q.shipping_weight_kg_per_unit, q.transport_mode, q.service_level,
+            q.freight_per_unit, q.freight_currency, q.shipping_weight_uom,
             v.vendor_name, v.payment_terms_days AS master_terms_days, v.lead_time_days,
             COALESCE(v.is_critical_supplier, FALSE) AS is_critical_supplier,
             COALESCE(v.is_single_source, FALSE)     AS is_single_source,
@@ -172,19 +180,47 @@ async function costMeasures(companyId, event, items, bids, model) {
     };
   }
 
-  const params = await loadTcoParams(companyId);
+  let params;
+  try {
+    params = await loadTcoParams(companyId);
+  } catch (e) {
+    if (!(e instanceof TcoParamsUnavailableError)) throw e;
+    // Unreadable settings: no cost score at all, rather than one built on
+    // defaults the company never chose.
+    return {
+      measures: {}, detail: {}, quantity: totalQty,
+      cost_basis: e.message, cost_basis_key: 'unavailable',
+    };
+  }
   const tcoUsable = params.tco_enabled && !!singleItem;
+
+  // Both branches below compare money across bids, so both convert with an
+  // APPROVED company rate (or the quote's documented override). A bid with no
+  // usable rate gets no cost measure — never its raw foreign number.
+  const fx = await loadFxForCurrencies(companyId, bids.flatMap((b) => [b.currency, b.freight_currency]), params);
+  const fxOf = (b) => fxFieldsFor(b.currency, fx, params.base_currency, b.fx_rate_override != null
+    ? { rate: b.fx_rate_override, reason: b.fx_override_reason, by_user_id: b.fx_override_by_user_id, at: b.fx_override_at }
+    : null);
 
   const measures = {};
   const detail = {};
 
   if (tcoUsable) {
     const demand = await loadAnnualDemand(Number(singleItem.item_id), companyId);
+    // Same freight model as the RFQ comparison (§216).
+    const freight = await loadFreightInputs(companyId, params, {
+      vendorIds: bids.map((b) => b.vendor_id),
+      lines: [{ item_id: Number(singleItem.item_id), quantity: totalQty, quantity_uom: singleItem.unit || null }],
+      quoteOverrides: new Map(bids.map((b) => [Number(b.vendor_id), {
+        weight_kg_per_unit: b.shipping_weight_kg_per_unit, weight_uom: b.shipping_weight_uom,
+        transport_mode: b.transport_mode, service_level: b.service_level,
+      }])),
+    });
     for (const b of bids) {
       const r = computeTco({
         unit_price: num(b.unit_price),
         quantity: totalQty,
-        freight_amount: num(b.freight_amount),
+        ...quoteFreightFields(b, fx, params.base_currency),
         insurance_amount: num(b.insurance_amount),
         duty_amount: num(b.duty_amount),
         packaging_amount: num(b.packaging_amount),
@@ -199,30 +235,74 @@ async function costMeasures(companyId, event, items, bids, model) {
         gst_rate: resolveGstRate(singleItem),
         annual_demand_qty: demand?.annual_demand_qty ?? null,
         is_single_source: b.is_single_source === true,
+        ...fxOf(b),
+        freight_model: freight.get(Number(b.vendor_id)) ?? null,
       }, params);
-      measures[b.vendor_id] = r.computable ? r.tco_per_unit : null;
+      // No freight at all → no cost measure: a TCO short by an unknown freight
+      // bill would score as the cheapest bid for the wrong reason (§216).
+      measures[b.vendor_id] = r.computable && r.completeness !== 'incomplete' ? r.tco_per_unit : null;
       detail[b.vendor_id] = r.computable
-        ? { tco_per_unit: r.tco_per_unit, tco_total: r.tco_total, confidence: r.confidence }
-        : { reason: r.reason };
+        ? { tco_per_unit: r.tco_per_unit, tco_total: r.tco_total, confidence: r.confidence,
+            completeness: r.completeness, freight_source: r.freight?.source ?? null, freight_missing: r.freight?.missing ?? [] }
+        : { reason: r.reason, fx_detail: r.fx_detail ?? null };
     }
-    return {
+    return withholdIfIncomplete({
       measures, detail, quantity: totalQty,
       cost_basis: 'total cost of ownership per unit (§128)',
       cost_basis_key: 'tco',
-    };
+    }, bids);
   }
 
   for (const b of bids) {
     const total = num(b.total_amount) ?? (num(b.unit_price) != null ? num(b.unit_price) * totalQty : null);
-    measures[b.vendor_id] = total != null && total > 0 ? total / totalQty : null;
-    detail[b.vendor_id] = { quoted_total: total };
+    const f = fxOf(b);
+    if (f.fx_unavailable) {
+      measures[b.vendor_id] = null;
+      detail[b.vendor_id] = { quoted_total: total, currency: f.currency, reason: 'no_fx_rate', fx_detail: f.fx_unavailable };
+      continue;
+    }
+    const rate = f.fx_rate ?? 1;
+    measures[b.vendor_id] = total != null && total > 0 ? (total * rate) / totalQty : null;
+    detail[b.vendor_id] = {
+      quoted_total: total, currency: f.currency ?? params.base_currency,
+      fx_rate: f.fx_rate ?? null, fx_rate_source: f.fx_rate_source ?? null,
+    };
   }
-  return {
+  return withholdIfIncomplete({
     measures, detail, quantity: totalQty,
     cost_basis: params.tco_enabled && !singleItem
       ? 'quoted price per unit — TCO needs a single-item RFQ to attribute item costs'
       : 'quoted price per unit — total cost of ownership is switched off in Procurement Settings',
     cost_basis_key: 'price',
+  }, bids);
+}
+
+/**
+ * §217 — the cost criterion is RELATIVE (benchmarked across bids), so a bid
+ * that quoted a price but cannot be costed (no usable approved FX, or no
+ * freight at all) would leave the others scored against a field it might have
+ * beaten. As in the TCO comparison: when any priced bid cannot be costed, no
+ * bid gets a cost score. The cost weight then counts as unscored, which the
+ * scoring engine already treats honestly (too_close_to_call / low coverage).
+ */
+function withholdIfIncomplete(cost, bids) {
+  const priced = (b) => num(b.unit_price) != null || num(b.total_amount) != null;
+  const blocked = bids.filter((b) => priced(b) && cost.measures[b.vendor_id] == null).map((b) => {
+    const d = cost.detail[b.vendor_id] || {};
+    const reason = d.reason === 'no_fx_rate' ? 'fx' : d.completeness === 'incomplete' ? 'freight' : 'not_costed';
+    const missing = reason === 'fx'
+      ? [{ input: 'fx', reason: d.fx_detail?.reason ?? 'no_approved_rate', message: d.fx_detail?.message ?? 'No usable approved exchange rate.' }]
+      : (d.freight_missing ?? []);
+    return { vendor_id: b.vendor_id, label: b.vendor_name ?? null, reason, missing };
+  }).filter((x) => x.reason !== 'not_costed');
+  if (!blocked.length) return { ...cost, cost_status: 'complete', cost_incomplete: [] };
+  const measures = Object.fromEntries(Object.keys(cost.measures).map((k) => [k, null]));
+  return {
+    ...cost, measures,
+    cost_status: 'incomplete',
+    cost_incomplete: blocked,
+    cost_basis: `cost not scored for any bid — ${blocked.length} bid${blocked.length === 1 ? '' : 's'} cannot be costed (${blocked.map((x) => `${x.label || 'vendor ' + x.vendor_id}: ${x.reason === 'fx' ? 'exchange rate' : 'freight'}`).join('; ')})`,
+    cost_basis_key: 'incomplete',
   };
 }
 
@@ -400,6 +480,8 @@ export async function getScorecard(companyId, rfqId) {
       compared_quantity: cost.quantity,
       cost_basis: cost.cost_basis,
       cost_basis_key: cost.cost_basis_key,
+      cost_status: cost.cost_status ?? null,
+      cost_incomplete: cost.cost_incomplete ?? [],
       health_note: 'A null vendor-health dimension means the health engine had no evidence; it is left unscored rather than scored zero.',
       invited: bids.length,
       responded: engineBids.filter((b) => b.responded).length,

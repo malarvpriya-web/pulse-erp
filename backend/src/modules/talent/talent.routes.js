@@ -11,8 +11,24 @@ import {
   isDriveConfigured,
 } from '../../services/googleDrive.service.js';
 import { captureBefore } from '../../middlewares/captureBefore.js';
+import { uploadFile as storeFile } from '../../services/StorageService.js';
+// Authorization. This router previously carried NONE — server.js mounts it with
+// verifyToken only, so all 26 routes below (the whole résumé/candidate database,
+// talent pools, agency commercial terms, the question bank) were readable AND
+// writable by any authenticated user of any role, including roles whose
+// role_permissions row sets recruitment can_view = false. Its sibling
+// recruitment.routes.js has always gated every route, which is precisely what
+// made this easy to miss. Same module key ('recruitment') and same four actions,
+// so the existing matrix already covers every role that reaches these pages.
+import { requirePermission } from '../../middlewares/auth.middleware.js';
+import { ensureDefaultInterviewQuestions } from './defaultInterviewQuestions.js';
 
 const router = Router();
+
+const view   = requirePermission('recruitment', 'view');
+const add    = requirePermission('recruitment', 'add');
+const edit   = requirePermission('recruitment', 'edit');
+const remove = requirePermission('recruitment', 'delete');
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -38,7 +54,10 @@ async function getUnsolicitedFolder() {
 }
 
 // ── Schema migration ──────────────────────────────────────────────────────────
-(async () => {
+// Exported so a test can wait for the import-time DDL to finish (it used to be a
+// bare IIFE nothing could observe). Each step catches its own error, so this
+// promise always resolves.
+export const talentSchemaReady = (async () => {
   // Each step is isolated so one failure doesn't skip later steps.
   const run = async (label, fn) => {
     try { await fn(); }
@@ -57,14 +76,12 @@ async function getUnsolicitedFolder() {
     )
   `));
 
-  await run('talent_pool_candidates', () => pool.query(`
-    CREATE TABLE IF NOT EXISTS talent_pool_candidates (
-      pool_id       INTEGER REFERENCES talent_pools(id) ON DELETE CASCADE,
-      candidate_id  INTEGER REFERENCES candidates(id)   ON DELETE CASCADE,
-      added_at      TIMESTAMPTZ DEFAULT NOW(),
-      PRIMARY KEY (pool_id, candidate_id)
-    )
-  `));
+  // talent_pool_candidates is deliberately NOT created here any more. It was a
+  // second table recording the same relationship as talent_pool_members — the
+  // one every endpoint in this file actually reads — so memberships landed in
+  // one table and were read from the other, and every pool reported zero
+  // members. Migration 20260917000030 merged the two and dropped it; recreating
+  // it on boot would resurrect the split. See that migration for the full story.
 
   await run('recruitment_agencies', () => pool.query(`
     CREATE TABLE IF NOT EXISTS recruitment_agencies (
@@ -118,20 +135,6 @@ async function getUnsolicitedFolder() {
   `));
 
   // ── talent_pool_members (candidate_id INTEGER matches candidates.id SERIAL) ─
-  // Drop and recreate if previously created with wrong UUID type
-  await run('fix talent_pool_members uuid type', () => pool.query(`
-    DO $$
-    BEGIN
-      IF EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_name = 'talent_pool_members'
-          AND column_name = 'candidate_id'
-          AND data_type = 'uuid'
-      ) THEN
-        DROP TABLE IF EXISTS talent_pool_members CASCADE;
-      END IF;
-    END $$
-  `));
   await run('talent_pool_members', () => pool.query(`
     CREATE TABLE IF NOT EXISTS talent_pool_members (
       pool_id      INTEGER     NOT NULL,
@@ -167,34 +170,18 @@ async function getUnsolicitedFolder() {
         REFERENCES recruitment_agencies(id) ON DELETE SET NULL
   `));
 
-  // ── Seed default questions for companies that have none ───────────────────
-  await run('seed interview questions', async () => {
-    const companies = await pool.query(`SELECT id FROM companies WHERE is_active = true`);
-    for (const co of companies.rows) {
-      const existing = await pool.query(
-        `SELECT COUNT(*) AS cnt FROM interview_questions WHERE company_id = $1`,
-        [co.id]
-      );
-      if (parseInt(existing.rows[0].cnt) === 0) {
-        await pool.query(`
-          INSERT INTO interview_questions
-            (company_id, question, category, difficulty, is_active)
-          VALUES
-            ($1, 'Tell me about yourself and your career journey.',              'HR',          'easy',   true),
-            ($1, 'Why do you want to join our company?',                        'HR',          'easy',   true),
-            ($1, 'Describe a challenging project you worked on.',               'Behavioural', 'medium', true),
-            ($1, 'How do you handle conflicting priorities?',                   'Situational', 'medium', true),
-            ($1, 'Where do you see yourself in 5 years?',                      'HR',          'easy',   true),
-            ($1, 'What is your current notice period and expected CTC?',        'HR',          'easy',   true),
-            ($1, 'Explain a time you disagreed with your manager.',             'Behavioural', 'hard',   true),
-            ($1, 'How do you keep your skills updated?',                        'Cultural Fit','easy',   true),
-            ($1, 'Describe your ideal work environment.',                       'Cultural Fit','medium', true),
-            ($1, 'What motivates you in your work?',                            'HR',          'easy',   true)
-        `, [co.id]);
-      }
-    }
-  });
+  // Default interview questions are NOT seeded here any more. This block runs on
+  // every import of the module — each server boot and each nodemon restart —
+  // and seeded every active company that happened to exist at that moment,
+  // integration-test companies included. They are now seeded per company on
+  // first read of its bank: see defaultInterviewQuestions.js.
 })();
+
+/** Seed the company's default bank on first read; a seeding failure never blocks the read. */
+async function seedBankOnFirstUse(companyId) {
+  try { await ensureDefaultInterviewQuestions(companyId); }
+  catch (e) { console.error('[talent] default interview-question seed failed:', e.message); }
+}
 
 // ── Helper ────────────────────────────────────────────────────────────────────
 const getCid = (req) => req.scope?.company_id ?? companyOf(req);
@@ -213,7 +200,7 @@ async function verifyPoolOwnership(poolId, companyId) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // GET /api/talent/agencies
-router.get('/agencies', async (req, res) => {
+router.get('/agencies', view, async (req, res) => {
   try {
     const { search = '' } = req.query;
     const companyId = getCid(req);
@@ -253,7 +240,7 @@ router.get('/agencies', async (req, res) => {
 });
 
 // POST /api/talent/agencies
-router.post('/agencies', async (req, res) => {
+router.post('/agencies', add, async (req, res) => {
   try {
     const {
       name, contact_person, email, phone, website,
@@ -292,7 +279,7 @@ router.post('/agencies', async (req, res) => {
 });
 
 // PUT /api/talent/agencies/:id
-router.put('/agencies/:id', captureBefore('recruitment_agencies'), async (req, res) => {
+router.put('/agencies/:id', edit, captureBefore('recruitment_agencies'), async (req, res) => {
   try {
     const companyId = getCid(req);
     const {
@@ -300,21 +287,30 @@ router.put('/agencies/:id', captureBefore('recruitment_agencies'), async (req, r
       specializations, fee_percentage, payment_terms,
       agreement_start, agreement_end, is_active, notes, city,
     } = req.body;
+    // Every column is COALESCE'd against its own value, so a field the caller did
+    // not send keeps what it had. Nine of these were previously assigned raw,
+    // which made this a full replace masquerading as a patch: the Deactivate
+    // button in RecruitmentAgencies.jsx sends {is_active:false} and nothing else,
+    // so one click nulled the agency's email, phone, website, fee percentage,
+    // payment terms, agreement dates, city and notes — real contract data, with
+    // no warning and no undo. `is_active` stays a plain assignment because it is
+    // the one field an explicit `false` must be able to write; the three-way
+    // check below distinguishes "sent false" from "not sent".
     const r = await pool.query(`
       UPDATE recruitment_agencies SET
         agency_name      = COALESCE($3, agency_name),
         contact_person   = COALESCE($4, contact_person),
-        email            = $5,
-        phone            = $6,
-        website          = $7,
+        email            = COALESCE($5, email),
+        phone            = COALESCE($6, phone),
+        website          = COALESCE($7, website),
         specializations  = COALESCE($8::jsonb, specializations),
-        fee_percentage   = $9,
-        payment_terms    = $10,
-        agreement_start  = $11,
-        agreement_end    = $12,
-        is_active        = $13,
-        notes            = $14,
-        city             = $15,
+        fee_percentage   = COALESCE($9, fee_percentage),
+        payment_terms    = COALESCE($10, payment_terms),
+        agreement_start  = COALESCE($11, agreement_start),
+        agreement_end    = COALESCE($12, agreement_end),
+        is_active        = COALESCE($13, is_active),
+        notes            = COALESCE($14, notes),
+        city             = COALESCE($15, city),
         updated_at       = NOW()
       WHERE id = $1
         AND ($2::int IS NULL OR company_id = $2)
@@ -328,11 +324,11 @@ router.put('/agencies/:id', captureBefore('recruitment_agencies'), async (req, r
       phone ?? null,
       website ?? null,
       specializations ? JSON.stringify(specializations) : null,
-      fee_percentage != null ? parseFloat(fee_percentage) : null,
+      fee_percentage != null && fee_percentage !== '' ? parseFloat(fee_percentage) : null,
       payment_terms ?? null,
       agreement_start ?? null,
       agreement_end ?? null,
-      is_active !== false,
+      is_active === undefined ? null : is_active !== false,
       notes ?? null,
       city ?? null,
     ]);
@@ -344,7 +340,7 @@ router.put('/agencies/:id', captureBefore('recruitment_agencies'), async (req, r
 });
 
 // DELETE /api/talent/agencies/:id
-router.delete('/agencies/:id', captureBefore('recruitment_agencies'), async (req, res) => {
+router.delete('/agencies/:id', remove, captureBefore('recruitment_agencies'), async (req, res) => {
   try {
     const companyId = getCid(req);
     const check = await pool.query(
@@ -368,7 +364,7 @@ router.delete('/agencies/:id', captureBefore('recruitment_agencies'), async (req
 });
 
 // GET /api/talent/agencies/:id/candidates
-router.get('/agencies/:id/candidates', async (req, res) => {
+router.get('/agencies/:id/candidates', view, async (req, res) => {
   try {
     const companyId = getCid(req);
     const r = await pool.query(`
@@ -393,9 +389,10 @@ router.get('/agencies/:id/candidates', async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // GET /api/talent/questions/stats  (must be before /questions/:id)
-router.get('/questions/stats', async (req, res) => {
+router.get('/questions/stats', view, async (req, res) => {
   try {
     const companyId = getCid(req);
+    await seedBankOnFirstUse(companyId);
     const r = await pool.query(`
       SELECT
         COUNT(*) FILTER (WHERE is_active = true)::int AS total,
@@ -437,6 +434,7 @@ router.get('/questions/stats', async (req, res) => {
 // the old `tags` text column instead of `tags_jsonb`, orphaning rows that the
 // scoped /questions endpoint could never see. One query, two response shapes.
 async function listQuestions(companyId, { category = '', difficulty = '', job_role = '', search = '' } = {}) {
+  await seedBankOnFirstUse(companyId);
   const r = await pool.query(`
     SELECT id, question, category, difficulty, job_role,
            expected_answer, tags_jsonb AS tags, is_active, created_at
@@ -470,7 +468,7 @@ async function insertQuestion(companyId, { question, category, difficulty, job_r
 }
 
 // GET /api/talent/questions
-router.get('/questions', async (req, res) => {
+router.get('/questions', view, async (req, res) => {
   try {
     const companyId = getCid(req);
     const rows = await listQuestions(companyId, req.query);
@@ -481,7 +479,7 @@ router.get('/questions', async (req, res) => {
 });
 
 // POST /api/talent/questions
-router.post('/questions', async (req, res) => {
+router.post('/questions', add, async (req, res) => {
   try {
     const { question, category } = req.body;
     if (!question) return res.status(400).json({ error: 'question is required' });
@@ -495,7 +493,7 @@ router.post('/questions', async (req, res) => {
 });
 
 // PUT /api/talent/questions/:id
-router.put('/questions/:id', captureBefore('interview_questions'), async (req, res) => {
+router.put('/questions/:id', edit, captureBefore('interview_questions'), async (req, res) => {
   try {
     const companyId = getCid(req);
     const { question, category, difficulty, job_role, expected_answer, tags } = req.body;
@@ -525,7 +523,7 @@ router.put('/questions/:id', captureBefore('interview_questions'), async (req, r
 });
 
 // DELETE /api/talent/questions/:id  (soft delete)
-router.delete('/questions/:id', captureBefore('interview_questions'), async (req, res) => {
+router.delete('/questions/:id', remove, captureBefore('interview_questions'), async (req, res) => {
   try {
     const companyId = getCid(req);
     await pool.query(
@@ -544,7 +542,7 @@ router.delete('/questions/:id', captureBefore('interview_questions'), async (req
 // ─────────────────────────────────────────────────────────────────────────────
 
 // GET /api/talent/pools
-router.get('/pools', async (req, res) => {
+router.get('/pools', view, async (req, res) => {
   try {
     const companyId = getCid(req);
     const { search = '' } = req.query;
@@ -573,7 +571,7 @@ router.get('/pools', async (req, res) => {
 });
 
 // GET /api/talent/pools/:id
-router.get('/pools/:id', async (req, res) => {
+router.get('/pools/:id', view, async (req, res) => {
   try {
     const companyId = getCid(req);
     const r = await pool.query(`
@@ -597,7 +595,7 @@ router.get('/pools/:id', async (req, res) => {
 });
 
 // POST /api/talent/pools
-router.post('/pools', async (req, res) => {
+router.post('/pools', add, async (req, res) => {
   try {
     const companyId = getCid(req);
     if (!companyId) return res.status(403).json({ error: 'Company scope required' });
@@ -618,14 +616,24 @@ router.post('/pools', async (req, res) => {
       is_active !== false,
       source || null,
       companyId,
-      req.user?.userId ?? null,
+      // talent_pools.created_by is a FOREIGN KEY to employees(id). This used to
+      // pass req.user.userId — a users.id — so every POST died on
+      // talent_pools_created_by_fkey. Not "sometimes": of the 134 active users on
+      // this database, ZERO have a users.id that matches any employees.id, so no
+      // account in the system could create a talent pool. The nastier half is
+      // what happens when the two id spaces DO overlap: the insert succeeds and
+      // silently credits the pool to an unrelated employee. employee_id is the
+      // claim that actually belongs in an employees column, and NULL (the column
+      // is ON DELETE SET NULL) is the right answer for an admin who has no
+      // employee record, rather than a wrong attribution.
+      req.user?.employee_id ?? null,
     ]);
     res.status(201).json({ data: r.rows[0] });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // PUT /api/talent/pools/:id
-router.put('/pools/:id', captureBefore('talent_pools'), async (req, res) => {
+router.put('/pools/:id', edit, captureBefore('talent_pools'), async (req, res) => {
   try {
     const companyId = getCid(req);
     const { pool_name, description, skills, department, is_active } = req.body;
@@ -655,7 +663,7 @@ router.put('/pools/:id', captureBefore('talent_pools'), async (req, res) => {
 });
 
 // DELETE /api/talent/pools/:id
-router.delete('/pools/:id', captureBefore('talent_pools'), async (req, res) => {
+router.delete('/pools/:id', remove, captureBefore('talent_pools'), async (req, res) => {
   try {
     const companyId = getCid(req);
     const members = await pool.query(
@@ -675,7 +683,7 @@ router.delete('/pools/:id', captureBefore('talent_pools'), async (req, res) => {
 });
 
 // GET /api/talent/pools/:id/members
-router.get('/pools/:id/members', async (req, res) => {
+router.get('/pools/:id/members', view, async (req, res) => {
   try {
     const companyId = getCid(req);
     if (!(await verifyPoolOwnership(req.params.id, companyId)))
@@ -704,7 +712,7 @@ router.get('/pools/:id/members', async (req, res) => {
 });
 
 // POST /api/talent/pools/:id/members
-router.post('/pools/:id/members', async (req, res) => {
+router.post('/pools/:id/members', add, async (req, res) => {
   try {
     const companyId = getCid(req);
     if (!(await verifyPoolOwnership(req.params.id, companyId)))
@@ -712,10 +720,23 @@ router.post('/pools/:id/members', async (req, res) => {
     const poolId = parseInt(req.params.id, 10);
     const { candidate_id, notes } = req.body;
     if (!candidate_id) return res.status(400).json({ error: 'candidate_id is required' });
+    // Guard the candidate the same way verifyPoolOwnership() guards the pool —
+    // without it, a caller could add another company's candidate to their own
+    // pool by id and then read that candidate's full profile back through
+    // GET /pools/:id/members.
+    const owns = await pool.query(
+      `SELECT 1 FROM candidates WHERE id = $1 AND company_id = $2 AND deleted_at IS NULL`,
+      [candidate_id, companyId]
+    );
+    if (!owns.rows.length) return res.status(404).json({ error: 'Candidate not found' });
+
     await pool.query(
+      // added_by is a FOREIGN KEY to employees(id) — see the note on
+      // talent_pools.created_by above. This passed users.id and 500'd on
+      // talent_pool_members_added_by_fkey for every caller.
       `INSERT INTO talent_pool_members (pool_id, candidate_id, added_by, notes)
        VALUES ($1,$2,$3,$4) ON CONFLICT (pool_id, candidate_id) DO NOTHING`,
-      [poolId, candidate_id, req.user?.userId ?? null, notes || null]
+      [poolId, candidate_id, req.user?.employee_id ?? null, notes || null]
     );
     const r = await pool.query(`
       SELECT
@@ -739,7 +760,7 @@ router.post('/pools/:id/members', async (req, res) => {
 });
 
 // DELETE /api/talent/pools/:id/members/:candidateId
-router.delete('/pools/:id/members/:candidateId', async (req, res) => {
+router.delete('/pools/:id/members/:candidateId', remove, async (req, res) => {
   try {
     const companyId = getCid(req);
     if (!(await verifyPoolOwnership(req.params.id, companyId)))
@@ -756,7 +777,7 @@ router.delete('/pools/:id/members/:candidateId', async (req, res) => {
 // RECRUITER DASHBOARD
 // ─────────────────────────────────────────────────────────────────────────────
 
-router.get('/recruiter-dashboard', async (req, res) => {
+router.get('/recruiter-dashboard', view, async (req, res) => {
   try {
     const companyId = getCid(req);
     const cFilter   = companyId ? ' AND company_id=$1' : '';
@@ -871,7 +892,26 @@ router.get('/recruiter-dashboard', async (req, res) => {
       expiring_count  = eo.rows.length;
     } catch (_) { /* offer_letters schema may differ */ }
 
-    // ── Action items: stale active candidates (7+ days without movement) ──
+    // ── Action items: candidates nobody has touched in 7+ days ─────────────
+    //
+    // Two defects fixed here 2026-09-27, both of which made this panel lie:
+    //
+    //  1. It measured `NOW() - c.created_at` while its own heading claimed "7+
+    //     days without movement". Those are different questions: a candidate
+    //     created thirty days ago and interviewed yesterday was reported as
+    //     waiting thirty days. There was no column recording the last movement,
+    //     which is why migration 20260927000001 added `last_activity_at` —
+    //     stamped by candidateIntelligence.recordActivity() on every mutation in
+    //     the module, and backfilled from candidate_stage_history for existing
+    //     rows. COALESCE to created_at covers a candidate who has genuinely never
+    //     moved since being created, where age IS the waiting time.
+    //
+    //  2. It excluded only ('hired','rejected'), so every candidate parked in
+    //     not_suitable / maybe / future_use sat in the recruiter's action list
+    //     forever — permanently, since nothing would ever move them again. Only
+    //     LIVE stages are actionable; a Talent Bank candidate is not waiting on
+    //     anybody, and 'future_use' has its own dated reminder
+    //     (candidate_recontact) rather than belonging here.
     let action_items = [];
     try {
       const ai = await pool.query(
@@ -879,14 +919,15 @@ router.get('/recruiter-dashboard', async (req, res) => {
                 COALESCE(c.full_name, CONCAT(c.first_name, ' ', c.last_name)) AS name,
                 c.current_stage AS stage,
                 jo.job_title,
-                DATE_PART('day', NOW() - c.created_at)::int AS days_waiting
+                DATE_PART('day', NOW() - COALESCE(c.last_activity_at, c.created_at))::int AS days_waiting
          FROM candidates c
          LEFT JOIN job_openings jo ON jo.id = c.applied_job_id
          WHERE c.deleted_at IS NULL
-           AND c.current_stage NOT IN ('hired', 'rejected')
-           AND c.created_at < NOW() - INTERVAL '7 days'
+           AND c.current_stage IN ('applied','screening','shortlisted','assessment',
+                                   '1st_level','2nd_level','offer','selected')
+           AND COALESCE(c.last_activity_at, c.created_at) < NOW() - INTERVAL '7 days'
            ${companyId ? 'AND c.company_id=$1' : ''}
-         ORDER BY c.created_at ASC LIMIT 10`,
+         ORDER BY COALESCE(c.last_activity_at, c.created_at) ASC LIMIT 10`,
         params
       );
       action_items = ai.rows;
@@ -919,7 +960,7 @@ router.get('/recruiter-dashboard', async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // GET /api/talent/resumes/stats — must be declared before /resumes to avoid param collision
-router.get('/resumes/stats', async (req, res) => {
+router.get('/resumes/stats', view, async (req, res) => {
   try {
     const companyId = getCid(req);
     if (!companyId) return res.status(401).json({ error: 'Unauthorized' });
@@ -948,7 +989,7 @@ router.get('/resumes/stats', async (req, res) => {
 });
 
 // GET /api/talent/resumes/skills — top skill chips for filter UI
-router.get('/resumes/skills', async (req, res) => {
+router.get('/resumes/skills', view, async (req, res) => {
   try {
     const companyId = getCid(req);
     if (!companyId) return res.status(401).json({ error: 'Unauthorized' });
@@ -965,7 +1006,7 @@ router.get('/resumes/skills', async (req, res) => {
 });
 
 // GET /api/talent/resumes
-router.get('/resumes', async (req, res) => {
+router.get('/resumes', view, async (req, res) => {
   try {
     const companyId = getCid(req);
     if (!companyId) return res.status(401).json({ error: 'Unauthorized' });
@@ -1023,7 +1064,7 @@ router.get('/resumes', async (req, res) => {
 });
 
 // POST /api/talent/resumes — speculative upload (no job opening required)
-router.post('/resumes', upload.single('resume'), async (req, res) => {
+router.post('/resumes', add, upload.single('resume'), async (req, res) => {
   try {
     const companyId = getCid(req);
     if (!companyId) return res.status(401).json({ error: 'Unauthorized' });
@@ -1043,38 +1084,65 @@ router.post('/resumes', upload.single('resume'), async (req, res) => {
     // previously its own separate INSERT (source: 'manual', no
     // candidate_stage_history row). 'resume_db' distinguishes speculative
     // Resume Database uploads from job-application-sourced candidates.
+    // Education, location and the parsed résumé text ride along with everything
+    // else. They arrive as multipart strings, so each is normalised here rather
+    // than trusted — a graduation year of "" would fail the CHECK constraint.
+    const intOrNull = (v) => { const n = parseInt(v, 10); return Number.isFinite(n) ? n : null; };
     const candidate = await recruitmentRepository.createCandidate({
       full_name: name, email, phone: phone || null,
       current_company: current_company || null,
       current_designation: current_designation || null,
       experience_years: experience_years ? parseFloat(experience_years) : null,
-      notice_period_days: (() => { const n = parseInt(notice_period_days, 10); return isNaN(n) ? null : n; })(),
+      notice_period_days: intOrNull(notice_period_days),
       expected_ctc: (() => { const n = parseFloat(expected_ctc); return isNaN(n) ? null : n; })(),
       skills,
       notes: notes || null,
+      location:        String(req.body.location ?? '').trim() || null,
+      qualification:   String(req.body.qualification ?? '').trim() || null,
+      specialisation:  String(req.body.specialisation ?? '').trim() || null,
+      institution:     String(req.body.institution ?? '').trim() || null,
+      graduation_year: intOrNull(req.body.graduation_year),
+      resume_text:     String(req.body.resume_text ?? '').trim() || null,
+      parse_source:    String(req.body.parse_source ?? '').trim() || null,
       source: 'resume_db',
       company_id: companyId,
     });
 
-    if (req.file && isDriveConfigured()) {
-      try {
-        const folderId = await getUnsolicitedFolder();
-        const result = await driveUpload({
-          buffer: req.file.buffer, originalName: req.file.originalname,
-          mimeType: req.file.mimetype || 'application/pdf', moduleType: 'hr', entityLabel: null,
-        });
-        if (folderId && result?.drive_file_id) await moveFile(result.drive_file_id, folderId);
-        if (result?.drive_file_id) {
-          await pool.query(
-            `UPDATE candidates SET resume_gdrive_file_id=$1, resume_gdrive_url=$2,
-             current_resume_folder='Applied' WHERE id=$3`,
-            [result.drive_file_id, result.drive_link, candidate.id]
-          );
-          candidate.resume_gdrive_file_id = result.drive_file_id;
-          candidate.resume_gdrive_url     = result.drive_link;
+    // Storing the file used to happen ONLY inside `if (req.file &&
+    // isDriveConfigured())`, with no else. Google Drive is optional and is not
+    // configured on most deployments, so the ordinary outcome was: recruiter
+    // attaches a résumé, endpoint returns 201, file is discarded, and nothing
+    // anywhere says so. POST /recruitment/candidates has always persisted via
+    // StorageService; this path now falls back to the same writer, so a résumé
+    // lands somewhere retrievable regardless of how the module is configured.
+    if (req.file) {
+      let stored = false;
+      if (isDriveConfigured()) {
+        try {
+          const folderId = await getUnsolicitedFolder();
+          const result = await driveUpload({
+            buffer: req.file.buffer, originalName: req.file.originalname,
+            mimeType: req.file.mimetype || 'application/pdf', moduleType: 'hr', entityLabel: null,
+          });
+          if (folderId && result?.drive_file_id) await moveFile(result.drive_file_id, folderId);
+          if (result?.drive_file_id) {
+            await pool.query(
+              `UPDATE candidates SET resume_gdrive_file_id=$1, resume_gdrive_url=$2,
+               current_resume_folder='Applied' WHERE id=$3`,
+              [result.drive_file_id, result.drive_link, candidate.id]
+            );
+            candidate.resume_gdrive_file_id = result.drive_file_id;
+            candidate.resume_gdrive_url     = result.drive_link;
+            stored = true;
+          }
+        } catch (driveErr) {
+          console.warn('[talent] Drive upload failed, falling back to local storage:', driveErr.message);
         }
-      } catch (driveErr) {
-        console.warn('[talent] Drive upload skipped:', driveErr.message);
+      }
+      if (!stored) {
+        const url = await storeFile(req.file.buffer, req.file.originalname, req.file.mimetype);
+        await pool.query(`UPDATE candidates SET resume_file_url=$1 WHERE id=$2`, [url, candidate.id]);
+        candidate.resume_file_url = url;
       }
     }
 
@@ -1087,7 +1155,7 @@ router.post('/resumes', upload.single('resume'), async (req, res) => {
 });
 
 // PUT /api/talent/resumes/:id — update candidate profile from Resume Database
-router.put('/resumes/:id', captureBefore('candidates'), async (req, res) => {
+router.put('/resumes/:id', edit, captureBefore('candidates'), async (req, res) => {
   try {
     const companyId = getCid(req);
     if (!companyId) return res.status(401).json({ error: 'Unauthorized' });
@@ -1100,18 +1168,25 @@ router.put('/resumes/:id', captureBefore('candidates'), async (req, res) => {
     if (typeof skills === 'string') {
       try { skills = JSON.parse(skills); } catch { skills = skills.split(',').map(s => s.trim()).filter(Boolean); }
     }
+    // Same patch-vs-replace fix as PUT /agencies/:id above: these seven columns
+    // were assigned raw, so any request that omitted one erased it. A partial
+    // update from anywhere — a future caller, a script, a half-filled form —
+    // silently wiped a candidate's phone, employer, designation, experience,
+    // notice period, expected CTC and notes.
     const r = await pool.query(
       `UPDATE candidates SET
          full_name            = COALESCE($3, full_name),
          email                = COALESCE($4, email),
-         phone                = $5,
-         current_company      = $6,
-         current_designation  = $7,
-         experience_years     = $8,
-         notice_period_days   = $9,
-         expected_ctc         = $10,
+         phone                = COALESCE($5, phone),
+         current_company      = COALESCE($6, current_company),
+         current_designation  = COALESCE($7, current_designation),
+         experience_years     = COALESCE($8, experience_years),
+         notice_period_days   = COALESCE($9, notice_period_days),
+         expected_ctc         = COALESCE($10, expected_ctc),
          skills               = COALESCE($11::jsonb, skills),
-         notes                = $12
+         location             = COALESCE($13, location),
+         notes                = COALESCE($12, notes),
+         updated_at           = CURRENT_TIMESTAMP
        WHERE id = $1 AND company_id = $2 AND deleted_at IS NULL
        RETURNING *`,
       [
@@ -1127,6 +1202,7 @@ router.put('/resumes/:id', captureBefore('candidates'), async (req, res) => {
         (() => { const n = parseFloat(expected_ctc); return isNaN(n) ? null : n; })(),
         skills             != null ? JSON.stringify(skills)        : null,
         notes              ?? null,
+        req.body.location  ?? null,
       ]
     );
     if (!r.rows[0]) return res.status(404).json({ error: 'Candidate not found' });
@@ -1138,7 +1214,7 @@ router.put('/resumes/:id', captureBefore('candidates'), async (req, res) => {
 // logic as /questions above (see listQuestions/insertQuestion), just kept
 // unwrapped (no {data:...} envelope) for whatever legacy caller still hits
 // this path. Flagged for removal in Phase 3 once nothing depends on it.
-router.get('/interview-questions', async (req, res) => {
+router.get('/interview-questions', view, async (req, res) => {
   try {
     const rows = await listQuestions(getCid(req), req.query);
     res.json(rows);
@@ -1148,7 +1224,7 @@ router.get('/interview-questions', async (req, res) => {
   }
 });
 
-router.post('/interview-questions', async (req, res) => {
+router.post('/interview-questions', add, async (req, res) => {
   try {
     const { question, category, difficulty, answer, tags } = req.body;
     if (!question) return res.status(400).json({ error: 'question is required' });

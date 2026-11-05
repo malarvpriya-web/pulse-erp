@@ -28,13 +28,20 @@ import { fmtL } from '@/utils/format';
 import { fmtDate } from '@/utils/dateFormatter';
 import './Leads.css';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import VocabSelect from '@/components/core/VocabSelect';
 
-// Includes Direct / Phone / IndiaMart, which live enquiries already carry but the
-// form never offered — the same drift as the status list below. Without them those
-// enquiries render on a fallback badge and the value is unpickable when editing.
-const SOURCES     = ['Website', 'LinkedIn', 'Referral', 'Campaign', 'Cold Call',
-                     'Exhibition', 'Tender Portal', 'Direct', 'Phone', 'IndiaMart', 'Manual'];
-const INDUSTRIES  = ['Technology', 'Manufacturing', 'Retail', 'Healthcare', 'Finance', 'Construction', 'Education', 'Logistics', 'Media', 'Consulting', 'Other'];
+// The SOURCES array that stood here is now the lead-source master. Its note is
+// worth keeping: it had been extended by hand to include Direct / Phone /
+// IndiaMart because live enquiries already carried those and the form did not
+// offer them, which left the value unpickable when editing. All eleven are
+// seeded into the master, and a source added from any CRM form is offered by
+// every other one from then on instead of needing this array edited again.
+//
+// Industries, account types and lead sources were hardcoded arrays here AND in
+// two other pages, and the copies had drifted. Four of the seven values actually
+// stored in accounts.industry (IT Services, Analytics, Engineering, FMCG) were in
+// none of them, so those accounts showed a blank Industry and the next save wiped
+// it. They now come from the shared master — backend/src/modules/master/vocabularies.js.
 
 // Includes Won / Lost / Negotiation, which existed in the data but were missing
 // from this list — 8 of 15 live enquiries carried one of them and were therefore
@@ -1067,9 +1074,8 @@ export default function Leads({ setPage }) {
               <div className="ld-row2">
                 <div className="ld-field">
                   <label>Source Type</label>
-                  <select value={form.lead_source} onChange={e => setForm(f => ({ ...f, lead_source: e.target.value }))}>
-                    {SOURCES.map(s => <option key={s}>{s}</option>)}
-                  </select>
+                  <VocabSelect vocab="lead-sources" value={form.lead_source}
+                    onChange={v => setForm(f => ({ ...f, lead_source: v }))} />
                 </div>
                 <div className="ld-field">
                   <label>Partner</label>
@@ -1083,10 +1089,8 @@ export default function Leads({ setPage }) {
               <div className="ld-row2">
                 <div className="ld-field">
                   <label>Industry</label>
-                  <select value={form.industry} onChange={e => setForm(f => ({ ...f, industry: e.target.value }))}>
-                    <option value="">Select…</option>
-                    {INDUSTRIES.map(i => <option key={i}>{i}</option>)}
-                  </select>
+                  <VocabSelect vocab="industries" value={form.industry} placeholder="Select…"
+                    onChange={v => setForm(f => ({ ...f, industry: v }))} />
                 </div>
                 <div className="ld-field">
                   <label>Status</label>

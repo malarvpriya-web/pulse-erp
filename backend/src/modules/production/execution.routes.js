@@ -7,6 +7,8 @@ import { postStock } from './subcontracting.routes.js';
 import prRepo from '../procurement/repositories/purchaseRequest.repository.js';
 import { employeeOf } from '../../shared/scope.js';
 import { captureBefore } from '../../middlewares/captureBefore.js';
+import { finiteSchedule, sequenceWorkCentre } from './productionScheduler.service.js';
+import { reportProductionToMPS } from './mpsGeneration.service.js';
 
 const router = Router();
 
@@ -14,6 +16,62 @@ const actor = (req) => ({
   id:   req.user?.userId || req.user?.id || null,
   name: req.user?.name   || req.user?.email || 'System',
 });
+
+/**
+ * Audit finding 20 — "stock promised for a production order must not
+ * accidentally be issued to another requirement".
+ *
+ * This is an ISSUE-time rule and it can only live here. A trigger on the
+ * reservation tables cannot see WHICH requirement is drawing the stock, so the
+ * first attempt at this (20260915000019-21) policed the promise instead and
+ * refused any reservation larger than stock on hand — which forbade reserving
+ * material before it arrives, the normal manufacturing case, and broke planning.
+ *
+ * The question that actually matters is asked at the moment of withdrawal:
+ * after this issue, is enough left in the lot to honour what OTHER live
+ * requirements are holding against this item? If not, the issue is taking
+ * somebody else's stock, and it is refused with the orders that hold the claim
+ * named — so the caller can go and get the promise released rather than guess.
+ *
+ * Quality-blocked lots are excluded from the supply side for the same reason
+ * the issue path refuses them: stock nobody may issue cannot honour a promise.
+ */
+async function assertNotReservedElsewhere(client, { itemId, qty, reservationId, productionOrderId }) {
+  const { rows: [supply] } = await client.query(`
+    SELECT COALESCE(SUM(COALESCE(quantity_available,0)), 0) AS available
+      FROM inventory_batches
+     WHERE item_id = $1 AND deleted_at IS NULL
+       AND LOWER(COALESCE(status,'available')) NOT IN ('rejected','quarantine','hold','blocked')`,
+    [itemId]);
+
+  const { rows: claims } = await client.query(`
+    SELECT m.id, m.production_order_id, po.production_order_no,
+           GREATEST(COALESCE(m.qty_reserved,0) - COALESCE(m.qty_issued,0), 0) AS outstanding
+      FROM material_reservations m
+      LEFT JOIN production_orders po ON po.id = m.production_order_id
+     WHERE m.item_id = $1
+       AND LOWER(COALESCE(m.status,'')) IN ('reserved','partially_issued')
+       AND ($2::int IS NULL OR m.id <> $2)
+       AND ($3::int IS NULL OR m.production_order_id IS DISTINCT FROM $3)
+     ORDER BY m.id`, [itemId, reservationId ?? null, productionOrderId ?? null]);
+
+  const othersHold = claims.reduce((t, c) => t + Number(c.outstanding || 0), 0);
+  const available = Number(supply.available || 0);
+  const remainingAfter = available - Number(qty || 0);
+
+  if (othersHold > 0 && remainingAfter < othersHold) {
+    const named = claims.filter(c => Number(c.outstanding) > 0)
+      .map(c => c.production_order_no || `order ${c.production_order_id}`);
+    return {
+      blocked: true,
+      available,
+      othersHold,
+      shortBy: Math.round((othersHold - remainingAfter) * 1000) / 1000,
+      heldBy: named,
+    };
+  }
+  return { blocked: false, available, othersHold };
+}
 
 /* ── Resolve the company an order should belong to ──
    Scoped users use their own company. A global super-admin (company_id = null)
@@ -631,6 +689,16 @@ router.post('/orders', requirePermission('production', 'add'), async (req, res) 
 
     await client.query('BEGIN');
     const cid = await resolveCompanyId(client, req.scope, company_id);
+    // product_id references inventory_items (FK, migration 20261028000005); it
+    // must also be this company's item — the FK cannot check that.
+    if (product_id != null && product_id !== '') {
+      const { rows: [it] } = await client.query(
+        `SELECT id FROM inventory_items WHERE id = $1 AND ($2::int IS NULL OR company_id = $2)`, [product_id, cid]);
+      if (!it) {
+        await client.query('ROLLBACK');
+        return res.status(422).json({ error: `Product ${product_id} is not an item of this company.`, code: 'PRODUCT_NOT_FOUND' });
+      }
+    }
     const no      = await nextProdOrderNumber(client);
     const creator = actor(req);
 
@@ -659,9 +727,12 @@ router.post('/orders', requirePermission('production', 'add'), async (req, res) 
       );
       for (const s of steps.rows) {
         await client.query(
+          // company_id from the parent order, in the statement — correct for every
+          // caller and needs no extra parameter. A tenant-less operation row is
+          // invisible to company-scoped shop-floor reads.
           `INSERT INTO production_operations
-            (production_order_id, routing_step_id, step_no, operation, work_centre_id, work_centre_name, std_time_hrs, status, is_inspection)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,'pending',$8)`,
+            (production_order_id, routing_step_id, step_no, operation, work_centre_id, work_centre_name, std_time_hrs, status, is_inspection, company_id)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,'pending',$8,(SELECT company_id FROM production_orders WHERE id = $1))`,
           [order.id, s.id, s.step_no, s.operation, s.work_centre_id || null,
            s.work_centre_name || null, s.std_time_hrs || 0, s.is_inspection || false]
         );
@@ -803,15 +874,19 @@ router.patch('/orders/:id/complete', requirePermission('production', 'edit'), as
         mpsId = open?.id ?? null;
       }
       if (mpsId) {
-        await client.query(`
-          UPDATE master_production_schedule
-             SET quantity_produced = LEAST(COALESCE(quantity_produced,0) + $2, COALESCE(quantity,0)),
-                 status = CASE WHEN COALESCE(quantity_produced,0) + $2 >= COALESCE(quantity,0)
-                               THEN 'closed' ELSE status END,
-                 updated_at = NOW()
-           WHERE id = $1`, [mpsId, qty]);
         await client.query(
           `UPDATE production_orders SET mps_id = $2 WHERE id = $1 AND mps_id IS NULL`, [order.id, mpsId]);
+        // Recomputed from the linked orders rather than incremented. An
+        // increment is right exactly once and wrong every time completion is
+        // reported twice — and quantity_produced is the column whose drift
+        // started this whole audit.
+        await reportProductionToMPS({ productionOrderId: order.id, companyId: cid, client });
+        await client.query(`
+          UPDATE master_production_schedule
+             SET status = CASE WHEN COALESCE(quantity_produced,0) >= COALESCE(quantity,0)
+                               THEN 'closed' ELSE status END,
+                 updated_at = NOW()
+           WHERE id = $1`, [mpsId]);
       }
     } catch (e) { console.warn('[production/complete] MPS report-back skipped:', e.message); }
 
@@ -1235,9 +1310,20 @@ router.post('/orders/:id/reserve-materials', requirePermission('production', 'ed
     if (!order.bom_id) return res.status(400).json({ error: 'Production order has no BOM linked' });
 
     await client.query('BEGIN');
-    // Clear existing reservations first
+    // Clear existing reservations first.
+    //
+    // This deleted status='pending' — a status autoReserveMaterials never
+    // writes; it writes 'reserved'. So the clear matched nothing and every
+    // re-reservation ADDED a full set of lines on top of the last one. Three
+    // calls on one order produced twelve reservations for a four-line BOM, and
+    // each one holds stock that the availability check then treats as spoken
+    // for. Nothing already issued or consumed is touched.
     await client.query(
-      `DELETE FROM material_reservations WHERE production_order_id=$1 AND status='pending'`, [req.params.id]
+      `DELETE FROM material_reservations
+        WHERE production_order_id = $1
+          AND LOWER(COALESCE(status,'')) IN ('pending','reserved')
+          AND COALESCE(qty_issued,0) = 0
+          AND COALESCE(qty_consumed,0) = 0`, [req.params.id]
     );
     await autoReserveMaterials(client, order.id, cid, order.bom_id, order.quantity_planned, a.id, a.name);
     await client.query('COMMIT');
@@ -1287,15 +1373,23 @@ router.post('/orders/:id/issue-material', requirePermission('production', 'edit'
     const unitCost = parseFloat(item?.unit_cost || 0);
     const totalCost = unitCost * qty_issued;
 
-    // Deduct from inventory — dual-written to stock_ledger + inventory_items.current_stock.
-    if (res_row.item_id) {
-      await postStock(client, {
-        itemId: res_row.item_id, outQty: parseFloat(qty_issued), txnType: 'production_issue',
-        refType: 'production_order', refId: req.params.id, rate: unitCost,
-        remarks: remarks || `Material issue — order #${req.params.id}`,
-        createdBy: req.user?.employee_id ?? null, companyId: cid,
-      }).catch(() => {});
-    }
+    // The project this order is building for, stamped onto every movement below.
+    const { rows: [issueOrder] } = await client.query(
+      `SELECT project_id FROM production_orders WHERE id = $1`, [req.params.id]);
+    const issueOrderProjectId = issueOrder?.project_id ?? null;
+
+    // ⚠ The ledger post used to happen HERE — before lot selection had run, for
+    // the whole quantity, as a single row. Two consequences:
+    //
+    //   1. The lot could not possibly be on it. The batch is not chosen until
+    //      forty lines below, so stock_ledger.batch_id was structurally
+    //      unreachable on every production issue in the system.
+    //   2. It was wrapped in `.catch(() => {})`. A failed ledger write was
+    //      swallowed and the issue still committed and still answered 200 — the
+    //      material left the store and the ledger never recorded it, silently.
+    //
+    // It now runs after lot selection, one row per lot, inside the transaction
+    // with its errors propagating. See the loop below the issue log.
 
     // ── Lot selection: WHICH lot is leaving the store ───────────────────────
     // This is the link the whole traceability chain hangs from. Until
@@ -1309,9 +1403,127 @@ router.post('/orders/:id/issue-material', requirePermission('production', 'edit'
     // issue can legitimately span several lots, so each lot consumed is its own
     // log row — a single row averaging two lots would destroy the trace it
     // exists to record.
-    const { batch_id, work_centre_id, operation_id } = req.body;
+    const { batch_id, work_centre_id, operation_id, serial_id, serial_number,
+            component_serial_id, component_serial_number,
+            substitute_for_item_id, substitution_reason, deviation_reference } = req.body;
+
+    // ── Substitution (finding 13) ───────────────────────────────────────────
+    // A substitute fitted in place of the BOM part was previously
+    // indistinguishable from the BOM part itself: nothing recorded that a swap
+    // had happened, why, or who allowed it, so the as-built list quietly
+    // asserted the original component. Recording the substitute WITHOUT the
+    // approval would be the same failure one step removed — a deviation nobody
+    // signed — so both are required together, and the database enforces it too.
+    if (substitute_for_item_id) {
+      if (!substitution_reason || !String(substitution_reason).trim()) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({
+          error: 'substitution_reason is required when fitting a substitute component',
+          code: 'SUBSTITUTION_REASON_REQUIRED',
+        });
+      }
+      const { rows: [orig] } = await client.query(
+        `SELECT id FROM inventory_items WHERE id = $1 AND deleted_at IS NULL
+           AND ($2::int IS NULL OR company_id = $2)`, [substitute_for_item_id, cid ?? null]);
+      if (!orig) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: 'The item being substituted for was not found' });
+      }
+      if (String(substitute_for_item_id) === String(res_row.item_id)) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({
+          error: 'An item cannot be a substitute for itself',
+          code: 'SUBSTITUTION_SELF_REFERENCE',
+        });
+      }
+    }
     let remainingToIssue = parseFloat(qty_issued);
     const lots = [];
+
+    // ── Unit attribution: WHICH panel this material went into ───────────────
+    // Optional, and left NULL when the caller does not say. An order that
+    // builds one unit and an order that builds five are not the same problem:
+    // without this, genealogy answered "which components are in panel 003?" by
+    // listing everything issued to the order, giving every panel on the order
+    // the same inflated as-built list. NULL here means "issued to the order,
+    // not attributable to a unit", which is the truth for bulk material and is
+    // reported as shared rather than silently folded into each panel.
+    let attributedSerialId = null;
+    if (serial_id || serial_number) {
+      const { rows: [sn] } = await client.query(`
+        SELECT id, serial_number, production_order_id FROM serial_numbers
+         WHERE ($1::int IS NULL OR id = $1)
+           AND ($2::text IS NULL OR serial_number = $2)
+           AND deleted_at IS NULL
+           AND ($3::int IS NULL OR company_id = $3 OR company_id IS NULL)
+         LIMIT 1`, [serial_id || null, serial_number || null, cid]);
+      if (!sn) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: `Serial ${serial_number || serial_id} not found` });
+      }
+      // A unit built by a different order cannot have consumed this issue.
+      // Accepting it would write a genealogy that contradicts itself.
+      if (String(sn.production_order_id) !== String(req.params.id)) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({
+          error: `Serial ${sn.serial_number} belongs to a different production order`,
+          code: 'SERIAL_ORDER_MISMATCH',
+        });
+      }
+      attributedSerialId = sn.id;
+    }
+
+    // The specific serialised unit CONSUMED, where the component carries one.
+    let componentSerialId = null;
+    let componentSerialBatchId = null;
+    if (component_serial_id || component_serial_number) {
+      const { rows: [csn] } = await client.query(`
+        SELECT id, serial_number, item_id, batch_id FROM serial_numbers
+         WHERE ($1::int IS NULL OR id = $1)
+           AND ($2::text IS NULL OR serial_number = $2)
+           AND deleted_at IS NULL
+           AND ($3::int IS NULL OR company_id = $3 OR company_id IS NULL)
+         LIMIT 1`, [component_serial_id || null, component_serial_number || null, cid]);
+      if (!csn) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: `Component serial ${component_serial_number || component_serial_id} not found` });
+      }
+      if (String(csn.item_id) !== String(res_row.item_id)) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({
+          error: `Component serial ${csn.serial_number} is not a unit of the item being issued`,
+          code: 'COMPONENT_SERIAL_ITEM_MISMATCH',
+        });
+      }
+
+      // A physical unit is in one panel at a time. Nothing checked this: the
+      // same component serial could be consumed into two panels, and both
+      // as-built lists would claim it. uq_mil_component_serial_live now forbids
+      // it at the database, which is the guarantee that actually holds; this
+      // lookup exists so the floor gets a sentence naming the order that
+      // already has the part, rather than a bare 23505.
+      const { rows: [held] } = await client.query(`
+        SELECT mil.production_order_id, po.production_order_no, sn.serial_number AS built_serial
+          FROM material_issue_logs mil
+          LEFT JOIN production_orders po ON po.id = mil.production_order_id
+          LEFT JOIN serial_numbers    sn ON sn.id = mil.serial_id
+         WHERE mil.component_serial_id = $1 AND mil.reversed_at IS NULL
+         LIMIT 1`, [csn.id]);
+      if (held) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({
+          error: `Component serial ${csn.serial_number} is already installed in `
+               + `${held.built_serial ? `panel ${held.built_serial}` : `order ${held.production_order_no || held.production_order_id}`}`
+               + `. Record a rework removal before fitting it elsewhere.`,
+          code: 'COMPONENT_SERIAL_ALREADY_INSTALLED',
+          installed_in_production_order_id: held.production_order_id,
+          installed_in_serial: held.built_serial || null,
+        });
+      }
+
+      componentSerialId = csn.id;
+      componentSerialBatchId = csn.batch_id;
+    }
 
     if (batch_id) {
       const { rows: [b] } = await client.query(
@@ -1344,6 +1556,26 @@ router.post('/orders/:id/issue-material', requirePermission('production', 'edit'
       });
     }
 
+    // Somebody else's promised stock is not available to this order.
+    const claim = await assertNotReservedElsewhere(client, {
+      itemId: res_row.item_id,
+      qty: parseFloat(qty_issued),
+      reservationId: reservation_id,
+      productionOrderId: req.params.id,
+    });
+    if (claim.blocked) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        error: `Issuing ${qty_issued} would leave ${Math.max(claim.available - parseFloat(qty_issued), 0)} `
+             + `against ${claim.othersHold} already promised to ${claim.heldBy.join(', ')}. `
+             + `Short by ${claim.shortBy}. Release or reduce that reservation first.`,
+        code: 'RESERVED_FOR_ANOTHER_REQUIREMENT',
+        available: claim.available,
+        promised_elsewhere: claim.othersHold,
+        held_by: claim.heldBy,
+      });
+    }
+
     const issuedLots = [];
     for (const b of lots) {
       if (remainingToIssue <= 0.000001) break;
@@ -1366,16 +1598,65 @@ router.post('/orders/:id/issue-material', requirePermission('production', 'edit'
     if (remainingToIssue > 0.000001) issuedLots.push({ batch_id: null, batch_number: null, qty: remainingToIssue });
 
     for (const lot of issuedLots) {
+      // The panel applies to every lot row of this issue: all of it went into
+      // that unit. A consumed component serial is one physical unit from one
+      // lot, so it attaches only to the row for its own lot — stamping it on
+      // each row of a multi-lot issue would claim the same unit was consumed
+      // several times. When the issue resolves to a single lot the match is
+      // unambiguous and the serial's own batch need not be recorded.
+      const lotComponentSerialId =
+        componentSerialId && (
+          issuedLots.length === 1 ||
+          componentSerialBatchId == null ||
+          String(componentSerialBatchId) === String(lot.batch_id)
+        ) ? componentSerialId : null;
+
       await client.query(`
         INSERT INTO material_issue_logs
           (company_id, production_order_id, reservation_id, item_id, item_name, batch_id,
            work_centre_id, operation_id, qty_issued, unit, unit_cost, total_cost,
-           issued_by, issued_by_name, notes)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+           issued_by, issued_by_name, notes, serial_id, component_serial_id,
+           substitute_for_item_id, substitution_reason, substitution_approved_by,
+           substitution_approved_by_name, substitution_approved_at, deviation_reference)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,
+                $18,$19,$20,$21,
+                CASE WHEN $18::int IS NULL THEN NULL ELSE NOW() END, $22)
       `, [cid, req.params.id, reservation_id, res_row.item_id, res_row.item_name, lot.batch_id,
           work_centre_id ?? null, operation_id ?? null, lot.qty, res_row.unit, unitCost,
           unitCost * lot.qty, a.id, a.name,
-          lot.batch_id ? (remarks || null) : `${remarks ? remarks + ' — ' : ''}lot not identified`]);
+          lot.batch_id ? (remarks || null) : `${remarks ? remarks + ' — ' : ''}lot not identified`,
+          attributedSerialId, lotComponentSerialId,
+          substitute_for_item_id ?? null,
+          substitute_for_item_id ? String(substitution_reason).trim() : null,
+          substitute_for_item_id ? a.id : null,
+          substitute_for_item_id ? a.name : null,
+          deviation_reference ?? null]);
+
+      // The ledger row for this lot, carrying everything the issue log carries:
+      // which lot left, which unit it was attributed to, which order consumed
+      // it. One row per lot rather than one per issue, so a multi-lot issue
+      // reconciles line-for-line against material_issue_logs instead of
+      // presenting an average that matches neither lot.
+      await postStock(client, {
+        itemId: res_row.item_id,
+        outQty: lot.qty,
+        txnType: 'production_issue',
+        refType: 'production_order',
+        refId: req.params.id,
+        rate: unitCost,
+        remarks: remarks || `Material issue — order #${req.params.id}`,
+        createdBy: req.user?.employee_id ?? null,
+        companyId: cid,
+        batchId: lot.batch_id,
+        serialId: attributedSerialId,
+        productionOrderId: req.params.id,
+        // Finding 35: material issued for a project was attributable only by
+        // walking back through its production order. The ledger column existed
+        // and nothing wrote it, so project material cost could not be read from
+        // movements at all. The order knows the project; the movement records it.
+        projectId: issueOrderProjectId,
+        reasonCode: 'production_issue',
+      });
     }
 
     // WIP transaction
@@ -2100,6 +2381,683 @@ router.post('/mrp/requirements/generate-prs', requirePermission('production', 'a
       } catch { /* non-fatal: skip item */ }
     }
     res.json({ created: prs.length, prs });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+/* ── FREEZE THE BOM THIS ORDER IS BUILT AGAINST ─────────────────────────────
+ *
+ * Audit finding 12. production_orders stored only `bom_id`, a pointer to a
+ * mutable row, so revising a BOM in place rewrote the apparent component list
+ * of every panel ever built from it. Copying the lines at freeze time is what
+ * makes the as-planned BOM immune to later edits — and gives the as-built list
+ * something honest to be compared against.
+ *
+ * Idempotent by design: re-freezing REPLACES the snapshot rather than appending
+ * to it. Appending would double every required quantity and make the variance
+ * report show a 100% under-issue on every line.
+ */
+router.post('/orders/:id/freeze-bom', requirePermission('production', 'edit'), async (req, res) => {
+  const client = await pool.connect();
+  try {
+    if (req.scope === null) return res.status(403).json({ error: 'Company scope required' });
+    const cid = req.scope?.company_id;
+    const a = actor(req);
+
+    await client.query('BEGIN');
+    const { rows: [order] } = await client.query(
+      `SELECT id, bom_id, quantity_planned, bom_snapshot_at FROM production_orders
+        WHERE id = $1 AND ($2::int IS NULL OR company_id = $2)`, [req.params.id, cid ?? null]);
+    if (!order) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Production order not found' }); }
+
+    const bomId = req.body?.bom_id ?? order.bom_id;
+    if (!bomId) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'This order has no BOM. Pass bom_id, or set one on the order first.' });
+    }
+
+    const { rows: [bom] } = await client.query(
+      `SELECT id, version, product_code, product_name FROM bom_headers
+        WHERE id = $1 AND ($2::int IS NULL OR company_id = $2 OR company_id IS NULL)`, [bomId, cid ?? null]);
+    if (!bom) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'BOM not found' }); }
+
+    const { rows: lines } = await client.query(`
+      SELECT bl.id, bl.component_id, bl.component_name, bl.qty, bl.unit, bl.unit_cost, bl.level,
+             ii.item_code
+        FROM bom_lines bl
+        LEFT JOIN inventory_items ii ON ii.id = bl.component_id
+       WHERE bl.bom_id = $1
+       ORDER BY bl.level NULLS FIRST, bl.id`, [bomId]);
+    if (!lines.length) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'That BOM has no component lines to freeze' });
+    }
+
+    // Replace, never append.
+    await client.query('DELETE FROM production_order_bom_lines WHERE production_order_id = $1', [req.params.id]);
+
+    const qtyPlanned = Number(order.quantity_planned) || 1;
+    let lineNo = 0;
+    for (const l of lines) {
+      lineNo += 1;
+      const perUnit = Number(l.qty) || 0;
+      await client.query(`
+        INSERT INTO production_order_bom_lines
+          (company_id, production_order_id, bom_id, bom_version, line_no, component_id,
+           component_code, component_name, qty_per_unit, qty_required, unit, unit_cost, level,
+           snapshot_by, snapshot_by_name)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+        [cid, req.params.id, bomId, bom.version, lineNo, l.component_id,
+         l.item_code, l.component_name, perUnit, perUnit * qtyPlanned,
+         l.unit, l.unit_cost, l.level, a.id, a.name]);
+    }
+
+    await client.query(
+      `UPDATE production_orders
+          SET bom_id = $2, bom_version = $3, bom_snapshot_at = NOW(), bom_snapshot_by = $4, updated_at = NOW()
+        WHERE id = $1`, [req.params.id, bomId, bom.version, a.id]);
+
+    await client.query('COMMIT');
+    res.status(201).json({
+      success: true,
+      production_order_id: Number(req.params.id),
+      bom_id: bomId,
+      bom_version: bom.version,
+      lines_frozen: lineNo,
+      refroze: Boolean(order.bom_snapshot_at),
+    });
+  } catch (e) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: e.message });
+  } finally { client.release(); }
+});
+
+/* ── REWORK: remove a component from a built unit, optionally replace it ─────
+ *
+ * Audit finding 17. Until now nothing recorded a rework anywhere: genealogy
+ * detected it by `notes ILIKE 'REWORK%'` and `qty_issued < 0`, neither of which
+ * any code path ever wrote, so the Rework view was structurally always empty.
+ *
+ * THE RULE THIS ENDPOINT EXISTS TO KEEP: the original assembly history is never
+ * overwritten. The original material_issue_logs row stays exactly as it is and
+ * is STAMPED reversed_at — which simultaneously frees the removed serial to be
+ * fitted elsewhere (uq_mil_component_serial_live is scoped to reversed_at IS
+ * NULL) and preserves the record that it was once in this panel. Deleting or
+ * editing that row would destroy precisely the genealogy this is for.
+ *
+ * Removal and replacement are separate: a panel legitimately sits with a part
+ * removed and no replacement yet, and forcing both at once would push that
+ * state into someone's notes.
+ */
+router.post('/orders/:id/rework', requirePermission('production', 'edit'), async (req, res) => {
+  const client = await pool.connect();
+  try {
+    if (req.scope === null) return res.status(403).json({ error: 'Company scope required' });
+    const cid = req.scope?.company_id;
+    const a = actor(req);
+    const {
+      issue_log_id, serial_number, reason, defect_code, disposition,
+      replacement_batch_id, replacement_component_serial_number, replacement_qty,
+      notes,
+    } = req.body || {};
+
+    if (!issue_log_id) return res.status(400).json({ error: 'issue_log_id (the original installation) is required' });
+
+    // The disposition column carries a CHECK constraint. Without this the route
+    // accepts anything, the insert fails on the constraint, and the caller gets
+    // a 500 naming "rework_disposition_chk" — a database identifier as an error
+    // message, from which nobody can work out what the allowed values are.
+    const REWORK_DISPOSITIONS = ['scrap', 'return_to_vendor', 'requarantine', 'reuse'];
+    if (disposition != null && !REWORK_DISPOSITIONS.includes(String(disposition))) {
+      return res.status(422).json({
+        error: `disposition must be one of: ${REWORK_DISPOSITIONS.join(', ')}`,
+        allowed: REWORK_DISPOSITIONS,
+      });
+    }
+    if (!reason || !String(reason).trim()) {
+      // A rework with no stated reason is an unexplained change to a built
+      // panel. The whole point of the record is why.
+      return res.status(400).json({ error: 'reason is required — a rework must say why the part came out' });
+    }
+
+    // ⚠ stock_ledger.created_by FKs employees(id), NOT users(id). actor().id is
+    // a users.id, so passing it straight through violates the FK — the recurring
+    // trap employeeOf() exists to prevent.
+    const employeeId = await employeeOf(req, pool);
+
+    await client.query('BEGIN');
+
+    const { rows: [rwOrder] } = await client.query(
+      `SELECT project_id FROM production_orders WHERE id = $1`, [req.params.id]);
+    const reworkProjectId = rwOrder?.project_id ?? null;
+
+    const { rows: [orig] } = await client.query(`
+      SELECT mil.*, b.batch_number, cs.serial_number AS component_serial
+        FROM material_issue_logs mil
+        LEFT JOIN inventory_batches b ON b.id = mil.batch_id
+        LEFT JOIN serial_numbers cs ON cs.id = mil.component_serial_id
+       WHERE mil.id = $1 AND mil.production_order_id = $2
+         AND ($3::int IS NULL OR mil.company_id = $3)`,
+      [issue_log_id, req.params.id, cid ?? null]);
+    if (!orig) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Installation record not found on this order' }); }
+    if (orig.reversed_at) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        error: 'That installation has already been reversed by an earlier rework',
+        code: 'ALREADY_REVERSED',
+      });
+    }
+
+    // Which unit was it in? Prefer the row's own attribution; fall back to an
+    // explicitly named panel. Left NULL when neither says — the honest answer
+    // for material that was issued to the order without naming a unit.
+    let serialId = orig.serial_id ?? null;
+    if (!serialId && serial_number) {
+      const { rows: [sn] } = await client.query(
+        `SELECT id FROM serial_numbers WHERE serial_number=$1 AND deleted_at IS NULL
+           AND ($2::int IS NULL OR company_id=$2 OR company_id IS NULL) LIMIT 1`,
+        [serial_number, cid ?? null]);
+      if (!sn) { await client.query('ROLLBACK'); return res.status(404).json({ error: `Serial ${serial_number} not found` }); }
+      serialId = sn.id;
+    }
+
+    // ── The removal. The original row is stamped, never altered otherwise. ──
+    await client.query(
+      `UPDATE material_issue_logs
+          SET reversed_at = NOW(), reversed_by = $2, reversal_reason = $3
+        WHERE id = $1`, [orig.id, a.id, String(reason).trim()]);
+
+    // The assembly event is stamped too, for the same reason and in the same
+    // way: the part is no longer IN the panel, but the record that it once was
+    // has to survive — a recall must reach a panel that CONTAINED a defective
+    // lot, not merely one that still does. Matched on the issue it came from,
+    // or on the component serial where the installation named one.
+    const { rows: removedInstalls } = await client.query(`
+      UPDATE component_installations
+         SET removed_at = NOW(), removed_by = $2, removal_reason = $3,
+             status = 'removed', updated_at = NOW()
+       WHERE removed_at IS NULL
+         AND production_order_id = $4
+         AND (issue_log_id = $1
+              OR ($5::int IS NOT NULL AND component_serial_id = $5))
+      RETURNING id`,
+      [orig.id, a.id, String(reason).trim(), req.params.id, orig.component_serial_id ?? null]);
+
+    // Removed material goes back to its lot only when it is fit to be reused.
+    // Scrap, RTV and re-quarantine must NOT silently restore available stock —
+    // that is how rejected material finds its way back onto the shop floor.
+    if (disposition === 'reuse' && orig.batch_id) {
+      await client.query(
+        `UPDATE inventory_batches
+            SET quantity_available = COALESCE(quantity_available,0) + $2,
+                quantity_consumed  = GREATEST(COALESCE(quantity_consumed,0) - $2, 0),
+                updated_at = NOW()
+          WHERE id = $1`, [orig.batch_id, Number(orig.qty_issued) || 0]);
+      await postStock(client, {
+        itemId: orig.item_id, inQty: Number(orig.qty_issued) || 0,
+        txnType: 'rework_return', refType: 'production_order', refId: req.params.id,
+        rate: Number(orig.unit_cost) || 0, remarks: `Rework removal — ${reason}`,
+        createdBy: employeeId, companyId: cid, batchId: orig.batch_id,
+        serialId, productionOrderId: req.params.id, projectId: reworkProjectId,
+        reasonCode: 'rework_removal',
+      });
+    }
+
+    // ── The replacement, when one is fitted in the same action ──────────────
+    let replacementLogId = null, replacementSerialId = null;
+    if (replacement_batch_id || replacement_component_serial_number) {
+      let replBatchId = replacement_batch_id ?? null;
+
+      if (replacement_component_serial_number) {
+        const { rows: [rs] } = await client.query(
+          `SELECT id, item_id, batch_id FROM serial_numbers
+            WHERE serial_number=$1 AND deleted_at IS NULL
+              AND ($2::int IS NULL OR company_id=$2 OR company_id IS NULL) LIMIT 1`,
+          [replacement_component_serial_number, cid ?? null]);
+        if (!rs) { await client.query('ROLLBACK'); return res.status(404).json({ error: `Replacement serial ${replacement_component_serial_number} not found` }); }
+        if (String(rs.item_id) !== String(orig.item_id)) {
+          await client.query('ROLLBACK');
+          return res.status(409).json({
+            error: `Replacement serial ${replacement_component_serial_number} is not a unit of the item being replaced`,
+            code: 'REPLACEMENT_ITEM_MISMATCH',
+          });
+        }
+        // The same live-installation rule as a first fit: a replacement part
+        // cannot be one that is already inside another panel.
+        const { rows: [held] } = await client.query(
+          `SELECT production_order_id FROM material_issue_logs
+            WHERE component_serial_id=$1 AND reversed_at IS NULL LIMIT 1`, [rs.id]);
+        if (held) {
+          await client.query('ROLLBACK');
+          return res.status(409).json({
+            error: `Replacement serial ${replacement_component_serial_number} is already installed in order ${held.production_order_id}`,
+            code: 'COMPONENT_SERIAL_ALREADY_INSTALLED',
+          });
+        }
+        replacementSerialId = rs.id;
+        replBatchId = replBatchId ?? rs.batch_id ?? null;
+      }
+
+      const qty = Number(replacement_qty) > 0 ? Number(replacement_qty) : Number(orig.qty_issued) || 0;
+
+      if (replBatchId) {
+        const { rows: [rb] } = await client.query(
+          `SELECT id, status, quantity_available FROM inventory_batches
+            WHERE id=$1 AND item_id=$2 AND deleted_at IS NULL`, [replBatchId, orig.item_id]);
+        if (!rb) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Replacement lot not found for this item' }); }
+        if (['rejected','quarantine','hold','blocked'].includes(String(rb.status || '').toLowerCase())) {
+          await client.query('ROLLBACK');
+          return res.status(409).json({
+            error: `Replacement lot is ${rb.status} and cannot be issued to production`, code: 'QC_BLOCKED',
+          });
+        }
+        await client.query(
+          `UPDATE inventory_batches
+              SET quantity_available = COALESCE(quantity_available,0) - $2,
+                  quantity_consumed  = COALESCE(quantity_consumed,0)  + $2,
+                  updated_at = NOW()
+            WHERE id = $1`, [replBatchId, qty]);
+      }
+
+      const { rows: [newLog] } = await client.query(`
+        INSERT INTO material_issue_logs
+          (company_id, production_order_id, reservation_id, item_id, item_name, batch_id,
+           work_centre_id, operation_id, qty_issued, unit, unit_cost, total_cost,
+           issued_by, issued_by_name, notes, serial_id, component_serial_id)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING id`,
+        [cid, req.params.id, orig.reservation_id, orig.item_id, orig.item_name, replBatchId,
+         orig.work_centre_id, orig.operation_id, qty, orig.unit, orig.unit_cost,
+         (Number(orig.unit_cost) || 0) * qty, a.id, a.name,
+         `REWORK replacement for issue #${orig.id} — ${reason}`, serialId, replacementSerialId]);
+      replacementLogId = newLog.id;
+
+      await postStock(client, {
+        itemId: orig.item_id, outQty: qty, txnType: 'rework_issue',
+        refType: 'production_order', refId: req.params.id,
+        rate: Number(orig.unit_cost) || 0, remarks: `Rework replacement — ${reason}`,
+        createdBy: employeeId, companyId: cid, batchId: replBatchId,
+        serialId, productionOrderId: req.params.id, projectId: reworkProjectId,
+        reasonCode: 'rework_replacement',
+      });
+    }
+
+    const { rows: [rw] } = await client.query(`
+      INSERT INTO rework_records
+        (company_id, production_order_id, serial_id,
+         removed_issue_log_id, removed_item_id, removed_batch_id, removed_component_serial_id,
+         defect_code, reason, removed_by, removed_by_name, disposition,
+         replacement_issue_log_id, replacement_item_id, replacement_batch_id,
+         replacement_component_serial_id, replaced_by, replaced_by_name, replaced_at,
+         retest_result, status, notes)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
+              CASE WHEN $13::int IS NULL THEN NULL ELSE NOW() END,
+              CASE WHEN $13::int IS NULL THEN NULL ELSE 'pending' END,
+              CASE WHEN $13::int IS NULL THEN 'removed' ELSE 'replaced' END, $19)
+      RETURNING *`,
+      [cid, req.params.id, serialId,
+       orig.id, orig.item_id, orig.batch_id, orig.component_serial_id,
+       defect_code ?? null, String(reason).trim(), a.id, a.name, disposition ?? null,
+       replacementLogId, replacementLogId ? orig.item_id : null,
+       replacementLogId ? (replacement_batch_id ?? null) : null,
+       replacementSerialId, replacementLogId ? a.id : null, replacementLogId ? a.name : null,
+       notes ?? null]);
+
+    await client.query('COMMIT');
+    res.status(201).json({ success: true, rework: rw, replacement_issue_log_id: replacementLogId });
+  } catch (e) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: e.message });
+  } finally { client.release(); }
+});
+
+/* ── Record the retest that proves a rework worked ───────────────────────── */
+router.post('/rework/:reworkId/retest', requirePermission('production', 'edit'), async (req, res) => {
+  try {
+    if (req.scope === null) return res.status(403).json({ error: 'Company scope required' });
+    const cid = req.scope?.company_id;
+    const a = actor(req);
+    const { result, reference, notes } = req.body || {};
+    if (!['pass', 'fail', 'pending'].includes(String(result || ''))) {
+      return res.status(400).json({ error: "result must be 'pass', 'fail' or 'pending'" });
+    }
+    const { rows: [rw] } = await pool.query(`
+      UPDATE rework_records
+         SET retest_result = $2, retested_by = $3, retested_by_name = $4,
+             retested_at = NOW(), retest_reference = $5,
+             notes = COALESCE($6, notes),
+             -- A failed retest leaves the rework open: it is not closed until
+             -- something passes. Marking it 'retested' either way would hide
+             -- panels that are still broken.
+             status = CASE WHEN $2 = 'pass' THEN 'closed' ELSE 'retested' END,
+             updated_at = NOW()
+       WHERE id = $1 AND ($7::int IS NULL OR company_id = $7)
+       RETURNING *`,
+      [req.params.reworkId, result, a.id, a.name, reference ?? null, notes ?? null, cid ?? null]);
+    if (!rw) return res.status(404).json({ error: 'Rework record not found' });
+    res.json({ success: true, rework: rw });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+/* GET /production/rework — the rework register.
+ *
+ * Rework could be RAISED and RETESTED but never listed: the records existed
+ * only as rows reachable from one production order's genealogy. A quality
+ * manager asking "what is in rework right now" had nowhere to look. */
+router.get('/rework', requirePermission('production', 'view'), async (req, res) => {
+  try {
+    const cid = req.scope?.company_id ?? null;
+    const { status, production_order_id } = req.query;
+    const vals = [cid];
+    let where = `($1::int IS NULL OR rr.company_id = $1)`;
+    if (status)              { vals.push(status);              where += ` AND LOWER(rr.status) = LOWER($${vals.length})`; }
+    if (production_order_id) { vals.push(production_order_id); where += ` AND rr.production_order_id = $${vals.length}`; }
+
+    const { rows } = await pool.query(`
+      SELECT rr.*,
+             p.production_order_no, p.product_name,
+             ri.item_code  AS removed_item_code,  ri.item_name  AS removed_item_name,
+             pi.item_code  AS replacement_item_code, pi.item_name AS replacement_item_name,
+             sn.serial_number
+        FROM rework_records rr
+        LEFT JOIN production_orders p ON p.id = rr.production_order_id
+        LEFT JOIN inventory_items  ri ON ri.id = rr.removed_item_id
+        LEFT JOIN inventory_items  pi ON pi.id = rr.replacement_item_id
+        LEFT JOIN serial_numbers   sn ON sn.id = rr.serial_id
+       WHERE ${where}
+       ORDER BY rr.removed_at DESC NULLS LAST, rr.id DESC
+       LIMIT 500`, vals);
+
+    const open = rows.filter(r => !['closed'].includes(String(r.status || '').toLowerCase()));
+    res.json({
+      rework: rows,
+      summary: {
+        total: rows.length,
+        open: open.length,
+        failed_retest: rows.filter(r => String(r.retest_result || '').toLowerCase() === 'fail').length,
+        scrapped: rows.filter(r => String(r.disposition || '').toLowerCase() === 'scrap').length,
+      },
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FINITE SCHEDULING
+// ─────────────────────────────────────────────────────────────────────────────
+
+/* POST /production/schedule/sequence — sequence every open operation onto its
+ * work centre. See productionScheduler.service.js for what this does and,
+ * more importantly, what it does not claim to do. */
+/* ── ASSEMBLY: record a component being FITTED into a panel ──────────────────
+ *
+ * Audit finding 15 — the one requirement that was wholly absent, and the reason
+ * findings 8, 9 and 14 were each capped at PARTIAL.
+ *
+ * The as-built list was reconstructed from `material_issue_logs`, which records
+ * material LEAVING THE STORE for an order. That is a different event from a part
+ * being fitted into a unit, and the difference is everything the requirement
+ * asks for: the issue cannot say who assembled the panel, at which station, when,
+ * against which BOM line, or under what work instruction.
+ *
+ * This writes the assembly event itself. It does not replace the issue log —
+ * the two are linked by `issue_log_id` and kept apart on purpose, because
+ * material issued but never installed is the normal signature of shrinkage or an
+ * unrecorded rework, and collapsing them would define that gap out of existence.
+ */
+router.post('/orders/:id/install-component', requirePermission('production', 'edit'), async (req, res) => {
+  const client = await pool.connect();
+  try {
+    if (req.scope === null) return res.status(403).json({ error: 'Company scope required' });
+    const cid = req.scope?.company_id;
+    const a = actor(req);
+    const {
+      serial_number, panel_serial_id,
+      item_id, component_serial_number, component_serial_id,
+      batch_id, quantity, unit,
+      issue_log_id, operation_id, work_centre_id, station_code,
+      bom_line_id, work_instruction_ref, deviation_reference,
+      started_at, completed_at, notes,
+    } = req.body || {};
+
+    const qty = Number(quantity);
+    if (!(qty > 0)) return res.status(400).json({ error: 'A positive quantity is required' });
+
+    await client.query('BEGIN');
+
+    const { rows: [order] } = await client.query(
+      `SELECT id, production_order_no, status, project_id FROM production_orders
+        WHERE id = $1 AND ($2::int IS NULL OR company_id = $2)`, [req.params.id, cid ?? null]);
+    if (!order) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Production order not found' }); }
+
+    // ── Which panel ────────────────────────────────────────────────────────
+    let serialId = panel_serial_id ?? null;
+    if (!serialId && serial_number) {
+      const { rows: [sn] } = await client.query(
+        `SELECT id, serial_number, production_order_id FROM serial_numbers
+          WHERE serial_number = $1 AND deleted_at IS NULL
+            AND ($2::int IS NULL OR company_id = $2 OR company_id IS NULL) LIMIT 1`,
+        [serial_number, cid ?? null]);
+      if (!sn) { await client.query('ROLLBACK'); return res.status(404).json({ error: `Panel serial ${serial_number} not found` }); }
+      // A unit built by a different order cannot be assembled on this one.
+      // Accepting it would write a genealogy that contradicts itself.
+      if (String(sn.production_order_id) !== String(req.params.id)) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({
+          error: `Panel ${sn.serial_number} belongs to a different production order`,
+          code: 'SERIAL_ORDER_MISMATCH',
+        });
+      }
+      serialId = sn.id;
+    }
+
+    // ── Which component ────────────────────────────────────────────────────
+    let itemId = item_id ?? null;
+    let componentSerialId = component_serial_id ?? null;
+    if (component_serial_number || componentSerialId) {
+      const { rows: [cs] } = await client.query(
+        `SELECT id, serial_number, item_id, batch_id FROM serial_numbers
+          WHERE ($1::int IS NULL OR id = $1) AND ($2::text IS NULL OR serial_number = $2)
+            AND deleted_at IS NULL
+            AND ($3::int IS NULL OR company_id = $3 OR company_id IS NULL) LIMIT 1`,
+        [componentSerialId, component_serial_number ?? null, cid ?? null]);
+      if (!cs) { await client.query('ROLLBACK'); return res.status(404).json({ error: `Component serial ${component_serial_number || componentSerialId} not found` }); }
+      if (itemId && String(itemId) !== String(cs.item_id)) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({
+          error: `Component serial ${cs.serial_number} is not a unit of the item being installed`,
+          code: 'COMPONENT_SERIAL_ITEM_MISMATCH',
+        });
+      }
+      // One physical unit sits in one panel at a time. The unique index
+      // enforces it; this lookup exists so the floor gets a sentence naming
+      // where the part already is, instead of a bare 23505.
+      const { rows: [held] } = await client.query(`
+        SELECT ci.production_order_id, po.production_order_no, sn.serial_number AS panel
+          FROM component_installations ci
+          LEFT JOIN production_orders po ON po.id = ci.production_order_id
+          LEFT JOIN serial_numbers    sn ON sn.id = ci.serial_id
+         WHERE ci.component_serial_id = $1 AND ci.removed_at IS NULL LIMIT 1`, [cs.id]);
+      if (held) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({
+          error: `Component serial ${cs.serial_number} is already installed in `
+               + `${held.panel ? `panel ${held.panel}` : `order ${held.production_order_no || held.production_order_id}`}`
+               + `. Record a rework removal before fitting it elsewhere.`,
+          code: 'COMPONENT_SERIAL_ALREADY_INSTALLED',
+          installed_in_production_order_id: held.production_order_id,
+          installed_in_serial: held.panel || null,
+        });
+      }
+      componentSerialId = cs.id;
+      itemId = itemId ?? cs.item_id;
+    }
+    if (!itemId) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'item_id or a component serial is required' }); }
+
+    // ── Which lot, and is it fit to fit ────────────────────────────────────
+    let lotId = batch_id ?? null;
+    if (lotId) {
+      const { rows: [b] } = await client.query(
+        `SELECT id, batch_number, status FROM inventory_batches
+          WHERE id = $1 AND item_id = $2 AND deleted_at IS NULL`, [lotId, itemId]);
+      if (!b) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Lot not found for this item' }); }
+      // The same quality gate the issue path applies. A lot that failed
+      // inspection must not reach a panel by a different door.
+      if (['rejected', 'quarantine', 'hold', 'blocked'].includes(String(b.status || '').toLowerCase())) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({
+          error: `Lot ${b.batch_number || b.id} is ${b.status} and cannot be installed.`,
+          code: 'QC_BLOCKED',
+        });
+      }
+    }
+
+    // ── The issue this material came from, if named ────────────────────────
+    if (issue_log_id) {
+      const { rows: [il] } = await client.query(
+        `SELECT id, item_id, batch_id FROM material_issue_logs
+          WHERE id = $1 AND production_order_id = $2`, [issue_log_id, req.params.id]);
+      if (!il) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Issue record not found on this order' }); }
+      if (String(il.item_id) !== String(itemId)) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({
+          error: 'That issue was for a different item', code: 'ISSUE_ITEM_MISMATCH',
+        });
+      }
+      lotId = lotId ?? il.batch_id;
+    }
+
+    const { rows: [ci] } = await client.query(`
+      INSERT INTO component_installations
+        (company_id, production_order_id, serial_id, item_id, component_serial_id, batch_id,
+         quantity, unit, issue_log_id, operation_id, work_centre_id, station_code,
+         installed_by, installed_by_name, started_at, completed_at,
+         bom_line_id, work_instruction_ref, deviation_reference, notes)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+      RETURNING *`,
+      [cid, req.params.id, serialId, itemId, componentSerialId, lotId,
+       qty, unit ?? null, issue_log_id ?? null, operation_id ?? null, work_centre_id ?? null,
+       station_code ?? null, a.id, a.name, started_at ?? null, completed_at ?? null,
+       bom_line_id ?? null, work_instruction_ref ?? null, deviation_reference ?? null, notes ?? null]);
+
+    // The lot's disposition: material fitted into a unit has left WIP for a
+    // panel. Tracked per lot so the forward question ("this lot of 100: where
+    // did it go?") balances instead of only accounting for what reached a panel.
+    if (lotId) {
+      await client.query(
+        `UPDATE inventory_batches
+            SET quantity_in_wip = GREATEST(COALESCE(quantity_in_wip,0) - $2, 0), updated_at = NOW()
+          WHERE id = $1`, [lotId, qty]);
+    }
+
+    await client.query('COMMIT');
+    res.status(201).json({ success: true, installation: ci });
+  } catch (e) {
+    await client.query('ROLLBACK');
+    if (e.code === '23505') {
+      return res.status(409).json({
+        error: 'That component serial is already installed in a panel.',
+        code: 'COMPONENT_SERIAL_ALREADY_INSTALLED',
+      });
+    }
+    res.status(500).json({ error: e.message });
+  } finally { client.release(); }
+});
+
+/* ── What is actually fitted in one panel ─────────────────────────────────── */
+router.get('/installations', requirePermission('production', 'view'), async (req, res) => {
+  try {
+    const cid = req.scope?.company_id ?? null;
+    const { serial_number, production_order_id, include_removed } = req.query;
+    if (!serial_number && !production_order_id) {
+      return res.status(400).json({ error: 'serial_number or production_order_id is required' });
+    }
+    let serialId = null;
+    if (serial_number) {
+      const { rows: [sn] } = await pool.query(
+        `SELECT id FROM serial_numbers WHERE serial_number = $1 AND deleted_at IS NULL
+           AND ($2::int IS NULL OR company_id = $2 OR company_id IS NULL) LIMIT 1`,
+        [serial_number, cid]);
+      if (!sn) return res.status(404).json({ error: `Serial ${serial_number} not found` });
+      serialId = sn.id;
+    }
+    const { rows } = await pool.query(`
+      SELECT ci.*, ii.item_code, ii.item_name, ii.manufacturer, ii.manufacturer_part_no,
+             b.batch_number, b.supplier_batch_no, b.grn_id,
+             cs.serial_number AS component_serial,
+             sn.serial_number AS panel_serial,
+             wc.name AS work_centre_name,
+             op.operation AS operation_name
+        FROM component_installations ci
+        LEFT JOIN inventory_items   ii ON ii.id = ci.item_id
+        LEFT JOIN inventory_batches b  ON b.id  = ci.batch_id
+        LEFT JOIN serial_numbers    cs ON cs.id = ci.component_serial_id
+        LEFT JOIN serial_numbers    sn ON sn.id = ci.serial_id
+        LEFT JOIN work_centres      wc ON wc.id = ci.work_centre_id
+        LEFT JOIN production_operations op ON op.id = ci.operation_id
+       WHERE ($1::int IS NULL OR ci.company_id = $1)
+         AND ($2::int IS NULL OR ci.serial_id = $2)
+         AND ($3::int IS NULL OR ci.production_order_id = $3)
+         AND ($4::boolean IS TRUE OR ci.removed_at IS NULL)
+       ORDER BY ci.installed_at, ci.id`,
+      [cid, serialId, production_order_id ? Number(production_order_id) : null,
+       include_removed === 'true']);
+    res.json({
+      count: rows.length,
+      installations: rows,
+      fitted: rows.filter(r => !r.removed_at).length,
+      removed: rows.filter(r => r.removed_at).length,
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+router.post('/schedule/sequence', requirePermission('production', 'edit'), async (req, res) => {
+  try {
+    const out = await finiteSchedule({
+      companyId:   req.scope?.company_id ?? null,
+      horizonDays: Math.min(365, Math.max(1, Number(req.body?.horizon_days) || 60)),
+      rule:        req.body?.rule || 'edd',
+      actor:       actor(req),
+      persist:     req.body?.preview !== true,
+    });
+    res.json(out);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+/* GET /production/schedule — the current sequence, newest run first */
+router.get('/schedule', requirePermission('production', 'view'), async (req, res) => {
+  try {
+    const cid = req.scope?.company_id ?? null;
+    const [runs, ops] = await Promise.all([
+      pool.query(`SELECT * FROM production_schedule_runs
+                   WHERE ($1::int IS NULL OR company_id = $1)
+                   ORDER BY id DESC LIMIT 20`, [cid]),
+      pool.query(`
+        SELECT o.id, o.production_order_id, o.operation, o.step_no, o.std_time_hrs,
+               o.work_centre_id, o.work_centre_name, o.status,
+               o.scheduled_seq, o.scheduled_start, o.scheduled_end,
+               p.production_order_no, p.product_name, p.priority,
+               COALESCE(p.planned_end_date, p.planned_start_date) AS due_date
+          FROM production_operations o
+          JOIN production_orders p ON p.id = o.production_order_id
+         WHERE ($1::int IS NULL OR o.company_id = $1)
+           AND o.scheduled_start IS NOT NULL
+         ORDER BY o.work_centre_id, o.scheduled_seq
+         LIMIT 1000`, [cid]),
+    ]);
+    const rows = ops.rows.map(r => ({
+      ...r,
+      late: r.scheduled_end && r.due_date ? new Date(r.scheduled_end) > new Date(r.due_date) : false,
+    }));
+    res.json({ runs: runs.rows, operations: rows, late_operations: rows.filter(r => r.late).length });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+/* GET /production/schedule/work-centre/:id — one machine's queue */
+router.get('/schedule/work-centre/:id', requirePermission('production', 'view'), async (req, res) => {
+  try {
+    const queue = await sequenceWorkCentre({
+      workCentreId: Number(req.params.id),
+      companyId: req.scope?.company_id ?? null,
+    });
+    res.json({ work_centre_id: Number(req.params.id), queue, late: queue.filter(q => q.late).length });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

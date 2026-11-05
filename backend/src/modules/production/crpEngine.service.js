@@ -25,6 +25,16 @@ const isoDate = (d) => (d ? new Date(d).toISOString().slice(0, 10) : null);
 // Mon=0 … Sun=6
 const workdayIndex = (d) => (d.getDay() + 6) % 7;
 
+/**
+ * Average load below which a work centre is reported as under-utilised.
+ *
+ * 40% is a judgement, not a law, and it is named here rather than buried in an
+ * expression so it can be argued with. Below roughly this level a centre is
+ * carrying fixed cost against work that could be consolidated elsewhere — which
+ * is a question worth putting to a planner, not an instruction to close it.
+ */
+export const UNDER_UTILISED_PCT = 40;
+
 /** Count working days within [start, end) given days-per-week (5=Mon-Fri, 6=+Sat, 7=all). */
 function workingDaysInBucket(start, end, daysPerWeek) {
   let n = 0;
@@ -35,7 +45,7 @@ function workingDaysInBucket(start, end, daysPerWeek) {
 }
 
 export async function runCRP({ companyId, horizonDays = 84, bucketDays = 7,
-  includePlanned = true, actor = {} }) {
+  includePlanned = true, actor = {}, mrpRunId: explicitMrpRunId = null }) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -104,10 +114,16 @@ export async function runCRP({ companyId, horizonDays = 84, bucketDays = 7,
     }
 
     // ── Planned load: latest MRP run's make planned-orders, via routing ──
-    let mrpRunId = null;
+    // The caller may name the run to plan against. "The latest run" is right for
+    // a CRP launched on its own and wrong when MRP calls this straight after
+    // committing: a concurrent run would then be planned against someone else's
+    // plan.
+    let mrpRunId = explicitMrpRunId;
     if (includePlanned) {
-      const { rows: [lastMrp] } = await client.query(
-        `SELECT id FROM mrp_runs WHERE ${scope()} ORDER BY created_at DESC LIMIT 1`);
+      const { rows: [lastMrp] } = explicitMrpRunId
+        ? { rows: [{ id: explicitMrpRunId }] }
+        : await client.query(
+            `SELECT id FROM mrp_runs WHERE ${scope()} ORDER BY created_at DESC LIMIT 1`);
       if (lastMrp) {
         mrpRunId = lastMrp.id;
         const { rows: planned } = await client.query(`
@@ -228,8 +244,73 @@ export async function runCRP({ companyId, horizonDays = 84, bucketDays = 7,
          r.machine_available_hours, r.labour_available_hours, r.constraint_type]);
     }
 
+    // ── Bottlenecks, under-utilisation, and telling somebody ──────────────────
+    //
+    // The run already computed all three of these and threw two of them away.
+    // `is_bottleneck` existed on work_centres and nothing ever set it;
+    // under-utilisation was "derivable from load %", which means nobody derived
+    // it; and an overload set a boolean on a row in a table no one watches.
+    //
+    // A capacity constraint that only a person looking at the CRP screen can
+    // discover is not a control. It is a report.
+    const perCentre = new Map();
+    for (const r of rows) {
+      const k = r.work_centre_id;
+      if (!perCentre.has(k)) perCentre.set(k, { name: r.work_centre_name, peak: 0, sum: 0, n: 0, over: 0 });
+      const s = perCentre.get(k);
+      s.peak = Math.max(s.peak, r.load_pct);
+      s.sum += r.load_pct; s.n += 1;
+      if (r.is_overloaded) s.over += 1;
+    }
+
+    const bottlenecks = [], underUtilised = [];
+    for (const [id, s] of perCentre) {
+      const avg = s.n ? s.sum / s.n : 0;
+      const isBottleneck = s.peak >= 100;
+      // Under-utilised is judged on the AVERAGE, not the peak: a centre that is
+      // idle for eleven weeks and swamped in the twelfth is a scheduling
+      // problem, not spare capacity, and calling it spare invites someone to
+      // take the capacity away.
+      const isUnder = !isBottleneck && avg < UNDER_UTILISED_PCT && s.n > 0;
+      if (isBottleneck) bottlenecks.push({ work_centre_id: id, name: s.name, peak_load_pct: Math.round(s.peak * 10) / 10, overloaded_buckets: s.over });
+      if (isUnder)      underUtilised.push({ work_centre_id: id, name: s.name, avg_load_pct: Math.round(avg * 10) / 10, threshold_pct: UNDER_UTILISED_PCT });
+      await client.query(
+        `UPDATE work_centres SET is_bottleneck = $2, updated_at = NOW() WHERE id = $1`,
+        [id, isBottleneck]).catch(() => {});
+    }
+
+    if (bottlenecks.length) {
+      // Addressed to the people who can act on it, not broadcast: production
+      // and inventory managers for this company.
+      const { rows: recipients } = await client.query(`
+        SELECT DISTINCT u.id
+          FROM users u
+          JOIN user_roles ur ON ur.user_id = u.id
+          JOIN roles r       ON r.id = ur.role_id
+         WHERE ($1::int IS NULL OR u.company_id = $1)
+           AND LOWER(COALESCE(r.code, r.role_name)) IN ('admin','super_admin','production','production_manager','plant_head')
+         LIMIT 25`, [companyId ?? null]).catch(() => ({ rows: [] }));
+
+      for (const u of recipients) {
+        for (const b of bottlenecks) {
+          await client.query(`
+            INSERT INTO notifications (user_id, title, message, module_name, reference_id, notification_type)
+            VALUES ($1,$2,$3,'production',$4,'CAPACITY_OVERLOAD_ALERT')`,
+            [u.id,
+             `Capacity overload: ${b.name}`,
+             `${b.name} peaks at ${b.peak_load_pct}% of available hours across ${b.overloaded_buckets} bucket(s) in CRP run ${run.run_no}. Releases into this work centre will not fit as planned.`,
+             run.id]).catch(() => {});
+        }
+      }
+    }
+
     await client.query('COMMIT');
-    return { run, load: rows, buckets: buckets.map(b => ({ index: b.index, start: isoDate(b.start), end: isoDate(b.end) })), workCentres: wcRows };
+    return {
+      run, load: rows,
+      buckets: buckets.map(b => ({ index: b.index, start: isoDate(b.start), end: isoDate(b.end) })),
+      workCentres: wcRows,
+      bottlenecks, under_utilised: underUtilised,
+    };
   } catch (e) {
     await client.query('ROLLBACK');
     throw e;

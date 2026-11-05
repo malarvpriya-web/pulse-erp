@@ -38,7 +38,7 @@ if (!process.env.DATABASE_URL) {
 const { default: pool }       = await import('../config/db.js');
 const { verifyToken }         = await import('../middlewares/auth.middleware.js');
 const { buildApp }            = await import('./helpers/testApp.js');
-const { makeToken }           = await import('./helpers/tokens.js');
+const { createIsolatedCompany, dropIsolatedCompany, leftoverCompanies } = await import('./helpers/isolatedCompany.js');
 const { default: salesRoutes }   = await import('../modules/sales/routes/sales.routes.js');
 const { default: bomRoutes }     = await import('../modules/production/bom.routes.js');
 const { default: mrpRoutes }     = await import('../modules/production/mrp.routes.js');
@@ -51,9 +51,12 @@ const mrpApp     = buildApp(['/api/mrp', verifyToken, mrpRoutes]);
 const qualityApp = buildApp(['/api/quality', qualityRoutes]);
 const ecnApp     = buildApp(['/api/engineering/ecn', verifyToken, ecnRoutes]);
 
-// Admin is discovered, not hardcoded — see integration.salesPartners.test.js.
-let ADMIN_ID;
-const auth = () => `Bearer ${makeToken({ userId: ADMIN_ID, role: 'admin' })}`;
+// Runs in its OWN throwaway company (helpers/isolatedCompany.js), never in
+// company 1: supplyChain plans MRP over all of company 1's orders, BOMs and
+// production orders, and this suite's rows appearing there mid-run made
+// supplyChain fail in parallel runs.
+const PREFIX = 'ZZP2P';
+let CO, auth, approverId, approverAuth;
 
 const TAG = `ZZTEST_${Date.now()}`;
 const created = {
@@ -63,17 +66,52 @@ const created = {
   engineering_changes: [],
 };
 
+/** Business rows the routes create on their own in the test company (projects, lifecycles...). */
+async function purgeCompany(companyId) {
+  const q = (label, sql) => pool.query(sql, [companyId]).catch(e => console.warn(`[cleanup] ${label} failed:`, e.message));
+  await q('lifecycle_stage_history', `DELETE FROM lifecycle_stage_history WHERE lifecycle_instance_id IN (SELECT id FROM lifecycle_instances WHERE company_id = $1)`);
+  await q('lifecycle_instances', `DELETE FROM lifecycle_instances WHERE company_id = $1`);
+  await q('quality_tests',       `DELETE FROM quality_tests WHERE company_id = $1`);
+  await q('ncr_reports',         `DELETE FROM ncr_reports WHERE company_id = $1`);
+  await q('inspection_reports',  `DELETE FROM inspection_reports WHERE company_id = $1`);
+  await q('production_operations', `DELETE FROM production_operations WHERE production_order_id IN (SELECT id FROM production_orders WHERE company_id = $1)`);
+  await q('production_orders',   `DELETE FROM production_orders WHERE company_id = $1`);
+  await q('mrp_planned_orders',  `DELETE FROM mrp_planned_orders WHERE company_id = $1`);
+  await q('mrp_runs',            `DELETE FROM mrp_runs WHERE company_id = $1`);
+  await q('ecn events',          `DELETE FROM engineering_change_events WHERE engineering_change_id IN (SELECT id FROM engineering_changes WHERE company_id = $1)`);
+  await q('ecn approvals',       `DELETE FROM engineering_change_approvals WHERE engineering_change_id IN (SELECT id FROM engineering_changes WHERE company_id = $1)`);
+  await q('ecn items',           `DELETE FROM engineering_change_items WHERE engineering_change_id IN (SELECT id FROM engineering_changes WHERE company_id = $1)`);
+  await q('bom_headers.ecn_id',  `UPDATE bom_headers SET ecn_id = NULL WHERE company_id = $1`);
+  await q('engineering_changes', `DELETE FROM engineering_changes WHERE company_id = $1`);
+  await q('bom_headers',         `DELETE FROM bom_headers WHERE company_id = $1`);
+  await q('workflow_instances',  `DELETE FROM workflow_instances WHERE entity_type = 'project' AND entity_id IN (SELECT id FROM projects WHERE company_id = $1)`);
+  await q('sales_orders.project_id', `UPDATE sales_orders SET project_id = NULL WHERE company_id = $1`);
+  await q('projects',            `DELETE FROM projects WHERE company_id = $1`);
+  await q('inventory_allocations', `DELETE FROM inventory_allocations WHERE company_id = $1`);
+  await q('backorders',          `DELETE FROM backorders WHERE company_id = $1`);
+  await q('sales_orders',        `DELETE FROM sales_orders WHERE company_id = $1`);
+}
+
 beforeAll(async () => {
-  const { rows } = await pool.query(
-    `SELECT u.id FROM users u
-       JOIN user_scope us ON us.user_id = u.id AND us.is_primary = true
-      WHERE u.is_active = true AND (u.logout_at IS NULL OR u.logout_at <= NOW()) AND us.company_id = 1
-        AND EXISTS (SELECT 1 FROM user_roles ur JOIN roles r ON r.id = ur.role_id
-                     WHERE ur.user_id = u.id AND LOWER(r.code) IN ('admin','super_admin'))
-      ORDER BY u.id LIMIT 1`
-  );
-  if (!rows[0]) throw new Error('No active company-scoped admin found — these tests need a seeded DB.');
-  ADMIN_ID = rows[0].id;
+  for (const old of await leftoverCompanies(pool, PREFIX)) {   // an earlier aborted run of THIS suite
+    await purgeCompany(old);
+    await dropIsolatedCompany(pool, old);
+  }
+  const iso = await createIsolatedCompany(pool, PREFIX);
+  CO = iso.companyId;
+  auth = () => `Bearer ${iso.token()}`;
+  // An ECN is decided only by a NAMED approver who is not its requester
+  // (policy 2026-10-20, manual §179.3) — a second login in the same company.
+  // dropIsolatedCompany() removes it with the company's other users.
+  const { default: jwt } = await import('jsonwebtoken');
+  const { rows: [ap] } = await pool.query(
+    `INSERT INTO users (name, email, password_hash, company_id, is_active, role)
+     VALUES ($1, $2, 'not-a-real-hash', $3, true, 'admin') RETURNING id`,
+    [`${iso.code} approver`, `${iso.code.toLowerCase()}.approver@test.invalid`, CO]);
+  await pool.query(`INSERT INTO user_roles (user_id, role_id) SELECT $1, id FROM roles WHERE LOWER(code) = 'admin' LIMIT 1`, [ap.id]);
+  approverId = ap.id;
+  approverAuth = () => `Bearer ${jwt.sign({ userId: ap.id, role: 'admin', company_id: CO, employee_id: null, name: 'approver' },
+    process.env.JWT_SECRET, { expiresIn: '1h' })}`;
 });
 
 afterAll(async () => {
@@ -100,7 +138,9 @@ afterAll(async () => {
   }
   if (created.projects.length)      await del('projects',      `DELETE FROM projects WHERE id = ANY($1::int[])`, [created.projects]);
   if (created.sales_orders.length)  await del('sales_orders',  `DELETE FROM sales_orders WHERE id = ANY($1::int[])`, [created.sales_orders]); // cascades sales_order_items
-  await pool.end();
+  // Anything else the routes created in the test company, then the company itself.
+  await purgeCompany(CO);
+  await dropIsolatedCompany(pool, CO);
 });
 
 // ── Flow 1: Sales Order confirm -> production order, BOM-matched, routing copied ──
@@ -109,8 +149,8 @@ describe('SO confirm -> production order', () => {
 
   beforeAll(async () => {
     const bom = await pool.query(
-      `INSERT INTO bom_headers (company_id, product_name, version, status) VALUES (1,$1,'1','active') RETURNING id`,
-      [`${TAG} SO Product`]
+      `INSERT INTO bom_headers (company_id, product_name, version, status) VALUES ($2,$1,'1','active') RETURNING id`,
+      [`${TAG} SO Product`, CO]
     );
     bomId = bom.rows[0].id;
     created.bom_headers.push(bomId);
@@ -173,15 +213,15 @@ describe('Failed QC holds the production order', () => {
     checklistId = cl.rows[0].id;
     created.inspection_checklists.push(checklistId);
 
-    const settings = await pool.query(`SELECT iqc_auto_ncr_on_fail FROM quality_settings WHERE company_id=1`);
+    const settings = await pool.query(`SELECT iqc_auto_ncr_on_fail FROM quality_settings WHERE company_id=$1`, [CO]);
     ncrAutoEnabled = settings.rows.length ? !!settings.rows[0].iqc_auto_ncr_on_fail : false;
   });
 
   const mkPO = async (suffix, status = 'released') => {
     const r = await pool.query(
       `INSERT INTO production_orders (production_order_no, product_name, quantity_planned, status, company_id)
-       VALUES ($1,$2,1,$3,1) RETURNING id`,
-      [`${TAG}-${suffix}`, `${TAG} PO ${suffix}`, status]
+       VALUES ($1,$2,1,$3,$4) RETURNING id`,
+      [`${TAG}-${suffix}`, `${TAG} PO ${suffix}`, status, CO]
     );
     created.production_orders.push(r.rows[0].id);
     return r.rows[0].id;
@@ -207,8 +247,8 @@ describe('Failed QC holds the production order', () => {
     const poId = await mkPO('QCB');
     const t = await pool.query(
       `INSERT INTO quality_tests (company_id, source_type, source_id, production_order_id, test_name, expected_value)
-       VALUES (1,'production_order',$1,$1,$2,'ok') RETURNING id`,
-      [poId, `${TAG} test B`]
+       VALUES ($3,'production_order',$1,$1,$2,'ok') RETURNING id`,
+      [poId, `${TAG} test B`, CO]
     );
     created.quality_tests.push(t.rows[0].id);
 
@@ -225,13 +265,15 @@ describe('Failed QC holds the production order', () => {
   it('PUT /quality/tests/:id holds the order via the operation_id -> production_order chain', async () => {
     const poId = await mkPO('QCC');
     const op = await pool.query(
-      `INSERT INTO production_operations (production_order_id, step_no, operation, status)
-       VALUES ($1,1,'Assembly','pending') RETURNING id`, [poId]
+      // company_id is NOT NULL on production_operations as of 20260926000002 —
+      // derive it from the order, exactly as the application paths now do.
+      `INSERT INTO production_operations (production_order_id, step_no, operation, status, company_id)
+       VALUES ($1,1,'Assembly','pending',(SELECT company_id FROM production_orders WHERE id = $1)) RETURNING id`, [poId]
     );
     const t = await pool.query(
       `INSERT INTO quality_tests (company_id, source_type, source_id, operation_id, test_name, expected_value)
-       VALUES (1,'production_operation',$1,$1,$2,'ok') RETURNING id`,
-      [op.rows[0].id, `${TAG} test C`]
+       VALUES ($3,'production_operation',$1,$1,$2,'ok') RETURNING id`,
+      [op.rows[0].id, `${TAG} test C`, CO]
     );
     created.quality_tests.push(t.rows[0].id);
 
@@ -271,8 +313,8 @@ describe('Failed QC holds the production order', () => {
     const poId = await mkPO('QCE', 'completed');
     const t = await pool.query(
       `INSERT INTO quality_tests (company_id, source_type, source_id, production_order_id, test_name, expected_value)
-       VALUES (1,'production_order',$1,$1,$2,'ok') RETURNING id`,
-      [poId, `${TAG} test E`]
+       VALUES ($3,'production_order',$1,$1,$2,'ok') RETURNING id`,
+      [poId, `${TAG} test E`, CO]
     );
     created.quality_tests.push(t.rows[0].id);
     const res = await request(qualityApp).put(`/api/quality/tests/${t.rows[0].id}`).set('Authorization', auth()).send({ result: 'fail' });
@@ -288,15 +330,15 @@ describe('MRP convert -> routing copied to production_operations', () => {
 
   beforeAll(async () => {
     const bom = await pool.query(
-      `INSERT INTO bom_headers (company_id, product_name, version, status) VALUES (1,$1,'1','active') RETURNING id`,
-      [`${TAG} MRP Product`]
+      `INSERT INTO bom_headers (company_id, product_name, version, status) VALUES ($2,$1,'1','active') RETURNING id`,
+      [`${TAG} MRP Product`, CO]
     );
     bomId = bom.rows[0].id;
     created.bom_headers.push(bomId);
     await pool.query(`INSERT INTO routing_steps (bom_id, step_no, operation, std_time_hrs, is_inspection) VALUES ($1,1,'Cut',2,false)`, [bomId]);
     await pool.query(`INSERT INTO routing_steps (bom_id, step_no, operation, std_time_hrs, is_inspection) VALUES ($1,2,'Inspect',1,true)`, [bomId]);
 
-    const run = await pool.query(`INSERT INTO mrp_runs (company_id) VALUES (1) RETURNING id`);
+    const run = await pool.query(`INSERT INTO mrp_runs (company_id) VALUES ($1) RETURNING id`, [CO]);
     runId = run.rows[0].id;
     created.mrp_runs.push(runId);
   });
@@ -304,8 +346,8 @@ describe('MRP convert -> routing copied to production_operations', () => {
   const mkPlannedOrder = async (suffix) => {
     const r = await pool.query(
       `INSERT INTO mrp_planned_orders (run_id, company_id, item_name, order_type, quantity, bom_id, status)
-       VALUES ($1,1,$2,'make',4,$3,'planned') RETURNING id`,
-      [runId, `${TAG} planned ${suffix}`, bomId]
+       VALUES ($1,$4,$2,'make',4,$3,'planned') RETURNING id`,
+      [runId, `${TAG} planned ${suffix}`, bomId, CO]
     );
     created.mrp_planned_orders.push(r.rows[0].id);
     return r.rows[0].id;
@@ -353,8 +395,8 @@ describe('ECN implement -> BOM promotion', () => {
 
   beforeAll(async () => {
     const r = await pool.query(
-      `INSERT INTO bom_headers (company_id, product_name, version, status) VALUES (1,$1,'1','active') RETURNING id`,
-      [`${TAG} ECN Product`]
+      `INSERT INTO bom_headers (company_id, product_name, version, status) VALUES ($2,$1,'1','active') RETURNING id`,
+      [`${TAG} ECN Product`, CO]
     );
     origBomId = r.rows[0].id;
     created.bom_headers.push(origBomId);
@@ -374,11 +416,20 @@ describe('ECN implement -> BOM promotion', () => {
   });
 
   it('submit + approve move the ECN to approved', async () => {
+    // The BOM-version ECN is raised with no approvers: it cannot be submitted
+    // until one is named (policy 2026-10-20).
     let res = await request(ecnApp).post(`/api/engineering/ecn/changes/${ecnId}/submit`).set('Authorization', auth()).send({});
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('APPROVERS_REQUIRED');
+    res = await request(ecnApp).put(`/api/engineering/ecn/changes/${ecnId}`).set('Authorization', auth())
+      .send({ approvers: [{ approver_id: approverId }] });
+    expect(res.status).toBe(200);
+
+    res = await request(ecnApp).post(`/api/engineering/ecn/changes/${ecnId}/submit`).set('Authorization', auth()).send({});
     expect(res.status).toBe(200);
     expect(res.body.status).toBe('submitted');
 
-    res = await request(ecnApp).post(`/api/engineering/ecn/changes/${ecnId}/approve`).set('Authorization', auth()).send({});
+    res = await request(ecnApp).post(`/api/engineering/ecn/changes/${ecnId}/approve`).set('Authorization', approverAuth()).send({});
     expect(res.status).toBe(200);
 
     const { rows } = await pool.query(`SELECT status FROM engineering_changes WHERE id=$1`, [ecnId]);

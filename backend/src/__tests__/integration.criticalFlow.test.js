@@ -40,6 +40,7 @@ import { evaluateRules }  from '../services/RuleEngineService.js';
 import { buildApp }       from './helpers/testApp.js';
 import { verifyToken }    from '../middlewares/auth.middleware.js';
 import { adminToken }     from './helpers/tokens.js';
+import { invalidateVocabularyCache } from '../shared/masterVocabulary.js';
 
 // ── Test apps ─────────────────────────────────────────────────────────────────
 const salesApp       = buildApp(['/api/sales', salesRoutes]);
@@ -354,6 +355,8 @@ describe('Step 5 — Move Order to Picking', () => {
 
   it('transitions order status to picking', async () => {
     const picking = { ...ORDER, order_status: 'picking' };
+    // The route first confirms the order is in the caller's company (configPool).
+    configPool.query.mockResolvedValueOnce({ rows: [{ ok: 1 }] });
     sharedPool.query.mockResolvedValueOnce({ rows: [picking] });
 
     const res = await request(salesApp).put('/api/sales/orders/42/status')
@@ -366,6 +369,8 @@ describe('Step 5 — Move Order to Picking', () => {
 
   it('advances order from picking to packed', async () => {
     const packed = { ...ORDER, order_status: 'packed' };
+    // The route first confirms the order is in the caller's company (configPool).
+    configPool.query.mockResolvedValueOnce({ rows: [{ ok: 1 }] });
     sharedPool.query.mockResolvedValueOnce({ rows: [packed] });
 
     const res = await request(salesApp).put('/api/sales/orders/42/status')
@@ -473,12 +478,26 @@ describe('Step 8 — Dispatch Sales Order', () => {
       ...ORDER, order_status: 'dispatched',
       carrier: 'DTDC', tracking_number: 'DTDC123456',
     };
-    // sales.routes.js uses pool from config/db.js (not shared/db.js)
-    // Dispatch now checks for open linked production orders before allowing
-    // the status flip (see sales.routes.js /orders/:id/dispatch) — mock that
-    // count query first, then the UPDATE.
-    configPool.query.mockResolvedValueOnce({ rows: [{ n: 0 }] }); // open-production-order count → none
-    configPool.query.mockResolvedValueOnce({ rows: [dispatched] }); // UPDATE → dispatched order
+    // Sales-order dispatch is one transaction on configPool.connect() → txClient
+    // (Phase 3D): the caller's own order, locked; no open warehouse pick list;
+    // the production gate; the final-inspection gate; a shipment row; then the
+    // order update.
+    txClient.query
+      .mockResolvedValueOnce({ rows: [] })                             // BEGIN
+      .mockResolvedValueOnce({ rows: [{ ...ORDER, company_id: 1 }] })  // own order, FOR UPDATE
+      .mockResolvedValueOnce({ rows: [] })                             // open pick lists → none
+      .mockResolvedValueOnce({ rows: [] })                             // stock lines not shipped by pick → none
+      .mockResolvedValueOnce({ rows: [{ n: 0 }] })                     // open production orders → none
+      .mockResolvedValueOnce({ rows: [] })                             // quality_settings → none (gate on)
+      .mockResolvedValueOnce({ rows: [] })                             // quality tests on the order → none
+      .mockResolvedValueOnce({ rows: [] })                             // FAT test runs on the order → none
+      .mockResolvedValueOnce({ rows: [] })                             // QC requirements (gate) → none configured
+      .mockResolvedValueOnce({ rows: [] })                             // QC requirements (qc_plan) → none
+      .mockResolvedValueOnce({ rows: [] })                             // advisory lock on numbering
+      .mockResolvedValueOnce({ rows: [{ n: 7 }] })                     // next dispatch number
+      .mockResolvedValueOnce({ rows: [{ id: 900 }] })                  // INSERT shipments
+      .mockResolvedValueOnce({ rows: [dispatched] })                   // UPDATE sales_orders
+      .mockResolvedValueOnce({ rows: [] });                            // COMMIT
 
     const res = await request(salesApp).put('/api/sales/orders/42/dispatch')
       .set('Authorization', `Bearer ${adminToken()}`)
@@ -488,6 +507,8 @@ describe('Step 8 — Dispatch Sales Order', () => {
     expect(res.body.order_status).toBe('dispatched');
     expect(res.body.carrier).toBe('DTDC');
     expect(res.body.tracking_number).toBe('DTDC123456');
+    expect(res.body.qc_plan).toBe('not_configured');
+    expect(res.body).toMatchObject({ shipment_id: 900, dispatch_ref: 'DSP-000007' });
   });
 });
 
@@ -648,10 +669,22 @@ describe('Step 12 — Service Ticket', () => {
     // silently ate the INSERT's {rows:[TICKET]} slot, leaving the real INSERT
     // reading {rows:[]} and throwing on the now-undefined ticket row. Not a
     // route bug — the route's new behavior is correct; this mock predates it.
+    //
+    // §172 added two more, for the same reason: zone and service_type are no
+    // longer validated against hardcoded arrays but against the masters, so the
+    // handler reads master_zones and master_values before it inserts. Both reads
+    // are memoised for 60s by masterVocabulary.js, which would otherwise make the
+    // number of queries depend on whether an earlier test in this file had
+    // already warmed the cache — so the cache is cleared explicitly rather than
+    // left to decide the mock sequence. Empty rows make both fall back to the
+    // arrays they replaced, which is the behaviour this test was written against.
+    invalidateVocabularyCache();
     configPool.query.mockReset();
     configPool.query
       .mockResolvedValueOnce({ rows: [ACTIVE_USER] }) // verifyToken
       .mockResolvedValueOnce({ rows: [{ n: 1 }] })    // nextTicketNumber (SELECT nextval)
+      .mockResolvedValueOnce({ rows: [] })            // vocabularyValues('ZONE')         → falls back
+      .mockResolvedValueOnce({ rows: [] })            // vocabularyValues('PROJECT_TYPE') → falls back
       .mockResolvedValueOnce({ rows: [] })            // matchAutoAssignmentRule — no active auto_assignment_rules
       .mockResolvedValueOnce({ rows: [TICKET] });     // INSERT support_tickets
     configPool.query.mockResolvedValue({ rows: [] });

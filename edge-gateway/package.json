@@ -1,15 +1,22 @@
 {
   "name": "pulse-edge-gateway",
-  "version": "1.0.0",
+  "version": "4.0.0",
   "private": true,
   "type": "module",
   "description": "On-site agent that polls a deployed device (Modbus TCP) and forwards telemetry to Pulse /iot/ingest.",
-  "bin": { "pulse-edge-gateway": "gateway.mjs" },
-  "scripts": {
-    "start": "node gateway.mjs"
+  "bin": {
+    "pulse-edge-gateway": "gateway.mjs",
+    "pulse-verify": "verify.mjs"
   },
-  "engines": { "node": ">=18" },
+  "scripts": {
+    "start": "node gateway.mjs",
+    "test": "node --test __tests__/*.test.mjs",
+    "verify": "node verify.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
   "optionalDependencies": {
-    "modbus-serial": "^8.0.0"
+    "modbus-serial": "^8.0.25"
   }
 }

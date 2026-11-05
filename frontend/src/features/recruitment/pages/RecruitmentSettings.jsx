@@ -1,100 +1,75 @@
-import React, { useState, useEffect } from 'react';
+import React from 'react';
 import { Briefcase } from 'lucide-react';
-import api from '@/services/api/client';
 import ModuleSettingsPanel from '@/components/core/ModuleSettingsPanel';
 
-function buildSections(templateOptions) {
+/**
+ * Recruitment settings.
+ *
+ * Five fields were removed here rather than left on the page. An audit found
+ * that eight of the nine keys this panel wrote were read by no code anywhere in
+ * the repository — a settings screen that persists into a void is worse than no
+ * settings screen, because it tells an administrator they have configured
+ * something. Each removal is deliberate:
+ *
+ *   interview_stages      — the pipeline stages are fixed by the
+ *                           candidates_current_stage_check CHECK constraint.
+ *                           A free-text override could only ever produce values
+ *                           Postgres rejects.
+ *   auto_send_offer       — PUT /recruitment/offers/:id explicitly refuses a
+ *                           direct move to 'sent': offers go through the
+ *                           Approval Center. A toggle promising to bypass that
+ *                           gate contradicts the API by design.
+ *   offer_letter_template — nothing in the offer path reads a template id.
+ *   probation_months,
+ *   probation_review_…    — the probation service computes no date window, so
+ *                           there is nothing for either value to apply to.
+ *                           Probation lives in its own module; these belong
+ *                           there, with the code that would use them.
+ *
+ * What remains is read by something. offer_validity_days is consumed by
+ * recruitment/offerValidity.js, and the three channel toggles now drive
+ * sourceOptions() in the shared constants — see SOURCE_SETTING_KEYS.
+ */
+function buildSections() {
   return [
     {
-      title: 'Pipeline',
-      description: 'Interview stage configuration and offer validity',
+      title: 'Offer',
+      description: 'How long a candidate has to respond to an offer',
       fields: [
-        {
-          key: 'interview_stages',
-          label: 'Interview Stages',
-          type: 'text',
-          default: 'Screening,Technical Round 1,Technical Round 2,HR Round,Offer',
-          placeholder: 'Screening,Technical,HR,Offer',
-          helpText: 'Comma-separated list of interview pipeline stages',
-        },
         {
           key: 'offer_validity_days',
           label: 'Default Offer Validity (days)',
           type: 'number',
           default: 7,
           placeholder: '7',
-          helpText: 'Candidates must accept the offer within this many days',
+          helpText: 'Applied when an offer is sent. A single offer can still be given its own expiry date.',
         },
       ],
     },
     {
-      title: 'Sourcing',
-      description: 'Job portal integrations (UI configuration only)',
+      title: 'Sourcing channels',
+      description: 'Which channels appear in the Source list when adding a candidate',
       fields: [
         {
           key: 'integrate_linkedin',
-          label: 'LinkedIn Integration',
+          label: 'LinkedIn',
           type: 'toggle',
-          default: false,
-          helpText: 'Show LinkedIn as a sourcing channel in candidate records',
+          default: true,
+          helpText: 'Offer LinkedIn as a source on candidate records. This is a label for reporting — Manifest does not connect to the LinkedIn API.',
         },
         {
           key: 'integrate_naukri',
-          label: 'Naukri Integration',
+          label: 'Naukri',
           type: 'toggle',
-          default: false,
-          helpText: 'Show Naukri as a sourcing channel in candidate records',
+          default: true,
+          helpText: 'Offer Naukri as a source on candidate records. Manual entry — there is no Naukri API integration.',
         },
         {
           key: 'integrate_indeed',
-          label: 'Indeed Integration',
+          label: 'Indeed',
           type: 'toggle',
-          default: false,
-          helpText: 'Show Indeed as a sourcing channel in candidate records',
-        },
-      ],
-    },
-    {
-      title: 'Offer',
-      description: 'Offer letter template and automation',
-      fields: [
-        {
-          key: 'offer_letter_template',
-          label: 'Offer Letter Template',
-          type: 'select',
-          options: templateOptions.length
-            ? templateOptions
-            : [{ value: '', label: 'No templates found' }],
-          default: '',
-          helpText: 'Template pre-filled when generating an offer letter',
-        },
-        {
-          key: 'auto_send_offer',
-          label: 'Auto-Send Offer Letter',
-          type: 'toggle',
-          default: false,
-          helpText: 'Automatically email the offer letter when status moves to Offered',
-        },
-      ],
-    },
-    {
-      title: 'Probation',
-      description: 'Default probation period settings for new hires',
-      fields: [
-        {
-          key: 'probation_months',
-          label: 'Default Probation Period (months)',
-          type: 'number',
-          default: 3,
-          placeholder: '3',
-        },
-        {
-          key: 'probation_review_reminder_days',
-          label: 'Probation Review Reminder (days before end)',
-          type: 'number',
-          default: 14,
-          placeholder: '14',
-          helpText: 'Send a reminder to HR this many days before the probation end date',
+          default: true,
+          helpText: 'Offer Indeed as a source on candidate records. Manual entry — there is no Indeed API integration.',
         },
       ],
     },
@@ -102,24 +77,13 @@ function buildSections(templateOptions) {
 }
 
 export default function RecruitmentSettings({ setPage }) {
-  const [templateOptions, setTemplateOptions] = useState([]);
-
-  useEffect(() => {
-    api.get('/documents/templates')
-      .then(res => {
-        const list = Array.isArray(res.data) ? res.data : (res.data?.templates || []);
-        setTemplateOptions(list.map(t => ({ value: String(t.id), label: t.name || t.template_name })));
-      })
-      .catch(() => setTemplateOptions([]));
-  }, []);
-
   return (
     <ModuleSettingsPanel
       moduleName="Recruitment"
       moduleIcon={Briefcase}
       apiEndpoint="/settings/recruitment"
       setPage={setPage}
-      sections={buildSections(templateOptions)}
+      sections={buildSections()}
     />
   );
 }

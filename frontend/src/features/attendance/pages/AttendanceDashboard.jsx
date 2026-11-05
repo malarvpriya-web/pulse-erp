@@ -12,6 +12,7 @@ import PunchModeNotice from '@/components/attendance/PunchModeNotice';
 import usePunchMode from '@/hooks/usePunchMode';
 import './AttendanceDashboard.css';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import { fmtDate, formatTime } from '@/utils/dateFormatter';
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -77,7 +78,7 @@ const fmtBreakTime = (t) => {
   if (!t) return '—';
   try {
     const d = new Date(t);
-    if (!isNaN(d)) return d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true });
+    if (!isNaN(d)) return formatTime(d);
     const parts = String(t).split(':');
     if (parts.length >= 2) {
       let h = parseInt(parts[0], 10); const m = parseInt(parts[1], 10);
@@ -998,7 +999,7 @@ const AttendanceDashboard = () => {
                 return (
                   <div key={req.id} className="atd-reg-item">
                     <div className="atd-reg-meta">
-                      <span className="atd-reg-date">{req.date}</span>
+                      <span className="atd-reg-date">{fmtDate(req.date)}</span>
                       {(req.check_in || req.check_out) && (
                         <span className="atd-reg-times">
                           {req.check_in && `In: ${req.check_in}`}

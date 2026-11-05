@@ -54,8 +54,16 @@ export default function MRPWorkbench() {
   const [mpsForm, setMpsForm] = useState({ product_id: '', product_name: '', due_date: '', quantity: '' });
   const [fcForm, setFcForm] = useState({ item_id: '', forecast_date: '', quantity: '' });
 
+  const [shortages, setShortages] = useState(null);
+
   const loadRuns = useCallback(async () => {
     try { setRuns((await api.get('/mrp/runs')).data || []); } catch { /* */ }
+  }, []);
+  // Shortages come from the latest completed run rather than the one being
+  // browsed: "what is short right now" is the question, and it is not
+  // answerable from a run somebody happens to be looking at the history of.
+  const loadShortages = useCallback(async () => {
+    try { setShortages((await api.get('/mrp/shortages')).data || null); } catch { /* */ }
   }, []);
   const loadRunDetail = useCallback(async (id) => {
     try {
@@ -75,7 +83,7 @@ export default function MRPWorkbench() {
     } catch { /* */ }
   }, []);
 
-  useEffect(() => { loadRuns(); loadItems(); loadDemand(); }, [loadRuns, loadItems, loadDemand]);
+  useEffect(() => { loadRuns(); loadItems(); loadDemand(); loadShortages(); }, [loadRuns, loadItems, loadDemand, loadShortages]);
 
   const runMRP = async () => {
     setRunning(true);
@@ -84,7 +92,7 @@ export default function MRPWorkbench() {
         horizon_days: Number(horizon), bucket_days: Number(bucketDays), include_sales_orders: inc.so, include_mps: inc.mps, include_forecast: inc.fc,
       });
       setRun(data.run); setPlanned(data.planned_orders || []); setExceptions(data.exceptions || []); setTimePhased(data.time_phased || []);
-      setTab('planned'); loadRuns();
+      setTab('planned'); loadRuns(); loadShortages();
       const s = data.summary;
       toast.success(`MRP done — ${s.planned_orders} planned (${s.make} make / ${s.buy} buy), ${s.exceptions} exceptions${s.unmatched ? `, ${s.unmatched} unmatched` : ''}`);
     } catch (e) { toast.error(e.response?.data?.error || 'MRP run failed'); }
@@ -234,6 +242,7 @@ export default function MRPWorkbench() {
         <Tab id="atp" label="ATP Check" />
         <Tab id="ctp" label="CTP Check" />
         <Tab id="exceptions" label="Exceptions" n={exceptions.length || null} />
+        <Tab id="shortages" label="Shortages" n={(shortages?.summary?.projected ?? 0) + (shortages?.summary?.below_safety_stock ?? 0) || null} />
         <Tab id="demand" label="Demand (MPS + Forecast)" />
         <Tab id="items" label="Item Planning" />
       </div>
@@ -304,6 +313,59 @@ export default function MRPWorkbench() {
                 </tr>
               ))}
               {exceptions.length === 0 && <tr><td style={{ ...td, color: MUT }} colSpan={5}>No exceptions.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* SHORTAGES — where the plan does not cover demand.
+          Two distinct conditions, kept apart because they need different
+          actions: the projected list says supply is planned but not early
+          enough; the safety-stock list does not wait for a run at all. */}
+      {tab === 'shortages' && (
+        <div style={card}>
+          <div style={{ fontSize: 12, color: MUT, marginBottom: 10 }}>
+            Projected shortages come from the time-phased grid going negative. Items at or below safety stock
+            are short <em>today</em>, whatever the plan says.
+          </div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: INK, margin: '6px 0' }}>
+            Projected ({shortages?.projected_shortages?.length || 0})
+          </div>
+          <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: 18 }}>
+            <thead><tr>{['Item', 'First short on', 'Projected', 'Shortfall', 'Covered by plan'].map(h => <th key={h} style={th}>{h}</th>)}</tr></thead>
+            <tbody>
+              {(shortages?.projected_shortages || []).map(s => (
+                <tr key={`p-${s.item_id}`}>
+                  <td style={{ ...td, fontWeight: 600 }}>{s.item_code} — {s.item_name}</td>
+                  <td style={td}>{s.first_short_on ? fmtDate(s.first_short_on) : '—'}</td>
+                  <td style={td}>{Number(s.projected_available).toFixed(2)}</td>
+                  <td style={td}>{Number(s.shortfall_qty).toFixed(2)}</td>
+                  <td style={td}>{s.uncovered
+                    ? <span style={SEV.critical}>no planned order</span>
+                    : `${s.planned_orders} planned order(s)`}</td>
+                </tr>
+              ))}
+              {!(shortages?.projected_shortages || []).length &&
+                <tr><td style={{ ...td, color: MUT }} colSpan={5}>No projected shortage in the latest run.</td></tr>}
+            </tbody>
+          </table>
+          <div style={{ fontSize: 13, fontWeight: 700, color: INK, margin: '6px 0' }}>
+            At or below safety stock ({shortages?.below_safety_stock?.length || 0})
+          </div>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead><tr>{['Item', 'On hand', 'Safety stock', 'Short by', 'Lead time'].map(h => <th key={h} style={th}>{h}</th>)}</tr></thead>
+            <tbody>
+              {(shortages?.below_safety_stock || []).map(s => (
+                <tr key={`s-${s.item_id}`}>
+                  <td style={{ ...td, fontWeight: 600 }}>{s.item_code} — {s.item_name}</td>
+                  <td style={td}>{Number(s.on_hand).toFixed(2)}</td>
+                  <td style={td}>{Number(s.safety_stock).toFixed(2)}</td>
+                  <td style={td}>{Number(s.shortfall_qty).toFixed(2)}</td>
+                  <td style={td}>{s.lead_time_days} d</td>
+                </tr>
+              ))}
+              {!(shortages?.below_safety_stock || []).length &&
+                <tr><td style={{ ...td, color: MUT }} colSpan={5}>Nothing is at or below its safety stock.</td></tr>}
             </tbody>
           </table>
         </div>

@@ -6,6 +6,7 @@ import { usePageAccess } from '@/hooks/usePageAccess';
 import ReadOnlyBanner from '@/components/ReadOnlyBanner';
 import './Accounts.css';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import VocabSelect from '@/components/core/VocabSelect';
 
 const fmt = n => {
   const v = parseFloat(n || 0);
@@ -16,8 +17,11 @@ const fmt = n => {
   return '—';
 };
 
-const INDUSTRIES  = ['Technology', 'Manufacturing', 'Retail', 'Healthcare', 'Finance', 'Construction', 'Education', 'Logistics', 'Media', 'Consulting', 'Other'];
-const ACCOUNT_TYPES = ['Customer', 'Prospect', 'Partner', 'Competitor', 'Other'];
+// Industries, account types and lead sources were hardcoded arrays here AND in
+// two other pages, and the copies had drifted. Four of the seven values actually
+// stored in accounts.industry (IT Services, Analytics, Engineering, FMCG) were in
+// none of them, so those accounts showed a blank Industry and the next save wiped
+// it. They now come from the shared master — backend/src/modules/master/vocabularies.js.
 const STATUSES    = ['Active', 'Inactive', 'Prospect'];
 
 const TYPE_META = {
@@ -241,16 +245,13 @@ export default function Accounts() {
               <div className="ac-row2">
                 <div className="ac-field">
                   <label>Account Type</label>
-                  <select value={form.account_type} onChange={e => setForm(f => ({ ...f, account_type: e.target.value }))}>
-                    {ACCOUNT_TYPES.map(t => <option key={t}>{t}</option>)}
-                  </select>
+                  <VocabSelect vocab="account-types" value={form.account_type}
+                    onChange={v => setForm(f => ({ ...f, account_type: v }))} />
                 </div>
                 <div className="ac-field">
                   <label>Industry</label>
-                  <select value={form.industry} onChange={e => setForm(f => ({ ...f, industry: e.target.value }))}>
-                    <option value="">Select…</option>
-                    {INDUSTRIES.map(i => <option key={i}>{i}</option>)}
-                  </select>
+                  <VocabSelect vocab="industries" value={form.industry} placeholder="Select…"
+                    onChange={v => setForm(f => ({ ...f, industry: v }))} />
                 </div>
               </div>
               <div className="ac-row2">

@@ -9,6 +9,7 @@ import {
 import { TrendingUp, TrendingDown, Target, Award, AlertTriangle, Users } from 'lucide-react';
 import api from '@/services/api/client';
 import { Stat } from '@/components/pulse-ui';
+import { drillProps } from './drillThrough';
 
 const fmtL = (n) => {
   const v = parseFloat(n || 0);
@@ -34,7 +35,7 @@ function KpiCard({ label, value, sub, color = C.primary, icon: Icon, trend }) {
 // exist. This panel used to fetch /sales-command-center/pipeline and /targets itself —
 // neither has ever been a route, so every card below rendered empty from the day it shipped.
 // Live routes on that router: /summary, /team-targets, /salesperson-scorecard.
-export default function RevenueForecastPanel({ summary, customerData, pipeStages, salesKpi, teamTargets }) {
+export default function RevenueForecastPanel({ summary, customerData, pipeStages, salesKpi, teamTargets, onNavigate }) {
   const [scc, setScc]         = useState(null);
   const [perf, setPerf]       = useState([]);
   const [loading, setLoading] = useState(true);
@@ -69,6 +70,11 @@ export default function RevenueForecastPanel({ summary, customerData, pipeStages
   const bottomPerf = ranked.slice(-6).reverse();
 
   // Funnel from /dashboard/sales — { stage, count, value }
+  // Clicking a stage opens the opportunities board narrowed to that stage.
+  // ⚠ The two ends hold DIFFERENT vocabularies — /dashboard/sales reports
+  // 'qualification' while the board's columns are keyed 'Qualification' — so the
+  // board matches the param case-insensitively against both key and label, and
+  // falls back to every stage (with a banner) rather than rendering empty.
   const funnelData = (pipeStages || []).map((s, i) => ({
     name: s.stage || 'Unknown',
     value: parseFloat(s.value || 0),
@@ -126,7 +132,11 @@ export default function RevenueForecastPanel({ summary, customerData, pipeStages
                 const maxVal = Math.max(...funnelData.map(f => f.value), 1);
                 const w = Math.round((s.value / maxVal) * 100);
                 return (
-                  <div key={s.name}>
+                  <div
+                    key={s.name}
+                    {...drillProps(onNavigate ? () => onNavigate('OpportunitiesKanban', { stage: s.name }) : null, `${s.name} opportunities`)}
+                    style={onNavigate ? { cursor: 'pointer' } : undefined}
+                  >
                     <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3, fontSize: 12 }}>
                       <span style={{ fontWeight: 600, color: '#374151' }}>{s.name}</span>
                       <span style={{ color: '#9ca3af' }}>{s.count} opp · {fmtL(s.value)}</span>

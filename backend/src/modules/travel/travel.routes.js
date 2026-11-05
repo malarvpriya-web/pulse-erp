@@ -202,6 +202,46 @@ async function ownEmployeeId(req) {
 const TRAVEL_APPROVE_ROLES = ['admin', 'super_admin', 'hr', 'manager'];
 const VALID_TRAVEL_STATUSES = new Set(['Pending', 'Approved', 'Rejected', 'Cancelled']);
 
+// The only transitions a decision may make. Anything else — re-deciding an
+// approved/rejected request, reopening one to Pending, approving a cancelled
+// one — used to be accepted and simply overwrote the status.
+const TRAVEL_TRANSITIONS = { Pending: ['Approved', 'Rejected', 'Cancelled'], Approved: ['Cancelled'] };
+
+/**
+ * Load one travel request / advance inside the caller's company. The decision
+ * routes read `WHERE id = $1` alone, and authorizeManagerApproval's HR/admin
+ * override carries no company — so HR in company B could decide company A's
+ * travel by id. Another company's row reads exactly like a missing one.
+ */
+async function loadInCompany(table, req, id) {
+  if (!/^\d+$/.test(String(id))) return null;
+  const { rows } = await pool.query(
+    `SELECT * FROM ${table} WHERE id = $1 AND ($2::int IS NULL OR company_id = $2)`,
+    [id, companyOf(req)]
+  );
+  return rows[0] || null;
+}
+const loadTravelRequest = (req, id) => loadInCompany('travel_requests', req, id);
+const loadAdvance       = (req, id) => loadInCompany('travel_advances', req, id);
+const decidedElsewhere = (res, what = 'request') =>
+  res.status(409).json({ error: `This ${what} was already decided — refresh to see its current status.` });
+
+// A delegate must be a real, active employee of the same company, and not the
+// requester. delegate_employee_id arrives from the client.
+async function assertDelegateEligible(delegateId, companyId, requesterEmployeeId) {
+  const { rows: [d] } = await pool.query(
+    `SELECT id FROM employees
+      WHERE id::text = $1::text AND ($2::int IS NULL OR company_id = $2) AND deleted_at IS NULL
+        AND LOWER(status) IN ('active', 'probation', 'notice')`,
+    [String(delegateId), companyId ?? null]
+  );
+  if (!d) return 'The delegate must be an active employee in the same company';
+  if (requesterEmployeeId != null && String(d.id) === String(requesterEmployeeId)) {
+    return 'A request cannot be delegated to the person who raised it';
+  }
+  return null;
+}
+
 router.get('/requests', async (req, res) => {
   try {
     const companyId = companyOf(req);
@@ -393,16 +433,20 @@ router.get('/approvals', async (req, res) => {
 // since those aren't the "approval" act the role-gate bug was about.
 router.put('/requests/:id/status', async (req, res) => {
   try {
-    const { status, comments } = req.body;
+    const { comments } = req.body;
+    // Canonical casing — ManagerDashboard sends 'approved'/'rejected'.
+    const raw = String(req.body.status || '');
+    const status = raw.charAt(0).toUpperCase() + raw.slice(1).toLowerCase();
     if (!VALID_TRAVEL_STATUSES.has(status)) {
       return res.status(400).json({ error: `Invalid status. Must be one of: ${[...VALID_TRAVEL_STATUSES].join(', ')}` });
     }
-    const { rows: [old] } = await pool.query(`SELECT * FROM travel_requests WHERE id=$1`, [req.params.id]);
+    const old = await loadTravelRequest(req, req.params.id);
     if (!old) return res.status(404).json({ error: 'Request not found' });
+    if (!(TRAVEL_TRANSITIONS[old.status] || []).includes(status)) {
+      return res.status(409).json({ error: `A ${old.status} request cannot be set to ${status}` });
+    }
 
     const actorId = req.user?.userId ?? req.user?.id;
-    let advancedViaEngine = false;
-
     if (status === 'Approved' || status === 'Rejected') {
       const auth = await authorizeManagerApproval({
         actorEmployeeId: req.user?.employee_id ?? null,
@@ -411,41 +455,37 @@ router.put('/requests/:id/status', async (req, res) => {
         delegateApproverId: old.delegate_approver_id,
       });
       if (!auth.authorized) return res.status(403).json({ error: DENIED_MESSAGE });
+    } else if (!TRAVEL_APPROVE_ROLES.includes(String(req.user?.role || '').toLowerCase())) {
+      return res.status(403).json({ error: 'Insufficient role for this action' });
+    }
 
-      // Route through the generic WorkflowService when this request has a live
-      // instance (created after the travel_approval workflow seed shipped) —
-      // best-effort: the direct travel_requests.status update below stays the
-      // source of truth regardless, so a ledger failure here never blocks
-      // approval (Automation Opportunity Audit §30.1 Travel pilot).
-      try {
-        const instance = await getWorkflowStatus('travel', old.id);
-        if (instance && !['approved', 'rejected', 'cancelled'].includes(instance.status)) {
+    // Compare-and-set on the status we validated: of two simultaneous
+    // decisions exactly one matches; the other gets 409 and changes nothing —
+    // no second engine transition, notification, audit row or booking stub.
+    const { rows: [updated] } = await pool.query(
+      `UPDATE travel_requests SET status = $1, updated_at = NOW()
+        WHERE id = $2 AND status = $3 RETURNING *`,
+      [status, old.id, old.status]
+    );
+    if (!updated) return decidedElsewhere(res);
+
+    // Mirror the decision onto the generic WorkflowService instance (created
+    // after the travel_approval workflow seed) — best-effort: travel_requests
+    // is the source of truth (Automation Opportunity Audit §30.1 Travel pilot).
+    let advancedViaEngine = false;
+    try {
+      const instance = await getWorkflowStatus('travel', old.id);
+      if (instance && !['approved', 'rejected', 'cancelled'].includes(instance.status)) {
+        if (status === 'Cancelled') {
+          await cancelWorkflow('travel', old.id, actorId);
+        } else {
           await advanceWorkflow(instance.id, status === 'Approved' ? 'approve' : 'reject', actorId, comments || '');
           advancedViaEngine = true;
         }
-      } catch (e) {
-        console.warn('[travel] advanceWorkflow failed, continuing with direct status update:', e.message);
       }
-    } else {
-      if (!TRAVEL_APPROVE_ROLES.includes(String(req.user?.role || '').toLowerCase())) {
-        return res.status(403).json({ error: 'Insufficient role for this action' });
-      }
-      // Mirror a cancel the same best-effort way as approve/reject above —
-      // without this, a cancelled request's shadow instance would sit
-      // 'pending' forever instead of reflecting that it's closed.
-      if (status === 'Cancelled') {
-        try {
-          await cancelWorkflow('travel', old.id, actorId);
-        } catch (e) {
-          console.warn('[travel] cancelWorkflow failed, continuing with direct status update:', e.message);
-        }
-      }
+    } catch (e) {
+      console.warn('[travel] workflow mirror failed, status already updated:', e.message);
     }
-
-    const { rows: [updated] } = await pool.query(
-      `UPDATE travel_requests SET status=$1, updated_at=NOW() WHERE id=$2 RETURNING *`,
-      [status, req.params.id]
-    );
 
     logAudit({
       userId: actorId,
@@ -458,22 +498,21 @@ router.put('/requests/:id/status', async (req, res) => {
       req,
     });
 
-    // advanceWorkflow() already fired the approved/rejected notification
-    // (correctly addressed to the real initiator) when routed through the
-    // engine above — only send the manual one on the fallback path, and
-    // address it to created_by (a real users.id) rather than employee_id,
-    // which was silently mis-addressing this notification (employee_id is an
-    // employees.id; notifyWorkflowEvent's submitterUserId expects users.id).
+    // advanceWorkflow() already notified the initiator when routed through the
+    // engine — only notify on the fallback path, addressed to created_by (a
+    // users.id; employee_id is an employees.id).
     if (!advancedViaEngine && (status === 'Approved' || status === 'Rejected')) {
       notifyWorkflowEvent(status === 'Approved' ? 'approved' : 'rejected', {
         module: 'Travel',
         recordId: updated.id,
         submitterUserId: updated.created_by,
+        comments,
       });
     }
 
-    // Auto-create a pending_booking stub when a request is approved for the first time
-    if (status === 'Approved' && old.status !== 'Approved') {
+    // Booking stub for a newly approved request (the compare-and-set above
+    // guarantees this runs once).
+    if (status === 'Approved') {
       const { rows: existing } = await pool.query(
         `SELECT id FROM travel_bookings WHERE travel_request_id=$1`, [updated.id]
       );
@@ -484,8 +523,7 @@ router.put('/requests/:id/status', async (req, res) => {
              employee_name, status, company_id, created_by)
           VALUES ($1,$2,$3,$4,$5,$6,'pending_booking',$7,$8)
         `, [updated.id, updated.destination, updated.from_date, updated.to_date,
-            updated.mode, updated.employee_name, updated.company_id,
-            req.user?.userId ?? req.user?.id]);
+            updated.mode, updated.employee_name, updated.company_id, actorId]);
       }
     }
 
@@ -503,8 +541,9 @@ router.post('/requests/:id/delegate', async (req, res) => {
   try {
     const { delegate_employee_id } = req.body;
     if (!delegate_employee_id) return res.status(400).json({ error: 'delegate_employee_id is required' });
-    const { rows: [tr] } = await pool.query(`SELECT * FROM travel_requests WHERE id=$1`, [req.params.id]);
+    const tr = await loadTravelRequest(req, req.params.id);
     if (!tr) return res.status(404).json({ error: 'Not found' });
+    if (tr.status !== 'Pending') return res.status(409).json({ error: `A ${tr.status} request cannot be delegated` });
 
     const auth = await authorizeManagerApproval({
       actorEmployeeId: req.user?.employee_id ?? null,
@@ -514,10 +553,15 @@ router.post('/requests/:id/delegate', async (req, res) => {
     });
     if (!auth.authorized) return res.status(403).json({ error: DENIED_MESSAGE });
 
+    const bad = await assertDelegateEligible(delegate_employee_id, tr.company_id, tr.employee_id);
+    if (bad) return res.status(400).json({ error: bad });
+
     const { rows: [updated] } = await pool.query(
-      `UPDATE travel_requests SET delegate_approver_id=$1, updated_at=NOW() WHERE id=$2 RETURNING *`,
-      [delegate_employee_id, req.params.id]
+      `UPDATE travel_requests SET delegate_approver_id=$1, updated_at=NOW()
+        WHERE id=$2 AND status='Pending' RETURNING *`,
+      [delegate_employee_id, tr.id]
     );
+    if (!updated) return decidedElsewhere(res);
     logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'travel', recordId: updated.id,
       recordType: 'travel_request', action: 'delegate', newData: { delegate_employee_id }, req });
     res.json(updated);
@@ -533,13 +577,16 @@ router.post('/requests', async (req, res) => {
     // Employees can only raise requests for themselves.
     const empId = isEmployeeRole(req) ? ((await ownEmployeeId(req)) ?? null) : employee_id;
     const { rows } = await pool.query(
+      // company_id from the caller's scope. Omitting it left the request
+      // tenant-less, which /travel/analytics/* then could not see once those
+      // endpoints gained company scoping.
       `INSERT INTO travel_requests
          (employee_id, destination, purpose, from_date, to_date, budget,
-          mode, hotel_required, advance_required, notes, status, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'Pending',$11) RETURNING *`,
+          mode, hotel_required, advance_required, notes, status, created_by, company_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'Pending',$11,$12) RETURNING *`,
       [empId, destination, purpose, from_date, to_date, budget,
        mode, hotel_required ?? false, advance_required ?? false, notes,
-       req.user?.userId ?? req.user?.id]
+       req.user?.userId ?? req.user?.id, companyOf(req)]
     );
     initiateWorkflow('travel', rows[0].id, 'travel_request', req.user?.userId ?? req.user?.id)
       .catch((e) => console.warn('[travel] initiateWorkflow failed:', e.message));
@@ -846,18 +893,19 @@ router.put('/advances/:id/finance-review', allowRoles(...ADVANCE_FINANCE_ROLES),
     if (status === 'Rejected' && !comments?.trim()) {
       return res.status(400).json({ error: 'Comments are required when rejecting an advance' });
     }
-    const { rows: [adv] } = await pool.query(`SELECT * FROM travel_advances WHERE id=$1`, [req.params.id]);
+    const adv = await loadAdvance(req, req.params.id);
     if (!adv) return res.status(404).json({ error: 'Advance not found' });
     if (adv.status !== 'Pending Finance') {
-      return res.status(400).json({ error: `Advance is ${adv.status}, not awaiting finance review` });
+      return res.status(409).json({ error: `Advance is ${adv.status}, not awaiting finance review` });
     }
 
     const newStatus = status === 'Approved' ? 'Pending Manager' : 'Finance Rejected';
     const { rows: [updated] } = await pool.query(
       `UPDATE travel_advances SET status=$1, finance_comments=$2, finance_by=$3, finance_at=NOW(), updated_at=NOW()
-       WHERE id=$4 RETURNING *`,
-      [newStatus, comments || null, actorId, req.params.id]
+       WHERE id=$4 AND status='Pending Finance' RETURNING *`,
+      [newStatus, comments || null, actorId, adv.id]
     );
+    if (!updated) return decidedElsewhere(res, 'advance');
 
     if (status === 'Rejected') {
       notifyWorkflowEvent('rejected', { module: 'TravelAdvance', recordId: updated.id, submitterUserId: adv.employee_id });
@@ -873,7 +921,7 @@ router.put('/advances/:id/resubmit', async (req, res) => {
   try {
     const { amount, purpose, required_by, document_link } = req.body;
     const actorId = req.user?.userId ?? req.user?.id;
-    const { rows: [adv] } = await pool.query(`SELECT * FROM travel_advances WHERE id=$1`, [req.params.id]);
+    const adv = await loadAdvance(req, req.params.id);
     if (!adv) return res.status(404).json({ error: 'Advance not found' });
     if (adv.status !== 'Finance Rejected') {
       return res.status(400).json({ error: 'Only finance-rejected advances can be resubmitted' });
@@ -890,10 +938,11 @@ router.put('/advances/:id/resubmit', async (req, res) => {
          document_link = COALESCE($4, document_link),
          status='Pending Finance', resubmission_count = COALESCE(resubmission_count,0)+1,
          finance_by=NULL, finance_at=NULL, updated_at=NOW()
-       WHERE id=$5 RETURNING *`,
+       WHERE id=$5 AND status='Finance Rejected' RETURNING *`,
       [amount ? Number(amount) : null, purpose || null, required_by || null,
-       document_link || null, req.params.id]
+       document_link || null, adv.id]
     );
+    if (!updated) return decidedElsewhere(res, 'advance');
     logAudit({ userId: actorId, module: 'travel', recordId: updated.id, recordType: 'travel_advance',
       action: 'resubmit', oldData: adv, newData: updated, req });
     res.json(updated);
@@ -921,10 +970,10 @@ router.put('/advances/:id/manager-review', async (req, res) => {
     if (!['Approved', 'Rejected'].includes(status)) {
       return res.status(400).json({ error: 'status must be Approved or Rejected' });
     }
-    const { rows: [adv] } = await pool.query(`SELECT * FROM travel_advances WHERE id=$1`, [req.params.id]);
+    const adv = await loadAdvance(req, req.params.id);
     if (!adv) return res.status(404).json({ error: 'Advance not found' });
     if (adv.status !== 'Pending Manager') {
-      return res.status(400).json({ error: `Advance is ${adv.status}, not awaiting manager review` });
+      return res.status(409).json({ error: `Advance is ${adv.status}, not awaiting manager review` });
     }
 
     const auth = await authorizeManagerApproval({
@@ -938,9 +987,10 @@ router.put('/advances/:id/manager-review', async (req, res) => {
     const newStatus = status === 'Approved' ? 'Approved' : 'Rejected';
     const { rows: [updated] } = await pool.query(
       `UPDATE travel_advances SET status=$1, manager_comments=$2, manager_by=$3, manager_at=NOW(), updated_at=NOW()
-       WHERE id=$4 RETURNING *`,
-      [newStatus, comments || null, actorId, req.params.id]
+       WHERE id=$4 AND status='Pending Manager' RETURNING *`,
+      [newStatus, comments || null, actorId, adv.id]
     );
+    if (!updated) return decidedElsewhere(res, 'advance');
 
     notifyWorkflowEvent(status === 'Approved' ? 'approved' : 'rejected',
       { module: 'TravelAdvance', recordId: updated.id, submitterUserId: adv.employee_id });
@@ -956,8 +1006,11 @@ router.post('/advances/:id/delegate', async (req, res) => {
   try {
     const { delegate_employee_id } = req.body;
     if (!delegate_employee_id) return res.status(400).json({ error: 'delegate_employee_id is required' });
-    const { rows: [adv] } = await pool.query(`SELECT * FROM travel_advances WHERE id=$1`, [req.params.id]);
+    const adv = await loadAdvance(req, req.params.id);
     if (!adv) return res.status(404).json({ error: 'Advance not found' });
+    if (adv.status !== 'Pending Manager') {
+      return res.status(409).json({ error: `Advance is ${adv.status}; only the manager review can be delegated` });
+    }
 
     const auth = await authorizeManagerApproval({
       actorEmployeeId: req.user?.employee_id ?? null,
@@ -967,10 +1020,16 @@ router.post('/advances/:id/delegate', async (req, res) => {
     });
     if (!auth.authorized) return res.status(403).json({ error: DENIED_MESSAGE });
 
+    const bad = await assertDelegateEligible(delegate_employee_id, adv.company_id,
+      await resolveAdvanceRequesterEmployeeId(adv));
+    if (bad) return res.status(400).json({ error: bad });
+
     const { rows: [updated] } = await pool.query(
-      `UPDATE travel_advances SET delegate_approver_id=$1, updated_at=NOW() WHERE id=$2 RETURNING *`,
-      [delegate_employee_id, req.params.id]
+      `UPDATE travel_advances SET delegate_approver_id=$1, updated_at=NOW()
+        WHERE id=$2 AND status='Pending Manager' RETURNING *`,
+      [delegate_employee_id, adv.id]
     );
+    if (!updated) return decidedElsewhere(res, 'advance');
     logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'travel', recordId: updated.id,
       recordType: 'travel_advance', action: 'delegate', newData: { delegate_employee_id }, req });
     res.json(updated);
@@ -982,18 +1041,19 @@ router.put('/advances/:id/disburse', allowRoles(...ADVANCE_FINANCE_ROLES), async
   try {
     const { payment_ref, payment_date } = req.body;
     const actorId = req.user?.userId ?? req.user?.id;
-    const { rows: [adv] } = await pool.query(`SELECT * FROM travel_advances WHERE id=$1`, [req.params.id]);
+    const adv = await loadAdvance(req, req.params.id);
     if (!adv) return res.status(404).json({ error: 'Advance not found' });
     if (adv.status !== 'Approved') {
-      return res.status(400).json({ error: `Advance is ${adv.status}, only Approved advances can be disbursed` });
+      return res.status(409).json({ error: `Advance is ${adv.status}, only Approved advances can be disbursed` });
     }
 
     const { rows: [updated] } = await pool.query(
       `UPDATE travel_advances SET status='Disbursed', payment_ref=$1, payment_date=$2,
          disbursed_by=$3, disbursed_at=NOW(), updated_at=NOW()
-       WHERE id=$4 RETURNING *`,
-      [payment_ref || null, payment_date || null, actorId, req.params.id]
+       WHERE id=$4 AND status='Approved' RETURNING *`,
+      [payment_ref || null, payment_date || null, actorId, adv.id]
     );
+    if (!updated) return decidedElsewhere(res, 'advance');
     logAudit({ userId: actorId, module: 'travel', recordId: updated.id, recordType: 'travel_advance',
       action: 'disburse', oldData: adv, newData: updated, req });
     res.json(updated);
@@ -1186,24 +1246,55 @@ router.get('/analytics/filter-options', async (req, res) => {
 });
 
 // ── Travel cost by project ────────────────────────────────────────────────────
+// Travel spend is ACTIVITY, so it follows the page filter, windowed on from_date
+// (the trip date, not the row's insert time).
+//
+// Two defects fixed alongside, both found 2026-09-16:
+//   * NO company scoping — travel_requests carries company_id and neither
+//     analytics route bound it, so this summed every tenant's trips;
+//   * this route counted Rejected requests while its by-employee sibling
+//     excluded them, so the two panels on the same tab disagreed by design.
 router.get('/analytics/by-project', async (req, res) => {
   try {
+    const companyId = companyOf(req);
+    const range = resolveRange(req.query);
+    const params = [];
+    let where = `WHERE project_number IS NOT NULL AND status != 'Rejected'`;
+    if (companyId) { params.push(companyId); where += ` AND company_id = $${params.length}`; }
+    if (range.from) { params.push(range.from); where += ` AND from_date >= $${params.length}::date`; }
+    if (range.to)   { params.push(range.to);   where += ` AND from_date <= $${params.length}::date`; }
     const { rows } = await pool.query(`
       SELECT project_number, customer_name,
              COUNT(*) AS trip_count,
              COALESCE(SUM(budget),0) AS total_spend
       FROM travel_requests
-      WHERE project_number IS NOT NULL
+      ${where}
       GROUP BY project_number, customer_name
       ORDER BY total_spend DESC LIMIT 20
-    `);
+    `, params);
     res.json(rows.map(r => ({ ...r, total_spend: parseFloat(r.total_spend) })));
   } catch { res.json([]); }
 });
 
 // ── Travel cost by employee (for CEO dashboard) ───────────────────────────────
+// ⚠⚠ This query had NEVER returned a row. `GROUP BY employee_name` did NOT group
+// by the CONCAT(...) output alias: travel_requests carries its own denormalised
+// `employee_name` column, and Postgres resolves a GROUP BY name that collides
+// with an INPUT column in favour of the input column — leaving e.first_name
+// ungrouped and raising 42803 on every call. The bare `catch { res.json([]) }`
+// then turned that error into an empty array, so the panel rendered "no travel
+// data" rather than surfacing a defect. Grouping by e.id (the real identity)
+// fixes it; the error is now logged instead of swallowed silently.
+// Same trap as the gender GROUP BY in metricsEngine.js.
 router.get('/analytics/by-employee', async (req, res) => {
   try {
+    const companyId = companyOf(req);
+    const range = resolveRange(req.query);
+    const params = [];
+    let where = `WHERE tr.status != 'Rejected'`;
+    if (companyId) { params.push(companyId); where += ` AND tr.company_id = $${params.length}`; }
+    if (range.from) { params.push(range.from); where += ` AND tr.from_date >= $${params.length}::date`; }
+    if (range.to)   { params.push(range.to);   where += ` AND tr.from_date <= $${params.length}::date`; }
     const { rows } = await pool.query(`
       SELECT CONCAT(e.first_name,' ',e.last_name) AS employee_name,
              e.designation,
@@ -1212,12 +1303,17 @@ router.get('/analytics/by-employee', async (req, res) => {
              COALESCE(SUM(tr.budget),0) AS total_spend
       FROM travel_requests tr
       JOIN employees e ON e.id = tr.employee_id
-      WHERE tr.status != 'Rejected'
-      GROUP BY employee_name, e.designation, e.department
+      ${where}
+      GROUP BY e.id, e.first_name, e.last_name, e.designation, e.department
       ORDER BY total_spend DESC LIMIT 15
-    `);
+    `, params);
     res.json(rows.map(r => ({ ...r, total_spend: parseFloat(r.total_spend) })));
-  } catch { res.json([]); }
+  } catch (err) {
+    // Was a BARE `catch { res.json([]) }`, which is why this panel read "no travel
+    // data" for its whole life instead of reporting a broken query. See below.
+    console.error('[travel] by-employee failed:', err.message);
+    res.json([]);
+  }
 });
 
 // ── POST travel request (enhanced with commercial fields) ─────────────────────
@@ -1242,8 +1338,8 @@ router.post('/requests/v2', async (req, res) => {
           opportunity_id, opportunity_ref, po_number,
           destination, purpose, from_date, to_date, budget,
           mode, hotel_required, advance_required, notes,
-          status, approval_level, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,'Pending',0,$21)
+          status, approval_level, created_by, company_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,'Pending',0,$21,$22)
        RETURNING *`,
       [empId, employee_name, department,
        customer_id, customer_name,
@@ -1251,7 +1347,7 @@ router.post('/requests/v2', async (req, res) => {
        opportunity_id, opportunity_ref, po_number,
        destination, purpose, from_date, to_date, budget,
        mode, hotel_required ?? false, advance_required ?? false, notes,
-       actorId]
+       actorId, companyOf(req)]
     );
     const req_ = rows[0];
     // Seed level 1 approval row
@@ -1283,11 +1379,16 @@ const LEVEL_23_ROLES = new Set(['admin', 'super_admin', 'hr', 'manager']);
 router.put('/requests/:id/level-approve', async (req, res) => {
   try {
     const { status, remarks } = req.body; // 'Approved' | 'Rejected'
+    if (!['Approved', 'Rejected'].includes(status)) {
+      return res.status(400).json({ error: 'status must be Approved or Rejected' });
+    }
     const actorId = req.user?.userId ?? req.user?.id;
-    const { rows: [tr] } = await pool.query(`SELECT * FROM travel_requests WHERE id=$1`, [req.params.id]);
+    const tr = await loadTravelRequest(req, req.params.id);
     if (!tr) return res.status(404).json({ error: 'Not found' });
+    if (tr.status !== 'Pending') return res.status(409).json({ error: `A ${tr.status} request cannot be decided again` });
 
-    const nextLevel = (tr.approval_level || 0) + 1;
+    const level = tr.approval_level || 0;
+    const nextLevel = level + 1;
     if (nextLevel === 1) {
       const auth = await authorizeManagerApproval({
         actorEmployeeId: req.user?.employee_id ?? null,
@@ -1299,47 +1400,53 @@ router.put('/requests/:id/level-approve', async (req, res) => {
     } else if (!LEVEL_23_ROLES.has(String(req.user?.role || '').toLowerCase())) {
       return res.status(403).json({ error: 'Insufficient role for this approval level' });
     }
+
+    // Every write below is conditional on the (status, level) we validated, so
+    // two simultaneous decisions at the same level cannot both apply.
     if (status === 'Rejected') {
-      await pool.query(`UPDATE travel_requests SET status='Rejected', updated_at=NOW() WHERE id=$1`, [req.params.id]);
+      const { rowCount } = await pool.query(
+        `UPDATE travel_requests SET status='Rejected', updated_at=NOW()
+          WHERE id=$1 AND status='Pending' AND COALESCE(approval_level, 0)=$2`, [tr.id, level]);
+      if (!rowCount) return decidedElsewhere(res);
       await pool.query(
         `UPDATE travel_request_approvals SET status='Rejected', approver_id=$1, remarks=$2, actioned_at=NOW()
          WHERE travel_request_id=$3 AND level=$4`,
-        [actorId, remarks, req.params.id, nextLevel]
+        [actorId, remarks, tr.id, nextLevel]
       );
-      notifyWorkflowEvent('rejected', { module: 'Travel', recordId: tr.id, submitterUserId: tr.employee_id });
+      notifyWorkflowEvent('rejected', { module: 'Travel', recordId: tr.id, submitterUserId: tr.created_by, comments: remarks });
+      logAudit({ userId: actorId, module: 'travel', recordId: tr.id, recordType: 'travel_request',
+        action: 'level_reject', newData: { level: nextLevel, status, remarks }, req });
       return res.json({ message: 'Request rejected' });
     }
 
-    // Approved at this level
+    const colMap = { 1: 'approved_by_rm', 2: 'approved_by_dh', 3: 'approved_by_mgmt' };
+    const col = colMap[nextLevel];
+    const final = nextLevel >= 3;
+    const { rowCount } = await pool.query(
+      `UPDATE travel_requests SET approval_level=$1, ${col}=$2, ${final ? "status='Approved', " : ''}updated_at=NOW()
+        WHERE id=$3 AND status='Pending' AND COALESCE(approval_level, 0)=$4`,
+      [nextLevel, actorId, tr.id, level]
+    );
+    if (!rowCount) return decidedElsewhere(res);
+
     await pool.query(
       `UPDATE travel_request_approvals SET status='Approved', approver_id=$1, remarks=$2, actioned_at=NOW()
        WHERE travel_request_id=$3 AND level=$4`,
-      [actorId, remarks, req.params.id, nextLevel]
+      [actorId, remarks, tr.id, nextLevel]
     );
-
-    const colMap = { 1: 'approved_by_rm', 2: 'approved_by_dh', 3: 'approved_by_mgmt' };
-    const col = colMap[nextLevel];
-    if (nextLevel < 3) {
-      await pool.query(`UPDATE travel_requests SET approval_level=$1, ${col}=$2, updated_at=NOW() WHERE id=$3`,
-        [nextLevel, actorId, req.params.id]);
-      // Seed next level
+    if (!final) {
       await pool.query(
         `INSERT INTO travel_request_approvals (travel_request_id, level, level_name, status)
          VALUES ($1,$2,$3,'Pending') ON CONFLICT DO NOTHING`,
-        [req.params.id, nextLevel + 1, LEVEL_NAMES[nextLevel + 1]]
+        [tr.id, nextLevel + 1, LEVEL_NAMES[nextLevel + 1]]
       );
     } else {
-      // Final approval
-      await pool.query(
-        `UPDATE travel_requests SET approval_level=3, ${col}=$1, status='Approved', updated_at=NOW() WHERE id=$2`,
-        [actorId, req.params.id]
-      );
-      notifyWorkflowEvent('approved', { module: 'Travel', recordId: tr.id, submitterUserId: tr.employee_id });
+      notifyWorkflowEvent('approved', { module: 'Travel', recordId: tr.id, submitterUserId: tr.created_by });
     }
 
     logAudit({ userId: actorId, module: 'travel', recordId: tr.id, recordType: 'travel_request',
-      action: 'level_approve', newData: { level: nextLevel, status, remarks } });
-    res.json({ message: `Level ${nextLevel} approved`, next_level: nextLevel < 3 ? nextLevel + 1 : null });
+      action: 'level_approve', newData: { level: nextLevel, status, remarks }, req });
+    res.json({ message: `Level ${nextLevel} approved`, next_level: final ? null : nextLevel + 1 });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -1347,10 +1454,15 @@ router.put('/requests/:id/level-approve', async (req, res) => {
 router.put('/requests/:id/finance-post', allowRoles('admin','super_admin','finance'), captureBefore('travel_requests'), async (req, res) => {
   try {
     const { payment_ref, payment_date } = req.body;
-    await pool.query(
-      `UPDATE travel_requests SET finance_posted=true, payment_ref=$1, payment_date=$2, updated_at=NOW() WHERE id=$3`,
-      [payment_ref, payment_date, req.params.id]
+    const tr = await loadTravelRequest(req, req.params.id);
+    if (!tr) return res.status(404).json({ error: 'Not found' });
+    // Only an approved trip is paid.
+    const { rowCount } = await pool.query(
+      `UPDATE travel_requests SET finance_posted=true, payment_ref=$1, payment_date=$2, updated_at=NOW()
+        WHERE id=$3 AND status='Approved'`,
+      [payment_ref, payment_date, tr.id]
     );
+    if (!rowCount) return res.status(409).json({ error: `A ${tr.status} request cannot be finance-posted` });
     res.json({ message: 'Finance posted' });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -1416,9 +1528,11 @@ router.put('/expenses/:id/reimburse', allowRoles('admin','super_admin','hr','fin
   try {
     const { reimbursement_status } = req.body;
     const { rows: [updated] } = await pool.query(
-      `UPDATE travel_expense_items SET reimbursement_status=$1, updated_at=NOW() WHERE id=$2 RETURNING *`,
-      [reimbursement_status, req.params.id]
+      `UPDATE travel_expense_items SET reimbursement_status=$1, updated_at=NOW()
+        WHERE id=$2 AND ($3::int IS NULL OR company_id = $3) RETURNING *`,
+      [reimbursement_status, req.params.id, companyOf(req)]
     );
+    if (!updated) return res.status(404).json({ error: 'Expense not found' });
     res.json(updated);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -1426,6 +1540,7 @@ router.put('/expenses/:id/reimburse', allowRoles('admin','super_admin','hr','fin
 // ── Approval levels for a request ────────────────────────────────────────────
 router.get('/requests/:id/approvals', async (req, res) => {
   try {
+    if (!(await loadTravelRequest(req, req.params.id))) return res.json([]);
     const { rows } = await pool.query(
       `SELECT tra.*, CONCAT(e.first_name,' ',e.last_name) AS approver_name
        FROM travel_request_approvals tra

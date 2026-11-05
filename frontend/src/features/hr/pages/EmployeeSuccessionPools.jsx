@@ -4,6 +4,7 @@ import { Users } from 'lucide-react';
 import api from '@/services/api/client';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import { fmtScore } from '@/utils/format';
 
 const INP = { width: '100%', boxSizing: 'border-box', padding: '7px 10px',
               border: '1px solid #e9e4ff', borderRadius: 7, fontSize: 13 };
@@ -442,7 +443,7 @@ export default function EmployeeSuccessionPools() {
                       {(m.performance_score || m.potential_score) && (
                         <div style={{ display: 'flex', gap: 8, fontSize: 11, color: '#6b7280', marginBottom: 6 }}>
                           {m.performance_score && (
-                            <span>Perf: <strong style={{ color: '#16a34a' }}>{m.performance_score}/5</strong></span>
+                            <span>Perf: <strong style={{ color: '#16a34a' }}>{fmtScore(m.performance_score, 5)}</strong></span>
                           )}
                           {m.potential_score && (
                             <span>Pot: <strong style={{ color: '#6B3FDB' }}>{m.potential_score}/5</strong></span>
@@ -463,7 +464,7 @@ export default function EmployeeSuccessionPools() {
                         {m.readiness && (
                           <span style={{ fontSize: 10, fontWeight: 600, padding: '1px 7px', borderRadius: 8,
                                          background: '#f5f3ff', color: '#6B3FDB' }}>
-                            {READY_LABELS[m.readiness] || m.readiness}
+                            {READY_LABELS[m.readiness] || 'Unclassified'}
                           </span>
                         )}
                       </div>

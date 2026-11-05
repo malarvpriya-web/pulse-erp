@@ -2,20 +2,60 @@ import express from 'express';
 import pool from '../../../config/db.js';
 import { logAudit } from '../../../services/AuditService.js';
 import { notifyWorkflowEvent } from '../../../services/WorkflowNotificationService.js';
-import { companyOf } from '../../../shared/scope.js';
+import { companyOf, employeeOf } from '../../../shared/scope.js';
 import { captureBefore } from '../../../middlewares/captureBefore.js';
+import { can } from '../../../middlewares/auth.middleware.js';
+import { currentAnnualCtc, createProposal, ProposalError } from '../../payroll/salaryProposals.service.js';
+import { normalizePayrollSettings } from '../../payroll/payrollSettings.js';
+
+// CTC-driven increments (PAYROLL_DATA_FLOW_AUDIT.md Part 4) apply only when the
+// company has switched ctc_mode on; otherwise the legacy Basic-ratio path runs.
+async function ctcModeOn(companyId) {
+  const { rows } = await pool.query(
+    `SELECT settings FROM company_settings WHERE company_id = $1 AND module = 'payroll' LIMIT 1`, [companyId]);
+  return !!normalizePayrollSettings(rows[0]?.settings || {}).settings.ctc_mode;
+}
 
 const router = express.Router();
 
-const role   = req => req.user?.role ?? 'employee';
 const getCid = req => req.scope?.company_id ?? companyOf(req);
-const isHR   = req => ['hr', 'super_admin', 'admin'].includes(role(req));
-const isMgr  = req => ['manager', 'hr', 'super_admin', 'admin'].includes(role(req));
+
+// ── Access (PC-01 D7, 04 Nov 26) ─────────────────────────────────────────────
+// The permission matrix decides; these were single-role checks on
+// req.user.role (isHR / isMgr) that let ANY `manager` list and create salary
+// recommendations for the whole company — every row carries current and
+// proposed CTC — and ignored a user's other roles.
+//   bands, approve / reject      performance:approve  (admin, hr, super_admin: the old isHR set)
+//   recommendations, company-wide  read: performance:approve (HR runs the cycle) or
+//                                payroll:edit (pushes approved increments) — not
+//                                payroll:view alone: finance_manager reads payroll
+//                                but has no increment duty (PC-01 closure decision 2);
+//                                create: payroll:edit
+//   budget summary               the same company-wide read (a one-person department
+//                                gives that person's CTC back)
+//   recommendations, own team    increment_team:view / :add — the caller's DIRECT
+//                                REPORTS only (employees.reporting_manager_id)
+//   push to payroll              payroll:edit, and only through a salary
+//                                proposal (CTC mode); never a direct salary write
+async function readsAllIncrements(req) {
+  return (await can(req, 'performance', 'approve')) || (await can(req, 'payroll', 'edit'));
+}
+
+async function recommendationScope(req, action) {
+  const companyWide = action === 'add' ? await can(req, 'payroll', 'edit') : await readsAllIncrements(req);
+  if (companyWide) return { all: true };
+  if (await can(req, 'increment_team', action)) {
+    const me = await employeeOf(req, pool);
+    if (me == null) return { error: 403, message: 'No employee record is linked to this account' };
+    return { all: false, managerId: Number(me) };
+  }
+  return { error: 403, message: 'You do not have access to salary increment recommendations' };
+}
 
 /* ─── INCREMENT BANDS (rating → % matrix) ───────────────────────────────── */
 
 router.get('/bands', async (req, res) => {
-  if (!isHR(req)) return res.status(403).json({ error: 'HR access required' });
+  if (!(await can(req, 'performance', 'approve'))) return res.status(403).json({ error: 'HR access required' });
   const cid = getCid(req);
   const { cycle_id } = req.query;
   const params = [cid];
@@ -33,7 +73,7 @@ router.get('/bands', async (req, res) => {
 });
 
 router.post('/bands', async (req, res) => {
-  if (!isHR(req)) return res.status(403).json({ error: 'HR access required' });
+  if (!(await can(req, 'performance', 'approve'))) return res.status(403).json({ error: 'HR access required' });
   const {
     cycle_id, band_name, rating_from, rating_to,
     increment_pct_min, increment_pct_max, increment_pct_default, budget_pct,
@@ -57,7 +97,7 @@ router.post('/bands', async (req, res) => {
 });
 
 router.patch('/bands/:id', captureBefore('increment_bands'), async (req, res) => {
-  if (!isHR(req)) return res.status(403).json({ error: 'HR access required' });
+  if (!(await can(req, 'performance', 'approve'))) return res.status(403).json({ error: 'HR access required' });
   const cid = getCid(req);
   const {
     band_name, rating_from, rating_to,
@@ -85,7 +125,7 @@ router.patch('/bands/:id', captureBefore('increment_bands'), async (req, res) =>
 });
 
 router.delete('/bands/:id', captureBefore('increment_bands'), async (req, res) => {
-  if (!isHR(req)) return res.status(403).json({ error: 'HR access required' });
+  if (!(await can(req, 'performance', 'approve'))) return res.status(403).json({ error: 'HR access required' });
   const cid = getCid(req);
   try {
     await pool.query(
@@ -99,11 +139,12 @@ router.delete('/bands/:id', captureBefore('increment_bands'), async (req, res) =
 /* ─── INCREMENT RECOMMENDATIONS ─────────────────────────────────────────── */
 
 router.get('/recommendations', async (req, res) => {
-  if (!isMgr(req)) return res.status(403).json({ error: 'Manager+ access required' });
+  const scope = await recommendationScope(req, 'view'); if (scope.error) return res.status(scope.error).json({ error: scope.message });
   const cid = getCid(req);
   const { cycle_id, status, department } = req.query;
   const params = [cid];
   let where = 'WHERE ir.company_id = $1';
+  if (!scope.all) { params.push(scope.managerId); where += ` AND e.reporting_manager_id = $${params.length}`; }
   if (cycle_id)   { params.push(cycle_id);   where += ` AND ir.cycle_id = $${params.length}`; }
   if (status)     { params.push(status);     where += ` AND ir.status = $${params.length}`; }
   if (department) { params.push(department); where += ` AND e.department = $${params.length}`; }
@@ -126,7 +167,7 @@ router.get('/recommendations', async (req, res) => {
 });
 
 router.get('/recommendations/:id', async (req, res) => {
-  if (!isMgr(req)) return res.status(403).json({ error: 'Manager+ access required' });
+  const scope = await recommendationScope(req, 'view'); if (scope.error) return res.status(scope.error).json({ error: scope.message });
   const cid = getCid(req);
   try {
     const { rows } = await pool.query(
@@ -137,16 +178,18 @@ router.get('/recommendations/:id', async (req, res) => {
        JOIN employees e ON e.id = ir.employee_id
        LEFT JOIN employees sub ON sub.id = ir.submitted_by
        LEFT JOIN employees apv ON apv.id = ir.approved_by
-       WHERE ir.id = $1 AND ir.company_id = $2`,
-      [req.params.id, cid]
+       WHERE ir.id = $1 AND ir.company_id = $2
+         AND ($3::int IS NULL OR e.reporting_manager_id = $3::int)`,
+      [req.params.id, cid, scope.all ? null : scope.managerId]
     );
+    // Not a direct report → the same 404 as a missing id (no existence hint).
     if (!rows.length) return res.status(404).json({ error: 'Recommendation not found' });
     res.json(rows[0]);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 router.post('/recommendations', async (req, res) => {
-  if (!isMgr(req)) return res.status(403).json({ error: 'Manager+ access required' });
+  const scope = await recommendationScope(req, 'add'); if (scope.error) return res.status(scope.error).json({ error: scope.message });
   const {
     employee_id, review_id, cycle_id,
     current_ctc, recommended_increment_pct, effective_date, justification,
@@ -155,8 +198,29 @@ router.post('/recommendations', async (req, res) => {
     return res.status(400).json({ error: 'employee_id and recommended_increment_pct required' });
   }
   const cid = getCid(req);
-  const recommended_new_ctc = current_ctc
-    ? Math.round(parseFloat(current_ctc) * (1 + parseFloat(recommended_increment_pct) / 100))
+  // Team scope: only a direct report. Anyone else is the same 404 as an
+  // unknown id — in CTC mode the response would otherwise disclose the
+  // employee's current annual CTC.
+  const { rows: own } = await pool.query(
+    `SELECT 1 FROM employees WHERE id = $1 AND company_id = $2
+       AND ($3::int IS NULL OR reporting_manager_id = $3::int)`,
+    [employee_id, cid, scope.all ? null : scope.managerId]);
+  if (!own.length) return res.status(404).json({ error: 'Employee not found' });
+  let baseCtc = current_ctc;
+  let currentAnnual = null;
+  if (await ctcModeOn(cid)) {
+    // The base is the annual CTC of the revision in force on the effective
+    // date — never a typed figure.
+    const on = effective_date || (await pool.query('SELECT CURRENT_DATE::text AS d')).rows[0].d;   // DB date, not UTC
+    const cur = await currentAnnualCtc({ company_id: cid, employee_id, on_date: on });
+    if (!cur || cur.annual_ctc == null) {
+      return res.status(422).json({ error: `No annual CTC can be derived for this employee on ${on}${cur?.reason ? `: ${cur.reason}` : ' (no salary revision in force)'}` });
+    }
+    currentAnnual = cur.annual_ctc;
+    baseCtc = cur.annual_ctc;
+  }
+  const recommended_new_ctc = baseCtc
+    ? Math.round(parseFloat(baseCtc) * (1 + parseFloat(recommended_increment_pct) / 100))
     : null;
   try {
     const { rows } = await pool.query(
@@ -175,15 +239,20 @@ router.post('/recommendations', async (req, res) => {
          updated_at                = NOW()
        RETURNING *`,
       [cid, employee_id, review_id || null, cycle_id || null,
-       current_ctc || null, recommended_increment_pct, recommended_new_ctc,
-       effective_date || null, justification || null, req.user?.userId ?? null]
+       baseCtc || null, recommended_increment_pct, recommended_new_ctc,
+       effective_date || null, justification || null, await employeeOf(req, pool)]
     );
+    if (currentAnnual != null) {
+      await pool.query(`UPDATE increment_recommendations SET current_annual_ctc = $2, new_annual_ctc = $3 WHERE id = $1`,
+        [rows[0].id, currentAnnual, recommended_new_ctc]);
+      rows[0].current_annual_ctc = currentAnnual; rows[0].new_annual_ctc = recommended_new_ctc;
+    }
     res.status(201).json(rows[0]);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 router.patch('/recommendations/:id/approve', captureBefore('increment_recommendations'), async (req, res) => {
-  if (!isHR(req)) return res.status(403).json({ error: 'HR access required' });
+  if (!(await can(req, 'performance', 'approve'))) return res.status(403).json({ error: 'HR access required' });
   const { final_increment_pct, final_new_ctc, effective_date } = req.body;
   const cid = getCid(req);
   try {
@@ -198,7 +267,7 @@ router.patch('/recommendations/:id/approve', captureBefore('increment_recommenda
          updated_at          = NOW()
        WHERE id = $1 AND company_id = $6 RETURNING *`,
       [req.params.id, final_increment_pct ?? null, final_new_ctc ?? null,
-       effective_date ?? null, req.user?.userId ?? null, cid]
+       effective_date ?? null, await employeeOf(req, pool), cid]
     );
     if (!rows.length) return res.status(404).json({ error: 'Recommendation not found' });
     const rec = rows[0];
@@ -212,7 +281,7 @@ router.patch('/recommendations/:id/approve', captureBefore('increment_recommenda
 });
 
 router.patch('/recommendations/:id/reject', captureBefore('increment_recommendations'), async (req, res) => {
-  if (!isHR(req)) return res.status(403).json({ error: 'HR access required' });
+  if (!(await can(req, 'performance', 'approve'))) return res.status(403).json({ error: 'HR access required' });
   const { rejection_reason } = req.body;
   const cid = getCid(req);
   try {
@@ -224,7 +293,7 @@ router.patch('/recommendations/:id/reject', captureBefore('increment_recommendat
          approved_at      = NOW(),
          updated_at       = NOW()
        WHERE id = $1 AND company_id = $4 RETURNING *`,
-      [req.params.id, rejection_reason || null, req.user?.userId ?? null, cid]
+      [req.params.id, rejection_reason || null, await employeeOf(req, pool), cid]
     );
     if (!rows.length) return res.status(404).json({ error: 'Recommendation not found' });
     const rec = rows[0];
@@ -239,7 +308,7 @@ router.patch('/recommendations/:id/reject', captureBefore('increment_recommendat
 
 /* POST /increments/recommendations/:id/push-payroll — write approved increment to salary_structures */
 router.post('/recommendations/:id/push-payroll', async (req, res) => {
-  if (!isHR(req)) return res.status(403).json({ error: 'HR access required' });
+  if (!(await can(req, 'payroll', 'edit'))) return res.status(403).json({ error: 'Payroll edit permission required' });
   const cid = getCid(req);
   const client = await pool.connect();
   try {
@@ -248,7 +317,10 @@ router.post('/recommendations/:id/push-payroll', async (req, res) => {
       `SELECT ir.*, e.id AS emp_id
        FROM increment_recommendations ir
        JOIN employees e ON e.id = ir.employee_id
-       WHERE ir.id = $1 AND ir.company_id = $2 AND ir.status = 'approved'`,
+       WHERE ir.id = $1 AND ir.company_id = $2 AND ir.status = 'approved'
+         -- the EMPLOYEE must be this company's too: the salary revision below
+         -- is written to it, and nothing checked that it was not another tenant's.
+         AND e.company_id = $2`,
       [req.params.id, cid]
     );
     if (!recs.length) {
@@ -256,48 +328,41 @@ router.post('/recommendations/:id/push-payroll', async (req, res) => {
       return res.status(400).json({ error: 'Recommendation not found or not approved' });
     }
     const rec = recs[0];
-    // Write the effective new pay into the table payroll actually reads
-    // (payroll.service.js's generatePayroll COALESCEs the latest
-    // employee_salary_assignments.basic_salary with employees.basic_salary).
-    // `salary_structures` is a shared component-template table with no
-    // employee_id/ctc/effective_date/is_active columns at all — the previous
-    // version of this UPDATE always failed against that schema, so an approved
-    // increment never actually changed what an employee got paid.
-    const { rows: [latestAssignment] } = await client.query(
-      `SELECT basic_salary, structure_id FROM employee_salary_assignments
-       WHERE employee_id = $1 ORDER BY effective_from DESC NULLS LAST, created_at DESC LIMIT 1`,
-      [rec.emp_id]
-    );
-    const { rows: [empRow] } = await client.query(`SELECT basic_salary FROM employees WHERE id = $1`, [rec.emp_id]);
-    const currentBasic = parseFloat(latestAssignment?.basic_salary ?? empRow?.basic_salary ?? 0);
-    const currentCtc = parseFloat(rec.current_ctc || 0);
-    const newCtc = parseFloat(rec.final_new_ctc || 0);
-    // Scale basic_salary by the same ratio as the CTC change; if we don't have
-    // enough information to compute a ratio, carry the current basic forward
-    // unchanged rather than guessing.
-    const newBasic = (currentCtc > 0 && newCtc > 0)
-      ? Math.round(currentBasic * (newCtc / currentCtc))
-      : currentBasic;
-    const effectiveFrom = rec.effective_date || new Date().toISOString().split('T')[0];
-
-    await client.query(
-      `INSERT INTO employee_salary_assignments (employee_id, structure_id, effective_from, basic_salary)
-       VALUES ($1,$2,$3,$4)`,
-      [rec.emp_id, latestAssignment?.structure_id || null, effectiveFrom, newBasic]
-    );
-    await client.query(`UPDATE employees SET basic_salary = $2 WHERE id = $1`, [rec.emp_id, newBasic]);
-    // Mark as processed
-    await client.query(
-      `UPDATE increment_recommendations SET
-         payroll_synced    = TRUE,
-         payroll_synced_at = NOW(),
-         status            = 'processed',
-         updated_at        = NOW()
-       WHERE id = $1`,
-      [req.params.id]
-    );
-    await client.query('COMMIT');
-    res.json({ message: 'Increment pushed to payroll', employee_id: rec.emp_id });
+    if (await ctcModeOn(cid)) {
+      // CTC mode: a DRAFT salary proposal on the increment's effective date,
+      // priced from the approved annual CTC with a full component breakdown.
+      // Nothing changes until an approver approves it (maker-checker per the
+      // company's CTC policy); previous revisions are never edited.
+      await client.query('ROLLBACK');
+      const eff = rec.effective_date ? (rec.effective_date instanceof Date ? rec.effective_date.toISOString() : String(rec.effective_date)).slice(0, 10) : null;
+      if (!eff) return res.status(422).json({ error: 'The increment has no effective date' });
+      const newCtc = parseFloat(rec.final_new_ctc || rec.recommended_new_ctc || 0);
+      if (!(newCtc > 0)) return res.status(422).json({ error: 'The increment has no new annual CTC' });
+      const { rows: [inForce] } = await pool.query(
+        `SELECT structure_id FROM employee_salary_assignments WHERE employee_id = $1 AND effective_from <= $2::date
+          ORDER BY effective_from DESC, created_at DESC LIMIT 1`, [rec.emp_id, eff]);
+      try {
+        const r = await createProposal({ company_id: cid, employee_id: rec.emp_id, structure_id: inForce?.structure_id ?? null,
+          effective_from: eff, annual_ctc: newCtc, source_type: 'increment', source_id: rec.id, userId: req.user?.userId ?? null, req });
+        await pool.query(`UPDATE increment_recommendations SET proposal_id = $2, new_annual_ctc = $3, updated_at = NOW() WHERE id = $1`,
+          [rec.id, r.proposal.id, newCtc]);
+        return res.status(201).json({ success: true, mode: 'ctc', proposal: r.proposal, preview: r.preview });
+      } catch (e) {
+        if (e instanceof ProposalError) return res.status(e.status).json({ error: e.message, ...e.extra });
+        throw e;
+      }
+    }
+    // PC-01 D7 / Q6 (04 Nov 26): outside CTC mode there is no salary proposal
+    // workflow, and the path below wrote the salary revision (and the master
+    // Basic) directly — a salary change with no approval. It is refused before
+    // anything is written; the salary is changed through Payroll Center →
+    // Salary Structures (payroll:edit) or, in CTC mode, a proposal. The old
+    // direct-write branch (revision + employees.basic_salary) was removed.
+    await client.query('ROLLBACK');
+    return res.status(409).json({
+      code: 'SALARY_PROPOSAL_REQUIRED',
+      error: 'Increments are pushed to payroll only as a salary proposal, which needs CTC mode. Change the salary in Payroll Center → Salary Structures instead.',
+    });
   } catch (err) {
     await client.query('ROLLBACK');
     res.status(500).json({ error: err.message });
@@ -306,7 +371,7 @@ router.post('/recommendations/:id/push-payroll', async (req, res) => {
 
 /* GET /increments/budget-summary — aggregate budget view (HR only) */
 router.get('/budget-summary', async (req, res) => {
-  if (!isHR(req)) return res.status(403).json({ error: 'HR access required' });
+  if (!(await readsAllIncrements(req))) return res.status(403).json({ error: 'Company-wide increment access required' });
   const cid = getCid(req);
   const { cycle_id } = req.query;
   const params = [cid];

@@ -25,7 +25,15 @@ function formatINR(val) {
 }
 
 // ─── Status badge ──────────────────────────────────────────────────────────────
-function StatusBadge({ status }) {
+// `reversed` is no longer a STATUS. A reversed entry stays `'posted'` so it
+// remains in the ledger and nets against its reversing leg (finance audit F06).
+// The API returns a derived `is_reversed` instead; passing it here wins over
+// the status label. The status map keeps its `'reversed'` key because other
+// record types on this page still carry that literal.
+function StatusBadge({ status, reversed = false }) {
+  if (reversed) {
+    return <span style={{ background: '#fee2e2', color: '#dc2626', padding: '3px 9px', borderRadius: 6, fontSize: 11, fontWeight: 600 }}>Reversed</span>;
+  }
   const colors = {
     draft: { bg: '#f3f4f6', color: '#6b7280', label: 'Draft' },
     posted: { bg: '#dcfce7', color: '#16a34a', label: 'Posted' },
@@ -507,7 +515,7 @@ export default function AccountingEngine() {
                     <td style={tdStyle}>{entry.entry_date}</td>
                     <td style={{ ...tdStyle, maxWidth: 250, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{entry.description}</td>
                     <td style={tdStyle}><span style={{ textTransform: 'capitalize', fontSize: 12, color: '#6b7280' }}>{entry.reference_type || '—'}</span></td>
-                    <td style={tdStyle}><StatusBadge status={entry.status} /></td>
+                    <td style={tdStyle}><StatusBadge status={entry.status} reversed={entry.is_reversed} /></td>
                     <td style={{ ...tdStyle, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{formatINR(entry.total_debit)}</td>
                     <td style={{ ...tdStyle, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{formatINR(entry.total_credit)}</td>
                     <td style={tdStyle} onClick={e => e.stopPropagation()}>
@@ -1841,7 +1849,7 @@ function EntryDrawer({ entry, onClose, onPost, onReverse }) {
             <div style={{ fontSize: 13, color: '#6b7280', marginTop: 2 }}>{entry.entry_date?.toString().slice(0, 10)}</div>
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <StatusBadge status={entry.status} />
+            <StatusBadge status={entry.status} reversed={entry.is_reversed} />
             <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 22, color: '#6b7280', marginLeft: 8 }}>×</button>
           </div>
         </div>

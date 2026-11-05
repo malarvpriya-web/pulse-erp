@@ -222,6 +222,12 @@
   flex-shrink: 0;
   background: #fefeff;
 }
+.hm-card-link {
+  border: none; background: none; padding: 0; cursor: pointer;
+  font-size: 11.5px; font-weight: 600; color: var(--color-primary);
+}
+.hm-card-link:hover { text-decoration: underline; }
+.hm-card-link:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; border-radius: 3px; }
 .hm-card-title {
   font-size: 12px; font-weight: 700; color: var(--color-text);
   display: flex; align-items: center; gap: 8px;
@@ -313,6 +319,8 @@
 }
 .hm-appr-row:last-child { border-bottom: none; }
 .hm-appr-row:hover { background: #F2EFFE; }
+.hm-appr-row--link { cursor: pointer; }
+.hm-appr-row--link:focus-visible { outline: 2px solid var(--color-primary); outline-offset: -2px; }
 .hm-appr-avatar {
   width: 32px; height: 32px; border-radius: 50%;
   background: linear-gradient(135deg, #E8E1FC, #D4CAFE);
@@ -331,6 +339,8 @@
 .hm-ann-row { display: flex; align-items: flex-start; gap: 10px; padding: 10px 18px; border-bottom: 1px solid #F2EFFE; transition: background .1s; }
 .hm-ann-row:last-child { border-bottom: none; }
 .hm-ann-row:hover { background: #F2EFFE; }
+.hm-ann-row--link { cursor: pointer; }
+.hm-ann-row--link:focus-visible { outline: 2px solid var(--color-primary, #6B3FDB); outline-offset: -2px; }
 .hm-ann-dot { width: 6px; height: 6px; border-radius: 50%; background: #5B35D5; flex-shrink: 0; margin-top: 6px; }
 .hm-ann-body { flex: 1; min-width: 0; }
 .hm-ann-title { font-size: 12px; font-weight: 600; color: var(--color-text); }
@@ -535,6 +545,13 @@
   cursor: pointer; transition: all .15s; white-space: nowrap;
 }
 .hm-doctile-dl:hover { background: #5B35D5; border-color: #5B35D5; color: #fff; }
+button.hm-doctile-dl { font-family: inherit; line-height: 1.2; }
+.hm-doctile-dl:disabled,
+.hm-doctile-dl:disabled:hover { background: #fff; border-color: #E8E1FC; color: #5B35D5; opacity: .6; cursor: wait; }
+.hm-doctile-meta {
+  display: block; margin-top: 1px;
+  font-size: 9.5px; font-weight: 600; color: var(--color-text-muted);
+}
 .hm-doctile-dl--muted {
   background: #f3f4f6; border-color: #e5e7eb; color: var(--color-text-muted);
   cursor: default;

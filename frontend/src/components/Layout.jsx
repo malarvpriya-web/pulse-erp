@@ -1,5 +1,5 @@
 import { Suspense, lazy, useCallback, useEffect, useState } from 'react';
-import { useParams, useNavigate, useLocation } from 'react-router-dom';
+import { useParams, useNavigate, useLocation, Navigate } from 'react-router-dom';
 import { useAuth } from '@/context/AuthContext';
 import Sidebar from './Sidebar';
 import Topbar from './Topbar';
@@ -11,10 +11,9 @@ import useSessionManager from '@/hooks/useSessionManager';
 // including pages that aren't hand-registered in routes.jsx.
 import { MERGED_ROUTES as ROUTES } from '@/config/autoRouter';
 import {
-  getSectionForPage, canEmployeeAccessPage, canRoleAccessAdminOnlyPage,
-  canRoleAccessSuperAdminPage, canRoleAccessPageBySection, canHrAccessPage,
-  canFinanceAccessPage, canHrExecAccessPage, canManagerAccessPage,
-  isFinanceSelfServicePage,
+  getSectionForPage, canRenderPage, canOpenEmployeeMaster,
+  EMPLOYEE_MASTER_PAGE, EMPLOYEE_DIRECTORY_PAGE,
+  payrollHubRedirect, PAYROLL_HUB_PAGE,
 } from '@/config/menuCatalog';
 import './Layout.css';
 
@@ -70,86 +69,33 @@ export default function Layout({ selectedEmployee, setSelectedEmployee }) {
       const Home = ROUTES['Home'].component;
       return <Home setPage={setPage} />;
     }
-    // Page Access override: a section set to "Not Visible" is blocked even via direct URL.
-    if (sectionAccess === 'hidden') {
+    // Every page-level gate — Page Access "Not Visible", the employee / hr /
+    // finance / hr_exec / manager scopings, admin-only, super-admin-only, the
+    // section allowlist and the route's module permission — lives in
+    // canRenderPage() (menuCatalog.js), in the order it always ran here. It was
+    // inline until 2026-10-20; it moved so that code which SENDS someone to a
+    // page (the Employee Directory → All Employees redirect below, the sidebar
+    // row it replaces) asks the very same question this route asks, and can
+    // never send anyone to an Access Denied screen.
+    // One employee list per person: whoever can open All Employees is sent
+    // there instead of the read-only phonebook. Checked BEFORE the gate below,
+    // because the target is what matters: a role that can open the master but
+    // was never in the phonebook's audience (department_head) is still sent to
+    // the list it can open, not refused. canOpenEmployeeMaster() is
+    // canRenderPage() on EmployeesData, so the redirect can never land anyone
+    // on Access Denied. Everyone else is gated on the phonebook as usual.
+    if (page === EMPLOYEE_DIRECTORY_PAGE &&
+        canOpenEmployeeMaster(role, { route: ROUTES[EMPLOYEE_MASTER_PAGE], menuAccess, hasPermission })) {
+      return <Navigate to={`/${EMPLOYEE_MASTER_PAGE}`} replace />;
+    }
+    // The standalone payroll pages are sections of Payroll Center. Anyone who
+    // can render the hub is sent to the matching section; the rest are gated
+    // on the page as before (payrollHubRedirect in menuCatalog.js).
+    const payrollHub = payrollHubRedirect(role, page, { route: ROUTES[PAYROLL_HUB_PAGE], menuAccess, hasPermission });
+    if (payrollHub) return <Navigate to={payrollHub} replace />;
+    if (!canRenderPage(role, page, { route, menuAccess, hasPermission })) {
       const Unauthorized = ROUTES['Unauthorized'].component;
       return <Unauthorized setPage={setPage} />;
-    }
-    // Employees may only reach self-service pages inside shared menus (HR,
-    // Service Desk, Travel Desk, Attendance, Leaves, Timesheets) — management
-    // pages are blocked even via direct URL, not just hidden from the menu.
-    if (role === 'employee' && !canEmployeeAccessPage(page)) {
-      const Unauthorized = ROUTES['Unauthorized'].component;
-      return <Unauthorized setPage={setPage} />;
-    }
-    // HR may only reach its own dashboards inside the shared 'Analytics & AI'
-    // section — the CEO/CFO/Ops/Executive/ERP-Intelligence/System-Health
-    // pages that share it are blocked even via direct URL.
-    if (role === 'hr' && sectionAccess !== 'view' && sectionAccess !== 'edit' && !canHrAccessPage(page)) {
-      const Unauthorized = ROUTES['Unauthorized'].component;
-      return <Unauthorized setPage={setPage} />;
-    }
-    // Finance (and the granular finance_manager/accounts_exec roles, which
-    // now carry the same Leaves/Attendance self-service carve-out) may only
-    // reach self-service pages inside those shared sections (leave
-    // approvals, team views, and attendance admin/config screens are blocked
-    // even via direct URL) and, inside the shared 'Analytics & AI' section,
-    // only the CFO Dashboard.
-    if (
-      (role === 'finance' || role === 'finance_manager' || role === 'accounts_exec') &&
-      sectionAccess !== 'view' && sectionAccess !== 'edit' && !canFinanceAccessPage(page)
-    ) {
-      const Unauthorized = ROUTES['Unauthorized'].component;
-      return <Unauthorized setPage={setPage} />;
-    }
-    // hr_exec may reach the rest of the 'HR' section but not Payroll Center —
-    // role_permissions grants it no payroll access, even via direct URL.
-    if (role === 'hr_exec' && sectionAccess !== 'view' && sectionAccess !== 'edit' && !canHrExecAccessPage(page)) {
-      const Unauthorized = ROUTES['Unauthorized'].component;
-      return <Unauthorized setPage={setPage} />;
-    }
-    // manager may only reach its own dashboard (Executive Dashboard) inside
-    // the shared 'Analytics & AI' section — the CEO/CFO/Ops/HR/ERP-
-    // Intelligence/System-Health pages that share it are blocked even via
-    // direct URL.
-    if (role === 'manager' && sectionAccess !== 'view' && sectionAccess !== 'edit' && !canManagerAccessPage(page)) {
-      const Unauthorized = ROUTES['Unauthorized'].component;
-      return <Unauthorized setPage={setPage} />;
-    }
-    // Admin-only pages (e.g. Knowledge Base) are blocked for every role except
-    // super_admin/admin, even via direct URL or global search.
-    if (!canRoleAccessAdminOnlyPage(role, page)) {
-      const Unauthorized = ROUTES['Unauthorized'].component;
-      return <Unauthorized setPage={setPage} />;
-    }
-    // Super-admin-only pages (roles/users/security/system tooling) are blocked
-    // for every other role — admin included — even via direct URL.
-    if (!canRoleAccessSuperAdminPage(role, page)) {
-      const Unauthorized = ROUTES['Unauthorized'].component;
-      return <Unauthorized setPage={setPage} />;
-    }
-    // Allowlisted roles (manager/hr/finance/employee) may only reach pages whose
-    // NAV section is in their allowlist — sections hidden from the menu are also
-    // blocked by direct URL, not merely absent from the sidebar.
-    if (!canRoleAccessPageBySection(role, page)) {
-      const Unauthorized = ROUTES['Unauthorized'].component;
-      return <Unauthorized setPage={setPage} />;
-    }
-    if (route.module) {
-      // finance/finance_manager/accounts_exec hold no real role_permissions
-      // grant on attendance/leaves/timesheets by design (self-service, not
-      // full module access) — without this carve-out this generic gate would
-      // silently re-block the exact self-service pages the checks above just
-      // approved. See isFinanceSelfServicePage's own comment for the full
-      // mechanism.
-      const financeSelfService =
-        (role === 'finance' || role === 'finance_manager' || role === 'accounts_exec') &&
-        isFinanceSelfServicePage(page);
-      const allowed = role === 'super_admin' || role === 'admin' || financeSelfService || hasPermission(route.module, 'view');
-      if (!allowed) {
-        const Unauthorized = ROUTES['Unauthorized'].component;
-        return <Unauthorized setPage={setPage} />;
-      }
     }
     const Page = route.component;
     // A route that declares no `props` function still needs the navigation
@@ -169,7 +115,10 @@ export default function Layout({ selectedEmployee, setSelectedEmployee }) {
       <div className="main-content">
         <Topbar goBack={goBack} currentPage={page} />
         <div className="page-content">
-          <ErrorBoundary>
+          {/* resetKey clears a caught error when the route changes — otherwise
+              one crashing page renders the error screen for every page the
+              user visits afterwards. */}
+          <ErrorBoundary resetKey={page}>
             <Suspense fallback={<div className="page-loading">Loading…</div>}>
               {renderPage()}
             </Suspense>

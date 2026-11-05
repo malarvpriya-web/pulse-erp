@@ -103,7 +103,7 @@ beforeAll(async () => {
     throw new Error('This suite needs two users in company 1 — the self-certification gate is meaningless with one.');
   }
 });
-afterAll(async () => { await sweepDebris(); await pool.end().catch(() => {}); });
+afterAll(async () => { await sweepDebris(); });
 
 describe('the run-rate figure', () => {
   it('is frozen from baseline, target and annual quantity', () => {

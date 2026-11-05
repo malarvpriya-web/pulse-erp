@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { IndianRupee } from 'lucide-react';
 import api from '@/services/api/client';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import { useAuth } from '@/context/AuthContext';
 import {
   LineChart, Line, ResponsiveContainer,
 } from 'recharts';
@@ -9,6 +10,26 @@ import {
 const fmt = (n) => `₹${parseFloat(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
 const fmtFx = (n, decimals = 4) => parseFloat(n || 0).toFixed(decimals);
 const fmtDate = (d) => d ? new Date(d).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '';
+// The LOCAL calendar date. toISOString() is UTC, which in IST is yesterday
+// until 05:30 — a rate entered at 1am was stamped with the previous day.
+const localToday = () => {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+};
+// Where a manually entered rate came from. 'api' is set only by the fetch.
+const RATE_SOURCES = [
+  { value: 'rbi', label: 'RBI reference rate' },
+  { value: 'bank', label: 'Bank rate' },
+  { value: 'finance_approved', label: 'Finance-approved' },
+  { value: 'manual', label: 'Manual' },
+];
+const STATUS_BADGE = {
+  draft:    { bg: '#fef3c7', fg: '#92400e', label: 'Awaiting approval' },
+  approved: { bg: '#d1fae5', fg: '#065f46', label: 'Approved' },
+  rejected: { bg: '#fee2e2', fg: '#991b1b', label: 'Rejected' },
+};
+const emptyRateForm = () => ({ from_currency: 'USD', to_currency: 'INR', rate: '', rate_date: localToday(), source: 'rbi' });
 
 const tabStyle = (active) => ({
   padding: '8px 20px', border: 'none', background: active ? '#6B3FDB' : 'transparent',
@@ -46,11 +67,17 @@ export default function ForexManagement({ embedded = false }) {
   const [fetchingLive, setFetchingLive] = useState(false);
   const [fetchError, setFetchError] = useState(null);
   const [showAddRate, setShowAddRate] = useState(false);
-  const [rateForm, setRateForm] = useState({ from_currency: 'USD', to_currency: 'INR', rate: '', rate_date: new Date().toISOString().split('T')[0] });
+  const [rateForm, setRateForm] = useState(emptyRateForm);
+  const [rateMsg, setRateMsg] = useState(null);           // { ok, text } after Save Rate
+  const [review, setReview] = useState({ status: 'draft', rows: [], loading: false, error: null });
+  const [reviewMsg, setReviewMsg] = useState(null);
+  const { hasPermission, user } = useAuth();
+  const canApprove = hasPermission('finance', 'approve');
+  const myUserId = user?.id ?? user?.userId ?? null;
   const [historyData, setHistoryData] = useState({});
   const [revalRunning, setRevalRunning] = useState(false);
   const [revalPreview, setRevalPreview] = useState(null);
-  const [revalDate, setRevalDate] = useState(new Date().toISOString().split('T')[0]);
+  const [revalDate, setRevalDate] = useState(localToday);
   const [convertForm, setConvertForm] = useState({ amount: '', from: 'USD', to: 'INR', result: null });
 
   // true if lastUpdated is more than 24 hours ago
@@ -88,12 +115,45 @@ export default function ForexManagement({ embedded = false }) {
   };
 
   const addManualRate = async () => {
+    setRateMsg(null);
     try {
-      await api.post('/forex/rates', rateForm);
+      const res = await api.post('/forex/rates', rateForm);
       setShowAddRate(false);
-      setRateForm({ from_currency: 'USD', to_currency: 'INR', rate: '', rate_date: new Date().toISOString().split('T')[0] });
+      setRateForm(emptyRateForm());
+      setRateMsg({ ok: true, text: res.data?.message || 'Rate saved as a draft.' });
       loadRates();
-    } catch (_) {}
+    } catch (err) {
+      // Was `catch (_) {}`: a rejected save closed nothing and said nothing.
+      setRateMsg({ ok: false, text: err.response?.data?.error || 'The rate could not be saved.' });
+    }
+  };
+
+  const loadReview = useCallback(async (status) => {
+    setReview(r => ({ ...r, status, loading: true, error: null }));
+    try {
+      const res = await api.get('/forex/rate-history', { params: status ? { status } : {} });
+      setReview({ status, rows: res.data?.data || [], loading: false, error: null });
+    } catch (err) {
+      setReview({ status, rows: [], loading: false, error: err.response?.data?.error || 'Could not load rates.' });
+    }
+  }, []);
+
+  useEffect(() => { if (tab === 3) loadReview(review.status); }, [tab]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const decide = async (row, decision) => {
+    setReviewMsg(null);
+    let note;
+    if (decision === 'reject') {
+      note = window.prompt(`Why is the ${row.currency_code} rate of ${row.rate_vs_inr} for ${row.rate_date} rejected?`);
+      if (note == null) return;
+    }
+    try {
+      await api.post(`/forex/rate-history/${row.id}/${decision}`, note ? { note } : {});
+      setReviewMsg({ ok: true, text: `${row.currency_code} ${row.rate_date} ${decision === 'approve' ? 'approved' : 'rejected'}.` });
+      loadReview(review.status);
+    } catch (err) {
+      setReviewMsg({ ok: false, text: err.response?.data?.error || 'That did not go through.' });
+    }
   };
 
   const loadHistory = async (currency) => {
@@ -165,7 +225,7 @@ export default function ForexManagement({ embedded = false }) {
     }>
 
       <div style={{ display: 'flex', gap: 4, background: '#f0ebff', padding: 4, borderRadius: 10, marginBottom: 16, width: 'fit-content' }}>
-        {['Exchange Rates', 'Forex Exposure', 'Revaluation'].map((t, i) => (
+        {['Exchange Rates', 'Forex Exposure', 'Revaluation', 'Rate Approval'].map((t, i) => (
           <button key={i} style={tabStyle(tab === i)} onClick={() => setTab(i)}>{t}</button>
         ))}
       </div>
@@ -211,8 +271,11 @@ export default function ForexManagement({ embedded = false }) {
 
           {showAddRate && (
             <div style={{ ...cardStyle, padding: 20, marginBottom: 16 }}>
-              <h3 style={{ margin: '0 0 16px', fontSize: 15, color: '#111827' }}>Add Manual Rate</h3>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
+              <h3 style={{ margin: '0 0 4px', fontSize: 15, color: '#111827' }}>Add Manual Rate</h3>
+              <p style={{ margin: '0 0 16px', fontSize: 12, color: '#6b7280' }}>
+                Saved as a draft. Vendor comparisons and awards use it only after another Finance approver approves it under Rate Approval.
+              </p>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 12 }}>
                 {[
                   { label: 'From Currency', key: 'from_currency', type: 'text', placeholder: 'USD' },
                   { label: 'To Currency', key: 'to_currency', type: 'text', placeholder: 'INR', disabled: true },
@@ -227,6 +290,14 @@ export default function ForexManagement({ embedded = false }) {
                       style={{ width: '100%', padding: '8px 12px', border: '1px solid #e9e4ff', borderRadius: 8, fontSize: 13, boxSizing: 'border-box', background: f.disabled ? '#f9f9f9' : '#fff' }} />
                   </div>
                 ))}
+                <div>
+                  <label htmlFor="fx-source" style={{ fontSize: 12, color: '#6b7280', display: 'block', marginBottom: 4 }}>Source</label>
+                  <select id="fx-source" value={rateForm.source}
+                    onChange={e => setRateForm(p => ({ ...p, source: e.target.value }))}
+                    style={{ width: '100%', padding: '8px 12px', border: '1px solid #e9e4ff', borderRadius: 8, fontSize: 13, boxSizing: 'border-box' }}>
+                    {RATE_SOURCES.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
+                  </select>
+                </div>
               </div>
               <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
                 <button onClick={addManualRate} disabled={!rateForm.from_currency || !rateForm.rate}
@@ -238,6 +309,13 @@ export default function ForexManagement({ embedded = false }) {
                   Cancel
                 </button>
               </div>
+            </div>
+          )}
+
+          {rateMsg && (
+            <div role="status" style={{ marginBottom: 16, padding: '10px 14px', borderRadius: 8, fontSize: 13,
+              background: rateMsg.ok ? '#f0fdf4' : '#fef2f2', color: rateMsg.ok ? '#166534' : '#991b1b' }}>
+              {rateMsg.text}
             </div>
           )}
 
@@ -563,6 +641,95 @@ export default function ForexManagement({ embedded = false }) {
                     </td>
                   </tr>
                 ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* ── Tab 3: Rate Approval (§215) ── */}
+      {tab === 3 && (
+        <div>
+          <p style={{ margin: '0 0 12px', fontSize: 13, color: '#4b5563', maxWidth: 820 }}>
+            Vendor comparisons, RFQ cost scores and awards convert foreign quotes using <strong>approved</strong> rates only:
+            the latest approved rate on or before the comparison date, within the age limit set in Procurement Settings.
+            A rate must be approved by someone other than the person who entered it.
+          </p>
+          <div style={{ display: 'flex', gap: 6, marginBottom: 12 }}>
+            {[['draft', 'Awaiting approval'], ['approved', 'Approved'], ['rejected', 'Rejected'], ['', 'All']].map(([s, label]) => (
+              <button key={label} onClick={() => loadReview(s || null)}
+                style={{ ...tabStyle((review.status || '') === s), padding: '6px 14px', fontSize: 13,
+                  border: '1px solid #e9e4ff' }}>
+                {label}
+              </button>
+            ))}
+          </div>
+          {reviewMsg && (
+            <div role="status" style={{ marginBottom: 12, padding: '10px 14px', borderRadius: 8, fontSize: 13,
+              background: reviewMsg.ok ? '#f0fdf4' : '#fef2f2', color: reviewMsg.ok ? '#166534' : '#991b1b' }}>
+              {reviewMsg.text}
+            </div>
+          )}
+          {review.error && (
+            <div role="alert" style={{ marginBottom: 12, padding: '10px 14px', borderRadius: 8, fontSize: 13, background: '#fef2f2', color: '#991b1b' }}>
+              {review.error}
+            </div>
+          )}
+          <div style={cardStyle}>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr>
+                  {['Currency', 'Rate (1 unit = ₹)', 'Effective date', 'Source', 'Status', 'Entered by', 'Reviewed by', ''].map(h => (
+                    <th key={h || 'actions'} style={thStyle}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {review.loading ? (
+                  <tr><td colSpan={8} style={{ ...tdStyle, textAlign: 'center', color: '#9ca3af' }}>Loading…</td></tr>
+                ) : review.rows.length === 0 ? (
+                  <tr><td colSpan={8} style={{ padding: '32px 16px', textAlign: 'center', color: '#9ca3af', fontSize: 13 }}>
+                    No rates in this list.
+                  </td></tr>
+                ) : review.rows.map(r => {
+                  const badge = STATUS_BADGE[r.status] || STATUS_BADGE.draft;
+                  const mine = myUserId != null && Number(r.entered_by_user_id) === Number(myUserId);
+                  return (
+                    <tr key={r.id}>
+                      <td style={tdStyle}><span style={{ fontWeight: 700, color: '#6B3FDB' }}>{r.currency_code}</span></td>
+                      <td style={{ ...tdStyle, fontWeight: 600 }}>₹{fmtFx(r.rate_vs_inr, 4)}</td>
+                      <td style={tdStyle}>{fmtDate(r.rate_date)}</td>
+                      <td style={tdStyle}>{RATE_SOURCES.find(s => s.value === r.source)?.label || r.source}</td>
+                      <td style={tdStyle}>
+                        <span style={{ padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 600, background: badge.bg, color: badge.fg }}
+                              title={r.review_note || undefined}>
+                          {badge.label}
+                        </span>
+                      </td>
+                      <td style={tdStyle}>{r.entered_by_name || (r.entered_by_user_id ? `User #${r.entered_by_user_id}` : 'Not recorded')}</td>
+                      <td style={tdStyle}>
+                        {r.approved_by_name || (r.approved_by_user_id ? `User #${r.approved_by_user_id}` : '—')}
+                        {r.approved_at && <div style={{ fontSize: 11, color: '#9ca3af' }}>{fmtDate(r.approved_at)}</div>}
+                      </td>
+                      <td style={{ ...tdStyle, whiteSpace: 'nowrap' }}>
+                        {r.status === 'draft' && canApprove && (mine ? (
+                          <span style={{ fontSize: 11, color: '#9ca3af' }}>You entered this — another approver must review it</span>
+                        ) : (
+                          <>
+                            <button onClick={() => decide(r, 'approve')}
+                              style={{ padding: '4px 12px', background: '#16a34a', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 600, marginRight: 6 }}>
+                              Approve
+                            </button>
+                            <button onClick={() => decide(r, 'reject')}
+                              style={{ padding: '4px 12px', background: '#fff', color: '#991b1b', border: '1px solid #fecaca', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>
+                              Reject
+                            </button>
+                          </>
+                        ))}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

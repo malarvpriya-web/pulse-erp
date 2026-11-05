@@ -107,7 +107,7 @@ const TABLE_CHECKS = [
   { table: 'stock_ledger',             minExpected: 0,   module: 'Inventory' },
   { table: 'warehouses',               minExpected: 0,   module: 'Inventory' },
   { table: 'warehouse_zones',          minExpected: 0,   module: 'Inventory' },
-  { table: 'bin_locations',            minExpected: 0,   module: 'Inventory' },
+  { table: 'warehouse_bins',           minExpected: 0,   module: 'Inventory' },
   { table: 'stock_transfers',          minExpected: 0,   module: 'Inventory' },
   { table: 'stock_adjustments',        minExpected: 0,   module: 'Inventory' },
   { table: 'reorder_rules',            minExpected: 0,   module: 'Inventory' },

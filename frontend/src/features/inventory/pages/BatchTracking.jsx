@@ -209,7 +209,15 @@ const BatchTracking = ({ setPage }) => {
           </thead>
           <tbody>
             {batches.map(batch => (
-              <tr key={batch.batch_id}>
+              /* /inventory/advanced/batches returns `id`, not `batch_id` —
+                 keying on the latter made every row's key `undefined`, so
+                 React warned about duplicate keys and could drop or
+                 duplicate rows on re-render.
+
+                 Plain block comment, NOT {/* … *\/}: inside `map(x => ( … ))`
+                 there is no enclosing JSX element, so braces here parse as an
+                 object literal and the build fails with "`,` or `)` expected". */
+              <tr key={batch.id ?? batch.batch_id}>
                 <td><strong>{batch.batch_number}</strong></td>
                 <td>{batch.item_name} ({batch.item_code})</td>
                 <td>{batch.warehouse_name}</td>

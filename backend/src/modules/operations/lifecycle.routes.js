@@ -1,18 +1,26 @@
 import { Router } from 'express';
 import pool from '../../config/db.js';
-import { nextLifecycleNumber, nextProdOrderNumber, nextAmcNumber } from '../../shared/docNumber.js';
+import { nextProdOrderNumber, nextAmcNumber, nextWarrantyNumber, nextWarrantyClaimNumber } from '../../shared/docNumber.js';
 import { logAudit } from '../../services/AuditService.js';
 import { notifyWorkflowEvent } from '../../services/WorkflowNotificationService.js';
 import * as drive from '../../services/googleDrive.service.js';
 import { copyRoutingToProductionOperations } from '../production/routingCopy.service.js';
 import invoiceService from '../finance/services/invoice.service.js';
 import { requiresRenewalApproval, isAuthorizedRenewalApprover, RENEWAL_APPROVAL_THRESHOLD } from '../../shared/renewalApproval.js';
-import { requirePermission } from '../../middlewares/auth.middleware.js';
+import { requirePermission, permissionFor } from '../../middlewares/auth.middleware.js';
 import { captureBefore } from '../../middlewares/captureBefore.js';
+import { toCsvObjects } from '../../shared/csv.js';
+import {
+  ensureProject, ProjectSetupError, setupErrorBody, lifecycleCustomerIdForOrder,
+} from '../projects/services/projectCreation.service.js';
+import {
+  stageModel, nextStage, earlierStages, ENTRY_GATES, FINAL_STAGE, OPEN_STATUSES, isLegacyStage, derivedProductionStage,
+} from '../../shared/projectStages.js';
+import { checkGates, lifecycleScope } from './services/lifecycleGates.service.js';
+import { getProjectClosureBlockers } from '../projects/services/projectClosure.service.js';
+import { CLOSED_PROJECT_STATUSES } from '../projects/projectStatus.js';
 
 const router = Router();
-
-const STAGES = ['order', 'design', 'procurement', 'production', 'testing', 'dispatch', 'installation', 'commissioning', 'sat', 'service', 'amc'];
 
 const cid = (req) => req.scope?.company_id ?? null;
 
@@ -20,6 +28,48 @@ const actor = (req) => ({
   id: req.user?.userId || req.user?.id || null,
   name: req.user?.name || req.user?.email || 'System',
 });
+
+/*
+ * Commissioning-report, warranty and warranty-claim routes only
+ * (LEGACY_MIS_TO_PULSE_AUDIT.md, P0 Task 4). cid() above is
+ * `req.scope?.company_id ?? null`, and every query here reads null as "all
+ * companies" — so a login with no company and no global scope used to read and
+ * write every company's records. These routes now refuse it, and refuse links
+ * to another company's lifecycle / sales order / warranty / ticket / asset.
+ */
+const requireCompanyScope = (req, res, next) => {
+  if (cid(req) == null && req.scope?.isGlobal !== true) {
+    return res.status(403).json({ error: 'No company is assigned to this login.' });
+  }
+  next();
+};
+
+/** First link that does not belong to `companyId`, as an error message; else null. */
+async function foreignLinkIn(companyId, links) {
+  for (const [table, value, label] of links) {
+    if (value === undefined || value === null || value === '') continue;
+    const { rows } = await pool.query(
+      `SELECT 1 FROM ${table} WHERE id = $1 AND ($2::int IS NULL OR company_id = $2)`,
+      [parseInt(value, 10) || 0, companyId]
+    );
+    if (!rows.length) return `${label} not found in your company`;
+  }
+  return null;
+}
+
+/** First link that does not belong to the caller's company, as an error message; else null. */
+const foreignLink = (req, links) => foreignLinkIn(cid(req), links);
+
+/*
+ * Lifecycle-instance routes (P1_PROJECT_LIFECYCLE_PLAN.md Phase 1, T1/T2): the
+ * same company rules. A bootstrap reads the sales order in the caller's
+ * company only, and the BOM / project a request names must be in the ORDER's
+ * company (a global caller included).
+ */
+const bootstrapLinkError = (so, body = {}) => foreignLinkIn(so.company_id ?? null, [
+  ['bom_headers', body.bom_id, 'BOM'],
+  ['projects', body.project_id, 'Project'],
+]);
 
 /* ─── table migrations ─────────────────────────────────────── */
 (async () => {
@@ -76,213 +126,45 @@ export async function createProductionOrderFromSalesOrder(client, salesOrder, re
   return po;
 }
 
+// Moved to the project creator, which is now its only internal user; kept
+// exported from here for existing imports.
+export { lifecycleCustomerIdForOrder };
+
+// C4: order -> project + lifecycle (ensureProject(), the one project creator:
+// confirmed order, order's company, reuse of the order's / its opportunity's
+// project and of that project's single open lifecycle), then the production
+// order — reused when the order already has one. Runs in the caller's
+// transaction; any failure throws and the caller rolls everything back.
 async function bootstrapLifecycleForSalesOrder(client, salesOrder, req, opts = {}) {
   const { auto_create_production_order = true } = opts;
-  const existing = await client.query(
-    `SELECT * FROM lifecycle_instances WHERE sales_order_id=$1 AND status IN ('active','on_hold') ORDER BY created_at DESC LIMIT 1`,
-    [salesOrder.id]
-  );
-  if (existing.rows.length) {
-    return { lifecycle: existing.rows[0], production_order: null, existed: true };
+  const a = actor(req);
+  const setup = await ensureProject(client, {
+    salesOrderId: salesOrder.id,
+    projectId: opts.project_id || null,
+    scopeCompanyId: cid(req),
+    actor: { userId: a.id, name: a.name },
+    lifecycleNotes: opts.stage_notes || 'Lifecycle bootstrapped from sales order',
+  });
+  if (setup.lifecycleExisted) {
+    return { lifecycle: setup.lifecycle, production_order: null, existed: true };
   }
 
+  let lifecycle = setup.lifecycle;
   let productionOrder = null;
   if (auto_create_production_order) {
-    productionOrder = await createProductionOrderFromSalesOrder(client, salesOrder, req, opts);
+    const { rows: existingPo } = await client.query(
+      `SELECT id FROM production_orders WHERE sales_order_id = $1 ORDER BY id LIMIT 1`, [salesOrder.id]);
+    productionOrder = existingPo[0]
+      ? (await client.query(
+        `UPDATE production_orders SET project_id = COALESCE(project_id, $2) WHERE id = $1 RETURNING *`,
+        [existingPo[0].id, setup.project.id])).rows[0]
+      : await createProductionOrderFromSalesOrder(client, salesOrder, req, { ...opts, project_id: setup.project.id });
+    lifecycle = (await client.query(
+      `UPDATE lifecycle_instances SET production_order_id = COALESCE(production_order_id, $1), updated_at = NOW()
+        WHERE id = $2 RETURNING *`,
+      [productionOrder.id, lifecycle.id])).rows[0];
   }
-
-  const lifecycleNumber = await nextLifecycleNumber(client);
-  const a = actor(req);
-  const lcRes = await client.query(
-    `INSERT INTO lifecycle_instances
-      (lifecycle_number, sales_order_id, production_order_id, project_id, customer_id, current_stage, status, stage_notes, created_by, created_by_name, company_id)
-     VALUES ($1,$2,$3,$4,$5,'order','active',$6,$7,$8,$9)
-     RETURNING *`,
-    [
-      lifecycleNumber,
-      salesOrder.id,
-      productionOrder?.id || null,
-      opts?.project_id || null,
-      salesOrder.customer_id || null,
-      opts?.stage_notes || 'Lifecycle bootstrapped from sales order',
-      a.id,
-      a.name,
-      salesOrder.company_id || null,
-    ]
-  );
-  const lifecycle = lcRes.rows[0];
-  await client.query(
-    `INSERT INTO lifecycle_stage_history
-      (lifecycle_instance_id, from_stage, to_stage, action, remarks, actor_id, actor_name, gate_snapshot)
-     VALUES ($1,NULL,'order','advance',$2,$3,$4,'{}')`,
-    [lifecycle.id, 'Lifecycle initiated from sales order', a.id, a.name]
-  );
   return { lifecycle, production_order: productionOrder, existed: false };
-}
-
-function nextStage(current) {
-  const i = STAGES.indexOf(current);
-  if (i < 0 || i === STAGES.length - 1) return null;
-  return STAGES[i + 1];
-}
-
-async function checkGates(client, instance) {
-  const gates = {
-    engineering_ready: false,
-    bom_materials_received: false,
-    production_ready: false,
-    fat_passed: false,
-    dispatch_recorded: false,
-    commissioning_done: false,
-    sat_completed: false,
-    amc_created: false,
-  };
-
-  // Design gate: at least one approved engineering change or BOM marked active for order product
-  const eng = await client.query(
-    `SELECT
-      EXISTS(SELECT 1 FROM engineering_changes ec WHERE ec.status='approved') AS has_approved_ecn,
-      EXISTS(
-        SELECT 1 FROM bom_headers bh
-        JOIN sales_order_items soi ON soi.order_id = $1
-        WHERE bh.product_name ILIKE '%' || soi.description || '%' AND bh.status='active'
-      ) AS has_active_bom`,
-    [instance.sales_order_id || 0]
-  );
-  gates.engineering_ready = Boolean(eng.rows[0]?.has_approved_ecn || eng.rows[0]?.has_active_bom);
-
-  // Procurement → Production gate: all BOM materials must be received via GRN
-  // We check that every bom_line component for the lifecycle's production order
-  // has at least one grn_item with received quantity ≥ required quantity.
-  // Falls back to true if there's no production order or no BOM lines (don't block).
-  if (instance.production_order_id) {
-    const poRes = await client.query(
-      `SELECT bom_id FROM production_orders WHERE id = $1`, [instance.production_order_id]
-    );
-    const bomId = poRes.rows[0]?.bom_id;
-    if (bomId) {
-      const bomLines = await client.query(
-        `SELECT bl.component_id, bl.qty
-         FROM bom_lines bl
-         WHERE bl.bom_id = $1 AND bl.component_id IS NOT NULL`,
-        [bomId]
-      );
-      if (bomLines.rows.length > 0) {
-        // For each BOM component, check total received quantity via GRN items
-        const componentIds = bomLines.rows.map(r => r.component_id);
-        const grnReceived = await client.query(
-          `SELECT gi.item_id, COALESCE(SUM(gi.quantity_received - COALESCE(gi.quantity_rejected, 0)), 0) AS received_qty
-           FROM grn_items gi
-           JOIN goods_receipt_notes grn ON grn.id = gi.grn_id
-           WHERE gi.item_id = ANY($1::int[])
-             AND grn.deleted_at IS NULL
-           GROUP BY gi.item_id`,
-          [componentIds]
-        );
-        const receivedMap = Object.fromEntries(grnReceived.rows.map(r => [String(r.item_id), parseFloat(r.received_qty)]));
-        gates.bom_materials_received = bomLines.rows.every(line => {
-          const received = receivedMap[String(line.component_id)] || 0;
-          return received >= parseFloat(line.qty);
-        });
-      } else {
-        gates.bom_materials_received = true; // No BOM lines — don't block
-      }
-    } else {
-      gates.bom_materials_received = true; // No BOM assigned — don't block
-    }
-  } else {
-    gates.bom_materials_received = true; // No production order — don't block
-  }
-
-  // Production gate
-  if (instance.production_order_id) {
-    const po = await client.query(`SELECT status FROM production_orders WHERE id=$1`, [instance.production_order_id]);
-    gates.production_ready = po.rows[0]?.status === 'completed';
-  }
-
-  // FAT gate
-  if (instance.production_order_id) {
-    const fat = await client.query(
-      `SELECT COUNT(*)::INT AS n
-       FROM test_runs
-       WHERE production_order_id=$1 AND test_stage='FAT' AND overall_result='pass'`,
-      [instance.production_order_id]
-    );
-    gates.fat_passed = Number(fat.rows[0]?.n || 0) > 0;
-  }
-
-  // Quality gate — check open NCRs and open punch points on the production order
-  if (instance.production_order_id) {
-    const openNcr = await client.query(
-      `SELECT COUNT(*)::INT AS n FROM ncr_reports
-       WHERE reference_type='production_order' AND reference_id=$1 AND status NOT IN ('closed')`,
-      [instance.production_order_id]
-    ).catch(() => ({ rows: [{ n: 0 }] }));
-    gates.no_open_ncrs = Number(openNcr.rows[0]?.n || 0) === 0;
-
-    const openPunch = await client.query(
-      `SELECT COUNT(*)::INT AS n FROM punch_points p
-       JOIN test_runs tr ON tr.id = p.test_run_id
-       WHERE tr.production_order_id=$1 AND p.status NOT IN ('closed','waived')`,
-      [instance.production_order_id]
-    ).catch(() => ({ rows: [{ n: 0 }] }));
-    gates.no_open_punch_points = Number(openPunch.rows[0]?.n || 0) === 0;
-  } else {
-    gates.no_open_ncrs = true;
-    gates.no_open_punch_points = true;
-  }
-
-  // Dispatch gate
-  if (instance.sales_order_id) {
-    const shp = await client.query(
-      `SELECT COUNT(*)::INT AS n FROM shipments WHERE reference_type='sales_order' AND reference_id=$1 AND status='delivered'`,
-      [instance.sales_order_id]
-    );
-    gates.dispatch_recorded = Number(shp.rows[0]?.n || 0) > 0;
-  }
-
-  // Commissioning gate
-  const comm = await client.query(
-    `SELECT COUNT(*)::INT AS n FROM commissioning_reports WHERE lifecycle_instance_id=$1 AND status='completed'`,
-    [instance.id]
-  );
-  gates.commissioning_done = Number(comm.rows[0]?.n || 0) > 0;
-
-  // SAT gate — check project SAT tracker (new) or fall back to commissioning_done
-  if (instance.project_id) {
-    const sat = await client.query(
-      `SELECT COUNT(*)::INT AS n FROM sat_trackers WHERE project_id=$1 AND status='passed'`,
-      [instance.project_id]
-    ).catch(() => ({ rows: [{ n: 0 }] }));
-    gates.sat_completed = Number(sat.rows[0]?.n || 0) > 0 || gates.commissioning_done;
-  } else {
-    gates.sat_completed = gates.commissioning_done;
-  }
-
-  // AMC gate
-  const amc = await client.query(
-    `SELECT COUNT(*)::INT AS n FROM amc_contracts WHERE lifecycle_instance_id=$1 AND status='active'`,
-    [instance.id]
-  );
-  gates.amc_created = Number(amc.rows[0]?.n || 0) > 0;
-
-  return gates;
-}
-
-function gateAllowsTransition(from, to, g) {
-  if (from === 'order' && to === 'design') return true;
-  if (from === 'design' && to === 'procurement') return g.engineering_ready;
-  if (from === 'procurement' && to === 'production') return g.bom_materials_received;
-  if (from === 'production' && to === 'testing') return g.production_ready;
-  if (from === 'testing' && to === 'dispatch') return g.fat_passed && g.no_open_ncrs && g.no_open_punch_points;
-  if (from === 'dispatch' && to === 'installation') return g.dispatch_recorded;
-  if (from === 'installation' && to === 'commissioning') return g.dispatch_recorded;
-  if (from === 'commissioning' && to === 'sat') return g.commissioning_done;
-  if (from === 'sat' && to === 'service') return g.sat_completed;
-  if (from === 'service' && to === 'amc') return g.amc_created;
-  // Legacy direct path: installation → service (for non-industrial projects)
-  if (from === 'installation' && to === 'service') return g.commissioning_done;
-  return false;
 }
 
 // Gated on the owning module 2026-09-04. A live probe with a plain
@@ -290,7 +172,7 @@ function gateAllowsTransition(from, to, g) {
 // employee has no routine need for this register — their own record reaches
 // them through self-service. `employee` is denied servicedesk in role_permissions,
 // which is what makes this gate real rather than decorative.
-router.get('/instances', requirePermission('servicedesk', 'view'), async (req, res) => {
+router.get('/instances', requireCompanyScope, requirePermission('servicedesk', 'view'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { sales_order_id, current_stage, status } = req.query;
@@ -304,8 +186,10 @@ router.get('/instances', requirePermission('servicedesk', 'view'), async (req, r
          so.order_number,
          po.production_order_no
        FROM lifecycle_instances li
-       LEFT JOIN sales_orders so ON so.id = li.sales_order_id
-       LEFT JOIN production_orders po ON po.id = li.production_order_id
+       -- Only an order / production order of the lifecycle's own company is
+       -- shown: a mis-linked id must not leak another company's numbers.
+       LEFT JOIN sales_orders so ON so.id = li.sales_order_id AND so.company_id IS NOT DISTINCT FROM li.company_id
+       LEFT JOIN production_orders po ON po.id = li.production_order_id AND po.company_id IS NOT DISTINCT FROM li.company_id
        WHERE ${where.join(' AND ')}
        ORDER BY li.created_at DESC`,
       params
@@ -316,46 +200,78 @@ router.get('/instances', requirePermission('servicedesk', 'view'), async (req, r
   }
 });
 
-router.post('/instances', requirePermission('servicedesk', 'add'), async (req, res) => {
+// C5: a manual lifecycle. It belongs to a project — named, or the confirmed
+// order's (created through ensureProject() when the order has none) — and a
+// project or order that already has an open lifecycle is refused (409) rather
+// than given a second one.
+router.post('/instances', requireCompanyScope, requirePermission('servicedesk', 'add'), async (req, res) => {
+  const { sales_order_id, production_order_id, project_id, customer_id, stage_notes } = req.body || {};
+  const given = (v) => v !== undefined && v !== null && v !== '';
+  if (!given(sales_order_id) && !given(project_id)) {
+    return res.status(400).json({ error: 'A lifecycle belongs to a project or a confirmed sales order: give project_id or sales_order_id' });
+  }
+  // A global caller has no company of its own: the lifecycle takes the
+  // company of what it links to, and every link must share it.
+  let companyId = cid(req);
+  if (companyId == null) {
+    for (const [table, value] of [['projects', project_id], ['sales_orders', sales_order_id]]) {
+      if (!given(value)) continue;
+      const { rows: owner } = await pool.query(`SELECT company_id FROM ${table} WHERE id = $1`, [parseInt(value, 10) || 0]);
+      if (owner[0]?.company_id != null) { companyId = owner[0].company_id; break; }
+    }
+    if (companyId == null) return res.status(400).json({ error: 'A project or sales order is required to place the lifecycle in a company' });
+  }
+  const foreign = await foreignLinkIn(companyId, [
+    ['sales_orders', sales_order_id, 'Sales order'],
+    ['production_orders', production_order_id, 'Production order'],
+    ['projects', project_id, 'Project'],
+    ['accounts', customer_id, 'Customer'],
+  ]);
+  if (foreign) return res.status(400).json({ error: foreign });
+
+  const client = await pool.connect();
   try {
-    const { sales_order_id, production_order_id, project_id, customer_id, stage_notes } = req.body;
-    const companyId = cid(req);
-    const lifecycleNumber = await nextLifecycleNumber();
+    await client.query('BEGIN');
     const a = actor(req);
-    const { rows } = await pool.query(
-      `INSERT INTO lifecycle_instances
-        (lifecycle_number, sales_order_id, production_order_id, project_id, customer_id, current_stage, status, stage_notes, created_by, created_by_name, company_id)
-       VALUES ($1,$2,$3,$4,$5,'order','active',$6,$7,$8,$9)
-       RETURNING *`,
-      [lifecycleNumber, sales_order_id || null, production_order_id || null, project_id || null, customer_id || null, stage_notes || null, a.id, a.name, companyId]
-    );
-    await pool.query(
-      `INSERT INTO lifecycle_stage_history
-        (lifecycle_instance_id, from_stage, to_stage, action, remarks, actor_id, actor_name, gate_snapshot)
-       VALUES ($1,NULL,'order','advance',$2,$3,$4,'{}')`,
-      [rows[0].id, 'Lifecycle initiated', a.id, a.name]
-    );
-    res.status(201).json(rows[0]);
+    const setup = await ensureProject(client, {
+      salesOrderId: given(sales_order_id) ? sales_order_id : null,
+      projectId: given(project_id) ? project_id : null,
+      scopeCompanyId: companyId,
+      actor: { userId: a.id, name: a.name },
+      lifecycleNotes: stage_notes || 'Lifecycle initiated',
+      lifecycleLinks: { production_order_id, customer_id },
+      conflictIfLifecycleOpen: true,
+    });
+    await client.query('COMMIT');
+    res.status(201).json(setup.lifecycle);
   } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    if (e instanceof ProjectSetupError) return res.status(e.status).json(setupErrorBody(e));
     res.status(500).json({ error: e.message });
+  } finally {
+    client.release();
   }
 });
 
-router.post('/instances/from-sales-order/:id', requirePermission('servicedesk', 'add'), async (req, res) => {
+router.post('/instances/from-sales-order/:id', requireCompanyScope, requirePermission('servicedesk', 'add'), async (req, res) => {
   const client = await pool.connect();
   try {
-    const { auto_create_production_order = true } = req.body || {};
     await client.query('BEGIN');
 
     const soRes = await client.query(
-      `SELECT * FROM sales_orders WHERE id=$1 AND deleted_at IS NULL FOR UPDATE`,
-      [req.params.id]
+      `SELECT * FROM sales_orders WHERE id=$1 AND deleted_at IS NULL AND ($2::int IS NULL OR company_id = $2) FOR UPDATE`,
+      [req.params.id, cid(req)]
     );
     if (!soRes.rows.length) {
       await client.query('ROLLBACK');
       return res.status(404).json({ error: 'Sales order not found' });
     }
     const so = soRes.rows[0];
+    const linkError = await bootstrapLinkError(so, req.body || {});
+    if (linkError) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: linkError });
+    }
 
     const { lifecycle, production_order, existed } = await bootstrapLifecycleForSalesOrder(client, so, req, req.body || {});
 
@@ -368,25 +284,32 @@ router.post('/instances/from-sales-order/:id', requirePermission('servicedesk', 
     });
   } catch (e) {
     await client.query('ROLLBACK');
+    // 422 SALES_ORDER_NOT_CONFIRMED: set-up needs a confirmed order.
+    if (e instanceof ProjectSetupError) return res.status(e.status).json(setupErrorBody(e));
     res.status(500).json({ error: e.message });
   } finally {
     client.release();
   }
 });
 
-router.post('/instances/auto-bootstrap/:id', requirePermission('servicedesk', 'add'), async (req, res) => {
+router.post('/instances/auto-bootstrap/:id', requireCompanyScope, requirePermission('servicedesk', 'add'), async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     const soRes = await client.query(
-      `SELECT * FROM sales_orders WHERE id=$1 AND deleted_at IS NULL FOR UPDATE`,
-      [req.params.id]
+      `SELECT * FROM sales_orders WHERE id=$1 AND deleted_at IS NULL AND ($2::int IS NULL OR company_id = $2) FOR UPDATE`,
+      [req.params.id, cid(req)]
     );
     if (!soRes.rows.length) {
       await client.query('ROLLBACK');
       return res.status(404).json({ error: 'Sales order not found' });
     }
     const so = soRes.rows[0];
+    const linkError = await bootstrapLinkError(so, req.body || {});
+    if (linkError) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: linkError });
+    }
     const status = String(so.order_status || '').toLowerCase();
     const eligible = ['accepted', 'confirmed', 'won', 'approved', 'released'].includes(status);
     if (!eligible) {
@@ -401,146 +324,295 @@ router.post('/instances/auto-bootstrap/:id', requirePermission('servicedesk', 'a
     res.status(existed ? 200 : 201).json({ lifecycle, production_order, existed });
   } catch (e) {
     await client.query('ROLLBACK');
+    if (e instanceof ProjectSetupError) return res.status(e.status).json(setupErrorBody(e));
     res.status(500).json({ error: e.message });
   } finally {
     client.release();
   }
 });
 
-router.get('/instances/:id', requirePermission('servicedesk', 'view'), async (req, res) => {
+// ── Stage model, transitions and gates (P1_PROJECT_LIFECYCLE_PLAN.md Phase 4) ──
+//
+// The stage list, the only forward step from each stage and the gate that
+// guards each stage all come from shared/projectStages.js; the evidence comes
+// from services/lifecycleGates.service.js. Every route below:
+//  - reads the lifecycle in the caller's company only (404 otherwise);
+//  - locks it FOR UPDATE, so two transitions of one lifecycle serialise;
+//  - writes one lifecycle_stage_history row (actor, reason, gate snapshot) —
+//    history is never edited or deleted;
+//  - leaves projects.status alone: the administrative state is not a stage.
+//
+// Permissions: view = servicedesk:view; advance / hold / resume =
+// servicedesk:edit; going backwards, cancelling, reopening and completing =
+// servicedesk:approve, and those need a written reason.
+
+const REASON_MIN = 5;
+const pick = (obj, keys) => Object.fromEntries(keys.map(k => [k, obj?.[k]]));
+
+/** A refusal with its HTTP status and machine code. */
+class TransitionError extends Error {
+  constructor(status, code, message, extra = {}) {
+    super(message);
+    this.status = status;
+    this.code = code;
+    this.extra = extra;
+  }
+}
+
+const reasonOf = (body) => String(body?.reason ?? body?.remarks ?? '').trim();
+const requireReason = (body, what) => {
+  const reason = reasonOf(body);
+  if (reason.length < REASON_MIN) {
+    throw new TransitionError(400, 'REASON_REQUIRED', `A reason (at least ${REASON_MIN} characters) is required to ${what}`);
+  }
+  return reason;
+};
+
+/** Refuse moving a lifecycle whose project is administratively closed. */
+function assertProjectOpen(scope) {
+  if (scope.project && CLOSED_PROJECT_STATUSES.includes(scope.project.status)) {
+    throw new TransitionError(409, 'PROJECT_CLOSED',
+      `The project is ${scope.project.status}; reopen the project before moving its lifecycle`);
+  }
+}
+
+async function writeHistory(client, { id, from, to, action, remarks, actor: a, snapshot = {} }) {
+  await client.query(
+    `INSERT INTO lifecycle_stage_history
+       (lifecycle_instance_id, from_stage, to_stage, action, remarks, actor_id, actor_name, gate_snapshot)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+    [id, from, to, action, remarks || null, a.id, a.name, JSON.stringify(snapshot)]);
+}
+
+/**
+ * Run one transition: lock the caller-company lifecycle, call fn, commit.
+ * fn(client, instance, a) returns the updated row; a TransitionError becomes
+ * its status, anything else a 500, and the transaction is rolled back.
+ */
+function transition(action, fn) {
+  return async (req, res) => {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const { rows } = await client.query(
+        `SELECT * FROM lifecycle_instances WHERE id=$1 AND ($2::int IS NULL OR company_id = $2) FOR UPDATE`,
+        [req.params.id, cid(req)]);
+      if (!rows.length) throw new TransitionError(404, 'NOT_FOUND', 'Lifecycle instance not found');
+      const a = actor(req);
+      const { row, from, to } = await fn(client, rows[0], a, req);
+      await client.query('COMMIT');
+      logAudit({ userId: a.id, module: 'lifecycle', recordId: req.params.id, recordType: 'lifecycle_instance',
+        action: 'workflow_transition', newData: { action, from, to, status: row.status }, req });
+      if (action === 'advance') {
+        notifyWorkflowEvent('lifecycle_advanced', { module: `Lifecycle (${from}→${to})`, recordId: req.params.id,
+          submitterUserId: rows[0].created_by ?? null, comments: `${from} → ${to}` });
+      }
+      res.json(row);
+    } catch (e) {
+      await client.query('ROLLBACK').catch(() => {});
+      if (e instanceof TransitionError) return res.status(e.status).json({ error: e.message, code: e.code, ...e.extra });
+      // ux_lifecycle_open_per_project / _sales_order (Phase 3): another open lifecycle exists.
+      if (e.code === '23505') {
+        return res.status(409).json({ error: 'Another open lifecycle already exists for this project or sales order', code: 'LIFECYCLE_EXISTS' });
+      }
+      res.status(500).json({ error: e.message });
+    } finally {
+      client.release();
+    }
+  };
+}
+
+// The stage model: stages in order, reserved ones, statuses, and the gate per stage.
+router.get('/stages', requireCompanyScope, requirePermission('servicedesk', 'view'), (req, res) => {
+  res.json(stageModel());
+});
+
+router.get('/instances/:id', requireCompanyScope, requirePermission('servicedesk', 'view'), async (req, res) => {
   try {
     const companyId = cid(req);
+    // order_number: the linked order's number, the same field the list returns.
+    // Joined only when the order is in the lifecycle's own company and not
+    // deleted — otherwise null, never another company's number.
     const { rows } = await pool.query(
-      `SELECT * FROM lifecycle_instances WHERE id=$1 AND ($2::int IS NULL OR company_id = $2)`,
+      `SELECT li.*, so.order_number
+         FROM lifecycle_instances li
+         LEFT JOIN sales_orders so
+           ON so.id = li.sales_order_id AND so.company_id IS NOT DISTINCT FROM li.company_id AND so.deleted_at IS NULL
+        WHERE li.id=$1 AND ($2::int IS NULL OR li.company_id = $2)`,
       [req.params.id, companyId]
     );
     if (!rows.length) return res.status(404).json({ error: 'Lifecycle instance not found' });
     const history = await pool.query(
-      `SELECT * FROM lifecycle_stage_history WHERE lifecycle_instance_id=$1 ORDER BY created_at DESC`,
+      `SELECT * FROM lifecycle_stage_history WHERE lifecycle_instance_id=$1 ORDER BY created_at DESC, id DESC`,
       [req.params.id]
     );
-    const gates = await checkGates(pool, rows[0]);
-    res.json({ ...rows[0], gates, history: history.rows });
+    const { gates, details, errors } = await checkGates(pool, rows[0]);
+    const next = rows[0].status === 'active' ? nextStage(rows[0].current_stage) : null;
+    res.json({
+      ...rows[0],
+      gates,
+      gate_details: details,
+      gate_errors: errors,
+      next_stage: next,
+      next_stage_gates: next ? ENTRY_GATES[next] || [] : [],
+      derived_production_stage: derivedProductionStage(rows[0].current_stage),
+      history: history.rows,
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
-router.post('/instances/:id/advance', requirePermission('servicedesk', 'add'), async (req, res) => {
-  const client = await pool.connect();
-  try {
-    const { remarks } = req.body;
-    const companyId = cid(req);
-    await client.query('BEGIN');
-    const instanceRes = await client.query(
-      `SELECT * FROM lifecycle_instances WHERE id=$1 AND ($2::int IS NULL OR company_id = $2) FOR UPDATE`,
-      [req.params.id, companyId]
-    );
-    if (!instanceRes.rows.length) {
-      await client.query('ROLLBACK');
-      return res.status(404).json({ error: 'Lifecycle instance not found' });
+// Forward, one stage, through the stage's gate. An explicit to_stage must be
+// that next stage (jumps and reserved stages are refused).
+router.post('/instances/:id/advance', requireCompanyScope, requirePermission('servicedesk', 'edit'),
+  transition('advance', async (client, inst, a, req) => {
+    if (inst.status !== 'active') {
+      throw new TransitionError(409, 'NOT_ACTIVE', inst.status === 'on_hold'
+        ? 'The lifecycle is on hold; resume it before advancing'
+        : `A ${inst.status} lifecycle cannot advance`);
     }
-    const instance = instanceRes.rows[0];
-    if (instance.status !== 'active') {
-      await client.query('ROLLBACK');
-      return res.status(400).json({ error: 'Only active lifecycle instances can advance' });
+    if (isLegacyStage(inst.current_stage)) {
+      throw new TransitionError(409, 'LEGACY_STAGE', `'${inst.current_stage}' is a legacy stage with no transitions`);
     }
-    const to = nextStage(instance.current_stage);
-    if (!to) {
-      await client.query('ROLLBACK');
-      return res.status(400).json({ error: 'Already at final stage' });
+    const to = nextStage(inst.current_stage);
+    if (!to) throw new TransitionError(409, 'FINAL_STAGE', `Already at ${inst.current_stage}; complete the lifecycle instead`);
+    const requested = req.body?.to_stage;
+    if (requested && requested !== to) {
+      throw new TransitionError(422, 'INVALID_TRANSITION',
+        `Cannot move ${inst.current_stage} -> ${requested}; the next stage is ${to}`, { allowed_next: to });
     }
-    const gates = await checkGates(client, instance);
-    const allowed = gateAllowsTransition(instance.current_stage, to, gates);
-    if (!allowed) {
-      await client.query('ROLLBACK');
-      return res.status(422).json({
-        error: `Cannot advance ${instance.current_stage} -> ${to}. Required gate not satisfied.`,
-        gates,
-      });
+    const evaluation = await checkGates(client, inst);
+    assertProjectOpen(evaluation.scope);
+    const required = ENTRY_GATES[to] || [];
+    const failing = required.filter(k => !evaluation.gates[k]);
+    if (failing.length) {
+      throw new TransitionError(422, 'GATE_NOT_SATISFIED',
+        `Cannot advance ${inst.current_stage} -> ${to}: ${failing.join(', ')} not satisfied`,
+        { gates: evaluation.gates, failing, gate_details: pick(evaluation.details, required), gate_errors: evaluation.errors });
     }
-
-    const a = actor(req);
-    const isFinal = to === 'amc';
     const { rows } = await client.query(
       `UPDATE lifecycle_instances
-       SET current_stage=$1,
-           stage_started_at=NOW(),
-           stage_completed_at=NOW(),
-           stage_notes=COALESCE($2, stage_notes),
-           status=CASE WHEN $3 THEN 'completed' ELSE status END,
-           updated_at=NOW()
-       WHERE id=$4
-       RETURNING *`,
-      [to, remarks || null, isFinal, req.params.id]
-    );
-    await client.query(
-      `INSERT INTO lifecycle_stage_history
-        (lifecycle_instance_id, from_stage, to_stage, action, remarks, actor_id, actor_name, gate_snapshot)
-       VALUES ($1,$2,$3,'advance',$4,$5,$6,$7)`,
-      [req.params.id, instance.current_stage, to, remarks || null, a.id, a.name, JSON.stringify(gates)]
-    );
-    await client.query('COMMIT');
-    logAudit({ userId: a.id, module: 'lifecycle', recordId: req.params.id, recordType: 'lifecycle_instance', action: 'workflow_transition', newData: { from: instance.current_stage, to, gates }, req });
-    notifyWorkflowEvent('lifecycle_advanced', { module: `Lifecycle (${instance.current_stage}→${to})`, recordId: req.params.id, submitterUserId: instance.created_by ?? null, comments: `${instance.current_stage} → ${to}` });
-    res.json(rows[0]);
-  } catch (e) {
-    await client.query('ROLLBACK');
-    res.status(500).json({ error: e.message });
-  } finally {
-    client.release();
-  }
-});
+          SET current_stage=$1, stage_started_at=NOW(), stage_completed_at=NULL,
+              stage_notes=COALESCE($2, stage_notes), updated_at=NOW()
+        WHERE id=$3 RETURNING *`,
+      [to, req.body?.remarks || null, inst.id]);
+    await writeHistory(client, { id: inst.id, from: inst.current_stage, to, action: 'advance', remarks: req.body?.remarks, actor: a,
+      snapshot: { required, gates: pick(evaluation.gates, required), details: pick(evaluation.details, required) } });
+    return { row: rows[0], from: inst.current_stage, to };
+  }));
 
-router.post('/instances/:id/hold', requirePermission('servicedesk', 'add'), async (req, res) => {
-  try {
-    const { remarks } = req.body;
-    const companyId = cid(req);
-    const a = actor(req);
-    const { rows } = await pool.query(
-      `UPDATE lifecycle_instances
-       SET status='on_hold', stage_notes=COALESCE($1, stage_notes), updated_at=NOW()
-       WHERE id=$2 AND ($3::int IS NULL OR company_id = $3) RETURNING *`,
-      [remarks || null, req.params.id, companyId]
-    );
-    if (!rows.length) return res.status(404).json({ error: 'Lifecycle instance not found' });
-    await pool.query(
-      `INSERT INTO lifecycle_stage_history
-        (lifecycle_instance_id, from_stage, to_stage, action, remarks, actor_id, actor_name, gate_snapshot)
-       VALUES ($1,$2,$2,'hold',$3,$4,$5,'{}')`,
-      [req.params.id, rows[0].current_stage, remarks || null, a.id, a.name]
-    );
-    res.json(rows[0]);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
+// Backwards, to any earlier active stage (default: the previous one). Approver only, with a reason.
+router.post('/instances/:id/rollback', requireCompanyScope, requirePermission('servicedesk', 'approve'),
+  transition('rollback', async (client, inst, a, req) => {
+    const reason = requireReason(req.body, 'move a lifecycle back');
+    if (inst.status !== 'active') {
+      throw new TransitionError(409, 'NOT_ACTIVE', `A ${inst.status} lifecycle cannot be moved back`);
+    }
+    const allowed = earlierStages(inst.current_stage);
+    const to = req.body?.to_stage || allowed[allowed.length - 1];
+    if (!to || !allowed.includes(to)) {
+      throw new TransitionError(422, 'INVALID_TRANSITION',
+        `Cannot move ${inst.current_stage} back to ${to || '(none)'}`, { allowed_previous: allowed });
+    }
+    assertProjectOpen(await lifecycleScope(client, inst));
+    const { rows } = await client.query(
+      `UPDATE lifecycle_instances SET current_stage=$1, stage_started_at=NOW(), stage_completed_at=NULL, updated_at=NOW()
+        WHERE id=$2 RETURNING *`, [to, inst.id]);
+    await writeHistory(client, { id: inst.id, from: inst.current_stage, to, action: 'rollback', remarks: reason, actor: a });
+    return { row: rows[0], from: inst.current_stage, to };
+  }));
 
-router.post('/instances/:id/resume', requirePermission('servicedesk', 'add'), async (req, res) => {
-  try {
-    const { remarks } = req.body;
-    const companyId = cid(req);
-    const a = actor(req);
-    const { rows } = await pool.query(
-      `UPDATE lifecycle_instances
-       SET status='active', stage_notes=COALESCE($1, stage_notes), updated_at=NOW()
-       WHERE id=$2 AND ($3::int IS NULL OR company_id = $3) RETURNING *`,
-      [remarks || null, req.params.id, companyId]
-    );
-    if (!rows.length) return res.status(404).json({ error: 'Lifecycle instance not found' });
-    await pool.query(
-      `INSERT INTO lifecycle_stage_history
-        (lifecycle_instance_id, from_stage, to_stage, action, remarks, actor_id, actor_name, gate_snapshot)
-       VALUES ($1,$2,$2,'resume',$3,$4,$5,'{}')`,
-      [req.params.id, rows[0].current_stage, remarks || null, a.id, a.name]
-    );
-    res.json(rows[0]);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
+router.post('/instances/:id/hold', requireCompanyScope, requirePermission('servicedesk', 'edit'),
+  transition('hold', async (client, inst, a, req) => {
+    if (inst.status !== 'active') throw new TransitionError(409, 'NOT_ACTIVE', `Only an active lifecycle can be put on hold (this one is ${inst.status})`);
+    const { rows } = await client.query(
+      `UPDATE lifecycle_instances SET status='on_hold', stage_notes=COALESCE($1, stage_notes), updated_at=NOW()
+        WHERE id=$2 RETURNING *`, [req.body?.remarks || null, inst.id]);
+    await writeHistory(client, { id: inst.id, from: inst.current_stage, to: inst.current_stage, action: 'hold', remarks: req.body?.remarks, actor: a });
+    return { row: rows[0], from: inst.current_stage, to: inst.current_stage };
+  }));
 
-router.post('/commissioning', requirePermission('servicedesk', 'add'), async (req, res) => {
+// Resume is only the way back from on_hold. A completed or cancelled
+// lifecycle is reopened (approver, reason) — never resumed.
+router.post('/instances/:id/resume', requireCompanyScope, requirePermission('servicedesk', 'edit'),
+  transition('resume', async (client, inst, a, req) => {
+    if (inst.status !== 'on_hold') {
+      throw new TransitionError(409, 'NOT_ON_HOLD', ['completed', 'cancelled'].includes(inst.status)
+        ? `A ${inst.status} lifecycle cannot be resumed; an approver can reopen it`
+        : 'Only a lifecycle on hold can be resumed');
+    }
+    assertProjectOpen(await lifecycleScope(client, inst));
+    const { rows } = await client.query(
+      `UPDATE lifecycle_instances SET status='active', stage_notes=COALESCE($1, stage_notes), updated_at=NOW()
+        WHERE id=$2 RETURNING *`, [req.body?.remarks || null, inst.id]);
+    await writeHistory(client, { id: inst.id, from: inst.current_stage, to: inst.current_stage, action: 'resume', remarks: req.body?.remarks, actor: a });
+    return { row: rows[0], from: inst.current_stage, to: inst.current_stage };
+  }));
+
+router.post('/instances/:id/cancel', requireCompanyScope, requirePermission('servicedesk', 'approve'),
+  transition('cancel', async (client, inst, a, req) => {
+    const reason = requireReason(req.body, 'cancel a lifecycle');
+    if (!OPEN_STATUSES.includes(inst.status)) throw new TransitionError(409, 'NOT_OPEN', `A ${inst.status} lifecycle cannot be cancelled`);
+    const { rows } = await client.query(
+      `UPDATE lifecycle_instances SET status='cancelled', updated_at=NOW() WHERE id=$1 RETURNING *`, [inst.id]);
+    await writeHistory(client, { id: inst.id, from: inst.current_stage, to: inst.current_stage, action: 'cancel', remarks: reason, actor: a });
+    return { row: rows[0], from: inst.current_stage, to: inst.current_stage };
+  }));
+
+// The explicit, authorised way back from completed / cancelled. Refused while
+// another lifecycle of the same project or order is open (Phase 3 indexes).
+router.post('/instances/:id/reopen', requireCompanyScope, requirePermission('servicedesk', 'approve'),
+  transition('reopen', async (client, inst, a, req) => {
+    const reason = requireReason(req.body, 'reopen a lifecycle');
+    if (!['completed', 'cancelled'].includes(inst.status)) {
+      throw new TransitionError(409, 'NOT_CLOSED', `Only a completed or cancelled lifecycle can be reopened (this one is ${inst.status})`);
+    }
+    assertProjectOpen(await lifecycleScope(client, inst));
+    const { rows: open } = await client.query(
+      `SELECT id, lifecycle_number FROM lifecycle_instances
+        WHERE id <> $1 AND status IN ('active','on_hold')
+          AND ((project_id IS NOT NULL AND project_id = $2) OR (sales_order_id IS NOT NULL AND sales_order_id = $3))
+        LIMIT 1`, [inst.id, inst.project_id, inst.sales_order_id]);
+    if (open.length) {
+      throw new TransitionError(409, 'LIFECYCLE_EXISTS',
+        `Lifecycle ${open[0].lifecycle_number} is already open for this project or order`, { lifecycle_id: open[0].id });
+    }
+    const { rows } = await client.query(
+      `UPDATE lifecycle_instances SET status='active', stage_completed_at=NULL, updated_at=NOW() WHERE id=$1 RETURNING *`, [inst.id]);
+    await writeHistory(client, { id: inst.id, from: inst.current_stage, to: inst.current_stage, action: 'reopen', remarks: reason, actor: a });
+    return { row: rows[0], from: inst.current_stage, to: inst.current_stage };
+  }));
+
+// Completion: only at Closure, approver only, with the project's closure
+// blockers (open tasks, unbilled billing milestones, pending timesheets)
+// cleared. An approver may complete over blockers only with a written
+// override_reason, which is recorded with the blockers in the history.
+// The project's own status is not changed here.
+router.post('/instances/:id/complete', requireCompanyScope, requirePermission('servicedesk', 'approve'),
+  transition('complete', async (client, inst, a, req) => {
+    if (inst.status !== 'active') throw new TransitionError(409, 'NOT_ACTIVE', `A ${inst.status} lifecycle cannot be completed`);
+    if (inst.current_stage !== FINAL_STAGE) {
+      throw new TransitionError(409, 'NOT_AT_CLOSURE', `Only a lifecycle at ${FINAL_STAGE} can be completed (this one is at ${inst.current_stage})`);
+    }
+    const scope = await lifecycleScope(client, inst);
+    const blockers = scope.projectId ? await getProjectClosureBlockers(client, scope.projectId) : [];
+    const override = String(req.body?.override_reason ?? '').trim();
+    if (blockers.length && override.length < REASON_MIN) {
+      throw new TransitionError(422, 'CLOSURE_BLOCKED',
+        'The project is not ready to close: ' + blockers.map(b => `${b.count} ${b.type.replace(/_/g, ' ')}`).join(', ')
+        + `. An approver may complete anyway with an override_reason (at least ${REASON_MIN} characters).`,
+        { blockers });
+    }
+    const { rows } = await client.query(
+      `UPDATE lifecycle_instances SET status='completed', stage_completed_at=NOW(), updated_at=NOW() WHERE id=$1 RETURNING *`, [inst.id]);
+    await writeHistory(client, { id: inst.id, from: inst.current_stage, to: inst.current_stage, action: 'complete',
+      remarks: override || req.body?.remarks || null, actor: a,
+      snapshot: { blockers, overridden: blockers.length > 0 } });
+    return { row: rows[0], from: inst.current_stage, to: inst.current_stage };
+  }));
+
+router.post('/commissioning', requireCompanyScope, requirePermission('servicedesk', 'add'), async (req, res) => {
   try {
     const {
       lifecycle_instance_id,
@@ -555,6 +627,13 @@ router.post('/commissioning', requirePermission('servicedesk', 'add'), async (re
       remarks,
     } = req.body;
     const companyId = cid(req);
+    // A report on another company's lifecycle would satisfy that lifecycle's
+    // commissioning gate (it counts reports by lifecycle_instance_id).
+    const foreign = await foreignLink(req, [
+      ['lifecycle_instances', lifecycle_instance_id, 'Lifecycle'],
+      ['sales_orders', sales_order_id, 'Sales order'],
+    ]);
+    if (foreign) return res.status(400).json({ error: foreign });
     const { rows } = await pool.query(
       `INSERT INTO commissioning_reports
         (lifecycle_instance_id, sales_order_id, site_name, site_address, commissioning_date, engineer_name, status, checklist, punch_points, remarks, company_id)
@@ -569,7 +648,7 @@ router.post('/commissioning', requirePermission('servicedesk', 'add'), async (re
   }
 });
 
-router.put('/commissioning/:id', requirePermission('servicedesk', 'edit'), captureBefore('commissioning_reports'), async (req, res) => {
+router.put('/commissioning/:id', requireCompanyScope, requirePermission('servicedesk', 'edit'), captureBefore('commissioning_reports'), async (req, res) => {
   try {
     const { status, checklist, punch_points, remarks, site_name, site_address, commissioning_date, engineer_name } = req.body;
     const companyId = cid(req);
@@ -983,8 +1062,9 @@ router.get('/amc-contracts/export/csv', requirePermission('servicedesk', 'view')
     const cols = ['contract_number','serial_number','start_date','end_date','contract_value',
       'billing_frequency','payment_terms','status','sla_response_hours','preventive_visits_per_year',
       'coverage_notes','next_renewal_date','renewal_count','last_invoice_date','lifecycle_number','order_number'];
-    const escape = v => { const s = String(v ?? '').replace(/"/g, '""'); return s.includes(',') || s.includes('"') || s.includes('\n') ? `"${s}"` : s; };
-    const csv = [cols.join(','), ...rows.map(r => cols.map(c => escape(r[c])).join(','))].join('\n');
+    // Shared writer: same conditional quoting, plus neutralisation of values a
+    // spreadsheet would evaluate as formulas. See shared/csv.js.
+    const csv = toCsvObjects(rows, { columns: cols, minimal: true });
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', `attachment; filename="amc_contracts_${new Date().toISOString().slice(0,10)}.csv"`);
     res.send(csv);
@@ -992,7 +1072,7 @@ router.get('/amc-contracts/export/csv', requirePermission('servicedesk', 'view')
 });
 
 // ── Commissioning sign-off ────────────────────────────────────────────────────
-router.put('/commissioning/:id/signoff', requirePermission('servicedesk', 'edit'), captureBefore('commissioning_reports'), async (req, res) => {
+router.put('/commissioning/:id/signoff', requireCompanyScope, requirePermission('servicedesk', 'edit'), captureBefore('commissioning_reports'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { serial_number, customer_signature, witness_name, witness_signature, iec_standard, ambient_temp_c, test_voltage_kv } = req.body;
@@ -1041,7 +1121,7 @@ router.put('/commissioning/:id/signoff', requirePermission('servicedesk', 'edit'
 });
 
 // ── Warranty Registrations ────────────────────────────────────────────────────
-router.get('/warranty', requirePermission('servicedesk', 'view'), async (req, res) => {
+router.get('/warranty', requireCompanyScope, requirePermission('servicedesk', 'view'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { status, expiring_days } = req.query;
@@ -1064,7 +1144,7 @@ router.get('/warranty', requirePermission('servicedesk', 'view'), async (req, re
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.get('/warranty/:id', requirePermission('servicedesk', 'view'), async (req, res) => {
+router.get('/warranty/:id', requireCompanyScope, requirePermission('servicedesk', 'view'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { rows } = await pool.query(
@@ -1078,7 +1158,7 @@ router.get('/warranty/:id', requirePermission('servicedesk', 'view'), async (req
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.post('/warranty', requirePermission('servicedesk', 'add'), async (req, res) => {
+router.post('/warranty', requireCompanyScope, requirePermission('servicedesk', 'add'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { serial_number, product_name, customer_name, customer_id, site_id,
@@ -1087,10 +1167,13 @@ router.post('/warranty', requirePermission('servicedesk', 'add'), async (req, re
     if (!serial_number || !warranty_start || !warranty_end) {
       return res.status(422).json({ error: 'serial_number, warranty_start, warranty_end are required' });
     }
-    const { rows: cnt } = await pool.query(
-      `SELECT COUNT(*) FROM warranty_registrations WHERE ($1::int IS NULL OR company_id=$1)`, [companyId]
-    );
-    const warrantyNumber = `WR-${String(parseInt(cnt[0].count) + 1).padStart(5, '0')}`;
+    const foreign = await foreignLink(req, [
+      ['lifecycle_instances', lifecycle_instance_id, 'Lifecycle'],
+      ['sales_orders', sales_order_id, 'Sales order'],
+      ['assets_register', asset_id, 'Asset'],
+    ]);
+    if (foreign) return res.status(400).json({ error: foreign });
+    const warrantyNumber = await nextWarrantyNumber();
     const { rows } = await pool.query(
       `INSERT INTO warranty_registrations
          (warranty_number, asset_id, sales_order_id, lifecycle_instance_id, serial_number,
@@ -1108,7 +1191,7 @@ router.post('/warranty', requirePermission('servicedesk', 'add'), async (req, re
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.put('/warranty/:id', requirePermission('servicedesk', 'edit'), captureBefore('warranty_registrations'), async (req, res) => {
+router.put('/warranty/:id', requireCompanyScope, requirePermission('servicedesk', 'edit'), captureBefore('warranty_registrations'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { warranty_end, warranty_type, coverage_parts, coverage_labour, coverage_travel, notes, status } = req.body;
@@ -1134,7 +1217,7 @@ router.put('/warranty/:id', requirePermission('servicedesk', 'edit'), captureBef
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.delete('/warranty/:id', requirePermission('servicedesk', 'delete'), captureBefore('warranty_registrations'), async (req, res) => {
+router.delete('/warranty/:id', requireCompanyScope, requirePermission('servicedesk', 'delete'), captureBefore('warranty_registrations'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { rows } = await pool.query(
@@ -1147,7 +1230,7 @@ router.delete('/warranty/:id', requirePermission('servicedesk', 'delete'), captu
 });
 
 // ── Warranty Claims ───────────────────────────────────────────────────────────
-router.get('/warranty-claims', requirePermission('servicedesk', 'view'), async (req, res) => {
+router.get('/warranty-claims', requireCompanyScope, requirePermission('servicedesk', 'view'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { status, warranty_registration_id } = req.query;
@@ -1163,16 +1246,18 @@ router.get('/warranty-claims', requirePermission('servicedesk', 'view'), async (
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.post('/warranty-claims', requirePermission('servicedesk', 'add'), async (req, res) => {
+router.post('/warranty-claims', requireCompanyScope, requirePermission('servicedesk', 'add'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { warranty_registration_id, ticket_id, serial_number, issue_description,
             failure_mode, parts_replaced, labour_hours, claim_value } = req.body;
     if (!issue_description) return res.status(422).json({ error: 'issue_description is required' });
-    const { rows: cnt } = await pool.query(
-      `SELECT COUNT(*) FROM warranty_claims WHERE ($1::int IS NULL OR company_id=$1)`, [companyId]
-    );
-    const claimNumber = `WC-${String(parseInt(cnt[0].count) + 1).padStart(5, '0')}`;
+    const foreign = await foreignLink(req, [
+      ['warranty_registrations', warranty_registration_id, 'Warranty'],
+      ['support_tickets', ticket_id, 'Ticket'],
+    ]);
+    if (foreign) return res.status(400).json({ error: foreign });
+    const claimNumber = await nextWarrantyClaimNumber();
     const { rows } = await pool.query(
       `INSERT INTO warranty_claims
          (claim_number, warranty_registration_id, ticket_id, serial_number, issue_description,
@@ -1187,10 +1272,22 @@ router.post('/warranty-claims', requirePermission('servicedesk', 'add'), async (
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.put('/warranty-claims/:id', requirePermission('servicedesk', 'edit'), captureBefore('warranty_claims'), async (req, res) => {
+router.put('/warranty-claims/:id', requireCompanyScope, requirePermission('servicedesk', 'edit'), captureBefore('warranty_claims'), async (req, res) => {
   try {
     const companyId = cid(req);
-    const { status, resolution_notes, approved_by } = req.body;
+    const { status, resolution_notes } = req.body;
+    // Deciding a claim is an approval: it needs servicedesk:approve, and the
+    // approver recorded is the logged-in user, never body.approved_by.
+    const deciding = ['approved', 'rejected'].includes(status);
+    let approved_by = null;
+    if (deciding) {
+      const perm = await permissionFor(req, 'servicedesk');
+      if (!perm?.can_approve) {
+        return res.status(403).json({ error: 'Approving or rejecting a warranty claim needs servicedesk approve permission' });
+      }
+      const { rows: me } = await pool.query(`SELECT name, email FROM users WHERE id = $1`, [actor(req).id]);
+      approved_by = me[0]?.name || me[0]?.email || String(actor(req).id);
+    }
     const { rows } = await pool.query(
       `UPDATE warranty_claims
        SET status           = COALESCE($1, status),
@@ -1207,7 +1304,7 @@ router.put('/warranty-claims/:id', requirePermission('servicedesk', 'edit'), cap
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.get('/commissioning', requirePermission('servicedesk', 'view'), async (req, res) => {
+router.get('/commissioning', requireCompanyScope, requirePermission('servicedesk', 'view'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { lifecycle_instance_id, status } = req.query;
@@ -1232,7 +1329,7 @@ router.get('/commissioning', requirePermission('servicedesk', 'view'), async (re
   }
 });
 
-router.get('/commissioning/:id', requirePermission('servicedesk', 'view'), async (req, res) => {
+router.get('/commissioning/:id', requireCompanyScope, requirePermission('servicedesk', 'view'), async (req, res) => {
   try {
     const companyId = cid(req);
     const { rows } = await pool.query(

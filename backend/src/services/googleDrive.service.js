@@ -303,6 +303,47 @@ export async function downloadFile(driveFileId) {
   return Buffer.from(resp.data);
 }
 
+// Google-native files (Docs/Sheets/Slides) have no bytes of their own; they
+// are exported to the Office format a person would expect to receive.
+const NATIVE_EXPORTS = {
+  'application/vnd.google-apps.document':     ['application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'docx'],
+  'application/vnd.google-apps.spreadsheet':  ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'xlsx'],
+  'application/vnd.google-apps.presentation': ['application/vnd.openxmlformats-officedocument.presentationml.presentation', 'pptx'],
+  'application/vnd.google-apps.drawing':      ['application/pdf', 'pdf'],
+};
+
+/**
+ * Open a Drive file as a stream through the service account, for passing
+ * straight on to an HTTP response. Unlike downloadFile() this does not buffer
+ * the whole file, and it exports Google-native documents instead of failing.
+ * Errors keep the Drive API's numeric `code` (403/404 = the service account
+ * cannot see the file) so callers can fall back to a link-shared fetch.
+ */
+export async function openFileStream(driveFileId) {
+  const drive = await getDriveClient();
+  const { data: meta } = await drive.files.get({
+    fileId: driveFileId, fields: 'id,name,mimeType,size', supportsAllDrives: true,
+  });
+  const native = NATIVE_EXPORTS[meta.mimeType];
+  if (native) {
+    const r = await drive.files.export({ fileId: driveFileId, mimeType: native[0] }, { responseType: 'stream' });
+    return { stream: r.data, name: `${meta.name}.${native[1]}`, mimeType: native[0], size: null };
+  }
+  if (String(meta.mimeType).startsWith('application/vnd.google-apps.')) {
+    throw Object.assign(new Error(`Drive item type ${meta.mimeType} cannot be downloaded`), { code: 415 });
+  }
+  const r = await drive.files.get(
+    { fileId: driveFileId, alt: 'media', supportsAllDrives: true },
+    { responseType: 'stream' },
+  );
+  return {
+    stream: r.data,
+    name: meta.name,
+    mimeType: meta.mimeType || 'application/octet-stream',
+    size: meta.size != null ? Number(meta.size) : null,
+  };
+}
+
 export async function deleteFile(driveFileId) {
   const drive = await getDriveClient();
   await drive.files.delete({ fileId: driveFileId });

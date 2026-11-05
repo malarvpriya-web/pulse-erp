@@ -1,6 +1,11 @@
 import pool from '../db.js';
 import { nextPaymentBatchNumber } from '../../../shared/docNumber.js';
 
+// The released bank file's metadata on a batch read (PC-02b-0 B-04): finance:view
+// sees that a file exists and its hash. Its content and beneficiary snapshot are
+// never selected here; only the finance:approve download serves the content.
+const BANK_FILE_META = `(SELECT json_build_object('format', f.format, 'file_name', f.file_name, 'sha256', f.sha256, 'line_count', f.line_count, 'total_amount', f.total_amount, 'released_at', f.released_at, 'released_by', f.released_by) FROM payment_batch_files f WHERE f.batch_id = pb.id) AS bank_file`;
+
 class PaymentBatchRepository {
   /**
    * `executor` lets a caller that already owns a transaction insert the header
@@ -72,16 +77,20 @@ class PaymentBatchRepository {
     return result.rows[0];
   }
 
-  async findById(id) {
+  // companyId scopes the read (null = global super admin); a batch in another
+  // company reads as missing.
+  async findById(id, companyId = null) {
+    if (!/^\d+$/.test(String(id))) return null;
     const result = await pool.query(
       `SELECT pb.*,
               ba.account_name AS bank_account,
               ba.bank_name,
-              ba.account_number
+              ba.account_number,
+              ${BANK_FILE_META}
        FROM payment_batches pb
        LEFT JOIN bank_accounts ba ON pb.bank_account_id = ba.id
-       WHERE pb.id = $1`,
-      [id]
+       WHERE pb.id = $1 AND ($2::int IS NULL OR pb.company_id = $2)`,
+      [id, companyId]
     );
     return result.rows[0] || null;
   }
@@ -116,7 +125,8 @@ class PaymentBatchRepository {
       SELECT pb.*,
              ba.account_name AS bank_account,
              ba.bank_name,
-             ba.account_number
+             ba.account_number,
+             ${BANK_FILE_META}
       FROM payment_batches pb
       LEFT JOIN bank_accounts ba ON pb.bank_account_id = ba.id
       WHERE ${where.join(' AND ')}
@@ -126,30 +136,13 @@ class PaymentBatchRepository {
     return result.rows;
   }
 
-  async getItems(batchId) {
-    const result = await pool.query(
+  // executor: the caller's transaction client when processing (B-02); the pool otherwise.
+  async getItems(batchId, executor = pool) {
+    const result = await executor.query(
       `SELECT pbi.*,
               COALESCE(pbi.supplier_name, v.vendor_name) AS supplier,
               COALESCE(pbi.bill_ref, b.bill_number) AS bill_ref,
               pbi.payment_method AS method
-       FROM payment_batch_items pbi
-       LEFT JOIN vendors v ON pbi.supplier_id = v.id
-       LEFT JOIN bills   b ON pbi.bill_id   = b.id
-       WHERE pbi.batch_id = $1
-       ORDER BY pbi.created_at`,
-      [batchId]
-    );
-    return result.rows;
-  }
-
-  async getItemsWithBankDetails(batchId) {
-    const result = await pool.query(
-      `SELECT pbi.*,
-              COALESCE(pbi.supplier_name, v.vendor_name) AS party_name,
-              COALESCE(pbi.bill_ref, b.bill_number)      AS bill_number,
-              v.account_number                           AS account_number,
-              v.ifsc                                     AS ifsc_code,
-              v.bank_name
        FROM payment_batch_items pbi
        LEFT JOIN vendors v ON pbi.supplier_id = v.id
        LEFT JOIN bills   b ON pbi.bill_id   = b.id

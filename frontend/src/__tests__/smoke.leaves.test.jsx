@@ -114,6 +114,48 @@ function stubApis({
   api.delete.mockResolvedValue({ data: {} });
 }
 
+/**
+ * The next Monday-to-Friday on or after today, as YYYY-MM-DD.
+ *
+ * ApplyLeave refuses a request whose range contains no WORKING day
+ * ("Select at least one working day for leave"), so a hardcoded date would make
+ * these tests pass or fail depending on the day of the week the suite happened to
+ * run. Built from local date parts, never toISOString() — that is UTC midnight,
+ * which in IST is the previous day.
+ */
+function nextWorkingDay() {
+  const d = new Date();
+  while (d.getDay() === 0 || d.getDay() === 6) d.setDate(d.getDate() + 1);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/**
+ * The date input under a given field label.
+ *
+ * ApplyLeave's date inputs carry no id and their labels no htmlFor, so
+ * getByLabelText cannot reach them. Matching on the label text inside the field
+ * wrapper is still better than indexing into every input[type=date] on the page,
+ * which silently follows any reordering.
+ */
+function dateInputFor(labelText) {
+  const field = [...document.querySelectorAll('.al-field')].find(
+    (f) => f.querySelector('label')?.textContent.trim().startsWith(labelText));
+  if (!field) throw new Error(`No leave form field labelled "${labelText}"`);
+  return field.querySelector('input[type="date"]');
+}
+
+/** Fill everything ApplyLeave requires, for a one-working-day request. */
+function fillValidLeave(reason = 'Fever') {
+  const day = nextWorkingDay();
+  fireEvent.change(dateInputFor('From Date'), { target: { value: day } });
+  fireEvent.change(dateInputFor('To Date'),   { target: { value: day } });
+  fireEvent.change(
+    screen.getByPlaceholderText(/briefly describe the reason/i),
+    { target: { value: reason } }
+  );
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   vi.spyOn(window.localStorage, 'getItem').mockReturnValue(JSON.stringify({ id: 4 }));
@@ -171,13 +213,16 @@ describe('ApplyLeave — smoke', () => {
   });
 
   it('calls POST /leaves/apply on valid submission', async () => {
+    // The employee self-service path, which is what this describe block is about.
+    // The default mock role is hr_manager, and ApplyLeave counts that as an ADMIN —
+    // admins additionally have to pick WHOSE leave they are applying for, so with
+    // the default role this submission is not valid and the form correctly refuses
+    // it. That, plus the two missing dates, is why this test never called api.post.
+    mockRoles = ['employee'];
     stubApis();
     render(<ApplyLeave />);
     await waitFor(() => expect(screen.getAllByText('Sick Leave').length).toBeGreaterThan(0));
-    fireEvent.change(
-      screen.getByPlaceholderText(/briefly describe the reason/i),
-      { target: { value: 'Fever' } }
-    );
+    fillValidLeave();
     fireEvent.click(screen.getByText('Submit Request'));
     await waitFor(() =>
       expect(api.post).toHaveBeenCalledWith(
@@ -188,13 +233,11 @@ describe('ApplyLeave — smoke', () => {
   });
 
   it('shows success toast after submit', async () => {
+    mockRoles = ['employee'];        // see the test above
     stubApis();
     render(<ApplyLeave />);
     await waitFor(() => expect(screen.getAllByText('Sick Leave').length).toBeGreaterThan(0));
-    fireEvent.change(
-      screen.getByPlaceholderText(/briefly describe the reason/i),
-      { target: { value: 'Fever' } }
-    );
+    fillValidLeave();
     fireEvent.click(screen.getByText('Submit Request'));
     await waitFor(() =>
       expect(screen.getByText('Leave application submitted successfully!')).toBeDefined()

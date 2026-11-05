@@ -4,6 +4,7 @@ import { nextComplaintNumber, nextServiceTicketNumber } from '../../shared/docNu
 import { pickUpdatable } from '../../shared/safeUpdate.js';
 import { validateOptionalMobile } from '../../shared/validators.js';
 import { PROJECT_TYPES } from '../../shared/projectTypes.js';
+import { canonicalValue } from '../../shared/masterVocabulary.js';
 import { resolveRange, dimension } from '../../shared/dashboardFilters.js';
 import { requirePermission } from '../../middlewares/auth.middleware.js';
 import { captureBefore } from '../../middlewares/captureBefore.js';
@@ -33,7 +34,13 @@ const svc = (action) => requirePermission('servicedesk', action);
 
 // Same lists the IPS grid validates against (ips.routes.js) — a converted ticket
 // must not be able to carry a zone/type the IPS filters can never select.
-const ZONES = ['North', 'South', 'East', 'West', 'Central'];
+//
+// Both are now read from the master (master_zones / master_values PROJECT_TYPE)
+// with these arrays as the fallback. Left as plain arrays they were a SECOND
+// master that disagreed with the first the moment anyone used the new "+ Add"
+// pickers: a project type added there passed the dropdown and then landed here
+// as NULL, because `PROJECT_TYPES.includes()` had never heard of it.
+const ZONE_FALLBACK = ['North', 'South', 'East', 'West', 'Central'];
 
 /** '' / null / 'abc' -> null; '3' -> 3. Keeps a cleared <select> from failing the int cast. */
 const intOrNull = (v) => {
@@ -530,6 +537,12 @@ router.post('/:id/convert-to-ips', svc('add'), async (req, res) => {
     // The ticket number is drawn inside the transaction: if the INSERT fails, the
     // sequence has still advanced (sequences are non-transactional) — a gap in
     // IPS numbering is acceptable, a duplicate would not be.
+    // Resolved against the masters before the transaction opens — canonicalValue
+    // matches case-insensitively and returns the master's own spelling, so the
+    // column converges on one form instead of accumulating 'EPC'/'epc'/'Epc'.
+    const zone        = await canonicalValue('ZONE', req.body.zone, companyId, ZONE_FALLBACK);
+    const serviceType = await canonicalValue('PROJECT_TYPE', req.body.service_type, companyId, PROJECT_TYPES);
+
     await client.query('BEGIN');
     const ticket_number = await nextServiceTicketNumber(client);
 
@@ -548,8 +561,8 @@ router.post('/:id/convert-to-ips', svc('add'), async (req, res) => {
         c.id,
         c.project_id,
         c.serial_number,
-        ZONES.includes(req.body.zone) ? req.body.zone : null,
-        PROJECT_TYPES.includes(req.body.service_type) ? req.body.service_type : null,
+        zone,
+        serviceType,
         req.user?.name || req.user?.email || null,
         req.user?.email || null,
         companyId,

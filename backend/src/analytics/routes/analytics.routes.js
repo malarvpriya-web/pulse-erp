@@ -23,6 +23,12 @@ import {
 import pqRouter  from './powerQuality.routes.js';
 import mfgRouter from './manufacturing.routes.js';
 import recruitmentRepository from '../../modules/recruitment/repositories/recruitment.repository.js';
+import {
+  getWorkforceAnalytics, parseWorkforceFilters,
+  getWorkforceHeadcountExport, getWorkforceAttritionExport, getWorkforceDocumentExpiryExport,
+} from '../../employees/employee.service.js';
+import { companyOf } from '../../shared/scope.js';
+import { reminderDaysFor, probationEndingSoonSql } from '../../shared/probationDates.js';
 
 /* safe single-row helper */
 const sq1 = async (sql, params = []) => {
@@ -160,8 +166,13 @@ router.use('/manufacturing', mfgRouter);
 // GET /api/analytics/headcount
 router.get('/headcount', async (req, res) => {
   try {
+    // Headcount is a POINT-IN-TIME population — who is on payroll today — so it
+    // deliberately ignores the page filter. Declaring that in the payload is the
+    // difference between "correctly point-in-time" and "silently unfiltered",
+    // which is what it looked like from the outside.
     const data = await computeHeadcount(req.scope?.company_id ?? null);
-    res.json({ data });
+    res.json({ data, point_in_time: true,
+               point_in_time_reason: 'Headcount is the payroll population as of today, not activity within a period' });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -170,8 +181,13 @@ router.get('/headcount', async (req, res) => {
 // GET /api/analytics/attrition
 router.get('/attrition', async (req, res) => {
   try {
-    const data = await computeAttrition(req.scope?.company_id ?? null);
-    res.json({ data });
+    // An attrition rate is exits over a window, so it follows the page filter.
+    // avgTenure stays as-of-today: it describes the people still here.
+    const range = resolveRange(req.query);
+    const data = await computeAttrition(req.scope?.company_id ?? null, range);
+    res.json({ data, period: { period: range.period, label: range.label, from: range.from, to: range.to },
+               period_applies_to: ['rate', 'voluntary', 'involuntary'],
+               point_in_time: ['avgTenure', 'atRisk'] });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -190,8 +206,14 @@ router.get('/dept-workforce', async (req, res) => {
 // GET /api/analytics/sales
 router.get('/sales', async (req, res) => {
   try {
-    const data = await computeSalesKPIs(req.scope?.company_id ?? null);
-    res.json({ data });
+    // conversionRate and avgDealSize follow the period; pipelineValue does not
+    // (open pipeline is a balance, not activity). The range travels back in the
+    // response so a caller can label which tiles the filter actually moved.
+    const range = resolveRange(req.query);
+    const data = await computeSalesKPIs(req.scope?.company_id ?? null, range);
+    res.json({ data, period: { period: range.period, label: range.label, from: range.from, to: range.to },
+               period_applies_to: ['conversionRate', 'avgDealSize'],
+               point_in_time: ['pipelineValue'] });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -316,12 +338,19 @@ router.get('/absenteeism', async (req, res) => {
       // 42703 on every call and sq1 returned null, so the absenteeism rate had
       // always been 0.0%. Scope through the employee, the same way every other
       // attendance read in the app does.
+      // ...and it was STILL 0.0% after that fix, for a second reason: `attendance`
+      // is a frozen table. It has no writers anywhere in the repo and its newest
+      // row is dated 2026-03-29, so a 30-day window matched nothing. The live
+      // table is `attendance_records` (17 INSERT sites — every punch, biometric
+      // sync and offline drain). Columns differ: date -> attendance_date, and
+      // rows are soft-deleted.
       sq1(`SELECT
              COUNT(*) FILTER (WHERE LOWER(a.status) = 'absent') AS absent_days,
              COUNT(*) AS total_days
-           FROM attendance a
+           FROM attendance_records a
            JOIN employees e ON e.id = a.employee_id
-           WHERE a.date >= CURRENT_DATE - INTERVAL '30 days'
+           WHERE a.attendance_date >= CURRENT_DATE - INTERVAL '30 days'
+             AND a.deleted_at IS NULL
              AND ($1::int IS NULL OR e.company_id = $1)`, [cid]),
       sq1(`SELECT COUNT(*) AS total FROM employees WHERE ${isIn('status', EMPLOYEE_ACTIVE)} ${and}`, params),
     ]);
@@ -445,11 +474,15 @@ router.get('/insights/hr', async (req, res) => {
 router.get('/ceo/kpis', async (req, res) => {
   try {
     const cid = req.scope?.company_id ?? null;
+    // The strip mixes activity with balances, so the range is passed only to the
+    // metrics it actually means something for. headcount and projectsOnTrack are
+    // point-in-time and are labelled as such in the response.
+    const range = resolveRange(req.query);
     const [hc, at, rev, sales, projR] = await Promise.allSettled([
       computeHeadcount(cid),
-      computeAttrition(cid),
+      computeAttrition(cid, range),
       computeRevenueMetrics(cid),
-      computeSalesKPIs(cid),
+      computeSalesKPIs(cid, range),
       // `projects.status = 'on-track'` is impossible: projects_status_check permits
       // only planning|active|on_hold|completed|cancelled, so the old filter made this
       // tile read 0/N forever. Project health is DERIVED, never stored — a project is
@@ -485,11 +518,22 @@ router.get('/ceo/kpis', async (req, res) => {
       kpis: {
         revenue:         { value: revenue.revenue || 0,         growth: revenue.growth || 0, label: 'Total Revenue (YTD)' },
         arr:             { value: revenue.arr || 0,             growth: 0,                   label: 'ARR (Ann.)', sub: 'Active AMC contracts' },
-        headcount:       { value: headcount.total || 0,         growth: headcount.growth || 0, label: 'Headcount' },
+        // headcount_on_payroll (= active), NOT total. computeHeadcount's own comment
+        // warns that `total` counts every employee record INCLUDING people who have
+        // left, while every department/gender breakdown it returns is filtered to
+        // EMPLOYEE_ACTIVE. Publishing `total` here under the bare label 'Headcount'
+        // was the fifth instance of that mix-up: measured 2026-09-16, this tile read
+        // 34 while the Workforce tab's department chart — same page, same load —
+        // summed to 33. The breakdowns are the payroll population, so the headline
+        // has to be too.
+        headcount:       { value: headcount.headcount_on_payroll ?? headcount.active ?? 0, growth: headcount.growth || 0, label: 'Headcount', sub: 'On payroll (notice period included)' },
         attrition:       { value: attrition.rate || 0,         growth: 0,                   label: 'Attrition Rate', unit: '%' },
         openPipeline:    { value: salesKPI.pipelineValue || 0,  growth: 0,                   label: 'Sales Pipeline' },
         projectsOnTrack: { value: onTrack, growth: 0,           label: 'Projects On-Track', outOf: activeProjects },
       },
+      period: { period: range.period, label: range.label, from: range.from, to: range.to },
+      period_applies_to: ['attrition'],
+      point_in_time: ['revenue', 'arr', 'headcount', 'openPipeline', 'projectsOnTrack'],
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -632,14 +676,19 @@ router.get('/onboarding', async (req, res) => {
   try {
     const cid = req.scope?.company_id ?? null;
     const { and, params } = scopeFrags(cid);
+    // "Confirming soon" is the probation-ending-soon count, on the ONE shared
+    // rule (shared/probationDates.js): current probationers whose STORED end
+    // date falls from today through today + the company's reminder lead time
+    // (default 14), calendar dates. It was a fixed 14 days compared with NOW(),
+    // which dropped anyone whose probation ends today, and it was counted only
+    // among people who JOINED in the last 90 days — with a six-month probation
+    // nobody ending soon is in that cohort, so it read 0 by construction.
+    const confirmWindow = await reminderDaysFor(pool, cid);
     // Employees who joined in the last 90 days (still in onboarding window)
-    const [summaryRow, newHires] = await Promise.all([
+    const [summaryRow, newHires, confirmRow] = await Promise.all([
       sq1(`
         SELECT
           COUNT(*)                                                          AS total,
-          COUNT(*) FILTER (WHERE probation_end_date IS NOT NULL
-                            AND probation_end_date <= NOW() + INTERVAL '14 days'
-                            AND probation_end_date >= NOW())                AS confirming_soon,
           COUNT(*) FILTER (WHERE joining_date >= NOW() - INTERVAL '30 days') AS joined_30d,
           COUNT(*) FILTER (WHERE joining_date >= NOW() - INTERVAL '7 days')  AS joined_7d
         FROM employees
@@ -657,11 +706,19 @@ router.get('/onboarding', async (req, res) => {
         ORDER BY joining_date DESC
         LIMIT 8
       `, params),
+      sq1(`
+        SELECT COUNT(*) AS confirming_soon
+        FROM employees
+        WHERE LOWER(status) = 'probation' AND deleted_at IS NULL
+          AND ${probationEndingSoonSql(confirmWindow)}
+          ${and}
+      `, params),
     ]);
     res.json({
       data: {
         total:           parseInt(summaryRow?.total            || 0),
-        confirmingSoon:  parseInt(summaryRow?.confirming_soon  || 0),
+        confirmingSoon:  parseInt(confirmRow?.confirming_soon  || 0),
+        confirmingSoonWindowDays: confirmWindow,
         joined30d:       parseInt(summaryRow?.joined_30d       || 0),
         joined7d:        parseInt(summaryRow?.joined_7d        || 0),
         recentHires:     newHires.map(e => ({
@@ -732,6 +789,41 @@ router.get('/hr-filter-options', async (req, res) => {
   }
 });
 
+/**
+ * GET /api/analytics/workforce — Workforce Analytics data (no salary).
+ *
+ * Permission: `hr:view`, via analyticsPolicy's default. ⚠ Deliberately NOT a
+ * '/workforce' prefix rule in analyticsAuthz.js: prefix rules cover every path
+ * beneath them, so a future '/workforce/salary' would inherit hr:view instead of
+ * the payroll:view compensation needs. Unmatched paths fall to hr:view anyway.
+ *
+ * Scope: fails CLOSED. companyOf() returns null for a caller with no company,
+ * and null means "every company" to the service — so null is accepted only for
+ * a genuine global super-admin scope.
+ *
+ * Query: department, designation, employment_type, gender, skill_type,
+ * branch_id (alias: location), status, period | from & to. Each text filter
+ * matches the chart label, so 'Not recorded' selects the blanks.
+ */
+router.get('/workforce', async (req, res) => {
+  const bad = assertDateParams(req.query, ['from', 'to']);
+  if (bad) return res.status(bad.status).json(bad.body);
+
+  const company_id = companyOf(req);
+  if (company_id == null && !req.scope?.isGlobal) {
+    return res.status(403).json({ error: 'No company scope for this user' });
+  }
+  try {
+    const filters = parseWorkforceFilters(req.query);
+    const { period, from, to } = req.query;
+    res.json(await getWorkforceAnalytics({ company_id, filters, period, from, to }));
+  } catch (e) {
+    if (e.status === 400) return res.status(400).json({ error: e.message });
+    console.error('[analytics/workforce]', e.message);
+    res.status(500).json({ error: 'Failed to load workforce analytics' });
+  }
+});
+
 // GET /api/analytics/age-distribution — headcount by age bracket
 router.get('/age-distribution', async (req, res) => {
   try {
@@ -779,108 +871,73 @@ async function sendXlsx(res, sheetName, rows, filename) {
   res.send(buf);
 }
 
-// GET /api/analytics/employee-reports/headcount — headcount report (JSON or CSV or XLSX)
+/*
+ * ── Workforce Analytics & Reports exports ──────────────────────────────────
+ * GET /api/analytics/employee-reports/headcount
+ * GET /api/analytics/employee-reports/attrition
+ * GET /api/analytics/employee-reports/doc-expiry?window=…
+ *
+ * Reworked 2026-10-13 for the Reports & Exports section. The previous versions
+ * had no caller left, and each was wrong for that page:
+ *   · headcount filtered by JOINING DATE using the period, so "last 12 months"
+ *     silently dropped everyone hired earlier, and took department only;
+ *   · attrition dated an exit by COALESCE(exit_date, updated_at) — the date the
+ *     row was last edited, not the date the person left;
+ *   · doc-expiry had no expiry window at all, and scoped by
+ *     `req.scope?.company_id ?? null`, which FAILS OPEN to every company.
+ * Each now reads the same filtered source as GET /analytics/workforce (the
+ * page's charts), takes the page's global filters, and fails CLOSED without a
+ * company scope.
+ *
+ * Permission: hr:view, via analyticsPolicy's default — unchanged. Only
+ * '/employee-reports/salary-bands' needs payroll:view, and none of these
+ * carries salary. Responses are JSON { columns, rows, total, … }; the page
+ * writes the CSV with the shared writer (formula quoting, Aadhaar masking).
+ * The old `?format=xlsx` path is not offered here: it bypassed that writer.
+ */
+function exportScope(req, res) {
+  const company_id = companyOf(req);
+  if (company_id == null && !req.scope?.isGlobal) {
+    res.status(403).json({ error: 'No company scope for this user' });
+    return undefined;
+  }
+  return company_id;
+}
+
+function sendExportError(res, e, label) {
+  if (e.status === 400) return res.status(400).json({ error: e.message });
+  console.error(`[analytics/employee-reports/${label}]`, e.message);
+  return res.status(500).json({ error: `Failed to build the ${label} report` });
+}
+
 router.get('/employee-reports/headcount', async (req, res) => {
+  const company_id = exportScope(req, res);
+  if (company_id === undefined) return;
   try {
-    // A malformed date used to reach Postgres and return a 500 carrying raw
-    // driver text; the caller could not tell a bad request from an outage.
-    const bad = assertDateParams(req.query);
-    if (bad) return res.status(bad.status).json(bad.body);
-    // EXPORT MUST MATCH THE SCREEN. This accepted only ?format and ignored the
-    // department and period the user had selected, so "export what I am looking
-    // at" silently produced the whole company. hrFrags is the same filter
-    // vocabulary the seven sibling /analytics endpoints already use.
-    const f = hrFrags(req, { defaultPeriod: 'all' });
-    const p = f.base();
-    const period = f.between('joining_date', p);
-    const { rows } = await pool.query(`
-      SELECT office_id AS "Emp Code",
-             first_name || ' ' || COALESCE(last_name,'') AS "Name",
-             department AS "Department", designation AS "Designation",
-             employment_type AS "Employment Type",
-             TO_CHAR(joining_date,'DD-Mon-YYYY') AS "Joining Date",
-             status AS "Status", gender AS "Gender",
-             COALESCE(grade,'') AS "Grade", COALESCE(band,'') AS "Band"
-      FROM employees
-      WHERE deleted_at IS NULL AND ${isIn('status', EMPLOYEE_ACTIVE)} ${f.and} ${period}
-      ORDER BY department, first_name
-    `, p);
-    if (req.query.format === 'xlsx') return sendXlsx(res, 'Headcount', rows, 'Headcount_Report.xlsx');
-    res.json({ data: rows, total: rows.length });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+    const filters = parseWorkforceFilters(req.query);
+    res.json(await getWorkforceHeadcountExport({ company_id, filters }));
+  } catch (e) { sendExportError(res, e, 'headcount'); }
 });
 
-// GET /api/analytics/employee-reports/attrition — attrition report for CSV export
 router.get('/employee-reports/attrition', async (req, res) => {
+  const bad = assertDateParams(req.query, ['from', 'to']);
+  if (bad) return res.status(bad.status).json(bad.body);
+  const company_id = exportScope(req, res);
+  if (company_id === undefined) return;
   try {
-    // A malformed date used to reach Postgres and return a 500 carrying raw
-    // driver text; the caller could not tell a bad request from an outage.
-    const bad = assertDateParams(req.query);
-    if (bad) return res.status(bad.status).json(bad.body);
-    // Department now propagates alongside the date window, matching the page.
-    const f = hrFrags(req, { defaultPeriod: 'all' });
-    const p = f.base();
-    const { from, to } = req.query;
-    let dateClause = '';
-    if (from) { p.push(from); dateClause += ` AND COALESCE(exit_date, updated_at) >= $${p.length}::date`; }
-    // Half-open upper bound: `<= $n` against a date literal is midnight, so an
-    // exit recorded on the last day of the window was excluded from the export.
-    if (to)   { p.push(to);   dateClause += ` AND COALESCE(exit_date, updated_at) < ($${p.length}::date + INTERVAL '1 day')`; }
-    const and = f.and;
-    const { rows } = await pool.query(`
-      SELECT office_id AS "Emp Code",
-             first_name || ' ' || COALESCE(last_name,'') AS "Name",
-             department AS "Department", designation AS "Designation",
-             TO_CHAR(joining_date,'DD-Mon-YYYY') AS "Joining Date",
-             TO_CHAR(exit_date,'DD-Mon-YYYY') AS "Exit Date",
-             status AS "Status",
-             COALESCE(exit_reason,'') AS "Exit Reason"
-      FROM employees
-      WHERE deleted_at IS NULL
-        AND ${isIn('status', EMPLOYEE_EXITED)}
-        ${and}${dateClause}
-      ORDER BY COALESCE(exit_date, updated_at) DESC
-    `, p);
-    if (req.query.format === 'xlsx') return sendXlsx(res, 'Attrition', rows, 'Attrition_Report.xlsx');
-    res.json({ data: rows, total: rows.length });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+    const filters = parseWorkforceFilters(req.query);
+    const { period, from, to } = req.query;
+    res.json(await getWorkforceAttritionExport({ company_id, filters, period, from, to }));
+  } catch (e) { sendExportError(res, e, 'attrition'); }
 });
 
-// GET /api/analytics/employee-reports/doc-expiry — document expiry report for CSV export
 router.get('/employee-reports/doc-expiry', async (req, res) => {
+  const company_id = exportScope(req, res);
+  if (company_id === undefined) return;
   try {
-    // A malformed date used to reach Postgres and return a 500 carrying raw
-    // driver text; the caller could not tell a bad request from an outage.
-    const bad = assertDateParams(req.query);
-    if (bad) return res.status(bad.status).json(bad.body);
-    const cid = req.scope?.company_id ?? null;
-    const cidClause = cid != null ? `AND e.company_id = $1` : '';
-    const params    = cid != null ? [cid] : [];
-    const { rows } = await pool.query(`
-      SELECT e.office_id AS "Emp Code",
-             e.first_name || ' ' || COALESCE(e.last_name,'') AS "Employee Name",
-             e.department AS "Department",
-             d.document_type AS "Document Type",
-             d.document_name AS "Document Name",
-             TO_CHAR(d.expiry_date,'DD-Mon-YYYY') AS "Expiry Date",
-             COALESCE(d.status,'pending') AS "Status",
-             (d.expiry_date - CURRENT_DATE) AS "Days Left"
-      FROM employee_documents d
-      JOIN employees e ON e.id = d.employee_id
-      WHERE d.expiry_date IS NOT NULL
-        AND ${isIn('e.status', EMPLOYEE_ACTIVE)}
-        ${cidClause}
-      ORDER BY d.expiry_date ASC
-    `, params);
-    if (req.query.format === 'xlsx') return sendXlsx(res, 'DocExpiry', rows, 'Document_Expiry_Report.xlsx');
-    res.json({ data: rows, total: rows.length });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+    const filters = parseWorkforceFilters(req.query);
+    res.json(await getWorkforceDocumentExpiryExport({ company_id, filters, window: req.query.window }));
+  } catch (e) { sendExportError(res, e, 'doc-expiry'); }
 });
 
 // GET /api/analytics/employee-reports/salary-bands — salary band distribution (HR only)

@@ -50,8 +50,28 @@ function logExceeded(req, bucket, count) {
  * @param {string}   opts.bucket     label for logs
  * @param {Function} [opts.key]      req → string (default: req.ip)
  * @param {Function} [opts.skip]     req → boolean; true bypasses the limiter
+ * @param {Function} [opts.countIf] (req, res) → boolean, evaluated once the
+ *        response has FINISHED. When supplied the limiter switches from
+ *        "count every request on the way in" to "count only the requests this
+ *        predicate accepts, on the way out". The budget is still checked on the
+ *        way in, so rejection stays cheap.
+ *
+ *        This exists for limiters that must bound work done BEFORE a request is
+ *        authenticated, without penalising the callers that turn out to be
+ *        legitimate. Counting on the way in and refunding on success does NOT
+ *        achieve that: once the counter is over budget the limiter rejects at
+ *        entry, so a legitimate caller is turned away before it can earn its
+ *        refund — which, for an IP-keyed limiter, means one bad client takes out
+ *        every other client behind the same NAT. Counting only failures avoids
+ *        that: successful traffic never moves the counter at all, so a site can
+ *        send without limit while a caller that cannot authenticate still hits a
+ *        ceiling.
+ *
+ *        The trade is that a burst arriving before any of it has finished is not
+ *        yet counted. That is acceptable for shedding floods, where responses
+ *        finish in milliseconds; it is not an authentication control.
  */
-export function memoryRateLimit({ windowMs, max, bucket, key, skip }) {
+export function memoryRateLimit({ windowMs, max, bucket, key, skip, countIf }) {
   const store = new Map(); // key → { count, windowStart }
 
   // Evict stale entries so the Map can't grow without bound under IP churn.
@@ -67,6 +87,32 @@ export function memoryRateLimit({ windowMs, max, bucket, key, skip }) {
     const k   = key ? key(req) : (req.ip || 'unknown');
     const now = Date.now();
     const e   = store.get(k);
+
+    // countIf mode: check the budget now, charge later and only if the predicate
+    // says this request should count. Nothing is incremented on the way in.
+    if (countIf) {
+      const live = e && now - e.windowStart <= windowMs ? e : null;
+      const used = live ? live.count : 0;
+
+      res.setHeader('X-RateLimit-Limit', max);
+      res.setHeader('X-RateLimit-Remaining', Math.max(0, max - used));
+
+      if (used > max) {
+        logExceeded(req, bucket, used);
+        return reject(res, Math.max(1, Math.ceil((windowMs - (now - live.windowStart)) / 1000)));
+      }
+
+      res.on('finish', () => {
+        try {
+          if (!countIf(req, res)) return;
+          const at  = Date.now();
+          const cur = store.get(k);
+          if (!cur || at - cur.windowStart > windowMs) store.set(k, { count: 1, windowStart: at });
+          else cur.count++;
+        } catch { /* never throw on a finished response */ }
+      });
+      return next();
+    }
 
     if (!e || now - e.windowStart > windowMs) {
       store.set(k, { count: 1, windowStart: now });

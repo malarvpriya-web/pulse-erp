@@ -41,12 +41,34 @@ const PRIORITY_COLORS = {
 
 const AVATAR_COLORS = ['#6366f1', '#10b981', '#7c5cf0', '#ef4444', '#3b82f6', '#8b5cf6'];
 
-const RISK_COLORS = { high: '#dc2626', medium: '#6d28d9', low: '#15803d' };
-const riskLevel = (score) => score >= 15 ? 'high' : score >= 6 ? 'medium' : 'low';
+const RISK_COLORS = { critical: '#b91c1c', high: '#dc2626', medium: '#6d28d9', low: '#15803d' };
 
-const emptyTask = () => ({ task_title: '', description: '', priority: 'medium', status: 'todo', due_date: '', assignee_name: '' });
+// project_risks.probability / .impact are VARCHAR level labels, not numbers.
+// This form used to post a 1-5 integer, which matched nothing in the backend's
+// label map and silently collapsed to medium x medium on every save — so the
+// numbers the user picked never reached the register. Labels now, matching the
+// backend's shared ordinal and the Resource Management risk form.
+const RISK_LEVEL_OPTIONS = [
+  { value: 'low',      label: 'Low' },
+  { value: 'medium',   label: 'Medium' },
+  { value: 'high',     label: 'High' },
+  { value: 'critical', label: 'Critical' },
+];
+const RISK_ORDINAL = { low: 1, medium: 2, high: 3, critical: 4 };
+const riskScoreOf = (probability, impact) =>
+  (RISK_ORDINAL[probability] || 0) * (RISK_ORDINAL[impact] || 0);
+// Bands the backend's 1..16 score. The old thresholds (>=15 high, >=6 medium)
+// were written for a 1..25 numeric scale this app never stored, so nothing
+// could ever reach 'high'.
+const riskLevel = (score) => score >= 12 ? 'critical' : score >= 6 ? 'high' : score >= 3 ? 'medium' : 'low';
+
+// task_description / assigned_to are the real `tasks` columns. The form used to
+// collect `description` and a free-text `assignee_name`; neither exists on the
+// table, so both were dropped on the way in and the task came back unassigned
+// with no description.
+const emptyTask = () => ({ task_title: '', task_description: '', priority: 'medium', status: 'todo', due_date: '', assigned_to: '' });
 const emptyMile = () => ({ name: '', description: '', due_date: '', amount: 0, billing_milestone: false });
-const emptyRisk = () => ({ description: '', category: 'technical', probability: 2, impact: 2, contingency_plan: '', status: 'open' });
+const emptyRisk = () => ({ title: '', description: '', category: 'technical', probability: 'medium', impact: 'medium', contingency_plan: '', status: 'open' });
 
 // Document classification — persisted to project_documents.document_type.
 const DOCUMENT_TYPES = ['drawing', 'specification', 'report', 'certificate', 'contract', 'manual', 'test_record', 'other'];
@@ -200,11 +222,18 @@ export default function ProjectDetail({ setPage, urlParams }) {
   const handleSaveTask = async () => {
     if (!taskForm.task_title) return showToast('Task title required', 'error');
     setSubmitting(true);
+    // assigned_to is an employees.id — send null rather than '' so the column
+    // clears instead of failing an integer cast.
+    const payload = {
+      ...taskForm,
+      project_id: pid,
+      assigned_to: taskForm.assigned_to ? Number(taskForm.assigned_to) : null,
+    };
     try {
       if (editTaskId) {
-        await api.put(`/projects/tasks/${editTaskId}`, { ...taskForm, project_id: pid });
+        await api.put(`/projects/tasks/${editTaskId}`, payload);
       } else {
-        await api.post('/projects/tasks', { ...taskForm, project_id: pid });
+        await api.post('/projects/tasks', payload);
       }
       showToast(editTaskId ? 'Task updated' : 'Task created');
       setTaskDrawer(false); setTaskForm(emptyTask()); setEditTaskId(null);
@@ -275,7 +304,9 @@ export default function ProjectDetail({ setPage, urlParams }) {
 
   /* ── RISK CRUD ── */
   const handleSaveRisk = async () => {
-    if (!riskForm.description) return showToast('Risk description required', 'error');
+    // project_risks.title is NOT NULL — this form only collected a description,
+    // so every save failed server-side and the catch below hid it.
+    if (!riskForm.title || !riskForm.title.trim()) return showToast('Risk title required', 'error');
     setSubmitting(true);
     try {
       if (editRiskId) {
@@ -286,7 +317,9 @@ export default function ProjectDetail({ setPage, urlParams }) {
       showToast(editRiskId ? 'Risk updated' : 'Risk registered');
       setRiskDrawer(false); setRiskForm(emptyRisk()); setEditRiskId(null);
       load();
-    } catch { showToast('Failed to save risk', 'error'); }
+    } catch (err) {
+      showToast(err?.response?.data?.error || 'Failed to save risk', 'error');
+    }
     finally { setSubmitting(false); }
   };
 
@@ -439,13 +472,13 @@ export default function ProjectDetail({ setPage, urlParams }) {
                         <span className="pdt-task-title">{task.task_title}</span>
                         <span className="pdt-priority-badge" style={{ background: pc.bg, color: pc.color }}>{task.priority || 'low'}</span>
                       </div>
-                      {task.assignee_name && <div className="pdt-task-meta"><Users size={10} /> {task.assignee_name}</div>}
+                      {task.assigned_to_name && <div className="pdt-task-meta"><Users size={10} /> {task.assigned_to_name}</div>}
                       {task.due_date && <div className="pdt-task-meta"><Clock size={10} /> {new Date(task.due_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' })}</div>}
                       <div className="pdt-task-actions">
                         {TASK_COLS.filter(c => c.key !== col.key).slice(0, 2).map(nc => (
                           <button key={nc.key} className="pdt-move-btn" style={{ color: nc.color }} onClick={() => updateTaskStatus(task.id, nc.key)}>→ {nc.label}</button>
                         ))}
-                        <button onClick={() => { setTaskForm({ task_title: task.task_title, description: task.description || '', priority: task.priority || 'medium', status: task.status, due_date: task.due_date ? task.due_date.split('T')[0] : '', assignee_name: task.assignee_name || '' }); setEditTaskId(task.id); setTaskDrawer(true); }} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 2, color: '#9ca3af' }}><Edit3 size={11} /></button>
+                        <button onClick={() => { setTaskForm({ task_title: task.task_title, task_description: task.task_description || '', priority: task.priority || 'medium', status: task.status, due_date: task.due_date ? task.due_date.split('T')[0] : '', assigned_to: task.assigned_to || '' }); setEditTaskId(task.id); setTaskDrawer(true); }} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 2, color: '#9ca3af' }}><Edit3 size={11} /></button>
                         <button onClick={() => setPendingDeleteTask(task.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 2, color: '#fca5a5' }}><Trash2 size={11} /></button>
                       </div>
                     </div>
@@ -515,7 +548,9 @@ export default function ProjectDetail({ setPage, urlParams }) {
           {risks.length === 0 ? <EmptyState icon={AlertTriangle} title="No risks registered" sub="Register project risks and mitigation plans" /> : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               {risks.map(r => {
-                const score = r.risk_score || (r.probability * r.impact);
+                // probability/impact are labels — the old `r.probability * r.impact`
+                // fallback multiplied two strings and rendered NaN.
+                const score = Number(r.risk_score) || riskScoreOf(r.probability, r.impact);
                 const level = riskLevel(score);
                 const rc = RISK_COLORS[level];
                 return (
@@ -528,12 +563,13 @@ export default function ProjectDetail({ setPage, urlParams }) {
                           <span style={{ padding: '2px 7px', borderRadius: 12, fontSize: 11, background: '#f3f4f6', color: '#6b7280' }}>{r.category}</span>
                           <span style={{ padding: '2px 7px', borderRadius: 12, fontSize: 11, background: r.status === 'open' ? '#ede9fe' : '#f0fdf4', color: r.status === 'open' ? '#5b21b6' : '#15803d', fontWeight: 600 }}>{r.status}</span>
                         </div>
-                        <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 2 }}>{r.description}</div>
+                        <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 2 }}>{r.title || r.description}</div>
+                        {r.title && r.description && <div style={{ fontSize: 12, color: '#6b7280' }}>{r.description}</div>}
                         {r.contingency_plan && <div style={{ fontSize: 12, color: '#6b7280' }}>Mitigation: {r.contingency_plan}</div>}
                         <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 4 }}>P: {r.probability} × I: {r.impact} = {score}</div>
                       </div>
                       <div style={{ display: 'flex', gap: 6, flexShrink: 0, marginLeft: 12 }}>
-                        <button onClick={() => { setRiskForm({ description: r.description, category: r.category || 'technical', probability: r.probability || 2, impact: r.impact || 2, contingency_plan: r.contingency_plan || '', status: r.status || 'open' }); setEditRiskId(r.id); setRiskDrawer(true); }} style={{ padding: '6px 10px', border: '1px solid var(--color-border)', borderRadius: 6, background: 'var(--color-background)', cursor: 'pointer' }}><Edit3 size={12} /></button>
+                        <button onClick={() => { setRiskForm({ title: r.title || '', description: r.description || '', category: r.category || 'technical', probability: RISK_ORDINAL[r.probability] ? r.probability : 'medium', impact: RISK_ORDINAL[r.impact] ? r.impact : 'medium', contingency_plan: r.contingency_plan || '', status: r.status || 'open' }); setEditRiskId(r.id); setRiskDrawer(true); }} style={{ padding: '6px 10px', border: '1px solid var(--color-border)', borderRadius: 6, background: 'var(--color-background)', cursor: 'pointer' }}><Edit3 size={12} /></button>
                         <button onClick={() => setPendingDeleteRisk(r.id)} style={{ padding: '6px 10px', border: '1px solid #fecaca', background: '#fef2f2', color: '#dc2626', borderRadius: 6, cursor: 'pointer' }}><Trash2 size={12} /></button>
                       </div>
                     </div>
@@ -688,14 +724,27 @@ export default function ProjectDetail({ setPage, urlParams }) {
             </div>
             <div className="pdt-drawer-body">
               <div className="pdt-field"><label>Task Title *</label><input value={taskForm.task_title} onChange={e => setTaskForm(f => ({ ...f, task_title: e.target.value }))} placeholder="What needs to be done…" /></div>
-              <div className="pdt-field"><label>Description</label><textarea rows={3} value={taskForm.description} onChange={e => setTaskForm(f => ({ ...f, description: e.target.value }))} /></div>
+              <div className="pdt-field"><label>Description</label><textarea rows={3} value={taskForm.task_description} onChange={e => setTaskForm(f => ({ ...f, task_description: e.target.value }))} /></div>
               <div className="pdt-row2">
                 <div className="pdt-field"><label>Priority</label><select value={taskForm.priority} onChange={e => setTaskForm(f => ({ ...f, priority: e.target.value }))}><option value="critical">Critical</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select></div>
                 <div className="pdt-field"><label>Status</label><select value={taskForm.status} onChange={e => setTaskForm(f => ({ ...f, status: e.target.value }))}>{TASK_COLS.map(c => <option key={c.key} value={c.key}>{c.label}</option>)}</select></div>
               </div>
               <div className="pdt-row2">
                 <div className="pdt-field"><label>Due Date</label><input type="date" value={taskForm.due_date} onChange={e => setTaskForm(f => ({ ...f, due_date: e.target.value }))} /></div>
-                <div className="pdt-field"><label>Assignee</label><input value={taskForm.assignee_name} onChange={e => setTaskForm(f => ({ ...f, assignee_name: e.target.value }))} placeholder="Name…" /></div>
+                <div className="pdt-field">
+                  <label>Assignee</label>
+                  <select value={taskForm.assigned_to} onChange={e => setTaskForm(f => ({ ...f, assigned_to: e.target.value }))}>
+                    <option value="">Unassigned</option>
+                    {team.map(m => (
+                      <option key={m.employee_id} value={m.employee_id}>
+                        {m.name}{m.role ? ` — ${m.role}` : ''}
+                      </option>
+                    ))}
+                  </select>
+                  {team.length === 0 && (
+                    <span style={{ fontSize: 11, color: '#9ca3af' }}>Add team members to this project first</span>
+                  )}
+                </div>
               </div>
             </div>
             <div className="pdt-drawer-ft">
@@ -804,17 +853,18 @@ export default function ProjectDetail({ setPage, urlParams }) {
               <button className="pdt-icon-btn" onClick={() => setRiskDrawer(false)}><X size={16} /></button>
             </div>
             <div className="pdt-drawer-body">
-              <div className="pdt-field"><label>Risk Description *</label><textarea rows={2} value={riskForm.description} onChange={e => setRiskForm(f => ({ ...f, description: e.target.value }))} placeholder="Describe the risk…" /></div>
+              <div className="pdt-field"><label>Risk Title *</label><input value={riskForm.title} onChange={e => setRiskForm(f => ({ ...f, title: e.target.value }))} placeholder="Short name for the risk…" /></div>
+              <div className="pdt-field"><label>Risk Description</label><textarea rows={2} value={riskForm.description} onChange={e => setRiskForm(f => ({ ...f, description: e.target.value }))} placeholder="Describe the risk…" /></div>
               <div className="pdt-row2">
                 <div className="pdt-field"><label>Category</label><select value={riskForm.category} onChange={e => setRiskForm(f => ({ ...f, category: e.target.value }))}><option value="technical">Technical</option><option value="financial">Financial</option><option value="schedule">Schedule</option><option value="resource">Resource</option><option value="regulatory">Regulatory</option><option value="safety">Safety</option></select></div>
                 <div className="pdt-field"><label>Status</label><select value={riskForm.status} onChange={e => setRiskForm(f => ({ ...f, status: e.target.value }))}><option value="open">Open</option><option value="mitigated">Mitigated</option><option value="closed">Closed</option></select></div>
               </div>
               <div className="pdt-row2">
-                <div className="pdt-field"><label>Probability (1-5)</label><input type="number" min={1} max={5} value={riskForm.probability} onChange={e => setRiskForm(f => ({ ...f, probability: e.target.value }))} /></div>
-                <div className="pdt-field"><label>Impact (1-5)</label><input type="number" min={1} max={5} value={riskForm.impact} onChange={e => setRiskForm(f => ({ ...f, impact: e.target.value }))} /></div>
+                <div className="pdt-field"><label>Probability</label><select value={riskForm.probability} onChange={e => setRiskForm(f => ({ ...f, probability: e.target.value }))}>{RISK_LEVEL_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}</select></div>
+                <div className="pdt-field"><label>Impact</label><select value={riskForm.impact} onChange={e => setRiskForm(f => ({ ...f, impact: e.target.value }))}>{RISK_LEVEL_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}</select></div>
               </div>
               <div style={{ padding: '8px 12px', background: '#ede9fe', borderRadius: 6, fontSize: 13, color: '#5b21b6', marginBottom: 12 }}>
-                Risk Score: <b>{(riskForm.probability || 0) * (riskForm.impact || 0)}</b> — Level: <b>{riskLevel((riskForm.probability || 0) * (riskForm.impact || 0)).toUpperCase()}</b>
+                Risk Score: <b>{riskScoreOf(riskForm.probability, riskForm.impact)}</b> / 16 — Level: <b>{riskLevel(riskScoreOf(riskForm.probability, riskForm.impact)).toUpperCase()}</b>
               </div>
               <div className="pdt-field"><label>Contingency / Mitigation Plan</label><textarea rows={3} value={riskForm.contingency_plan} onChange={e => setRiskForm(f => ({ ...f, contingency_plan: e.target.value }))} placeholder="How will this risk be mitigated…" /></div>
             </div>

@@ -17,18 +17,12 @@ router.get('/today', async (req, res) => {
 // Returns tasks visible to the authenticated user (used by the home-page widget)
 router.get('/my-tasks', async (req, res) => {
   try {
-    const authEmail = req.user?.email;
     const companyId = req.scope?.company_id ?? null;
     const { status, limit = 10 } = req.query;
 
-    let empId = null;
-    if (authEmail) {
-      const empRow = await pool.query(
-        'SELECT id FROM employees WHERE company_email = $1 LIMIT 1',
-        [authEmail]
-      );
-      if (empRow.rows.length > 0) empId = empRow.rows[0].id;
-    }
+    // The login's employee link, not a company_email match on the login
+    // address (unscoped, LIMIT 1, and an editable HR field).
+    const empId = req.user?.employee_id ?? null;
 
     const params = [companyId];
     let paramCount = 2;

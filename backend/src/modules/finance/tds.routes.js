@@ -6,7 +6,20 @@ import { companyOf } from '../../shared/scope.js';
 import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = express.Router();
-router.use(requirePermission('finance', 'view'));
+
+// PC-01 D6 (04 Nov 26): the salary Form 138 / 24Q extract carries every
+// employee's salary, PAN and TDS. It has its own narrow right,
+// payroll_tds_extract:export, held by exactly the roles that reached it through
+// finance:view before. It grants nothing else, and finance:view no longer opens
+// it. Every other TDS route keeps the router-wide finance:view gate.
+const SALARY_TDS_EXTRACT_PATHS = new Set(['/form24q', '/form24q-download']);
+const salaryTdsExtract = requirePermission('payroll_tds_extract', 'export');
+const financeView = requirePermission('finance', 'view');
+// Express routing ignores case and a trailing slash, so the check does too —
+// '/Form24Q/' must not slip past it into the finance:view branch.
+const normalisedPath = (p) => (String(p || '').replace(/\/+$/, '') || '/').toLowerCase();
+router.use((req, res, next) =>
+  (SALARY_TDS_EXTRACT_PATHS.has(normalisedPath(req.path)) ? salaryTdsExtract : financeView)(req, res, next));
 
 // ── Dev-only: seed sample TDS deductees — NEVER runs in production ────────────
 // Fake PAN numbers (DEFGH5678J, TRNSP1234T, etc.) must not appear in a real
@@ -744,242 +757,190 @@ router.get('/form26q', async (req, res) => {
   }
 });
 
-// ── GET /form24q — NSDL-compatible salary TDS return (section 192) ────────────
-// Sources actuals from payroll_runs. Falls back to employee master for missing periods.
-router.get('/form24q', async (req, res) => {
-  const { financial_year, quarter } = req.query;
-  const fy  = financial_year || currentFY();
-  const qtr = quarter; // 'Q1'–'Q4', if omitted all quarters
-  const companyId = companyOf(req) ?? req.scope?.company_id ?? null;
+// ── Form 138 (formerly Form 24Q) — quarterly statement of salary TDS ─────────
+// Tax years from 2026-27 (Income-tax Act 2025 / Income-tax Rules 2026):
+//   the DEDUCTION from salary is made under s.392 (was s.192);
+//   the QUARTERLY STATEMENT is Form No. 138, furnished under s.397(3)(b) read
+//   with Rule 219 (was Form 24Q under s.200(3) / Rule 31A).
+// Earlier years keep the 1961 Act's labels. Protean's RPU/FVU v1.1 note
+// ("Key Features", effective FY 2026-27) renames Form 24Q to Form No. 138,
+// replaces "Financial Year" with "Tax Year" and drops the "See Sections 192"
+// caption. tds_transactions.section stays '192' — it is the stored ledger
+// key (payroll.service.js writes it), not a statutory label. Endpoint paths
+// keep "form24q" for compatibility. (manual §200)
+//
+// Built from FINALISED payroll only (approved / paid, is_test = false). The old
+// version summed every payroll_runs row in the FY regardless of status, so
+// drafts and the seeded Q1 rows (salary ₹175 / ₹200 with TDS ₹3,150 / ₹3,600)
+// went into the return; it wrote PANNOTAVBL for a missing PAN, reported
+// "TDS deposited" = "TDS deducted" with no challan behind it, and still
+// produced the file with "TAN_NOT_CONFIGURED".
+//
+// The download refuses (422) while any ERROR remains.
 
-  // Derive year range from FY string  "2025-2026" → startYear=2025, endYear=2026
-  const fyParts    = fy.split('-');
-  const fyStartYr  = parseInt(fyParts[0]) || new Date().getFullYear() - 1;
-  const fyEndYr    = parseInt(fyParts[1]) || fyStartYr + 1;
+const QUARTER_MONTHS = { Q1: [4, 5, 6], Q2: [7, 8, 9], Q3: [10, 11, 12], Q4: [1, 2, 3] };
+const PAN_RE = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
+const TAN_RE = /^[A-Z]{4}[0-9]{5}[A-Z]$/;
 
-  // Quarter month ranges (Indian financial year: Apr = Q1)
-  const QUARTER_MONTHS = {
-    Q1: [4, 5, 6],
-    Q2: [7, 8, 9],
-    Q3: [10, 11, 12],
-    Q4: [1, 2, 3],
-  };
+// Labels that depend on which Act governs the year — see the comment above.
+export function salaryTdsLabels(startYear) {
+  return startYear >= 2026
+    ? { form_type: '138', form_label: 'Form 138 (formerly Form 24Q)', section: '392', period_term: 'Tax Year',
+        statute: 'Quarterly statement under s.397(3)(b) of the Income-tax Act 2025 (Rule 219, Income-tax Rules 2026); salary TDS deducted under s.392' }
+    : { form_type: '24Q', form_label: 'Form 24Q (Income-tax Rules 1962)', section: '192', period_term: 'FY',
+        statute: 'Quarterly statement under s.200(3) of the Income-tax Act 1961 (Rule 31A, Income-tax Rules 1962); salary TDS deducted under s.192' };
+}
 
-  function quarterForMonth(mo) {
-    if ([4,5,6].includes(mo))  return 'Q1';
-    if ([7,8,9].includes(mo))  return 'Q2';
-    if ([10,11,12].includes(mo)) return 'Q3';
-    return 'Q4';
+function parseFY(fy) {
+  const [a, b] = String(fy || '').split('-');
+  const start = parseInt(a);
+  if (!start) return null;
+  let end = parseInt(b);
+  // '2026-27' used to give endYear 27 — Q4 then read Jan–Mar of year 27.
+  if (!end || end < 100) end = start + 1;
+  if (end !== start + 1) return null;
+  return { start, end, label: `${start}-${end}` };
+}
+
+async function buildForm138({ companyId, financial_year, quarter }) {
+  const fy = parseFY(financial_year || currentFY());
+  if (!fy) return { http: 400, body: { message: 'financial_year must look like 2026-2027 or 2026-27' } };
+  if (quarter && !QUARTER_MONTHS[quarter]) return { http: 400, body: { message: 'quarter must be Q1, Q2, Q3 or Q4' } };
+  if (companyId == null) return { http: 400, body: { message: 'Company context required' } };
+
+  const labels = salaryTdsLabels(fy.start);
+  const yearOf = (mo) => ([1, 2, 3].includes(mo) ? fy.end : fy.start);
+  const quarters = quarter ? [quarter] : ['Q1', 'Q2', 'Q3', 'Q4'];
+  const keys = quarters.flatMap(q => QUARTER_MONTHS[q].map(mo => yearOf(mo) * 100 + mo));
+
+  const [{ rows: runs }, { rows: [co] }, { rows: excluded }, { rows: deposits }] = await Promise.all([
+    pool.query(`
+      SELECT pr.id, pr.employee_id, pr.month, pr.year, pr.status, pr.tds, pr.gross, pr.period_label, pr.is_test,
+             e.first_name, e.last_name, e.pan_number, e.office_id
+        FROM payroll_runs pr JOIN employees e ON e.id = pr.employee_id
+       WHERE e.company_id = $1 AND (pr.year * 100 + pr.month) = ANY($2::int[])
+       ORDER BY e.first_name, e.last_name, pr.year, pr.month`, [companyId, keys]),
+    pool.query(`SELECT name, tan, pan FROM companies WHERE id = $1`, [companyId]),
+    pool.query(`
+      SELECT pr.is_test, pr.status, COUNT(*)::int AS n
+        FROM payroll_runs pr JOIN employees e ON e.id = pr.employee_id
+       WHERE e.company_id = $1 AND (pr.year * 100 + pr.month) = ANY($2::int[])
+         AND (pr.is_test OR pr.status NOT IN ('approved', 'paid'))
+       GROUP BY pr.is_test, pr.status`, [companyId, keys]),
+    pool.query(`
+      SELECT employee_id, payroll_month AS month, payroll_year AS year,
+             SUM(total_tds) FILTER (WHERE deposited AND challan_number IS NOT NULL) AS deposited
+        FROM tds_transactions
+       WHERE section = '192' AND (company_id = $1 OR company_id IS NULL)
+         AND (payroll_year * 100 + payroll_month) = ANY($2::int[])
+       GROUP BY employee_id, payroll_month, payroll_year`, [companyId, keys]),
+  ]);
+
+  const final = runs.filter(r => !r.is_test && ['approved', 'paid'].includes(r.status));
+  const depMap = new Map(deposits.map(d => [`${d.employee_id}-${d.year}-${d.month}`, Number(d.deposited || 0)]));
+  const errors = [], warnings = [];
+  const tan = (co?.tan || process.env.EMPLOYER_TAN || '').trim().toUpperCase();
+  if (!TAN_RE.test(tan)) errors.push({ code: 'TAN', message: tan ? `Employer TAN "${tan}" is invalid (format AAAA99999A)` : 'Employer TAN is not configured (Company profile → TAN)' });
+
+  for (const q of quarters) {
+    const pend = runs.filter(r => !r.is_test && !['approved', 'paid'].includes(r.status) && QUARTER_MONTHS[q].includes(r.month));
+    if (pend.length) errors.push({ code: 'UNAPPROVED', quarter: q, message: `${q}: ${pend.length} payroll record(s) are not approved — approve payroll before filing` });
   }
 
-  function calendarYear(mo) {
-    return [1,2,3].includes(mo) ? fyEndYr : fyStartYr;
-  }
-
-  try {
-    // Fetch all saved payroll_runs for this FY (section 192 = salary TDS)
-    const { rows: runs } = await pool.query(`
-      SELECT
-        pr.employee_id,
-        pr.month,
-        pr.year,
-        pr.tds                 AS tds_amount,
-        pr.gross               AS salary_paid,
-        pr.period_label,
-        e.first_name,
-        e.last_name,
-        e.pan_number           AS employee_pan,
-        e.office_id            AS employee_code
-      FROM payroll_runs pr
-      JOIN employees e ON e.id = pr.employee_id
-      WHERE (
-        (pr.year = $1 AND pr.month >= 4)
-        OR
-        (pr.year = $2 AND pr.month <= 3)
-      )
-      AND ($3::varchar IS NULL OR (
-        CASE
-          WHEN pr.month IN (4,5,6)   THEN 'Q1'
-          WHEN pr.month IN (7,8,9)   THEN 'Q2'
-          WHEN pr.month IN (10,11,12) THEN 'Q3'
-          ELSE 'Q4'
-        END
-      ) = $3)
-      AND ($4::int IS NULL OR e.company_id = $4)
-      ORDER BY e.last_name, e.first_name, pr.year, pr.month
-    `, [fyStartYr, fyEndYr, qtr || null, companyId]);
-
-    // Group into quarters
-    const quarterMap = {};
-    for (const r of runs) {
-      const q = quarterForMonth(r.month);
-      if (!quarterMap[q]) quarterMap[q] = { quarter: q, deductees: {}, totals: { salary: 0, tds: 0 } };
-      const empKey = String(r.employee_id);
-      if (!quarterMap[q].deductees[empKey]) {
-        quarterMap[q].deductees[empKey] = {
-          employee_id:   r.employee_id,
-          employee_code: r.employee_code || `EMP${String(r.employee_id).padStart(4,'0')}`,
-          employee_name: `${r.first_name || ''} ${r.last_name || ''}`.trim(),
-          employee_pan:  r.employee_pan || 'PANNOTAVBL',
-          section:       '192',
-          months:        [],
-          total_salary:  0,
-          total_tds:     0,
-        };
-      }
-      const amt_tds    = parseFloat(r.tds_amount || 0);
-      const amt_salary = parseFloat(r.salary_paid || 0);
-      quarterMap[q].deductees[empKey].months.push({
-        month: r.month, year: r.year, period_label: r.period_label,
-        salary_paid: amt_salary, tds_deducted: amt_tds,
-      });
-      quarterMap[q].deductees[empKey].total_salary += amt_salary;
-      quarterMap[q].deductees[empKey].total_tds    += amt_tds;
-      quarterMap[q].totals.salary += amt_salary;
-      quarterMap[q].totals.tds    += amt_tds;
-    }
-
-    const quarters = Object.values(quarterMap).map(q => ({
-      quarter:   q.quarter,
-      deductees: Object.values(q.deductees).map((d, idx) => ({ sno: idx + 1, ...d })),
-      totals:    q.totals,
-    })).sort((a, b) => a.quarter.localeCompare(b.quarter));
-
-    const grandTotals = quarters.reduce(
-      (acc, q) => ({ salary: acc.salary + q.totals.salary, tds: acc.tds + q.totals.tds }),
-      { salary: 0, tds: 0 }
-    );
-
-    return res.json({
-      financial_year:  fy,
-      form_type:       '24Q',
-      source:          'payroll_runs',
-      quarters,
-      grand_total:     grandTotals,
-      instructions:    'Use this data to fill NSDL RPU software for Form 24Q salary TDS quarterly return (section 192).',
+  const quarterMap = {};
+  for (const r of final) {
+    const q = Object.keys(QUARTER_MONTHS).find(k => QUARTER_MONTHS[k].includes(r.month));
+    quarterMap[q] ??= { quarter: q, deductees: {}, totals: { salary: 0, tds: 0, deposited: 0 } };
+    const key = String(r.employee_id);
+    const name = `${r.first_name || ''} ${r.last_name || ''}`.trim();
+    const pan = String(r.pan_number || '').trim().toUpperCase();
+    const d = (quarterMap[q].deductees[key] ??= {
+      employee_id: r.employee_id, employee_code: r.office_id || null, employee_name: name,
+      employee_pan: pan || null, pan_valid: PAN_RE.test(pan), section: labels.section, months: [],
+      total_salary: 0, total_tds: 0, total_deposited: 0,
     });
-  } catch (err) {
-    return res.status(500).json({ error: err.message });
+    const tds = Number(r.tds || 0), gross = Number(r.gross || 0);
+    const dep = depMap.get(`${r.employee_id}-${r.year}-${r.month}`) || 0;
+    if (tds > gross) errors.push({ code: 'TDS_GT_SALARY', quarter: q, employee_code: r.office_id, message: `${name} (${r.office_id}) ${r.period_label}: TDS ₹${tds} exceeds salary ₹${gross} — invalid record` });
+    d.months.push({ month: r.month, year: r.year, period_label: r.period_label, salary_paid: gross, tds_deducted: tds, tds_deposited: dep });
+    d.total_salary += gross; d.total_tds += tds; d.total_deposited += dep;
+    quarterMap[q].totals.salary += gross; quarterMap[q].totals.tds += tds; quarterMap[q].totals.deposited += dep;
   }
+  for (const q of Object.values(quarterMap)) {
+    for (const d of Object.values(q.deductees)) {
+      if (!d.pan_valid) errors.push({ code: 'PAN', quarter: q.quarter, employee_code: d.employee_code, message: `${d.employee_name} (${d.employee_code}): PAN ${d.employee_pan ? `"${d.employee_pan}" is invalid` : 'is missing'}` });
+      if (d.total_tds > 0 && Math.round(d.total_deposited) !== Math.round(d.total_tds)) {
+        errors.push({ code: 'CHALLAN', quarter: q.quarter, employee_code: d.employee_code, message: `${d.employee_name} (${d.employee_code}): TDS deducted ₹${Math.round(d.total_tds)} but challan-backed deposit ₹${Math.round(d.total_deposited)}` });
+      }
+    }
+  }
+  for (const x of excluded) {
+    warnings.push({ code: x.is_test ? 'TEST_EXCLUDED' : 'NOT_FINAL_EXCLUDED', message: `${x.n} ${x.is_test ? 'test' : `"${x.status}"`} payroll record(s) excluded from this return` });
+  }
+
+  const qs = Object.values(quarterMap).map(q => ({
+    quarter: q.quarter, totals: q.totals,
+    deductees: Object.values(q.deductees).map((d, i) => ({ sno: i + 1, ...d })),
+  })).sort((a, b) => a.quarter.localeCompare(b.quarter));
+  return {
+    http: 200,
+    body: {
+      // Form No. 138 applies from tax year 2026-27 (Income-tax Rules 2026);
+      // earlier years are filed as Form 24Q under the 1962 Rules.
+      financial_year: fy.label,
+      form_type: labels.form_type,
+      form_label: labels.form_label,
+      salary_tds_section: labels.section,
+      period_term: labels.period_term,
+      statute: labels.statute,
+      source: 'payroll_runs (approved/paid, test excluded)',
+      employer: { name: co?.name || null, tan: tan || null },
+      quarters: qs,
+      grand_total: qs.reduce((a, q) => ({ salary: a.salary + q.totals.salary, tds: a.tds + q.totals.tds, deposited: a.deposited + q.totals.deposited }), { salary: 0, tds: 0, deposited: 0 }),
+      validation: { ok: errors.length === 0, errors, warnings },
+    },
+  };
+}
+
+router.get('/form24q', async (req, res) => {
+  try {
+    const r = await buildForm138({ companyId: companyOf(req), financial_year: req.query.financial_year, quarter: req.query.quarter });
+    res.status(r.http).json(r.body);
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ── GET /form24q-download — Form 24Q text file for NSDL RPU import ────────────
-// Generates a structured text file with quarterly TDS data.
-// One header line + one detail line per employee per quarter (Annexure I, CD records).
+// GET /form24q-download — data extract for preparing Form 138 in the return
+// preparation utility. NOT an FVU file. Refused while validation errors exist.
 router.get('/form24q-download', async (req, res) => {
-  const { financial_year, quarter } = req.query;
-  const fy        = financial_year || currentFY();
-  const fyParts   = fy.split('-');
-  const fyStartYr = parseInt(fyParts[0]) || new Date().getFullYear() - 1;
-  const fyEndYr   = parseInt(fyParts[1]) || fyStartYr + 1;
-  const qtr       = quarter; // 'Q1'|'Q2'|'Q3'|'Q4'
-  const companyId = companyOf(req) ?? req.scope?.company_id ?? null;
-
-  function quarterForMonth(mo) {
-    if ([4,5,6].includes(mo))   return 'Q1';
-    if ([7,8,9].includes(mo))   return 'Q2';
-    if ([10,11,12].includes(mo)) return 'Q3';
-    return 'Q4';
-  }
-  function quarterEndMonth(q) {
-    return { Q1: 6, Q2: 9, Q3: 12, Q4: 3 }[q];
-  }
-  function quarterEndYear(q) {
-    return [q === 'Q4' ? fyEndYr : fyStartYr];
-  }
-
   try {
-    const { rows: runs } = await pool.query(`
-      SELECT
-        pr.employee_id,
-        pr.month, pr.year,
-        pr.tds       AS tds_amount,
-        pr.gross     AS salary_paid,
-        e.first_name, e.last_name,
-        COALESCE(e.pan_number, 'PANNOTAVBL') AS pan,
-        e.office_id  AS emp_code
-      FROM payroll_runs pr
-      JOIN employees e ON e.id = pr.employee_id
-      WHERE (
-        (pr.year = $1 AND pr.month >= 4)
-        OR (pr.year = $2 AND pr.month <= 3)
-      )
-      AND ($3::varchar IS NULL OR (
-        CASE
-          WHEN pr.month IN (4,5,6)    THEN 'Q1'
-          WHEN pr.month IN (7,8,9)    THEN 'Q2'
-          WHEN pr.month IN (10,11,12) THEN 'Q3'
-          ELSE 'Q4'
-        END
-      ) = $3)
-      AND ($4::int IS NULL OR e.company_id = $4)
-      ORDER BY e.last_name, e.first_name, pr.year, pr.month
-    `, [fyStartYr, fyEndYr, qtr || null, companyId]);
-
-    if (!runs.length) return res.status(404).json({ message: 'No payroll TDS data found for the requested period.' });
-
-    // Aggregate per employee per quarter
-    const empQuarterMap = {};
-    for (const r of runs) {
-      const q   = quarterForMonth(r.month);
-      const key = `${r.employee_id}_${q}`;
-      if (!empQuarterMap[key]) {
-        empQuarterMap[key] = {
-          quarter: q, employee_id: r.employee_id,
-          name: `${r.first_name || ''} ${r.last_name || ''}`.trim(),
-          pan: r.pan, emp_code: r.emp_code || r.employee_id,
-          total_salary: 0, total_tds: 0, month_count: 0,
-        };
-      }
-      empQuarterMap[key].total_salary += parseFloat(r.salary_paid || 0);
-      empQuarterMap[key].total_tds    += parseFloat(r.tds_amount  || 0);
-      empQuarterMap[key].month_count  += 1;
+    const r = await buildForm138({ companyId: companyOf(req), financial_year: req.query.financial_year, quarter: req.query.quarter });
+    if (r.http !== 200) return res.status(r.http).json(r.body);
+    const b = r.body;
+    if (!b.validation.ok) {
+      return res.status(422).json({ message: `Form 138 cannot be generated: ${b.validation.errors.length} validation error(s)`, validation: b.validation });
     }
-
-    const records = Object.values(empQuarterMap).sort((a, b) =>
-      a.quarter.localeCompare(b.quarter) || a.name.localeCompare(b.name)
-    );
-
-    // Generate structured text (CD record format compatible with NSDL RPU Annexure I)
-    // Fields: Sno | Quarter | PAN | Name | Section | Salary | TDS Deducted | TDS Deposited | Date of Deposit
+    if (!b.quarters.length) return res.status(404).json({ message: 'No approved salary TDS records for the requested period.' });
     const lines = [
-      `FORM 24Q - Salary TDS Return | FY ${fy}${qtr ? ` | ${qtr}` : ''}`,
-      `Generated: ${new Date().toISOString()}`,
-      `Source: payroll_runs (Pulse ERP)`,
-      ``,
-      `Sl.No|Quarter|Employee PAN|Employee Name|Section|Salary Paid|TDS Deducted|TDS Deposited|Remarks`,
+      `${b.form_type === '138' ? 'FORM 138 (formerly FORM 24Q)' : 'FORM 24Q'} - Salary TDS statement data extract | ${b.period_term} ${b.financial_year}${req.query.quarter ? ` | ${req.query.quarter}` : ''}`,
+      b.statute,
+      `Employer: ${b.employer.name || ''} | TAN: ${b.employer.tan}`,
+      `Generated: ${new Date().toISOString()} | Source: approved payroll (Pulse ERP)`,
+      '',
+      // "Act Section" is the statutory section, NOT an RPU section code.
+      'Sl.No|Quarter|Employee Code|Employee PAN|Employee Name|Act Section|Salary Paid|TDS Deducted|TDS Deposited',
     ];
-
-    records.forEach((r, idx) => {
-      const tds = Math.round(r.total_tds);
-      lines.push([
-        idx + 1,
-        r.quarter,
-        r.pan,
-        r.name,
-        '192',
-        Math.round(r.total_salary),
-        tds,
-        tds,
-        'Salary',
-      ].join('|'));
-    });
-
-    const grandSalary = records.reduce((s, r) => s + r.total_salary, 0);
-    const grandTDS    = records.reduce((s, r) => s + r.total_tds,    0);
-    lines.push('');
-    lines.push(`TOTAL||||||${Math.round(grandSalary)}|${Math.round(grandTDS)}|${Math.round(grandTDS)}|`);
-    lines.push('');
-    lines.push('NOTE: Import this file into NSDL RPU software (Annexure I, Section 192) to generate FVU file for e-filing.');
-    lines.push(`Employer TAN: ${process.env.EMPLOYER_TAN || 'TAN_NOT_CONFIGURED'}`);
-
-    const fileName = `Form24Q_${fy.replace('-', '_')}${qtr ? `_${qtr}` : ''}.txt`;
+    let n = 0;
+    for (const q of b.quarters) for (const d of q.deductees) {
+      lines.push([++n, q.quarter, d.employee_code, d.employee_pan, d.employee_name, b.salary_tds_section,
+        Math.round(d.total_salary), Math.round(d.total_tds), Math.round(d.total_deposited)].join('|'));
+    }
+    lines.push('', `TOTAL|||||| ${Math.round(b.grand_total.salary)}|${Math.round(b.grand_total.tds)}|${Math.round(b.grand_total.deposited)}`);
+    lines.push('', 'NOTE: This is a validated data extract, not a filed return. "Act Section" is the statutory section, not an RPU section code. Prepare and validate the statement in the official utility (RPU/FVU) before filing.');
+    const fileName = `Form${b.form_type}_${b.financial_year.replace('-', '_')}${req.query.quarter ? `_${req.query.quarter}` : ''}.txt`;
     res.setHeader('Content-Type', 'text/plain');
     res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
     res.send(lines.join('\n'));
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // ── POST /lower-deduction-cert — store 197 certificate for a deductee ─────────

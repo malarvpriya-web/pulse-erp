@@ -25,6 +25,7 @@ import { spawnSync } from 'child_process';
 import fs            from 'fs';
 import path          from 'path';
 import { fileURLToPath } from 'url';
+import { resolveDbTarget, pgToolEnv } from '../src/config/dbTarget.js';
 
 const __dirname  = path.dirname(fileURLToPath(import.meta.url));
 const BACKUP_DIR = path.join(__dirname, '../backups');
@@ -37,35 +38,14 @@ if (fs.existsSync(dotenvPath)) {
     .filter(l => l.trim() && !l.startsWith('#') && l.includes('='));
   for (const line of vars) {
     const [k, ...rest] = line.split('=');
-    if (!process.env[k.trim()]) {
-      process.env[k.trim()] = rest.join('=').trim();
-    }
+    if (process.env[k.trim()] === undefined) process.env[k.trim()] = rest.join('=').trim();
   }
 }
 
 // ── DB config ─────────────────────────────────────────────────────────────────
-function dbFromUrl(url) {
-  const u = new URL(url);
-  return {
-    host:     u.hostname,
-    port:     u.port     || '5432',
-    name:     u.pathname.slice(1),
-    user:     u.username,
-    password: u.password,
-  };
-}
+const DB = resolveDbTarget(process.env);
 
-const DB = process.env.DATABASE_URL
-  ? dbFromUrl(process.env.DATABASE_URL)
-  : {
-      host:     process.env.DB_HOST     || 'localhost',
-      port:     process.env.DB_PORT     || '5432',
-      name:     process.env.DB_NAME     || 'Pulse',
-      user:     process.env.DB_USER     || 'postgres',
-      password: process.env.DB_PASSWORD || '',
-    };
-
-const pgEnv = { ...process.env, PGPASSWORD: DB.password };
+const pgEnv = pgToolEnv(DB, process.env);
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function psql(args, opts = {}) {

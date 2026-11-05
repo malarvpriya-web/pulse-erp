@@ -4,6 +4,7 @@ import {
 } from 'recharts';
 import api from '@/services/api/client';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import { localDay } from '@/utils/dateFormatter';
 import {
   Clock, AlertTriangle, Search, Download, RefreshCw, Users, TrendingUp,
   BarChart2, FileWarning, X, CheckCircle, Printer, Bell, Calendar,
@@ -213,7 +214,7 @@ export default function LateArrivals() {
   const [loading,       setLoading]       = useState(false);
   const [search,        setSearch]        = useState('');
   const [department,    setDepartment]    = useState('');
-  const [month,         setMonth]         = useState(new Date().toISOString().slice(0, 7));
+  const [month,         setMonth]         = useState(localDay().slice(0, 7));
   const [departments,   setDepartments]   = useState([]);
   const [warningTarget, setWarningTarget] = useState(null);
   const [activeTab,     setActiveTab]     = useState('detail'); // 'detail' | 'summary' | 'trend'

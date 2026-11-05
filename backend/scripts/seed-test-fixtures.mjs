@@ -16,6 +16,7 @@
 import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 import pool   from '../src/config/db.js';
+import { FIXTURE_CODE_SQL } from '../src/shared/employeeCode.js';
 
 if (process.env.NODE_ENV === 'production') {
   console.error('❌  seed-test-fixtures is a test fixture — refusing to run in production.');
@@ -97,9 +98,13 @@ try {
   for (const [first, last, dept, designation, status] of STAFF) {
     const email = `${first}.${last}@staff.test`.toLowerCase();
     await client.query(
-      `INSERT INTO employees (first_name, last_name, company_email, department,
+      // office_id is NOT NULL as of 20260928000003. This is an INSERT ... SELECT,
+      // so the code has to be the first SELECT expression rather than a VALUES
+      // entry. FIXTURE_CODE_SQL is unique by construction (seq_emp + 900000), so
+      // re-running this seed cannot collide with itself or with real numbering.
+      `INSERT INTO employees (office_id, first_name, last_name, company_email, department,
                               designation, status, company_id)
-       SELECT $1::text, $2::text, $3::text, $4::text, $5::text, $6::text, 1
+       SELECT ${FIXTURE_CODE_SQL}, $1::text, $2::text, $3::text, $4::text, $5::text, $6::text, 1
         WHERE NOT EXISTS (SELECT 1 FROM employees WHERE company_email = $3)`,
       [first, last, email, dept, designation, status]);
   }
@@ -134,6 +139,22 @@ try {
        FROM vendors v
       WHERE v.vendor_code = 'TSTV-1'
         AND NOT EXISTS (SELECT 1 FROM vendor_ratings r WHERE r.vendor_id = v.id)`);
+  // ...and the vendor's STORED ratings, which are what PO approval's
+  // min_vendor_rating gate actually reads (vendors.quality/delivery/price_rating,
+  // not the history rows). The app keeps them as the average of the history —
+  // POST /procurement/vendor-ratings recomputes them exactly like this — but an
+  // INSERT straight into vendor_ratings does not, so a fresh database had a
+  // vendor with a 4/4/4 history and 0/0/0 stored ratings. Every PO approval
+  // against it was refused ("Vendor rating (0.0) is below minimum required")
+  // until some test happened to post a rating — so the first run on each new
+  // database failed and every later one passed (§222).
+  await client.query(
+    `UPDATE vendors v SET
+        quality_rating  = (SELECT ROUND(AVG(quality_score)::NUMERIC,1)  FROM vendor_ratings WHERE vendor_id = v.id),
+        delivery_rating = (SELECT ROUND(AVG(delivery_score)::NUMERIC,1) FROM vendor_ratings WHERE vendor_id = v.id),
+        price_rating    = (SELECT ROUND(AVG(price_score)::NUMERIC,1)    FROM vendor_ratings WHERE vendor_id = v.id)
+      WHERE v.vendor_code = 'TSTV-1'
+        AND EXISTS (SELECT 1 FROM vendor_ratings r WHERE r.vendor_id = v.id)`);
 
   // An HSN code carrying a real GST rate, and components that inherit it. The
   // tax carry-over test needs default_gst_rate > 0 to have anything to carry.

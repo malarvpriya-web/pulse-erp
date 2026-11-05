@@ -36,8 +36,19 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.resolve(__dirname, '../.env'), quiet: true });
 
 const { default: pool } = await import('../src/config/db.js');
+const { guardOrExit, assertTestServer } = await import('./test-db/guard.mjs');
 
-const BASE = process.env.PROBE_BASE || 'http://localhost:5000';
+// §220 — this probe creates requisitions, POs, GRNs and bills (each consumes a
+// document sequence) and deletes what it tagged. It runs ONLY against an
+// isolated test database and a server proven to serve that database. It used
+// to default to http://localhost:5000 and superadmin@manifest.in — the live
+// developer database and company 1.
+await guardOrExit(pool, 'procurement-lifecycle-probe');
+if (!process.env.PROBE_BASE) {
+  console.error('\n❌ [procurement-lifecycle-probe] PROBE_BASE is required (the test backend, e.g. http://localhost:5100). There is no default.\n');
+  await pool.end(); process.exit(1);
+}
+const BASE = process.env.PROBE_BASE;
 const TAG  = 'ZZPROBE';
 
 let pass = 0, fail = 0;
@@ -150,9 +161,9 @@ async function cleanup() {
 const one = async (sql, params) => (await pool.query(sql, params)).rows[0];
 
 async function main() {
+  const admin = await mintToken(process.env.PROBE_EMAIL || 'e2e.superadmin@pulse-e2e.test');
+  await assertTestServer(pool, BASE, admin.token, 'procurement-lifecycle-probe');
   await cleanup();
-
-  const admin = await mintToken(process.env.PROBE_EMAIL || 'superadmin@manifest.in');
   const CO    = admin.user.company_id;
   console.log(`probing ${BASE} as ${admin.user.email} (company ${CO}, roles ${admin.user.roles.join(',')})`);
   const T = admin.token;

@@ -88,13 +88,9 @@ export async function callerIdentity(req, pool, companyId = null) {
       empId = userRow.employee_id;
       source = 'employee_link';
     }
-    if (empId == null && userRow?.email) {
-      const { rows } = await pool.query(
-        `SELECT id FROM employees WHERE company_email = $1 AND deleted_at IS NULL LIMIT 1`,
-        [userRow.email]
-      );
-      if (rows[0]) { empId = rows[0].id; source = 'company_email'; }
-    }
+    // No company_email fallback. Company email is an editable HR field, not
+    // the login: matching it made an HR edit decide whose identity a caller
+    // acted under. users.employee_id is the link (2026-10-12).
 
     if (empId != null) {
       const { rows } = await pool.query(

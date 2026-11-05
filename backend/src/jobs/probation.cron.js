@@ -1,158 +1,193 @@
 /**
- * Probation Cron Job
+ * Probation reminder job — daily at 09:00 IST.
  * ──────────────────────────────────────────────────────────────────────────────
- * Runs daily at 09:00.
+ * For every company, for every employee whose status is Probation and who has a
+ * stored probation_end_date (the canonical date — shared/probationDates.js):
  *
- * Rule: Every new employee starts on Probation. The probation period is 6 months
- * (180 days) from joining_date.
+ *   due_soon  today is within the company's reminder lead time before the end
+ *             date (probation_review_reminder_days, default 14):
+ *               end - lead <= today < end
+ *   ended     today is the end date or later, and the employee is STILL on
+ *             probation — the decision is due or overdue.
  *
- * This job does two things:
- *  1. WARNING  — 15 days before the end of probation (day 165 from joining):
- *               Notify the reporting manager AND all super_admin users so they
- *               can decide to confirm or extend.
+ * Each (employee, end date, kind) is sent at most once, ever. That is enforced
+ * by a UNIQUE row in probation_reminder_log, inserted in the SAME transaction
+ * as the notifications it stands for: either both commit or neither does, so a
+ * failed run is retried next time and a repeated run sends nothing new.
  *
- *  2. REMINDER — On the last day of probation (day 180 from joining):
- *               Send a final reminder to manager + super_admin that probation
- *               has ended and the employee's status needs a decision.
+ * WHAT CHANGED, AND WHY
+ *   - The old job fired only when CURRENT_DATE was EXACTLY joining + 165 or
+ *     joining + 180. One missed day — a restart, a deploy, an outage at 09:00 —
+ *     and that reminder never happened. A window is checked instead: a missed
+ *     run is caught up by the next one. A run that misses the WHOLE due-soon
+ *     window sends the single 'ended' reminder, not a stale "due soon".
+ *   - It ignored probation_end_date and assumed 180 days from joining. It now
+ *     reads the stored date, and skips an employee who has none (that gap is
+ *     reported by the dashboard's data-quality tile; this job does not invent
+ *     a date).
+ *   - Recipients were the reporting manager matched BY NAME across every
+ *     company, plus every super admin of every company. They are now this
+ *     company's HR users (hr, hr_manager, hr_exec), this company's super
+ *     admins, and the employee's reporting manager resolved by id — all within
+ *     the employee's company.
+ *   - De-duplication looked for an existing notification row, which is
+ *     per-recipient, deletable by its reader and has no company. The ledger
+ *     replaces it.
  *
- * Notification deduplication: a "probation_warning" or "probation_due" notif
- * is only created once per employee (checked via reference_id + module_name +
- * notification_type in the notifications table).
+ * An employee with no one to notify (no HR login in the company yet) gets NO
+ * ledger row, so the reminder goes out on the first run after someone exists to
+ * receive it.
  */
 
 import cron from 'node-cron';
-import pool from '../modules/shared/db.js';
-import notificationsRepository from '../modules/notifications/repositories/notifications.repository.js';
+import pool from '../config/db.js';
+import { scheduled } from './jobRun.js';
+import { statusExpr } from '../shared/employeeStatus.js';
+import { getProbationPolicy } from '../shared/probationDates.js';
+import {
+  companyUsersWithRoles, userForEmployee, insertNotifications, dispatchAfterCommit,
+} from '../probation/probation.service.js';
 
-// ── helpers ───────────────────────────────────────────────────────────────────
+export const HR_RECIPIENT_ROLES = ['hr', 'hr_manager', 'hr_exec', 'super_admin'];
 
-async function getSuperAdminIds() {
-  const res = await pool.query(
-    `SELECT id, name FROM users WHERE role = 'super_admin' AND is_active = true`
-  );
-  return res.rows;
-}
+const fmt = (iso) => {
+  const [y, m, d] = iso.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d))
+    .toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC' });
+};
 
-async function getManagerUserId(managerName) {
-  if (!managerName) return null;
-  const res = await pool.query(
-    `SELECT id FROM users
-     WHERE LOWER(TRIM(name)) = LOWER(TRIM($1)) AND is_active = true
-     LIMIT 1`,
-    [managerName]
-  );
-  return res.rows[0]?.id || null;
-}
-
-async function alreadyNotified(employeeId, notifType) {
-  const res = await pool.query(
-    `SELECT id FROM notifications
-     WHERE reference_id = $1
-       AND module_name  = 'probation'
-       AND notification_type = $2
-       AND deleted_at IS NULL
-     LIMIT 1`,
-    [employeeId, notifType]
-  );
-  return res.rowCount > 0;
-}
-
-async function createForRecipients(recipientIds, payload) {
-  for (const userId of recipientIds) {
-    if (!userId) continue;
-    await notificationsRepository.create({ ...payload, user_id: userId });
+function payloadFor(emp, kind, daysLeft) {
+  const name = `${emp.first_name ?? ''} ${emp.last_name ?? ''}`.trim() || 'An employee';
+  const who = `${name} (${emp.office_id || 'no ID'})`;
+  const end = fmt(emp.probation_end_date);
+  if (kind === 'due_soon') {
+    return {
+      title: `Probation Ending Soon — ${name}`,
+      message: `${who}'s probation ends on ${end} (${daysLeft} day${daysLeft === 1 ? '' : 's'} left). `
+        + `Start the probation review so a decision is ready by then.`,
+      notification_type: 'probation_warning',
+    };
   }
+  const when = daysLeft === 0 ? 'ends today' : `ended on ${end} (${-daysLeft} day${daysLeft === -1 ? '' : 's'} ago)`;
+  return {
+    title: `Probation ${daysLeft === 0 ? 'Ends Today' : 'Ended'} — ${name}`,
+    message: `${who}'s probation ${when} and they are still on probation. `
+      + `Record the confirmation decision.`,
+    notification_type: 'probation_due',
+  };
 }
 
-// ── core logic ────────────────────────────────────────────────────────────────
-
-async function runProbationCheck() {
-  console.log(`[Probation Cron] Running at ${new Date().toISOString()}`);
-
+/**
+ * Remind for one employee. Returns 'sent' | 'duplicate' | 'no_recipient'.
+ * Throws on a real failure (after rolling back) — the caller counts it.
+ */
+async function remindOne(companyId, emp, kind) {
+  const client = await pool.connect();
+  let sent = [];
   try {
-    // ── 1. 15-day warning (day 165 since joining) ──────────────────────────
-    const warningRes = await pool.query(`
-      SELECT id, first_name, last_name, joining_date, reporting_manager, office_id
-      FROM employees
-      WHERE LOWER(status) = 'probation'
-        AND joining_date IS NOT NULL
-        AND CURRENT_DATE = (joining_date::date + INTERVAL '165 days')::date
-    `);
-
-    for (const emp of warningRes.rows) {
-      const notifType = 'probation_warning';
-      if (await alreadyNotified(emp.id, notifType)) continue;
-
-      const name     = `${emp.first_name} ${emp.last_name}`.trim();
-      const dueDate  = new Date(new Date(emp.joining_date).getTime() + 180 * 86400000)
-                         .toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' });
-
-      const payload = {
-        title           : `Probation Ending Soon — ${name}`,
-        message         : `${name} (${emp.office_id || 'N/A'}) has 15 days left on probation. Review and confirm / extend before ${dueDate}.`,
-        module_name     : 'probation',
-        reference_id    : emp.id,
-        notification_type: notifType,
-      };
-
-      const superAdmins   = await getSuperAdminIds();
-      const managerUserId = await getManagerUserId(emp.reporting_manager);
-      const recipients    = [...superAdmins.map(u => u.id), managerUserId];
-
-      await createForRecipients(recipients, payload);
-      console.log(`[Probation Cron] ⚠️  Warning sent for employee #${emp.id} (${name})`);
+    await client.query('BEGIN');
+    const recipients = [
+      ...(await companyUsersWithRoles(client, companyId, HR_RECIPIENT_ROLES)),
+      await userForEmployee(client, companyId, emp.reporting_manager_id),
+    ].filter((id) => id != null);
+    const unique = [...new Set(recipients)];
+    if (!unique.length) {
+      await client.query('ROLLBACK');
+      return 'no_recipient';
     }
-
-    // ── 2. Probation-due reminder (day 180 since joining) ─────────────────
-    const dueRes = await pool.query(`
-      SELECT id, first_name, last_name, joining_date, reporting_manager, office_id
-      FROM employees
-      WHERE LOWER(status) = 'probation'
-        AND joining_date IS NOT NULL
-        AND CURRENT_DATE = (joining_date::date + INTERVAL '180 days')::date
-    `);
-
-    for (const emp of dueRes.rows) {
-      const notifType = 'probation_due';
-      if (await alreadyNotified(emp.id, notifType)) continue;
-
-      const name = `${emp.first_name} ${emp.last_name}`.trim();
-
-      const payload = {
-        title           : `Probation Period Ended — ${name}`,
-        message         : `${name} (${emp.office_id || 'N/A'}) has completed 6 months. Please update their employment status (Confirm / Extend / Terminate).`,
-        module_name     : 'probation',
-        reference_id    : emp.id,
-        notification_type: notifType,
-      };
-
-      const superAdmins   = await getSuperAdminIds();
-      const managerUserId = await getManagerUserId(emp.reporting_manager);
-      const recipients    = [...superAdmins.map(u => u.id), managerUserId];
-
-      await createForRecipients(recipients, payload);
-      console.log(`[Probation Cron] 🔔  Due-reminder sent for employee #${emp.id} (${name})`);
+    const { rows } = await client.query(
+      `INSERT INTO probation_reminder_log
+         (company_id, employee_id, probation_end_date, reminder_kind, recipient_count)
+       VALUES ($1, $2, $3::date, $4, $5)
+       ON CONFLICT (employee_id, probation_end_date, reminder_kind) DO NOTHING
+       RETURNING id`,
+      [companyId, emp.id, emp.probation_end_date, kind, unique.length],
+    );
+    if (!rows.length) {
+      await client.query('ROLLBACK');
+      return 'duplicate';
     }
-
-    const totalWarnings = warningRes.rowCount;
-    const totalDue      = dueRes.rowCount;
-    console.log(`[Probation Cron] Done — ${totalWarnings} warning(s), ${totalDue} due-reminder(s).`);
-
+    sent = await insertNotifications(client, unique, {
+      ...payloadFor(emp, kind, emp.days_left),
+      module_name: 'probation',
+      reference_id: emp.id,
+      company_id: companyId,
+    });
+    await client.query('COMMIT');
   } catch (err) {
-    console.error('[Probation Cron] Error:', err.message);
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
   }
+  await dispatchAfterCommit(sent);
+  return 'sent';
 }
 
-// ── schedule ──────────────────────────────────────────────────────────────────
+/**
+ * One pass. `asOf` ('YYYY-MM-DD') replaces today for tests; `companyId` limits
+ * the pass to one company (the manual trigger, run by a company admin).
+ * Returns counters; throws AFTER processing everything else if any employee
+ * failed, so runJob logs a FAIL with the first error rather than a clean run.
+ */
+export async function runProbationCheck({ asOf = null, companyId = null } = {}) {
+  const counters = { companies: 0, due_soon: 0, ended: 0, duplicate: 0, no_recipient: 0, failed: 0 };
+  const failures = [];
+
+  const { rows: companies } = await pool.query(
+    `SELECT DISTINCT company_id
+       FROM employees
+      WHERE company_id IS NOT NULL AND deleted_at IS NULL
+        AND probation_end_date IS NOT NULL
+        AND ${statusExpr()} = 'probation'
+        AND ($1::int IS NULL OR company_id = $1)
+      ORDER BY company_id`,
+    [companyId],
+  );
+
+  for (const { company_id: cid } of companies) {
+    counters.companies += 1;
+    const policy = await getProbationPolicy(pool, cid);
+    const { rows: due } = await pool.query(
+      `SELECT id, office_id, first_name, last_name, reporting_manager_id,
+              probation_end_date::text AS probation_end_date,
+              (probation_end_date - COALESCE($2::date, CURRENT_DATE))::int AS days_left
+         FROM employees
+        WHERE company_id = $1 AND deleted_at IS NULL
+          AND ${statusExpr()} = 'probation'
+          AND probation_end_date IS NOT NULL
+          AND probation_end_date <= COALESCE($2::date, CURRENT_DATE) + $3::int
+        ORDER BY probation_end_date, id`,
+      [cid, asOf, policy.reminder_days],
+    );
+    for (const emp of due) {
+      const kind = emp.days_left > 0 ? 'due_soon' : 'ended';
+      try {
+        const outcome = await remindOne(cid, emp, kind);
+        if (outcome === 'sent') counters[kind] += 1;
+        else counters[outcome] += 1;
+      } catch (err) {
+        counters.failed += 1;
+        failures.push(`company ${cid} employee ${emp.id}: ${err.message}`);
+      }
+    }
+  }
+
+  if (failures.length) {
+    const err = new Error(`${failures.length} probation reminder(s) failed — ${failures.join('; ')}`);
+    err.counters = counters;
+    throw err;
+  }
+  return counters;
+}
 
 export function startProbationCron() {
-  // Run daily at 09:00 server time
-  cron.schedule('0 9 * * *', runProbationCheck, {
-    scheduled : true,
-    timezone  : 'Asia/Kolkata',
+  cron.schedule('0 9 * * *', scheduled('probationReminders', () => runProbationCheck()), {
+    scheduled: true,
+    timezone: 'Asia/Kolkata',
   });
   console.log('✅ Probation cron scheduled — runs daily at 09:00 IST');
 }
 
-// Allow manual trigger via: node -e "import('./src/jobs/probation.cron.js').then(m => m.runProbationCheckNow())"
-export { runProbationCheck as runProbationCheckNow };
+/** Manual trigger (notifications.routes.js). Resolves to the counters or throws. */
+export const runProbationCheckNow = (opts = {}) => runProbationCheck(opts);

@@ -23,6 +23,7 @@ export default function ModuleSettingsPanel({
   apiEndpoint,
   setPage,
   sections,
+  embedded = false,
 }) {
   const defaults = buildDefaults(sections);
 
@@ -32,6 +33,13 @@ export default function ModuleSettingsPanel({
   const [saving,   setSaving]   = useState(false);
   const [toast,    setToast]    = useState(null);
   const [hasSaved, setHasSaved] = useState(false);
+  // A failed load (anything but 404 = "never saved") would leave the form on
+  // its DEFAULTS, and saving them would overwrite the real settings. So on a
+  // failure the form is not shown at all — only the error and Retry — and
+  // Save is refused. The server answers 200 {} only when nothing is saved and
+  // 500 SETTINGS_READ_FAILED when the read itself failed (manual §200).
+  const [loadError, setLoadError] = useState(null);
+  const [attempt,   setAttempt]   = useState(0);
 
   const dirty = JSON.stringify(values) !== JSON.stringify(saved);
 
@@ -45,11 +53,19 @@ export default function ModuleSettingsPanel({
   useEffect(() => {
     let alive = true;
     setLoading(true);
+    setLoadError(null);
     api.get(apiEndpoint)
       .then(res => {
         if (!alive) return;
+        // Anything but a plain object (an HTML error page, an array) is not a
+        // settings blob — spreading a string would scatter its characters in.
+        const body = res.data ?? {};
+        if (typeof body !== 'object' || Array.isArray(body)) {
+          setLoadError('the server returned something that is not a settings object');
+          return;
+        }
         const d = buildDefaults(sections);
-        const merged = { ...d, ...(res.data || {}) };
+        const merged = { ...d, ...body };
         setValues(merged);
         setSaved(merged);
       })
@@ -57,11 +73,12 @@ export default function ModuleSettingsPanel({
         if (!alive) return;
         if (err?.response?.status !== 404) {
           console.error('[ModuleSettingsPanel] load failed:', err.message);
+          setLoadError(err?.response?.data?.message || err?.response?.data?.error || err.message || 'request failed');
         }
       })
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
-  }, [apiEndpoint]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [apiEndpoint, attempt]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const flash = (msg, type = 'success') => {
     setToast({ msg, type });
@@ -69,6 +86,7 @@ export default function ModuleSettingsPanel({
   };
 
   const handleSave = async () => {
+    if (loadError) return;
     setSaving(true);
     try {
       await api.post(apiEndpoint, values);
@@ -177,7 +195,7 @@ export default function ModuleSettingsPanel({
   const goBack = () => setPage && setPage('SettingsCenter');
 
   return (
-    <div style={{ minHeight: '100vh', background: '#f8f9fb', fontFamily: 'inherit', display: 'flex', flexDirection: 'column' }}>
+    <div style={{ minHeight: embedded ? 0 : '100vh', background: embedded ? 'transparent' : '#f8f9fb', fontFamily: 'inherit', display: 'flex', flexDirection: 'column' }}>
 
       {/* Toast */}
       {toast && (
@@ -192,7 +210,14 @@ export default function ModuleSettingsPanel({
       )}
 
       {/* Header — the shared hero. Every module's Settings page renders
-          through this shell, so one hero here covers all of them. */}
+          through this shell, so one hero here covers all of them. Embedded in a
+          hub (Payroll Center → Settings) the hub's own hero is the header, and
+          "Back to Settings" would leave the hub, so a one-line title stands in. */}
+      {embedded ? (
+        <div style={{ fontSize: 13, color: dirty ? '#6d28d9' : '#6b7280', padding: '0 0 4px' }}>
+          <strong style={{ color: '#1f2937' }}>{moduleName} Settings</strong> — {dirty ? 'Unsaved changes' : `Configuration for the ${moduleName} module`}
+        </div>
+      ) : (
       <PageHero
         icon={Icon}
         eyebrow="Settings"
@@ -204,12 +229,26 @@ export default function ModuleSettingsPanel({
           </button>
         }
       />
+      )}
 
       {/* Sections */}
-      <div style={{ flex: 1, padding: '24px 28px 120px', overflowY: 'auto' }}>
+      <div style={{ flex: 1, padding: embedded ? '16px 0 120px' : '24px 28px 120px', overflowY: 'auto' }}>
         {loading ? (
           <div style={{ color: '#9ca3af', fontSize: 14, padding: 40, textAlign: 'center' }}>
             Loading settings…
+          </div>
+        ) : loadError ? (
+          <div role="alert" style={{ maxWidth: 740, padding: '14px 16px', borderRadius: 8,
+            background: '#fef2f2', border: '1px solid #fecaca', color: '#991b1b', fontSize: 13 }}>
+            Could not load the saved {moduleName} settings ({loadError}). They are not shown and cannot be
+            saved until they load, so nothing can overwrite them with defaults.
+            <div style={{ marginTop: 10 }}>
+              <button onClick={() => setAttempt(a => a + 1)}
+                style={{ padding: '7px 16px', borderRadius: 7, border: '1px solid #fecaca', background: '#fff',
+                  color: '#991b1b', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
+                Retry
+              </button>
+            </div>
           </div>
         ) : (
           <div style={{ maxWidth: 740, display: 'flex', flexDirection: 'column', gap: 18 }}>
@@ -263,8 +302,8 @@ export default function ModuleSettingsPanel({
         )}
       </div>
 
-      {/* Sticky bottom bar */}
-      {!loading && (
+      {/* Sticky bottom bar — not drawn while the saved settings failed to load. */}
+      {!loading && !loadError && (
         <div style={{
           position: 'sticky', bottom: 0, background: '#fff',
           borderTop: dirty ? '2px solid #8b5cf6' : '1px solid #f0f0f4',
@@ -290,11 +329,12 @@ export default function ModuleSettingsPanel({
             </button>
             <button
               onClick={handleSave}
-              disabled={saving}
+              disabled={saving || !!loadError}
+              title={loadError ? 'Saved settings did not load — saving now would overwrite them with defaults' : undefined}
               style={{
                 padding: '8px 20px', borderRadius: 7, border: 'none',
                 background: '#7c3aed', color: '#fff', fontSize: 13, fontWeight: 600,
-                cursor: saving ? 'default' : 'pointer', opacity: saving ? 0.7 : 1,
+                cursor: saving || loadError ? 'not-allowed' : 'pointer', opacity: saving ? 0.7 : loadError ? 0.45 : 1,
               }}
             >
               {saving ? 'Saving…' : 'Save Changes'}

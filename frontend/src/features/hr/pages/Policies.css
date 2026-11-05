@@ -74,6 +74,7 @@
 }
 
 .pol-grid input,
+.pol-grid select,
 .pol-grid textarea {
   width: 100%;
   border: 1px solid #d1d5db;

@@ -1,12 +1,18 @@
 import { useState, useEffect, useRef } from 'react';
 import {
   FileText, Trash2, CheckCircle, XCircle, ExternalLink, X, ChevronDown,
-  Users,
+  Users, Download,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import { useAuth } from '@/context/AuthContext';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { openEmployeeFile } from '@/features/employees/shared/employeeFiles';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import {
+  peekEmployeeListFilter, clearEmployeeListFilter,
+} from '@/features/employees/employeeListFilter';
+import { downloadCsv, maskAadhaarInText } from '@/features/employees/csvExport';
+import { localDay } from '@/utils/dateFormatter';
 
 const DOC_TYPES = [
   'Offer Letter', 'Appointment Letter', 'Contract', 'NDA',
@@ -50,11 +56,42 @@ function isExpired(expiryDate) {
   return new Date(expiryDate) < new Date();
 }
 
+/**
+ * The "Export filtered" file: exactly the rows the table is showing, in the
+ * columns the table shows, plus Days Left (what the old Document Expiry report
+ * on Employee Reports was for). Notes and file links are not on screen and are
+ * not exported — the CSV never says more than the page.
+ *
+ * Every text cell goes through maskAadhaarInText: there is no Aadhaar column
+ * here, but a document name is free text and "Aadhar Card 2345 6789 0123" is the
+ * obvious thing to type. Formula quoting is applied by downloadCsv/buildCsv.
+ */
+export const DOCUMENT_EXPORT_HEADERS = [
+  'Emp Code', 'Employee', 'Department', 'Document', 'Type', 'Source',
+  'Expiry Date', 'Days Left', 'Date', 'Status',
+];
+
+export function documentExportRows(docs) {
+  return docs.map(d => {
+    const daysLeft = d.expiry_date
+      ? Math.ceil((new Date(d.expiry_date) - Date.now()) / 86400000)
+      : '';
+    return [
+      d.employee_code, d.employee_name, d.employee_department,
+      d.name, d.type, d.source,
+      d.expiry_date || '', daysLeft, d.uploaded_at || '',
+      (STATUS_META[d.status] || STATUS_META.pending).label,
+    ].map(v => (typeof v === 'string' ? maskAadhaarInText(v) : (v ?? '')));
+  });
+}
+
 export default function EmployeeDocuments({ setPage: _setPage }) {
   // HR runs the cross-employee audit (add/verify/reject/delete). Everyone else
   // — employees — gets a read-only view of their own documents only.
   const { user, hasPermission } = useAuth();
-  const canManage = hasPermission('hr', 'add') || hasPermission('hr', 'edit');
+  // employee_documents — the explicit HR document grant the server checks
+  // (§202). It used to be the broad 'hr' module, which payroll_admin holds.
+  const canManage = hasPermission('employee_documents', 'add') || hasPermission('employee_documents', 'edit');
   const myEmpId   = user?.employee_id ? String(user.employee_id) : null;
 
   const [docs,        setDocs]        = useState([]);
@@ -67,6 +104,22 @@ export default function EmployeeDocuments({ setPage: _setPage }) {
   const [filterEmp,    setFilterEmp]    = useState('');   // '' = all
   const [filterType,   setFilterType]   = useState('');
   const [filterStatus, setFilterStatus] = useState('');
+  // Expiry is a CLIENT-side filter: the API has no expiry predicate and the
+  // page already holds every row it would filter. '' = all, 'attention' =
+  // expired or expiring within 30 days, 'expired', 'expiring'.
+  // Seeded from the Employees Dashboard's "Expiring Docs" card, which used to
+  // land here with no filter at all — a count of 4 followed by the full
+  // document register.
+  // ⚠ Honour whichever bucket the dashboard sent. This used to test only for
+  // 'expiring' and map it to 'attention'; once the Documents tile's overdue
+  // badge became its own link it started sending 'expired', which fell
+  // straight through to '' and opened the register unfiltered — the exact
+  // failure the handoff exists to prevent.
+  const [filterExpiry, setFilterExpiry] = useState(() => {
+    const wanted = peekEmployeeListFilter()?.expiry;
+    return ['expired', 'expiring', 'attention'].includes(wanted) ? wanted : '';
+  });
+  useEffect(() => { clearEmployeeListFilter(); }, []);
 
   // Add form
   const [form, setForm] = useState({
@@ -168,6 +221,20 @@ export default function EmployeeDocuments({ setPage: _setPage }) {
   const expiredCount  = docs.filter(d => isExpired(d.expiry_date)).length;
   const expiringSoon  = docs.filter(d => isExpiringSoon(d.expiry_date)).length;
 
+  // ⚠ The table used to render `docs` directly while three <select>s sat above
+  // it. Those three happen to be server-side (loadDocs re-queries on change),
+  // so it worked — but any client-side filter added later would have been
+  // silently ignored. One list, one place it is narrowed.
+  const visibleDocs = docs.filter(d => {
+    if (!filterExpiry) return true;
+    const expired  = isExpired(d.expiry_date);
+    const expiring = isExpiringSoon(d.expiry_date);
+    if (filterExpiry === 'expired')   return expired;
+    if (filterExpiry === 'expiring')  return expiring;
+    if (filterExpiry === 'attention') return expired || expiring;
+    return true;
+  });
+
   return (
     <PageShell dock={
       <PageHero
@@ -211,8 +278,8 @@ export default function EmployeeDocuments({ setPage: _setPage }) {
         <div style={{ display: 'flex', gap: 10, marginBottom: 18, flexWrap: 'wrap' }}>
           <Chip label={`${docs.length} total`} bg="#f3f4f6" color="#374151" />
           {pendingCount > 0  && <Chip label={`${pendingCount} pending verification`} bg="#ede9fe" color="#5b21b6" onClick={() => setFilterStatus('pending')} />}
-          {expiredCount > 0  && <Chip label={`${expiredCount} expired`}             bg="#fee2e2" color="#dc2626" />}
-          {expiringSoon > 0  && <Chip label={`${expiringSoon} expiring in 30 days`} bg="#fff7ed" color="#5b21b6" />}
+          {expiredCount > 0  && <Chip label={`${expiredCount} expired`}             bg="#fee2e2" color="#dc2626" onClick={() => setFilterExpiry('expired')} />}
+          {expiringSoon > 0  && <Chip label={`${expiringSoon} expiring in 30 days`} bg="#fff7ed" color="#b45309" onClick={() => setFilterExpiry('expiring')} />}
         </div>
       )}
 
@@ -242,12 +309,40 @@ export default function EmployeeDocuments({ setPage: _setPage }) {
             { value: 'rejected', label: 'Rejected' },
           ]}
         />
-        {(filterEmp || filterType || filterStatus) && (
+        <SelectFilter
+          value={filterExpiry}
+          onChange={setFilterExpiry}
+          placeholder="Any Expiry"
+          options={[
+            { value: 'attention', label: 'Expired or expiring' },
+            { value: 'expired',   label: 'Expired' },
+            { value: 'expiring',  label: 'Expiring in 30 days' },
+          ]}
+        />
+        {(filterEmp || filterType || filterStatus || filterExpiry) && (
           <button
-            onClick={() => { setFilterEmp(''); setFilterType(''); setFilterStatus(''); }}
+            onClick={() => { setFilterEmp(''); setFilterType(''); setFilterStatus(''); setFilterExpiry(''); }}
             style={{ background: 'none', border: '1px solid #e5e7eb', borderRadius: 7, padding: '7px 12px', fontSize: 12, cursor: 'pointer', color: '#6b7280' }}
           >
             Clear filters
+          </button>
+        )}
+        {/* Replaces the Document Expiry CSV that used to sit on Employee Reports:
+            the export now lives with the filters it should respect. */}
+        {canManage && (
+          <button
+            type="button"
+            onClick={() => {
+              const scope = (filterEmp || filterType || filterStatus || filterExpiry) ? 'filtered' : 'all';
+              const stamp = localDay();
+              downloadCsv(DOCUMENT_EXPORT_HEADERS, documentExportRows(visibleDocs),
+                `employee-documents-${scope}-${stamp}.csv`);
+            }}
+            disabled={loading || visibleDocs.length === 0}
+            title="Download the documents currently listed as CSV"
+            style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 6, background: '#fff', border: '1px solid #e5e7eb', borderRadius: 7, padding: '7px 12px', fontSize: 12, fontWeight: 600, color: '#374151', cursor: (loading || visibleDocs.length === 0) ? 'default' : 'pointer', opacity: (loading || visibleDocs.length === 0) ? 0.5 : 1 }}
+          >
+            <Download size={13} /> Export filtered ({visibleDocs.length})
           </button>
         )}
       </div>
@@ -266,7 +361,7 @@ export default function EmployeeDocuments({ setPage: _setPage }) {
               </tr>
             </thead>
             <tbody>
-              {docs.map(doc => {
+              {visibleDocs.map(doc => {
                 const sm = STATUS_META[doc.status] || STATUS_META.pending;
                 const expired    = isExpired(doc.expiry_date);
                 const expireSoon = isExpiringSoon(doc.expiry_date);
@@ -318,7 +413,9 @@ export default function EmployeeDocuments({ setPage: _setPage }) {
                         {doc.view_url && (
                           <ActionBtn
                             title="View / Open"
-                            onClick={() => window.open(doc.view_url, '_blank', 'noopener,noreferrer')}
+                            // A Drive link opens as-is; an uploaded file goes through the
+                            // authenticated /files route (employeeFiles.js).
+                            onClick={async () => { const err = await openEmployeeFile(doc.view_url); if (err) showToast(err, 'error'); }}
                             icon={<ExternalLink size={12} color="#6b7280" />}
                             bg="#f3f4f6"
                           />

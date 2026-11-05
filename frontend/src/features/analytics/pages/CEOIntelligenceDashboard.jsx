@@ -21,6 +21,7 @@ import RevenueForecastPanel   from './RevenueForecastPanel';
 import CustomerRiskPanel      from './CustomerRiskPanel';
 import VendorRiskPanel        from './VendorRiskPanel';
 import CollectionRiskPanel    from './CollectionRiskPanel';
+import { drillProps, toCustomer, toVendor } from './drillThrough';
 import SupplyChainRiskPanel   from './SupplyChainRiskPanel';
 import ProjectProfitabilityPanel from './ProjectProfitabilityPanel';
 import StrategicAlertsPanel   from './StrategicAlertsPanel';
@@ -67,8 +68,17 @@ const TABS = [
 ];
 
 // Operations drill-through tiles — `route` is the autoRouter page name
+//
+// 'Open Projects', NOT 'Active Projects'. /dashboard/operations counts projects
+// whose status is NOT IN ('completed','cancelled'), which includes 'planning';
+// the Projects tab's 'Active Projects' counts status = 'active' exactly. Both
+// numbers are right for their own definition, but under one shared label the
+// page contradicted itself — measured 2026-09-16: this tile read 6 while the
+// Projects tab read 2, from 2 active + 4 planning. Same family of defect as the
+// open-ticket casing split already documented in dashboard.controller.js; the
+// fix is to name the two sets differently, not to force them equal.
 const OPS_TILES = [
-  { key: 'active_projects',    label: 'Active Projects',    icon: Briefcase,   color: C.primary, route: 'ProjectsDashboard' },
+  { key: 'active_projects',    label: 'Open Projects',      icon: Briefcase,   color: C.primary, route: 'ProjectsDashboard' },
   { key: 'open_tickets',       label: 'Open Tickets',       icon: Ticket,      color: C.blue,    route: 'AllTickets' },
   { key: 'pending_invoices',   label: 'Pending Invoices',   icon: FileText,    color: C.amber,   route: 'InvoicesNew' },
   { key: 'overdue_tasks',      label: 'Overdue Tasks',      icon: Clock,       color: C.red,     route: 'Projects', alertWhenPositive: true },
@@ -115,8 +125,8 @@ const PC_PAD_NEG = 'calc(var(--spacing-md, 20px) * -1)';
 const KPI_STRIP = [
   { key: 'revenue',         icon: IndianRupee, color: C.green,   money: true },
   { key: 'arr',             icon: Zap,         color: C.rose,    money: true, sub: 'Active AMC contracts' },
-  { key: 'headcount',       icon: Users,       color: C.blue },
-  { key: 'attrition',       icon: Activity,    color: C.amber,   invert: true },
+  { key: 'headcount',       icon: Users,       color: C.blue,    sub: 'On payroll today' },
+  { key: 'attrition',       icon: Activity,    color: C.amber,   invert: true, sub: 'Exits in selected period' },
   { key: 'openPipeline',    icon: Target,      color: C.primary, money: true },
   // Derived (not stored): open, not past its end date, and within 110% of budget.
   { key: 'projectsOnTrack', icon: CheckCircle, color: C.cyan, sub: 'On schedule and within budget' },
@@ -158,8 +168,31 @@ function GrowthChip({ growth, invert = false }) {
   );
 }
 
-function KpiStrip({ kpis }) {
-  const k = kpis || {};
+/**
+ * The six headline numbers, persistent across tabs.
+ *
+ * Mounted 2026-09-16. It had been DEFINED BUT RENDERED NOWHERE since it was
+ * merged in from CeoDashboard — and the Executive tab omits Revenue YTD, ARR and
+ * Pipeline precisely because a comment there says "the sticky KPI strip above
+ * carries them". It did not, so those three numbers appeared nowhere on the page.
+ *
+ * `execKpis` is /ceo-intelligence/executive-summary, which DOES follow the page
+ * filter. Its figures are preferred for the three money tiles so the strip moves
+ * with the period instead of contradicting the tab under it; the rest are
+ * point-in-time and say so on the tile.
+ */
+function KpiStrip({ kpis, execKpis }) {
+  const base = kpis || {};
+  const e = execKpis || {};
+  const merge = (key, value, sub) => (value == null || base[key] == null)
+    ? base[key]
+    : { ...base[key], value, sub: sub ?? base[key].sub };
+  const k = {
+    ...base,
+    revenue:      merge('revenue',      e.revenue_ytd,        'In selected period'),
+    arr:          merge('arr',          e.amc_revenue_annual, 'Active AMC contracts'),
+    openPipeline: merge('openPipeline', e.pipeline_value,     'Open now — not period-filtered'),
+  };
   return (
     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(148px, 1fr))', gap: 8, marginTop: 12 }}>
       {KPI_STRIP.map(({ key, icon: Icon, color, sub, invert, money }) => {
@@ -225,10 +258,15 @@ function ExecutiveAlertsCard({ insights }) {
   );
 }
 
-function KpiCard({ label, value, sub, color = C.primary, icon: Icon, trend, warn }) {
+function KpiCard({ label, value, sub, color = C.primary, icon: Icon, trend, warn, onGo, goLabel }) {
   // Delegates to the design-system card so this page's KPIs match every other
-  // page's. Signature unchanged, so no call site needed editing.
-  return <Stat label={label} value={value} sub={sub} color={color} icon={Icon} trend={trend} warn={warn} />;
+  // page's. Call sites that pass no onGo are unaffected.
+  const card = <Stat label={label} value={value} sub={sub} color={color} icon={Icon} trend={trend} warn={warn} />;
+  // Wrapped rather than passing onClick into Stat: Stat is shared by every page
+  // and must not grow a navigation concern for this one.
+  return onGo
+    ? <div {...drillProps(onGo, goLabel || label)} style={{ cursor: 'pointer' }}>{card}</div>
+    : card;
 }
 
 function TrafficLight({ lights }) {
@@ -294,7 +332,7 @@ function HealthPieChart({ data, title }) {
 function ExecutiveSummaryTab({
   summary, customerSummary, vendorSummary, projectSummary,
   ceoKpis, salesKpi, insights, revChart, hasOutstanding,
-  period, setPeriod, year, setYear, showYoY, setShowYoY,
+  period, setPeriod, year, setYear, showYoY, setShowYoY, onTab,
 }) {
   // Forecast provenance, surfaced by /ceo-intelligence/executive-summary.
   const summaryMeta = summary;
@@ -352,7 +390,7 @@ function ExecutiveSummaryTab({
               "AMC Annual Revenue" is also gone: it ran the identical query as
               ARR and differed only in label. */}
           <KpiCard label="Revenue This Month" value={fmtL(kpis.revenue_this_month)} color={C.green} icon={IndianRupee} trend={ck.revenue?.growth} />
-          <KpiCard label="Outstanding Collections" value={fmtL(kpis.outstanding_collections)} color={C.amber} icon={Clock} sub="Unpaid, excluding cancelled" warn={kpis.outstanding_collections > kpis.revenue_ytd * 0.25} />
+          <KpiCard label="Outstanding Collections" value={fmtL(kpis.outstanding_collections)} color={C.amber} icon={Clock} sub="Unpaid, excluding cancelled" warn={kpis.outstanding_collections > kpis.revenue_ytd * 0.25} onGo={onTab && (() => onTab('collections'))} goLabel="Collections aging" />
           <KpiCard label="Avg Deal Size" value={salesKpi?.avgDealSize != null ? fmtL(salesKpi.avgDealSize) : '—'} color={C.blue} icon={ShoppingCart} sub="Won opportunities" />
           {/* The forecast names its own assumption: the backend reports whether
               the win rate was measured from closed opportunities or defaulted. */}
@@ -409,10 +447,12 @@ function ExecutiveSummaryTab({
       {/* Quick Stats Row */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 }}>
         {[
-          { label: 'Total Customers', value: fmtNum(customerSummary?.total_customers), color: C.blue, icon: Users },
-          { label: 'Total Vendors', value: fmtNum(vendorSummary?.total_vendors), color: C.cyan, icon: Package },
-          { label: 'Active Projects', value: fmtNum(projectSummary?.active_projects), color: C.primary, icon: Briefcase },
-          { label: 'Delayed Projects', value: fmtNum(projectSummary?.delayed_count), color: C.red, icon: AlertTriangle, warn: projectSummary?.delayed_count > 0 },
+          { label: 'Total Customers', value: fmtNum(customerSummary?.total_customers), color: C.blue, icon: Users, onGo: onTab && (() => onTab('customers')), goLabel: 'Customer intelligence' },
+          { label: 'Total Vendors', value: fmtNum(vendorSummary?.total_vendors), color: C.cyan, icon: Package, onGo: onTab && (() => onTab('vendors')), goLabel: 'Vendor intelligence' },
+          // status = 'active' only. The Operations tab's 'Open Projects' is the
+          // wider set (adds 'planning'), which is why the two differ on purpose.
+          { label: 'Active Projects', value: fmtNum(projectSummary?.active_projects), color: C.primary, icon: Briefcase, sub: `of ${fmtNum(projectSummary?.total_projects)} total`, onGo: onTab && (() => onTab('projects')), goLabel: 'Project profitability' },
+          { label: 'Delayed Projects', value: fmtNum(projectSummary?.delayed_count), color: C.red, icon: AlertTriangle, warn: projectSummary?.delayed_count > 0, onGo: onTab && (() => onTab('projects')), goLabel: 'Project profitability' },
         ].map(k => <KpiCard key={k.label} {...k} />)}
       </div>
 
@@ -427,7 +467,7 @@ function ExecutiveSummaryTab({
 }
 
 // ── Customer Intelligence Tab ─────────────────────────────────────────────────
-function CustomerIntelligenceTab({ data }) {
+function CustomerIntelligenceTab({ data, onNavigate }) {
   const [view, setView] = useState('overview'); // overview | risk | growth
   const summary = data?.summary || {};
   const dist = data?.health_distribution || [];
@@ -467,20 +507,20 @@ function CustomerIntelligenceTab({ data }) {
 
       {view === 'overview' && (
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 280px', gap: 16 }}>
-          <CustomerTable customers={customers} />
+          <CustomerTable customers={customers} onNavigate={onNavigate} />
           <HealthPieChart data={dist} title="Customer Health Distribution" />
         </div>
       )}
 
-      {view === 'risk' && <CustomerRiskPanel atRisk={atRisk} />}
+      {view === 'risk' && <CustomerRiskPanel atRisk={atRisk} onNavigate={onNavigate} />}
       {view === 'growth' && (
-        <CustomerGrowthView growth={growth} decliners={decliners} basis={growthBasis} />
+        <CustomerGrowthView growth={growth} decliners={decliners} basis={growthBasis} onNavigate={onNavigate} />
       )}
     </div>
   );
 }
 
-function CustomerTable({ customers }) {
+function CustomerTable({ customers, onNavigate }) {
   return (
     <div style={{ background: '#fff', border: `1px solid ${C.border}`, borderRadius: 14, overflow: 'hidden' }}>
       <div style={{ padding: '14px 18px', borderBottom: `1px solid ${C.border}`, fontSize: 13, fontWeight: 700, color: '#374151' }}>
@@ -497,7 +537,11 @@ function CustomerTable({ customers }) {
           </thead>
           <tbody>
             {customers.map((c, i) => (
-              <tr key={c.id} style={{ borderBottom: `1px solid #f3f4f6`, background: i % 2 === 0 ? '#fff' : '#fafafa' }}>
+              <tr
+                key={c.id}
+                {...drillProps(onNavigate && c.id ? () => onNavigate(...toCustomer(c.id)) : null, c.name)}
+                style={{ borderBottom: `1px solid #f3f4f6`, background: i % 2 === 0 ? '#fff' : '#fafafa', cursor: onNavigate && c.id ? 'pointer' : 'default' }}
+              >
                 <td style={{ padding: '8px 12px', fontWeight: 600, color: '#111827' }}>{c.name}</td>
                 <td style={{ padding: '8px 12px', color: C.green, fontWeight: 700 }}>{fmtL(c.revenue)}</td>
                 <td style={{ padding: '8px 12px', color: c.outstanding > 0 ? C.amber : '#6b7280' }}>{fmtL(c.outstanding)}</td>
@@ -522,7 +566,7 @@ function CustomerTable({ customers }) {
 // One account on the growth board. The same card serves the risers and the
 // fallers - only the colour and the arrow differ - so the two lists stay
 // visually comparable instead of reading as unrelated widgets.
-function GrowthCard({ c, onConvert, converting, converted, convertErr }) {
+function GrowthCard({ c, onConvert, converting, converted, convertErr, onNavigate }) {
   const pct = c.revenue_growth_pct;
   const isNew = c.is_new_revenue;
   const up = isNew || pct > 0;
@@ -532,7 +576,16 @@ function GrowthCard({ c, onConvert, converting, converted, convertErr }) {
     <div style={{ background: '#fff', border: `1px solid ${C.border}`, borderRadius: 12, padding: '14px 16px' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10 }}>
         <div style={{ minWidth: 0 }}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: '#111827' }}>{c.name}</div>
+          <div
+            {...drillProps(onNavigate && c.id ? () => onNavigate(...toCustomer(c.id)) : null, c.name)}
+            style={{
+              fontSize: 13, fontWeight: 700,
+              color: onNavigate && c.id ? C.primary : '#111827',
+              textDecoration: onNavigate && c.id ? 'underline' : 'none',
+              textUnderlineOffset: 2,
+              cursor: onNavigate && c.id ? 'pointer' : 'default',
+            }}
+          >{c.name}</div>
           <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2 }}>
             {[c.city, c.state].filter(Boolean).join(', ') || '—'}
           </div>
@@ -609,7 +662,7 @@ function GrowthCard({ c, onConvert, converting, converted, convertErr }) {
 
 const GROWTH_GRID = { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 };
 
-function CustomerGrowthView({ growth = [], decliners = [], basis = null }) {
+function CustomerGrowthView({ growth = [], decliners = [], basis = null, onNavigate }) {
   const [converting, setConverting] = useState(null);
   const [converted,  setConverted]  = useState({});
   const [convertErr, setConvertErr] = useState({});
@@ -629,6 +682,7 @@ function CustomerGrowthView({ growth = [], decliners = [], basis = null }) {
 
   const cardProps = (c) => ({
     c,
+    onNavigate,
     onConvert: convert,
     converting: converting === c.id,
     converted: converted[c.id],
@@ -692,7 +746,7 @@ function CustomerGrowthView({ growth = [], decliners = [], basis = null }) {
 }
 
 // ── Vendor Intelligence Tab ───────────────────────────────────────────────────
-function VendorIntelligenceTab({ data }) {
+function VendorIntelligenceTab({ data, onNavigate }) {
   const [view, setView] = useState('overview');
   const summary = data?.summary || {};
   const dist = data?.health_distribution || [];
@@ -722,7 +776,7 @@ function VendorIntelligenceTab({ data }) {
 
       {view === 'overview' && (
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 280px', gap: 16 }}>
-          <VendorTable vendors={vendors} />
+          <VendorTable vendors={vendors} onNavigate={onNavigate} />
           <HealthPieChart data={dist} title="Vendor Health Distribution" />
         </div>
       )}
@@ -732,7 +786,7 @@ function VendorIntelligenceTab({ data }) {
   );
 }
 
-function VendorTable({ vendors }) {
+function VendorTable({ vendors, onNavigate }) {
   return (
     <div style={{ background: '#fff', border: `1px solid ${C.border}`, borderRadius: 14, overflow: 'hidden' }}>
       <div style={{ padding: '14px 18px', borderBottom: `1px solid ${C.border}`, fontSize: 13, fontWeight: 700, color: '#374151' }}>
@@ -749,7 +803,11 @@ function VendorTable({ vendors }) {
           </thead>
           <tbody>
             {vendors.map((v, i) => (
-              <tr key={v.id} style={{ borderBottom: `1px solid #f3f4f6`, background: i % 2 === 0 ? '#fff' : '#fafafa' }}>
+              <tr
+                key={v.id}
+                {...drillProps(onNavigate && v.id ? () => onNavigate(...toVendor(v.id)) : null, v.name)}
+                style={{ borderBottom: `1px solid #f3f4f6`, background: i % 2 === 0 ? '#fff' : '#fafafa', cursor: onNavigate && v.id ? 'pointer' : 'default' }}
+              >
                 <td style={{ padding: '8px 12px', fontWeight: 600, color: '#111827' }}>
                   {v.name}
                   {v.single_source && <span style={{ marginLeft: 6, fontSize: 10, background: '#ede9fe', color: '#5b21b6', padding: '1px 5px', borderRadius: 4 }}>SS</span>}
@@ -793,7 +851,7 @@ function VendorTable({ vendors }) {
 // permanently. The endpoint now returns the taxonomy from `product_lines`
 // itself, plus an explicit coverage figure, so the tab reports how much of the
 // portfolio is actually classified instead of implying the business did no work.
-function BusinessLinesTab({ data }) {
+function BusinessLinesTab({ data, onNavigate }) {
   const manifest = data?.manifest || [];
   const coverage = data?.coverage || {};
   const amc      = data?.amc || {};
@@ -850,11 +908,24 @@ function BusinessLinesTab({ data }) {
               muted: !bl.has_cost_data,
               colorOverride: bl.has_cost_data ? (bl.profit >= 0 ? C.green : C.red) : undefined },
           ];
+          // Only a line that names a row in the product_lines taxonomy can be
+          // filtered on. 'Unassigned' and any stale free-text opportunity
+          // product_line have no id and stay inert — there is nothing to filter by.
+          const goLine = onNavigate && bl.product_line_id != null
+            ? () => onNavigate('Projects', {
+                product_line_id: String(bl.product_line_id),
+                product_line: bl.business_line,
+              })
+            : null;
           return (
-            <div key={bl.business_line} style={{
-              background: '#fff', border: `1px solid ${C.border}`,
-              borderRadius: 14, padding: '13px 15px', borderLeft: `4px solid ${color}`,
-            }}>
+            <div
+              key={bl.business_line}
+              {...drillProps(goLine, `${bl.business_line} projects`)}
+              style={{
+                background: '#fff', border: `1px solid ${C.border}`,
+                borderRadius: 14, padding: '13px 15px', borderLeft: `4px solid ${color}`,
+                cursor: goLine ? 'pointer' : 'default',
+              }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 12 }}>
                 <div style={{ fontSize: 15, fontWeight: 800, color }}>{bl.business_line}</div>
                 {!bl.has_cost_data && bl.project_count > 0 && (
@@ -938,7 +1009,14 @@ function WorkforceTab({ headcount, attrition, deptWf }) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-      <SectionHeader title="Workforce Intelligence" sub="Headcount, attrition and workforce composition" />
+      {/* Headcount and composition are a population AS OF TODAY, so the period
+          filter does not move them — only the attrition rate is activity. Saying
+          so is the difference between a number that is correctly point-in-time
+          and one that looks like the filter is broken. */}
+      <SectionHeader
+        title="Workforce Intelligence"
+        sub="Attrition follows the selected period · headcount and composition are as of today"
+      />
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(190px, 1fr))', gap: 10 }}>
         <KpiCard label="Total Headcount" value={fmtNum(hc.total)} color={C.primary} icon={Users} />
@@ -1030,7 +1108,14 @@ function OperationsTab({ opsData, alerts, travelByEmp, travelByProj, onNavigate 
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-      <SectionHeader title="Operations Command" sub="Live counts across all modules · click any tile to drill through" />
+      {/* Every tile here is a live backlog count — open tickets, low stock, people
+          on leave today. Windowing them to a period would not describe them, it
+          would hide them, so they are point-in-time on purpose. Travel spend
+          below is activity and DOES follow the filter. */}
+      <SectionHeader
+        title="Operations Command"
+        sub="Live counts, not period-filtered · travel spend below follows the period · click any tile to drill through"
+      />
 
       {/* Drill-through tiles */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: 10 }}>
@@ -1197,9 +1282,24 @@ export default function CEOIntelligenceDashboard({ setPage }) {
   const abortRef = useRef(null);
 
   // Drill-through: prefer the injected page-switcher, fall back to the router
-  const go = useCallback((page) => {
-    if (typeof setPage === 'function') setPage(page);
-    else navigate(`/${page}`);
+  /**
+   * Drill-through. `params` carries the record id so a row lands on ITS record
+   * rather than on an unfiltered list.
+   *
+   * The key differs per destination and is not guessable — verified against each
+   * page 2026-09-16:
+   *   Customer360  reads `party_id` (uuid)   — Customer360.jsx urlParams.get('party_id')
+   *   Vendor360    reads `vendor`   (Number) — Vendor360.jsx  Number(params.get('vendor'))
+   *   ProjectDetail reads `id`               — ProjectDetail.jsx urlParams?.id
+   * App.jsx's setPage(pg, params) turns the object into the query string.
+   */
+  const go = useCallback((page, params) => {
+    if (typeof setPage === 'function') setPage(page, params);
+    else {
+      const qs = params && Object.keys(params).length
+        ? `?${new URLSearchParams(params).toString()}` : '';
+      navigate(`/${page}${qs}`);
+    }
   }, [setPage, navigate]);
 
   const load = useCallback(async () => {
@@ -1234,8 +1334,12 @@ export default function CEOIntelligenceDashboard({ setPage }) {
         api.get('/ceo-intelligence/service-amc').catch(track('Service & AMC')),
         api.get('/ceo-intelligence/strategic-alerts').catch(track('Strategic alerts')),
         api.get('/ceo-intelligence/manifest', { params }).catch(track('Business lines')),
-        api.get('/analytics/ceo/kpis').catch(track('Headline KPIs')),
-        api.get('/analytics/sales').catch(track('Sales KPIs')),
+        // These four now honour the period (backend change 2026-09-16). The rest
+        // below deliberately do NOT — they are point-in-time balances and
+        // counters, and each is labelled as such in the UI rather than quietly
+        // ignoring the filter, which is how this looked before.
+        api.get('/analytics/ceo/kpis', { params }).catch(track('Headline KPIs')),
+        api.get('/analytics/sales', { params }).catch(track('Sales KPIs')),
         // Pipeline stages. /dashboard/sales is the source CeoDashboard used and the one that
         // actually exists — /sales-command-center/pipeline has never been a route.
         api.get('/dashboard/sales').catch(track('Pipeline stages')),
@@ -1243,12 +1347,12 @@ export default function CEOIntelligenceDashboard({ setPage }) {
         // The route is /team-targets; a plain /targets 404s.
         api.get('/sales-command-center/team-targets').catch(track('Sales targets')),
         api.get('/analytics/headcount').catch(track('Headcount')),
-        api.get('/analytics/attrition').catch(track('Attrition')),
+        api.get('/analytics/attrition', { params }).catch(track('Attrition')),
         api.get('/analytics/dept-workforce').catch(track('Department workforce')),
         api.get('/dashboard/operations').catch(track('Operations counters')),
         api.get('/dashboard/alerts').catch(track('System alerts')),
-        api.get('/travel/analytics/by-employee').catch(track('Travel by employee')),
-        api.get('/travel/analytics/by-project').catch(track('Travel by project')),
+        api.get('/travel/analytics/by-employee', { params }).catch(track('Travel by employee')),
+        api.get('/travel/analytics/by-project', { params }).catch(track('Travel by project')),
       ]);
       if (ctrl.signal.aborted) return;
       setSummary(exec.data);
@@ -1405,17 +1509,26 @@ export default function CEOIntelligenceDashboard({ setPage }) {
           );
         })}
       </div>
+      {/* Persistent headline numbers — see KpiStrip's own note on why this render
+          call is new even though the component is not. */}
+      <KpiStrip kpis={ceoKpis} execKpis={summary?.kpis} />
       <DashboardFilterBar
         filters={filters}
         actions={
           <span
             className="ceo-filter-note"
-            title={'Period-driven: Executive revenue, Customer intelligence, Vendor spend, '
-                 + 'Projects and Business Lines. '
-                 + 'Point-in-time by design: Collections aging, Service & AMC and Strategic '
-                 + 'Alerts — these are work awaiting action, and a narrow period must not hide it.'}
+            title={'FOLLOWS THE PERIOD: Executive revenue, Customer intelligence, '
+                 + 'Vendor spend, Projects, Business Lines, Attrition rate, '
+                 + 'Sales conversion & avg deal size, Travel spend.  |  '
+                 + 'POINT-IN-TIME, and not a bug: Collections aging, Service & AMC, '
+                 + 'Strategic Alerts, Headcount, Department workforce, Open pipeline & '
+                 + 'stages, Operations counters, System alerts — these are balances and '
+                 + 'backlog, or a population as of today, and a narrow period would hide '
+                 + 'them rather than describe them.  |  '
+                 + 'Sales targets compare an ANNUAL target against the full financial '
+                 + 'year, so they follow the FY, not this filter.'}
           >
-            Applies to activity — collections, AMC and alerts stay point-in-time
+            Applies to activity — balances &amp; counters stay point-in-time
           </span>
         }
       />
@@ -1476,6 +1589,7 @@ export default function CEOIntelligenceDashboard({ setPage }) {
                 vendorSummary={vendorData?.summary}
                 projectSummary={projectData?.summary}
                 ceoKpis={ceoKpis}
+                onTab={setActiveTab}
                 salesKpi={salesKpi}
                 insights={insights}
                 revChart={revChart}
@@ -1485,7 +1599,7 @@ export default function CEOIntelligenceDashboard({ setPage }) {
                 showYoY={showYoY} setShowYoY={setShowYoY}
               />
             )}
-            {activeTab === 'customers' && <CustomerIntelligenceTab data={customerData} />}
+            {activeTab === 'customers' && <CustomerIntelligenceTab data={customerData} onNavigate={go} />}
             {activeTab === 'sales' && (
               <RevenueForecastPanel
                 summary={summary}
@@ -1493,11 +1607,12 @@ export default function CEOIntelligenceDashboard({ setPage }) {
                 pipeStages={pipeStages}
                 salesKpi={salesKpi}
                 teamTargets={salesTargets}
+                onNavigate={go}
               />
             )}
-            {activeTab === 'vendors' && <VendorIntelligenceTab data={vendorData} />}
-            {activeTab === 'projects' && <ProjectProfitabilityPanel data={projectData} />}
-            {activeTab === 'collections' && <CollectionRiskPanel data={collectionData} serviceData={serviceData} />}
+            {activeTab === 'vendors' && <VendorIntelligenceTab data={vendorData} onNavigate={go} />}
+            {activeTab === 'projects' && <ProjectProfitabilityPanel data={projectData} onNavigate={go} />}
+            {activeTab === 'collections' && <CollectionRiskPanel data={collectionData} serviceData={serviceData} onNavigate={go} />}
             {activeTab === 'workforce' && (
               <WorkforceTab headcount={headcount} attrition={attrition} deptWf={deptWf} />
             )}
@@ -1519,7 +1634,7 @@ export default function CEOIntelligenceDashboard({ setPage }) {
                       insights above it, so it gets its own label rather than sharing one. */}
                   <button onClick={() => setWarroomView('gpt')} style={subNavBtn(warroomView === 'gpt')}>GPT Executive Brief</button>
                 </div>
-                {warroomView === 'alerts' && <StrategicAlertsPanel data={alertsData} onRefresh={load} />}
+                {warroomView === 'alerts' && <StrategicAlertsPanel data={alertsData} onRefresh={load} onNavigate={go} />}
                 {warroomView === 'ai' && <AIInsightsPanel />}
                 {warroomView === 'gpt' && (
                   <AIInsightCard dashboardData={{
@@ -1529,7 +1644,7 @@ export default function CEOIntelligenceDashboard({ setPage }) {
                 )}
               </div>
             )}
-            {activeTab === 'manifest' && <BusinessLinesTab data={manifestData} />}
+            {activeTab === 'manifest' && <BusinessLinesTab data={manifestData} onNavigate={go} />}
           </>
         )}
       </div>

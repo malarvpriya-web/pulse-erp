@@ -44,6 +44,14 @@ vi.mock('../config/menuCatalog', () => ({
   canHrExecAccessPage: () => true,
   canManagerAccessPage: () => true,
   isFinanceSelfServicePage: () => false,
+  // Layout now asks these two (2026-10-20); the gates are not under test here.
+  canRenderPage: () => true,
+  canOpenEmployeeMaster: () => false,
+  EMPLOYEE_MASTER_PAGE: 'EmployeesData',
+  EMPLOYEE_DIRECTORY_PAGE: 'EmployeeDirectory',
+  // Payroll Center redirect (2026-10-28) — not under test here.
+  payrollHubRedirect: () => null,
+  PAYROLL_HUB_PAGE: 'PayrollCenter',
 }));
 
 // A page that reports what the router actually handed it.

@@ -152,7 +152,15 @@ router.post('/items/:itemId/vendor-prices', requirePermission('inventory', 'add'
       [
         req.params.itemId, b.vendor_id, b.warehouse_id || null,
         b.unit_price ?? 0, b.currency || 'INR', b.moq ?? 0, b.pack_size || null,
-        b.discount_pct ?? 0, b.tax_pct ?? 0, b.lead_time_days || null,
+        // tax_pct is `?? null`, not `?? 0`. A price-book entry that does not
+        // state a tax rate has not declared the supply nil-rated — it has said
+        // nothing, and the comparison should then use the ITEM's GST rate via
+        // resolveGstRate(). Writing 0 asserted "exempt" and suppressed that
+        // fallback, since itemSourcing reads `v.tax_pct ?? itemTaxPct` and 0 is
+        // not null. The column dropped its NOT NULL/DEFAULT 0 in 20260917000002
+        // for exactly this. discount_pct keeps `?? 0`: for a discount, absence
+        // genuinely IS zero — net price equals list price.
+        b.discount_pct ?? 0, b.tax_pct ?? null, b.lead_time_days || null,
         b.vendor_sku || null, b.last_quoted_date || null, b.valid_until || null,
         !!b.is_preferred, b.notes || null, scopeOf(req), req.user?.userId ?? null,
       ]

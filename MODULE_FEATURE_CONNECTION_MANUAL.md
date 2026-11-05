@@ -718,7 +718,7 @@ Features to test:
 
 - Announcements
 - Payroll Center entry points
-- Employee Directory
+- Employee Directory — moved out of the HR menu to a top-level row beside Org Chart (§180)
 - Probation
 - Policies
 - HR Documents
@@ -726,7 +726,7 @@ Features to test:
 - Exit Management
 - Employee Documents
 - Self Service
-- Succession Center
+- Succession Center — optional, confidential: needs `succession:view` (hr, hr_manager, admin, super_admin by default; §209)
 - Asset Management
 - Employee skills
 - Onboarding
@@ -1419,43 +1419,77 @@ Manual checks:
 
 Frontend:
 
-- Payroll Center
-- My Payslip
-- Salary Structure
+- Payroll Center (`PayrollCenter.jsx`) — sections (§199): Overview · Payroll Processing · Salary Structures & Loans · Payslips (Preview & distribute · Payslip viewer) · Tax & Statutory (Form 16 / Form No. 130 · Form 138 / Form 24Q) · Settings. The old page keys redirect into these sections.
+- My Payslips (finalised payslips only)
+- Salary Structure → Assign (records a salary revision)
 
 Backend:
 
-- `backend/src/modules/payroll`
-- `backend/src/modules/finance`
+- `backend/src/modules/payroll` — `payroll.service.js` (`buildPeriodContext`: the one read path for every payroll figure), `payrollEngine.js` (pure calculation), `payrollEligibility.js` (rule E1–E6 + statutory-data checks), `statutoryRules.js` (effective-dated rules with verification status), `payrollSettings.js` (one reading of the two settings key families, pay cycle), `payrollReleaseGate.js` (what blocks approval)
+- `backend/src/modules/finance` — `tds.routes.js` (Form 138 / 24Q), `services/payrollJournal.service.js` (GL on approval)
+
+Lifecycle (each step separate and audited):
+
+```mermaid
+flowchart LR
+  EMP[Employee] --> REV[Salary revision<br/>employee_salary_assignments]
+  REV --> STR[Structure<br/>own or company default]
+  STR --> ELIG{Eligibility E1–E6}
+  ATT[Attendance LOP / OT] --> GEN
+  LOAN[Loans] --> GEN
+  ARR[Approved arrears] --> GEN
+  ELIG -->|eligible| GEN[Generate DRAFT<br/>status pending]
+  GEN --> GATE{Release gate<br/>settings + statutory rules}
+  GATE -->|ready| APP[Approve<br/>bank/PAN + mid-month revision checks]
+  APP --> GL[GL payroll journal<br/>per company, per batch]
+  APP --> REPAY[Loan repayments<br/>auto-close at 0]
+  APP --> ARRP[Arrears marked paid]
+  APP --> PAY[Mark paid<br/>bank re-check]
+  PAY --> TDS[s.192 TDS ledger]
+  PAY --> DISB[Salary-disbursement journal]
+  APP --> SLIP[Payslip / email]
+  APP --> ECR[PF ECR]
+  TDS --> F138[Form 138 / 24Q<br/>validated]
+  F138 --> F130[Form No. 130 / 16<br/>after FY end]
+```
 
 Features to test:
 
-- Salary structure setup
-- Salary component setup
-- Payroll processing
-- Payslip generation
-- Payslip viewing
-- Payroll reports
-- Payroll compliance
-- Employee self-service tax/IT declarations if enabled
-- Attendance sync
-- Leave sync
-- Overtime sync
+- Salary revision via Assign (monthly Basic; > ₹5,00,000 asks for confirmation; retro dates refused after approval)
+- Eligibility panel on Run Payroll (who is payable and why not)
+- Draft generation (never overwrites approved/paid rows)
+- Release prerequisites panel; Approve disabled while blocked
+- Approval blocked by invalid bank/PAN data or a mid-month salary revision
+- Payment only for approved rows; payslip email only for approved/paid payslips
+- Payslip shape: employee deductions vs employer contributions (never deducted)
+- Statutory rules: `GET /payroll/statutory-rules`, record a version `POST /payroll/statutory-rules` (with source); `GET /payroll/release-readiness`
+- Loans: EMI, repayment ledger, closure; Arrears: compute, approve into a month, paid once
+- PF ECR (approved only, UAN required), ESI challan, Form 138 / 24Q validation, Form 130 / 16 lifecycle
 
 Connections:
 
-- Employees provide active employee list.
-- Attendance provides payable days and overtime.
-- Leaves provides unpaid leave and encashment.
-- Performance can feed increments/promotions.
-- Finance receives salary accounting/payment postings.
+- Employees provide status, joining/exit dates, bank/PAN/UAN (eligibility E1–E4, approval validation).
+- Salary Structure provides the revision in force on the last day of the month (E5) and the structure (E6).
+- Attendance provides LOP days, night shifts and approved overtime (multiplier ≤ 2 enforced); its payroll sync writes into DRAFT runs only (§185).
+- Leaves provides unpaid leave and encashment, posted into DRAFT runs only; an approved run is never changed (§185).
+- Performance increments write salary revisions (base = revision in force on the increment date; same-company employees only); with `ctc_mode` on they create a salary proposal on annual CTC instead (§184).
+- Recruitment: an accepted offer's annual CTC is shown to HR beside a missing revision; a hire creates no salary revision (§183). With `ctc_mode` on, HR converts the accepted offer into a draft salary proposal (§184).
+- Payroll Settings (`company_settings.payroll`) provide toggles, the pay cycle, `ctc_mode` (off by default) and the statutory jurisdiction (`statutory_state`, `pt_local_body`; §185); Setup Wizard writes the same values.
+- Companies / Branches provide each employee's statutory state (branch, else company); the release gate blocks approval when it differs from the recorded jurisdiction (§185).
+- Salary proposals (`salary_revision_proposals`, §184): only an approved proposal writes a revision, with its approved breakdown, which payroll pays as-is.
+- Finance receives the payroll journal on approval and the salary-disbursement journal on payment; TDS receives the s.192 ledger row on payment.
+- Maker-checker (§185): generation records the preparer (`payroll_runs.generated_by`, users.id); approval is refused to the preparer of any draft in the batch, and refused for drafts with no recorded preparer until they are regenerated.
 
 Manual checks:
 
-- Payroll excludes inactive employees.
-- Attendance/leave changes affect payable days.
-- Payslip matches salary structure.
-- Finance posting appears after payroll completion if supported.
+- An Active employee with no salary revision is listed as not eligible (E5), never paid allowances alone.
+- Regenerating an approved month changes nothing.
+- Approve stays disabled until every release prerequisite is cleared.
+- Net pay = gross − employee deductions; employer PF/ESI appear only under Employer Contributions.
+- Finance posting appears once per approval batch, under the right company.
+- "Employer cost this month" = gross + employer PF/ESI/LWF, equal to the department report and the GL; nothing is labelled CTC except offer/increment inputs (§183).
+
+See §182 for the 2026-10-20 audit and release-gate design, §184 for CTC-driven salary entry, and §185 for the jurisdiction gate and Tamil Nadu PT/LWF.
 
 ## 7. Finance and Commercial Modules
 
@@ -2726,14 +2760,15 @@ Features to test:
 Connections:
 
 - Approvals trigger notifications.
-- HR announcements appear on Home/login where intended.
+- HR announcements appear on Home, Employee Dashboard and Self Service for their audience only (login required; one visibility rule, §187).
+- Publishing an announcement notifies its audience once, when it goes live (in-app + push via the notifications repository; §187).
 - Leave, travel, procurement, service, documents can notify users.
 
 Manual checks:
 
 - Notification recipient is correct.
 - Read/unread count updates.
-- Active public announcement appears where intended.
+- A live announcement reaches only its company and audience; scheduled, not-started, inactive, expired and archived ones do not (§187).
 
 ### Audit Logs
 
@@ -8663,6 +8698,9 @@ User: "not able to download the file, link is getting opened... same for brand v
 when i share the link, it should be able to download in home page." Two unrelated root causes
 found under one symptom:
 
+> **Superseded by §178 (2026-10-19):** the `uc?export=download` rewrite below ended on Google sign-in for
+> org-restricted files. Home now downloads through `GET /api/home/documents/:kind/:id/download`.
+
 1. **Policies (`hr_policies`, real content)** — a Google Drive share link
    (`/file/d/ID/view?usp=sharing`) opens Drive's viewer page; the anchor's HTML5 `download`
    attribute is a no-op for a cross-origin URL like that, so clicking just navigates there.
@@ -8996,13 +9034,15 @@ on an implicit assignment cast. Both fixed — the in/out branch now covers the 
 payroll-synced month, with an admin override. `/qr/scan` had no check at all and could mutate
 attendance payroll had already paid on. Now guarded by a new shared `isPeriodFrozen(dateStr,
 companyId)` helper, deliberately **without** an override — a self-service punch is never a
-correction. `offlineSync`, `biometric` and the cron still have no freeze check; flagged not fixed.
+correction. `offlineSync` and the cron still have no freeze check; flagged not fixed. (`biometric`
+now has one — the device sync and CSV import share `isPeriodFrozen`, moved to
+`shared/attendanceRules.js` in §197.)
 
 **`full_day_hours` is the OT threshold and it is configurable.** New shared helper
 `getFullDayHours(companyId)` reads `attendance_general_settings.full_day_hours`, falling back to
 9. `/qr/scan` now computes `total_hours`/`ot_hours` on check-out through it (previously it never
-computed either, so QR-only sites produced rows reading zero hours). `offlineSync.routes.js:130`,
-`biometric.routes.js:202` and `attendance.cron.js:129` **still hardcode 9** and should be moved
+computed either, so QR-only sites produced rows reading zero hours). `offlineSync.routes.js:130`
+and `attendance.cron.js:129` **still hardcode 9** (biometric moved onto the helper in §197) and should be moved
 onto this helper — until they are, a company that sets an 8-hour day gets OT computed from two
 different thresholds in the same month, in the same table, feeding the same payslip. OT *records*
 (`attendance_ot_records`, with policy caps and weekday/weekend/holiday multipliers) remain
@@ -20922,3 +20962,4225 @@ unknown key silently will let a test claim a bug that is not there.**
 while proving nothing — the same vacuous-pass trap as §170's fixture and §153's sourcing
 resolver, and the third time in three sections that a bounded test had to be stopped from
 succeeding at nothing.
+
+---
+
+## §172 — Master data, from the form that needs it (2026-09-16)
+
+**Trigger**: "users must navigate to Master Settings to add Zones, Departments,
+Designations… this creates unnecessary navigation and reduces usability." §170
+had already moved five masters into their forms via `MasterSelect`. The ask was
+to finish the job across every module — so the work started as an audit of what
+master data actually exists, and most of what it found was not a navigation
+problem.
+
+### The audit
+
+A scan of `frontend/src/**` for pure string-literal arrays found **381**, of
+which **148** read as a vocabulary (`*_TYPES`, `CATEGORIES`, `SOURCES`,
+`STATUSES`, `INDUSTRIES`…). Those split three ways:
+
+| | count | disposition |
+|---|---|---|
+| State machines and code-coupled enums | ~110 | **Left alone.** See "what is deliberately not master data" below. |
+| Already behind a real master, page just did not read it | 4 | Wired up |
+| User-extensible vocabularies with no master at all | **13** | New registry |
+
+The 13 were not merely inconvenient. Several were copy-pasted into two or three
+pages that had since drifted apart, and the drift shows in live data:
+
+| column | stored values the dropdown never offered |
+|---|---|
+| `accounts.industry` | **4 of 7** — IT Services, Analytics, Engineering, FMCG |
+| `project_issues.issue_type` | **5 of 5** — the array was lowercase, the column is Title Case |
+| `projects.project_type` | `Primary` |
+| `employees.employment_type` | holds BOTH `Permanent` (HR's list) and `full_time` (recruitment's) |
+
+⚠⚠ **A value a `<select>` cannot match renders blank and is rewritten by the
+next save.** So this was not a usability ticket — every account with an
+industry the CRM never offered, and every project issue in the table, was one
+edit away from losing a field nobody touched. `INDUSTRIES` was the same
+eleven-item array in `Accounts.jsx`, `Leads.jsx` and `Parties.jsx`; `PROJECT_TYPES`
+the same ten in three project pages; `VISIT_TYPES` three *different* lists
+(13 / 7 / 13) writing to the same kind of column.
+
+### Why `master_values` and not thirteen new tables
+
+`master_values` (type / value / code / parent_id / sort_order / is_active /
+company_id) has been in the schema since `20260428000001_platform_foundation`
+with 18 seeded rows and — verified across `backend/` and `frontend/` — **zero
+application readers**. Seeded and never connected, the pattern
+[[project_empty_table_seed_probe_10_tables]] warns about. Reviving it gives one
+table, one API, one audit path, and makes a fourteenth vocabulary a row in a
+registry rather than a migration.
+
+```
+backend/src/modules/master/vocabularies.js     REGISTRY — 13 entries
+backend/src/modules/master/master.routes.js    GET/POST/PUT/DELETE /master/v/:vocab
+backend/src/shared/masterVocabulary.js         the SERVER-side read (see below)
+frontend/src/components/core/VocabSelect.jsx   <VocabSelect vocab="industries" …>
+```
+
+`GET /master/v` serves the registry itself — key, label, module, columns, and
+**the roles the write routes enforce**. Master Data Setup builds its tabs from
+it and `VocabSelect` resolves its `addRoles` from it, so there is no second copy
+of the vocabulary list in the frontend to drift.
+
+### Row ownership
+
+| | | |
+|---|---|---|
+| `company_id IS NULL` | seeded default | readable by every tenant, writable only by a globally scoped super admin |
+| `company_id = <cid>` | the tenant's own addition | theirs to rename and retire |
+
+A scoped admin renaming a shared row gets **409 with the reason**, not a silent
+no-op — and Master Data Setup marks those rows `built in` and hides their
+Rename/Delete buttons rather than moving the refusal to after the click. Another
+tenant's row is **404**, which must not be a 409: a 409 confirms it exists.
+
+⚠ `companyOf()` returning null means two different things — "global" and "no
+company" — and both the read predicate and the create path have to tell them
+apart. Same collapse `companyScope()` handles for grades/bands; see §170's note.
+
+### ⚠⚠ The half a frontend change does not fix
+
+Three route modules validated the same vocabularies against **their own**
+hardcoded arrays:
+
+```js
+complaints.routes.js:552   PROJECT_TYPES.includes(body.service_type) ? body.service_type : null
+servicedesk.routes.js:639  oneOf(body.zone, ZONES)
+```
+
+So a project type added through the new picker would have been accepted by the
+master, offered in the dropdown, chosen by the user — and then **written as
+NULL**. A validator that does not read the master is not a validator, it is a
+second master that silently disagrees with the first.
+
+`shared/masterVocabulary.js` closes it: `vocabularyValues(type, companyId,
+fallback)` and `canonicalValue(…)`, 60s cache, and **every call site passes the
+array it replaced as the fallback** — a database blip must not turn every zone
+and service type in an incoming request into NULL. It knows about both master
+shapes: `master_values` by type, and the three that have their own table
+(`master_zones`, `master_departments`, `master_designations`).
+
+`canonicalValue` matches case-insensitively and returns **the master's**
+spelling, so a free-text column converges on one form instead of accumulating
+`EPC`/`epc`/`Epc` — which is how `issue_type` ended up with four spellings.
+
+### What is deliberately NOT master data
+
+`LEAVE_TYPE`, `APPROVAL_STATUS` and `PRIORITY` already sit in `master_values`
+and are **not** exposed by the API:
+
+- **Leave types** — the live master is the `leave_types` TABLE (23 rows, full
+  policy columns). Serving the 6 shadow rows would give leave types two sources
+  of truth, the exact thing this module exists to prevent. (§170 already made
+  Master Data Setup's Leave Types tab a pointer at Leave Settings.)
+- **Approval statuses** — drive workflow transitions in code.
+- **Priorities** — 29 tables carry a `priority` column that is compared, sorted
+  and SLA-driven (`low` < `high`). The user's brief asked for these; they are
+  the clearest case for refusing. Letting someone add a 42nd project status does
+  not give them a workflow, it gives them a row nothing can act on.
+
+Also refused: `projects.status` has a **CHECK constraint** — it is an enum, not a
+vocabulary. And `parties.payment_terms` is an **INTEGER** (credit days: 30, 45,
+15 in live data) while the other four `payment_terms` columns are text; a text
+master bound to it would 500 on the insert. Only the four text columns are
+mapped.
+
+### ⚠ The seeded values that were NOT adopted
+
+The usual move — union the master with `SELECT DISTINCT` so nothing drops out of
+its dropdown — is wrong here, because four columns hold the **same four words**:
+
+```
+project_issues.issue_type              Primary, General, Standard, Routine
+visit_reports.visit_type               Primary, General, Standard, Routine
+customer_visits.visit_type             Primary, General, Standard, Routine
+employee_asset_allocations.asset_type  Primary, General, Standard, Routine
+```
+
+That is not four vocabularies, it is one placeholder list written across every
+free-text `*_type` column by an earlier empty-table seeding pass. Adopting it
+would enshrine junk as configuration. Nothing is lost by leaving it out:
+**MasterSelect renders a stored value absent from the master as its own option**,
+so the record still shows its value and still round-trips a save. `INDUSTRY` is
+the one exception — its off-list values are real customer data, and are adopted
+per-company, minus the placeholder words.
+
+### Duplicate prevention
+
+The pre-existing `UNIQUE (type, code, company_id)` does **nothing** for the UI:
+`code` is nullable and Postgres treats NULLs as distinct, so two rows both called
+"Technology" never collided. Migration `20260916000010` adds
+`UNIQUE (type, COALESCE(company_id,0), LOWER(BTRIM(value)))`.
+
+⚠ The index cannot express the other half — a tenant adding "Technology" when the
+**shared** default already says "Technology" belongs to no company, so no
+per-company constraint sees it. The route checks shared + own before inserting;
+the index closes the race behind it.
+
+### Pickers: search, and the threshold
+
+`MasterSelect` stays a native `<select>` up to 12 options and becomes a
+searchable combobox past it. **Click opens the whole list** before anything is
+typed — [[feedback_pickers_must_be_browsable_dropdowns]] — and re-opening a
+picker that already holds a value shows everything again rather than filtering
+down to the one row already chosen.
+
+`allowAdd={false}` on FILTER pickers. A filter narrows what is already there;
+minting a master value from one produces a filter that matches nothing, with no
+explanation on screen.
+
+⚠ Which mode a picker takes depends on how many rows its master currently holds,
+so a test that located Industry as a `<select>` would break the day someone adds
+a thirteenth industry — the very action this feature exists to make easy. Both
+paths carry `data-master="<endpoint>"`; the menu carries `data-master-menu` and
+its rows `data-master-option`.
+
+### Also fixed in passing
+
+- **`ItemMaster`'s category add was `window.prompt`** — one unvalidated field, no
+  duplicate message, no Escape, and the created row was selected only if the
+  POST happened to echo an id. Now a `MasterSelect` over
+  `/inventory/catalog/categories` (`optionValue="id"` — items store an FK).
+- **`captureBefore` was missing from four master routes.** Renames and retires on
+  departments/zones/designations/grades/bands reached the audit log with
+  `old_data_json: null` — the entry recorded that a name changed but not what it
+  changed FROM, which for a vocabulary every employee row and report filter
+  references is the only question worth asking afterwards.
+- `rowsOf()` now tolerates a named collection (`{ categories: [...] }`) as well
+  as a bare array and a `{ data }` envelope. A shape mismatch here does not
+  throw — it silently empties the dropdown.
+
+### Pages wired
+
+| Module | Page | Vocabulary |
+|---|---|---|
+| CRM | Accounts, Leads, Parties | Industry |
+| CRM | Accounts | Account Type |
+| CRM | Leads | Lead Source |
+| Projects | Projects, ProjectPipelineBoard*, ProductionDeliveryTracker* | Project Type |
+| Projects | IssueManagement | Issue Type |
+| HR | AddEmployee, EditEmployee | Employment Type, Qualification, Skill Type, Asset Type |
+| Procurement | VendorManagement (form + filter*) | Vendor Category |
+| Travel | TravelRequests | Travel Type |
+| Travel | VisitReports, CustomerVisits (form + filter*) | Visit Type |
+| Inventory | ItemMaster | Item Category |
+
+`*` filter picker — reads the master, does not offer to extend it.
+
+### Verification
+
+- **Backend** `integration.masterVocabularies.test.js` — 24 cases against the
+  real database across four roles and two companies. Every negative case is
+  paired with a positive one.
+- **Frontend** `masterSelect.test.jsx` — 21 cases pinning the component
+  contract, including the orphan-value case with its input stated.
+- **Playwright** `23-master-data.spec.ts` (`--project=master-data`) — 8 cases
+  driving the integration claim in a browser.
+- Full suites at the time of the pass: backend **75 files / 1653 passing**,
+  frontend **23 / 518**. A later run shows one failure in `unit.csvWriter.test.js`,
+  a repo guard flagging `20260917000004_pct_family_seed_purge.js` — a concurrent
+  session's migration, not this work. The suites this pass touches are green in
+  isolation.
+
+⚠ The Playwright teardown initially leaked ZZPW rows into a shared master and
+reported a clean run: `browser.newPage()` opens a context **without** the
+project's storageState, so `localStorage` is empty there, every DELETE went out
+as `Bearer null`, and the `.catch()` that stops teardown from masking a real
+failure swallowed it. The token is now captured during the tests and the
+teardown names anything it could not remove.
+
+### Remaining Master-Settings-only
+
+`MASTER_DATA_ARCHITECTURE_AUDIT.md` carries the full inventory. Short version:
+UOM and HSN/SAC stay centrally managed because they are multi-column and
+consequential (an HSN code carries a GST rate); grades and bands because
+`MasterSelect` is add-only by design and those are already reachable from the
+employee form; `leave_types` because Leave Settings is the strictly larger screen
+over the same table.
+
+---
+
+## §173 — The two §172 left open, and what was under them (2026-09-17)
+
+**Trigger**: "close the two gaps." §172 reported expense categories and ticket
+categories as unfixed and said why. Looking properly at each found something
+bigger than the missing picker that had been reported.
+
+### 1. Expense — three vocabularies, one domain
+
+| where | shape | writes |
+|---|---|---|
+| `ExpenseClaims.jsx` | hardcoded **two-level** (5 groups, 20 items) | `expense_claims.expense_type` / `.expense_category` |
+| `EmployeeSelfService.jsx` | a different, **lowercase** `CLAIM_TYPES` | `reimbursement_claims.claim_type` |
+| `expense_categories` table | 11 curated rows **with descriptions** | nothing — written only by the seed script |
+
+Three descriptions of the same domain at three granularities, and the only one
+an administrator could see was the one nothing read.
+
+⚠⚠ **`expense_type` is a policy key, not just a vocabulary.** Both the claim path
+and the preview map it to a limit column on `travel_policy_rules`:
+
+```
+Accommodation → hotel_limit_per_day
+Food          → meal_limit_per_day
+Travel        → local_conveyance_limit
+anything else → miscellaneous_limit
+```
+
+§172 had flagged the first three as a reason for caution. **Checking the code
+rather than asserting it changed the answer**: both files carry that final
+`else`, so a type a user adds is still policy-checked, against the miscellaneous
+limit. That is what makes it safe to open up — had either lacked the fallback, a
+user-added type would have created a class of spend passing no check at all and
+this would have belonged in `RESERVED_TYPES` instead. The three named spellings
+are now load-bearing and are asserted by a test.
+
+`master_values.parent_id` has been in the schema all along, so the two-level
+taxonomy needed **no DDL**. `parentOf` on a registry entry turns it on:
+
+- `GET /master/v/expense-categories?parent=Food` — the parent matched by **name**,
+  not id, because the page that needs the child list already holds the parent's
+  stored text. ⚠ An unknown parent returns `[]`, never everything: a cascading
+  picker showing all children under a parent that does not exist invites choosing
+  a value the record cannot mean.
+- Omitting `?parent` returns every child **with `parent_name`** — which is what
+  Master Data Setup wants and a form picker does not.
+- `POST` **refuses a child with no parent** (400). Written without one it is a
+  row no cascading picker will ever show again: accepted, invisible, and
+  impossible to find in order to delete.
+
+⚠ The unique index is `(type, company, value)` and does **not** include the
+parent, so a category name can exist under only one type. That is the right
+constraint — once the category is plain text on the record, two rows with the
+same name are indistinguishable — but it bites during seeding: a first draft put
+`Miscellaneous` under both Site and Other, the second silently no-opped against
+the first, and **Other shipped with an empty child list**. A cascade whose second
+step is empty is a dead end. There is now a test that every expense type has at
+least one category.
+
+Also fixed while in there: changing the type used to auto-select the new type's
+**first item**, so switching Travel→Food silently turned a Flight into a
+Breakfast on a claim someone was mid-way through filling. It clears instead.
+
+### 2. Tickets — an FK that had never been set, and a fourth list
+
+`support_tickets` carries **both** `category` (varchar, live) and `category_id`
+(FK → `ticket_categories`). `ticket.repository.js`:
+
+```js
+INSERT INTO support_tickets (…, category, …) VALUES (…, $4, …)
+[…, category_id, …]          // an integer, into a varchar column
+```
+
+So a ticket raised from the finance Tickets page stored `"3"` where every reader
+expects `"Network"`, and **`category_id` was NULL on all 15 rows ever created**.
+`findById` joins on `category_id`, so its `category_name` was always null;
+`findAll` reads the text column, so the grid showed a bare number.
+
+Counting the vocabularies for this one column found **four**:
+
+| | count | status |
+|---|---|---|
+| `ticket_categories` | 8 | Hardware, Software, Network… — nothing used it |
+| `support_tickets.category` | 11 | HR, Finance, IT, Attendance, Payroll… — the live data |
+| `SupportDashboard.jsx`, inline in the JSX | 9 | **the only one users could reach** |
+| finance `Tickets.jsx` | by id | registered in `routes.jsx` and in **no menu** |
+
+⚠⚠ **The page §172's report pointed at is an orphan.** `/Tickets` resolves to the
+Service Desk, not to `features/finance/pages/Tickets.jsx`, which is registered
+and reachable by nobody — so wiring a picker there would have been correct and
+invisible. It was found only by driving the page in a browser and screenshotting
+what actually rendered. The fix went where users are: the Service Desk dialog,
+whose inline nine-item array was the fourth vocabulary.
+
+The migration seeds the **union** (22), so making `ticket_categories` the single
+master orphans no ticket and removes no value the live dialog used to offer, then
+backfills `category_id` — 15 of 15 now linked. A rename updates the tickets' text
+too, or every existing ticket would show the old name and no longer match its own
+category row. `POST /finance/ticket-categories` and friends are new: until now
+this table could not be changed from a module page **or** from Master Data Setup.
+
+### Also
+
+- `GET /finance/expense-categories` now answers from the master. `description` is
+  **not** carried over — filling that key with the parent name to preserve the
+  old shape would be a field that lies.
+- An unknown ticket category was a **500**; the repository tags it 400 and the
+  route honours `err.statusCode`. The difference between "pick a real category"
+  and "the helpdesk is down".
+- Master Data Setup grows a `ParentedListTab` for two-level vocabularies. Without
+  it the auto-generated tab would have rendered 30 names with no parent shown and
+  **400'd on every add**.
+
+### ⚠ A test that passed for the wrong reason
+
+The RBAC case here first went green claiming an `employee` could write. The
+harness was at fault: `permissionFor()` checks the `permissions` table **by
+user_id first** and only falls back to `role_permissions`, and user 1 carries a
+user-level row granting `finance.can_add`. Any RBAC assertion built on user 1
+passes regardless of role. The suite now looks up a real employee account with no
+user-level override, in `beforeAll` rather than hardcoded — a fixed id could
+quietly acquire one later and the test would go green while the gate went open.
+
+### Verification
+
+24 → **34** backend vocabulary cases, **12** new ticket cases (which read the
+COLUMNS, not the response — a test asserting only "the POST returns 201" passed
+throughout the entire life of the binding bug), 21 → **27** component cases,
+8 → **11** Playwright. Frontend **23 files / 524**. Backend **77 of 78 files /
+1677**; the one failure is `unit.csvWriter.test.js` flagging
+`20260917000004_pct_family_seed_purge.js`, a concurrent session's migration.
+
+---
+
+## §174 — The leave ledger the dashboards stopped following (2026-09-17)
+
+Remediation of the P0/P1 findings from `MANIFEST_ERP_FUNCTIONAL_AUDIT_2026-09-17.md`.
+
+### 174.1 Two leave tables, and the wrong test for which one was live
+
+Pulse has three leave tables. Only one is the ledger:
+
+| table | rows | last write | role |
+|---|---:|---|---|
+| `leave_applications` | 4 | 2026-04-25 | **the ledger** — sole INSERT target of `leaves.repository.js` |
+| `leave_requests` | 769 | 2026-03-30 | frozen; its only writer was the WhatsApp webhook |
+| `leaves` | 1 | 2026-02-26 | dead legacy |
+
+An earlier pass unified "pending approvals" onto `leave_requests` **because it had
+more rows**. Row count is not liveness. `leave_requests` had 769 rows because it
+had been abandoned mid-2026 with its history intact; `leave_applications` had 4
+because it is the live table on a young dataset.
+
+The cost: `/dashboard/approvals`, `/dashboard/summary` and `/dashboard/live-kpis`
+reported **159 pending leave approvals aged 184 days**, none actionable — the Leave
+screens read the other table — and the count could never fall, because nothing
+wrote to `leave_requests` any more. `pendingApprovals` read **170**; it is now **11**.
+
+**Repointed to `leave_applications`** (18 query sites + every stale comment):
+
+```
+modules/dashboard/dashboard.controller.js   18 queries, incl. PENDING_APPROVALS_SQL
+modules/intelligence/ai.routes.js            4 queries (assistant context, NL query,
+                                               approvals answer, stale-approval nudge)
+modules/analytics/aiPayroll.service.js       1 query
+modules/admin/security.routes.js             GDPR export — now exports BOTH tables
+modules/integrations/whatsapp.routes.js      INSERT target moved to the ledger
+```
+
+Two schema differences the swap had to carry, and any future reader must:
+
+- rows are **soft-deleted** — every read needs `deleted_at IS NULL`;
+- the leave type is an **FK** (`leave_type_id` → `leave_types`), not the free-text
+  `leave_type` the old table carried. The approval queue and the leave-type
+  breakdown now join `leave_types` for a name.
+
+`status` needed no translation: it defaults to `'pending'` NOT NULL on
+`leave_applications`, so `LEAVE_PENDING` means there what it meant before.
+
+### 174.2 The WhatsApp webhook had never processed a message
+
+Found while moving its INSERT. The employee lookup read
+`WHERE phone = $1 OR mobile = $1` — **`employees.mobile` does not exist** (the
+columns are `phone` and `company_phone`). It threw 42703 on every inbound message,
+a bare `.catch(() => ({ rows: [] }))` swallowed it, `employee` was always
+undefined, and the loop always hit `continue`. Every WhatsApp message this webhook
+has ever received was silently discarded.
+
+Fixed the column, added `company_id` to the projection, and replaced the blind
+catch with one that logs — "the query blew up" and "nobody has that number" are
+not the same outcome and must not look the same.
+
+### 174.3 Leave was scoped by what the client volunteered
+
+`GET /leaves/applications` and `GET /leaves` gate on `requirePermission('leaves','view')`
+— a **module** grant that the `employee` role holds, because every employee needs it
+to open their own leave page. Nothing narrowed the result server-side. The only thing
+keeping an employee to their own rows was the frontend choosing to send
+`?employee_id=<me>` (`AllLeaves.jsx`: `isAdminOrHR ? {} : { employee_id: uid }`).
+
+Verified live before the fix: a plain `employee` (employee_id 10) received four
+applications belonging to employee_id 1, reason free-text included.
+
+Scoping by what the client chose to send is not scoping. `scopeToSelf()` and
+`canSeeApplication()` in `leaves.routes.js` now decide on the server:
+
+| caller | sees |
+|---|---|
+| admin / HR | everything, as before |
+| approver queue (`manager_status` present) | unchanged — already pinned to their own employee_id |
+| everyone else | own rows only; a client-supplied `employee_id` is **overwritten** |
+
+Applied to `GET /`, `GET /applications`, and `GET /applications/:id` (which returns
+404 rather than confirming a colleague's leave exists). `GET /my` gained `?? -1`:
+`findApplications` skips a falsy `employee_id`, so an account with no linked employee
+record used to fall through "my leaves" into the whole company's list.
+
+Verified after: employee 10 → 0 rows and 404 on the detail route; employee 10 asking
+`?employee_id=1` → 0 rows; **employee 1 still sees all four of their own** on every
+route; admin and HR unchanged at 4.
+
+### 174.4 New leave applications had no tenant
+
+`leaves.repository.js` never set `company_id` on insert. Company-scoped dashboard
+counts match `company_id = $1`, which matches NULL against nothing — so a freshly
+applied leave was invisible to every approval queue that scopes by company. The
+INSERT now derives it: `(SELECT company_id FROM employees WHERE id = $1)`.
+
+This is one instance of a schema-wide issue recorded in the audit: `company_id` is
+nullable on **375 of the 489 tables that carry it**, and two incompatible scoping
+idioms read it (`company_id = $1`, 1,136 uses; `... OR company_id IS NULL`, 285 uses
+across 92 files), so a NULL-tenant row is invisible to every tenant under one and
+visible to all of them under the other.
+
+### 174.5 Cash flow: one column name, two dead endpoints
+
+`SUM(cost) FROM fixed_assets` — the column is `purchase_cost`. Both
+`GET /statements/cash-flow` and `GET /statements/export/cash-flow` returned 500;
+the screen and its CSV share the query and both were fixed. Its four sibling
+statements were healthy throughout.
+
+Worth recording *why* this surfaced: the `failQuery` hardening at the top of
+`statements.routes.js` stops a failed query returning `{}` that callers read as
+zero. Before it, capex read ₹0 and the statement rendered as if balanced. The 500
+is the hardening working.
+
+### 174.6 The repo guard that a correct commit turned red
+
+`unit.csvWriter.test.js` walks `src/` for hand-rolled CSV escaping. It also walked
+`src/database/migrations/`, and went red on `20260917000004_pct_family_seed_purge.js`
+for `const ident = (s) => `"${String(s).replace(/"/g, '""')}"`` — SQL identifier
+quoting, the same construct already allowlisted for `systemHealth.routes.js`, and
+not a CSV-injection vector. Migrations serve no CSV, so the walk now skips them
+wholesale rather than allowlisting each new migration by name as it lands.
+
+### Verified
+
+Backend suite green. Live, after restart: `/statements/cash-flow` and its export
+**200**; `/dashboard/approvals` pending queue **empty** (was 159 phantom rows);
+`pendingApprovals` **170 → 11**; leave scoping as tabulated in §174.3.
+
+**Still open, deliberately** — the 769 rows in `leave_requests`. Nothing reads them
+for counts any more, and the subject-access export reads both tables, so they are
+correctly preserved history. Migrating the 159 still marked `pending` into the live
+ledger would recreate exactly the queue this section removed, six months stale, in
+the right table. Archiving or purging them is a data decision, not a code one.
+
+---
+
+## §175 — The second frozen ledger, and the tenant a row inherits (2026-09-26)
+
+Remediation of the THIS-MONTH items from `MANIFEST_ERP_FUNCTIONAL_AUDIT_2026-09-17.md`,
+continuing §174.
+
+### 175.1 Attendance had the same two-table split as leave
+
+§174 found the dashboards counting leave from a table the workflow had abandoned.
+Writing the first Attendance tests found the identical shape one module over:
+
+| table | rows | newest row | writers | role |
+|---|---:|---|---:|---|
+| `attendance_records` | 74 | 2026-12-30 | **17** | **the live table** |
+| `attendance` | 210 | **2026-03-29** | **0** | frozen |
+
+Eight queries on `dashboard.controller.js` plus one in `analytics.routes.js` and one
+in `anomalyDetector.js` asked the frozen table for "present today" / "this month".
+A frozen table has no rows dated `CURRENT_DATE`, so **every attendance tile on every
+dashboard read 0** — `attendanceRate: 0` regardless of who had clocked in — and the
+"Low Attendance" anomaly detector, whose `HAVING COUNT(a.id) > 0` could never be
+satisfied, **had never once fired**.
+
+**A second, independent bug was stacked underneath it.** The two tables disagree on
+status *case*:
+
+```
+attendance         (frozen)  Present 95 · Absent 60 · Weekend 40 · Late 15   <- Title Case
+attendance_records (live)    holiday 70 · present 4                          <- lowercase
+```
+
+The dashboard compared `status = 'present'` — exact and case-sensitive. So it
+returned 0 against the frozen table for *both* reasons, and swapping the table alone
+would have left it at 0. All ten sites now use the existing
+`sqlAttendancePresent()` predicate from `shared/statusSets.js`, which lowercases and
+also counts `late` / `wfh` / `half_day` / `on_duty` as present days. Proven on the
+one date that carries real attendance: the new query counts **1 present of 42**
+where the old counted **0**.
+
+Column map for anyone porting another query: `date` to `attendance_date`,
+`check_in` to `check_in_time`, `work_hours` to `total_hours`, add `deleted_at IS NULL`.
+`attendance_records` also carries `company_id`, which `attendance` never had, so
+these counts can finally be tenant-scoped.
+
+### 175.2 A guard so the next frozen table fails in CI, not in an audit
+
+`src/__tests__/unit.deadTableGuard.test.js` fails if application code acquires a
+`FROM`/`JOIN`/`INTO`/`UPDATE` reference to any table on the dead list:
+`leave_requests`, `attendance`, `journal_entry_lines`, `stock_movements`,
+`payroll_slips`, `putaway_tasks`, `talent_pool_candidates`.
+
+It earned its place on the first run by catching two readers of frozen `attendance`
+that a `FROM attendance` grep had missed — `anomalyDetector.js` and, as a false
+positive worth recording, `reportCatalog.js`, where the match was the English
+sentence *"Per-employee day counts from attendance records"* inside a `desc:`
+string. The guard therefore requires the SQL keyword to be **UPPERCASE** (every
+query in this repo writes them that way) and strips comments first, because several
+allowed files mention these tables only to explain why not to use them. A guard with
+a false positive gets muted; better to miss lowercase SQL that does not exist here
+than to cry wolf about prose that does.
+
+The tables are NOT dropped. `security.routes.js` deliberately reads the frozen leave
+and attendance tables so a subject-access export returns everything held about a
+person, and is listed as an allowed reader for that reason.
+
+### 175.3 journal_entry_lines was a duplicate, not lost ledger detail
+
+The audit flagged 8 general-ledger lines sitting in a table no code reads, and could
+not say whether that was orphaned history or missing detail. Resolved: all four
+journal entries (JE0005-JE0008, depreciation, 89,289.06 Dr = Cr) have **2 lines in
+the dead table AND 2 lines in the live `journal_lines`**. The GL is complete; the
+dead rows are a redundant copy. Safe to drop whenever someone wants to — which is a
+data decision, so the guard above is the fix that shipped.
+
+### 175.4 A row inherits its tenant from its parent, not from its table
+
+`company_id` is nullable on **375 of the 489 tables that carry it**, and the two
+scoping idioms (§174.4) make a NULL-tenant row invisible to every tenant under one
+and visible to all of them under the other.
+
+`20260926000001_backfill_tenant_from_parent_record.js` stamps the transactional
+rows from their **parent record** — a journal line takes the company of its journal
+*entry*, a BOM line of its *header*, an attendance record of its *employee*. This is
+deliberately a different strategy from `20260917000005`, which inferred the owner
+from the table's own already-stamped rows: that is the right answer when a row has
+no parent to ask, but deriving from the parent is correct even in a genuinely
+multi-tenant install, where the table-wide inference refuses to run at all.
+
+Measured 36 NULL rows across ten tables; **28 stamped, 8 left alone**, and the 8 are
+not business data:
+
+- `pick_lists` 21-25 are 2026-08-20 empty-table-seeder fixtures whose
+  `sales_order_id` values (1-5) point at sales orders that **do not exist**.
+- `leads` 10, `travel_requests` 300 and `engineering_changes` 4 carry a NULL
+  `owner_id` / `employee_id` — no parent to derive from at all.
+
+Both groups want deleting rather than stamping, and deleting rows is not a
+migration's decision. Tables with NULL-tenant rows: **27 to 21**. The rest are
+shared reference data (`chart_of_accounts`, `master_values`, `roles`,
+`iot_metric_definitions`, `geo_locations`, `validation_rules`, `email_templates`)
+and platform audit logs — both legitimately tenant-less.
+
+`NOT NULL` was deliberately **not** added. These ten are a first pass; adding the
+constraint before the remaining tables get the same treatment just moves the failure
+to an INSERT that has not been taught to supply the column — which is exactly the
+bug §174.4 fixed in the leave repository.
+
+### 175.5 Also fixed
+
+- **`/biometric/employees/unmapped`** — 500 since it was written:
+  `employee_id AS emp_code FROM employees`, and `employees` has no `employee_id`
+  (the code column is `office_id`). `resolveEmployeeId()` at the top of the very
+  same file documents this trap; the route was added later and repeated it. While
+  it 500'd, the screen HR uses to find staff with no biometric enrolment showed
+  nothing, so the enrolment gap was invisible.
+- **IoT Alert Rules role picker** — called `GET /roles`, which does not exist. It
+  404'd on every mount and the component fell back to four hardcoded role codes, so
+  **22 of the 26 real roles could never be chosen as an escalation target**, with
+  no error anywhere on screen. Now uses `useRoleCatalog()` from
+  `config/roleCatalog.js` — the registry file whose own header says every role
+  dropdown reads from it. This screen was the one that did not.
+
+### 175.6 Attendance test coverage
+
+`src/__tests__/integration.attendanceContract.test.js` — 23 tests, real database,
+read-only. Attendance had 149 endpoints, 22 tables and **zero** tests while being
+the module payroll is computed from.
+
+Deliberately a **contract** suite: it asserts that every read endpoint on the
+attendance and biometric surface can execute its SQL, and treats 4xx as a pass —
+"employee_id required" is the endpoint working. Only 5xx fails, because on this
+surface a 5xx has meant "the SQL names a column that is not there" every time.
+Neither defect above was findable with a mocked pool: a mock returns whatever the
+test tells it to, so a query naming a non-existent column passes forever.
+Mutation-checked — reverting the `office_id` fix fails two assertions.
+
+### Verified
+
+Backend suite **81 files / 1,822 passed / 0 failed / 9 skipped**. No 5xx across the
+26 endpoints touched by §174-§175. `check:status-literals` and `check:sql-refs` pass.
+
+⚠ **One self-inflicted lesson worth the line:** the first version of the
+`anomalyDetector.js` comment wrote the table name in backticks *inside a JS
+template literal*, which closed the literal and broke the parse — the trap already
+recorded in [[project_backtick_in_sql_comment_breaks_boot]]. It surfaced as a
+`RolldownError` in an unrelated analytics suite, and cascaded into 41 skipped tests
+that looked like a pool-lifecycle problem. Never put a backtick in a SQL comment here.
+
+---
+
+## §176 — Closing the tenant column: the write paths, then the constraint (2026-09-26)
+
+§175.4 backfilled 28 of 36 NULL-tenant transactional rows and deliberately deferred
+three things. All three are now done, in the order that made each safe.
+
+### 176.1 The backfill was history; the write paths were the bug
+
+A backfill cleans what already happened. It does nothing about the next row. So
+before adding any constraint, every `INSERT INTO <table> (...)` in application code
+was parsed and checked for `company_id` in its column list — not grepped for a
+nearby mention, which counts comments and adjacent statements and is how this kind
+of audit gets the wrong answer.
+
+**19 of 53 INSERT sites across these ten tables omitted the column:**
+
+| table | sites fixed | tenant now comes from |
+|---|---:|---|
+| `journal_lines` | 8 | `companyId` / `companyOf(req)` already in scope from the parent entry |
+| `bom_lines` | 3 | `(SELECT company_id FROM bom_headers WHERE id = $1)` |
+| `production_operations` | 2 | `(SELECT company_id FROM production_orders WHERE id = $1)` |
+| `travel_requests` | 2 | `companyOf(req)` |
+| `quotations` | 1 | the quotation being revised (`current.company_id`) |
+| `lifecycle_instances` | 1 | `(SELECT company_id FROM sales_orders WHERE id = $2)` |
+| `engineering_changes` | 1 | `cid` — the second ECN creation path in `bom.routes.js` |
+
+Two patterns worth reusing. Where the company was **already in scope** — all eight
+`journal_lines` sites sit directly beneath a `journal_entries` INSERT that passes it
+— the tenant was known and simply not carried onto the child row. That is the whole
+explanation for 12 tenant-less lines out of 30 in the general ledger. Where it was
+not in scope, the derivation goes **in the statement** as a subquery on the parent,
+which needs no new parameter and is correct for every caller, including ones added
+later.
+
+`engineering_changes` is the clearest illustration of why a table-level audit beats a
+route-level one: `ecn.routes.js` stamped the column correctly, and a **second**
+creation path in `bom.routes.js` did not. One of two writers being right produces a
+table that looks mostly fine.
+
+### 176.2 Then the eight rows the backfill would not guess at
+
+- **`pick_lists` 21–25: deleted.** 2026-08-20 empty-table-seeder fixtures —
+  `sales_order_ref` reads "SEED sales order ref N" and `sales_order_id` 1–5 match
+  **zero** rows in `sales_orders`. A pick list for an order that does not exist
+  cannot be given a meaningful tenant by any means. Removed with one
+  `pick_list_lines` child each; the migration re-checks all four conditions per row
+  and deletes only what still matches.
+- **`leads` 10, `travel_requests` 300, `engineering_changes` 4: stamped.** The first
+  pass could not resolve these because their owner FK (`owner_id` / `employee_id`) is
+  NULL — but each carries a **creator** (`created_by` / `requested_by`), and users 1,
+  848 and 849 all hold `company_id = 1`. The tenant was knowable from a column the
+  first pass did not look at. Stamped rather than deleted: two carry real content,
+  and deleting rows is not a migration's decision.
+
+### 176.3 And only then the constraint
+
+`company_id` is now `NOT NULL` on all ten: `journal_lines`, `production_operations`,
+`bom_lines`, `quotations`, `lifecycle_instances`, `attendance_records`, `pick_lists`,
+`leads`, `travel_requests`, `engineering_changes`.
+
+Each `ALTER` re-counts NULLs first and **skips with a warning rather than failing the
+deploy**, because this file will also run against databases whose history is not this
+one's. Repo-wide: tables holding NULL-tenant rows **27 → 17**, columns declared
+`NOT NULL` **114 → 124**.
+
+The 17 that remain are correct as they are — shared reference data
+(`chart_of_accounts` 132/132, `master_values`, `roles`, `iot_metric_definitions`,
+`geo_locations`, `validation_rules`, `email_templates`, `iot_device_profiles`) and
+platform audit logs (`audit_logs`, `access_denials`, `attendance_audit_logs`,
+`signature_audit_log`, `workflow_run_logs`, `users`, `user_roles`). Those are read
+with the explicit `OR company_id IS NULL` idiom on purpose.
+
+### 176.4 The constraint immediately found two tests standing on borrowed data
+
+Both failures were the constraint working, not collateral damage:
+
+- `integration.planToProduce.test.js` inserted into `production_operations` without a
+  company. Fixture now derives it from the order, the same way the app does.
+- `integration.traceabilityClosure.test.js` asserted that "consumers reach a bin
+  through the canonical table" via
+  `pick_list_lines JOIN warehouse_bins ON wb.id = pll.bin_id`. That join was
+  satisfied **only** by the five seeder rows deleted in §176.2 — the suite's own
+  `pick_list_lines` row carried no `bin_id` at all. The suite now creates its own bin
+  and points its own line at it. An assertion that rests on data no test created is
+  not testing anything, and it reads as a real regression the first time someone
+  cleans the fixture up.
+
+### 176.5 A correction to the audit: the uniqueness bypass was not proven
+
+`MANIFEST_ERP_FUNCTIONAL_AUDIT_2026-09-17.md` listed, as a *proven consequence* of the
+nullable tenant column, that `test@dbtest.com` appears twice in `leads` — once under
+company 1, once under no company — and that a NULL-tenant row therefore slips past
+every composite unique index led by `company_id`.
+
+Re-tested here. The index is **partial**:
+
+```
+leads_company_email_unique ON leads (company_id, email)
+  WHERE email IS NOT NULL AND email <> '' AND deleted_at IS NULL
+```
+
+and lead 10 was soft-deleted on 2026-07-09, so it is excluded by `deleted_at IS NULL`
+**whatever its company_id is**. The NULL tenant is not what permits the pair. A sweep
+of all **68** company-led unique indexes found no NULL-tenant row anywhere in this
+database duplicating a stamped value.
+
+The mechanism is real in principle — `NULL <> NULL` does mean such a row cannot
+collide — but there was no live instance, and the report should not have called it
+proven. Corrected in place, with the original wording quoted so the change is
+visible rather than silently rewritten. The ordering, scoping and reporting
+consequences of the nullable column are unaffected; they were measured separately.
+
+### Verified
+
+Backend suite **81 files / 1,822 passed / 0 failed / 9 skipped**. No 5xx across the
+26 endpoints touched by §174–§176. A full `pg_dump` was taken before the delete
+(`backups/pulse-2026-09-26_04-29-17.sql`, 68 MB).
+
+⚠ **`npm run backup` needs `pg_dump` on PATH and does not say so usefully.** It
+reports "pg_dump not found in PATH. Install PostgreSQL client tools" on a machine
+where PostgreSQL 18 is installed and serving this very database — the binary is at
+`C:/Program Files/PostgreSQL/18/bin`. Worth teaching the script to look in the
+standard install locations before telling someone to install what they already have.
+
+
+## §177 — Probation reviews: department heads, reviewer eligibility, HR worklist and reassignment notices (2026-10-19)
+
+Connects **HR → Probation** to **Department Heads** (new per-company mapping), **Notifications**
+and **Audit**. There is no Approval Center record and no HR final decision in this flow yet; it
+ends when the department head submits a recommendation.
+
+```mermaid
+flowchart LR
+  DH[department_heads<br/>one active head per company+department] -->|resolveReviewer| PR[probation_reviews]
+  HR[HR: Probation page<br/>POST /probation-reviews  hr:add] --> PR
+  PR -->|probation_review_request<br/>reference = review id| N[notifications]
+  N --> MPR[My Probation Reviews<br/>personal page]
+  MPR -->|POST /probation-reviews/mine/:id/submit<br/>current head only| PR
+  W[HR worklist  GET /probation-reviews  hr:view<br/>reviewer_state per open review] --> P[ProbationReviewsPanel]
+  P -->|POST /probation-reviews/:id/reassign  hr:edit| PR
+  PR -->|new head: probation_review_request<br/>former head: probation_review_reassigned, no ref| N
+  PR -->|reassign_reviewer + notified counts| A[audit_logs]
+```
+
+### Reviewer rule (one place)
+
+`probation/probationReviews.service.js` `resolveReviewer()` is the only rule for "who reviews this
+employee": the employee's department (text, matched case-insensitively to `master_departments`)
+→ the company's active `department_heads` row → the head must be a current employee with an
+active login and must not be the employee themselves. It is used by request, submission (under
+`FOR SHARE`, with the review row `FOR UPDATE`), reassignment, and the HR worklist.
+
+### HR worklist (Task 3E)
+
+`GET /probation-reviews` (hr:view, company-scoped) now adds to each **requested** review:
+`reviewer_state` (`current` | `reviewer_replaced` | `no_eligible_head`), `reviewer_state_reason`,
+`current_head` and `reassignable`. Submitted, decided and cancelled reviews always carry
+`reviewer_state: null, reassignable: false` — they are never flagged. The flags are a snapshot;
+reassignment re-checks everything under its own locks.
+
+UI: `features/hr/components/ProbationReviewsPanel.jsx`, mounted on the Probation page directly
+below `DepartmentHeadsPanel`. Reassign is shown only to `hr:edit` holders and only when the
+server says `reassignable`; a reason is required. `no_eligible_head` tells HR to assign a head in
+the Department Heads panel first.
+
+### Reassignment notifications (Task 3E)
+
+`POST /probation-reviews/:id/reassign` (hr:edit), one transaction:
+
+- the **new** reviewer's active logins get `probation_review_request` (reference = review id);
+- the **former** reviewer's active logins get `probation_review_reassigned` — generic text,
+  `reference_id` NULL, no employee details. A former reviewer with no active login gets nothing
+  and the reassignment still succeeds;
+- the `audit_logs` row (`reassign_reviewer`) is written in the same transaction and records
+  previous/new reviewer plus `notified_new` / `notified_previous`;
+- push/email dispatch happens after commit; a no-op (same head) sends nothing and writes no audit.
+
+Routing: `notificationTarget.js` maps both `probation_review_request` and
+`probation_review_reassigned` to `MyProbationReviews` (the latter with no params).
+
+### Files
+
+Backend `probation/probationReviews.{service,routes}.js`, `probation/departmentHeads.{service,routes}.js`,
+migrations `20261014000006_department_heads.js`, `20261014000007_probation_reviews.js`.
+Frontend `features/hr/components/{DepartmentHeadsPanel,ProbationReviewsPanel}.jsx`,
+`features/hr/pages/MyProbationReviews.jsx`, `features/notifications/notificationTarget.js`.
+Tests `probationReviewStaleness`, `probationReviewEligibility`, `probationReviews`,
+`departmentHeads` (backend integration) and `probationReviewsPanel.test.jsx` (frontend).
+
+
+## §178 — Home Policies & Brand Vault: company-wide only, and Download returns the file (2026-10-19)
+
+Ask: keep Home universal (no department dashboards), keep its six sections, make Policies a clean
+company-wide section HR maintains from a designated Google Drive folder, keep exactly one
+Presentation Template in Brand Vault, and make Download return the actual file. Supersedes the
+download mechanism in §101.3 item 1 and the Home-policy query in §101.2.
+
+### Audit findings (before any change)
+
+- **Home layout** was already universal: hero, clock-in strip, six slots. No department dashboard
+  is mounted (HomeBusinessPulse is not imported). Nothing removed.
+- **Policies listed every `hr_policies` row**: every historical version (the Policies page's
+  "New Ver." inserts a NEW row with the same title), regardless of `applicable_to` (an internal SOP
+  would reach every employee), plus 3 SEED rows whose links were `example.invalid`. No active flag.
+- **Download was broken for the only real policy.** `DocTile` rewrote Drive links to
+  `uc?export=download`; for an org-restricted file that redirects to Google sign-in, and the
+  browser got a ~900 KB HTML page instead of the document (verified with curl).
+- **Brand Vault**: 'Presentation Template' and 'PPT Template' both active with the same file;
+  Quotation / Purchase Order / Certificate templates missing; every `file_url` a
+  `/documents/brand/…` path that has never existed (§101.3). Admin PUT/DELETE matched on id alone
+  (cross-tenant writes).
+- `GET /home/summary` announcements had no tenant filter.
+- The Drive service account (`GOOGLE_DRIVE_SERVICE_ACCOUNT_*`) is NOT configured in this
+  environment's `.env`, so the Drive API path cannot run here.
+
+### Data model (migration `20261019000001_home_documents_governance.js`)
+
+| Table | Change |
+| --- | --- |
+| `hr_policies` | `+ is_active BOOLEAN NOT NULL DEFAULT true`. `applicable_to` (existing) is now the audience: `'all'` = company-wide (Home + every employee), anything else = internal to HR. Read fail-closed. |
+| `company_documents` | `+ version`, `+ effective_date`; retire duplicate 'PPT Template'; 'Colour Codex' → 'Colour Codex / Brand Guidelines'; add Quotation / Purchase Order / Certificate templates (unlinked); clear the never-existing `/documents/%` paths; unique index `company_documents_active_title_uq` on `(COALESCE(company_id,0), category, LOWER(BTRIM(title))) WHERE is_active`. |
+
+Brand Vault after migration: Logo Pack, Colour Codex / Brand Guidelines, Brand Deck, Presentation
+Template, Letterhead Template (still HR/Accounts-only per §101.1), Quotation Template, Purchase
+Order Template, Certificate Templates, Email Signature Template.
+
+### What reaches Home
+
+- **Policies** (`home.service.js getPolicyDocuments`): company scope, `is_active`,
+  `applicable_to = 'all'`, `DISTINCT ON (LOWER(BTRIM(title)))` → newest row already in effect (a
+  version whose `effective_date` is in the future does not displace the current one). Sorted by
+  title. Link source = `file_url` first, then `drive_url` (`'#'` = none).
+- **Brand Vault** (`getBrandAssets`): active, company scope, `visible_roles` gate.
+- Each tile carries `download`: `'file'` (Drive file or Google Doc, streamed by Pulse),
+  `'link'` (non-Google page, opened in a new tab, `file_url` included), or `null` ("Not linked
+  yet"). **No Drive link is sent to the browser.**
+- Announcements now company-scoped.
+
+### Download flow
+
+```mermaid
+sequenceDiagram
+  participant E as Employee (Home tile)
+  participant P as Pulse API
+  participant D as Google Drive
+  E->>P: GET /api/home/documents/:kind/:id/download (Bearer)
+  P->>P: same visibility rules as the panel (else 404)
+  alt service account configured
+    P->>D: files.get alt=media / files.export (Docs→docx, Sheets→xlsx, Slides→pptx)
+  else or SA gets 403/404
+    P->>D: drive.usercontent.google.com/download?id=…&confirm=t (or docs export URL)
+  end
+  D-->>P: bytes, or redirect to sign-in (HTML)
+  P-->>E: 200 attachment + filename  |  502 {code:NOT_SHARED}  |  404 {code:NO_FILE|DRIVE_NOT_FOUND|NOT_FOUND}
+```
+
+`backend/src/home/documentDownload.js` (`parseDriveRef`, `classifySource`, `validateDocumentUrl`,
+`openDocument`), `googleDrive.service.js openFileStream` (new: streaming + native export).
+An HTML response or one that landed on `accounts.google.com` is NEVER passed on as the document.
+The server never fetches non-Google URLs (no SSRF surface). Frontend: `pages/homeDocuments.js`
+(blob via the API client, filename from `Content-Disposition`, server reason shown in Home's toast).
+
+### How HR maintains files
+
+Policies page (`features/hr/pages/Policies.jsx`): "Link Policy" now has **Audience** (All employees
+— shown on Home / Internal — HR & admin only), and each row has **Retire / Restore**; Internal and
+Retired badges are shown to managers. `GET /hr/policies` returns internal/retired rows only to
+holders of `hr:view` (HR roles, payroll_admin, admin). POST/PUT accept `applicable_to` (unknown →
+`'internal'`) and `is_active`; both refuse Drive *folder* links; a new `file_url` now replaces the
+stale `drive_url` copy. Brand Vault editor (`features/admin/pages/BrandVault.jsx`) gains Version and
+Effective Date; writes are tenant-scoped; a duplicate active title is a 409.
+
+To publish a new revision under the same link: Drive → Manage versions → Upload new version.
+Otherwise use "New Ver." and paste the new file's link; Home switches to it automatically.
+
+**Operational requirement:** for org-restricted files, share the designated HR policy folder with
+the service account and set `GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON` (or `_PATH`). Without it, only files
+shared "Anyone with the link — Viewer" download; others show the NOT_SHARED reason.
+
+### Verification
+
+- `backend/src/__tests__/homeDocuments.integration.test.js` — 18 tests, real DB + routers + a local
+  HTTP stand-in for Google (bytes, UTF-8 filename, docx export, sign-in redirect, 404). Mutation-checked:
+  removing the audience filter (4 fail), the latest-version DISTINCT ON (2 fail), or the HTML check (1 fail).
+- `frontend/src/__tests__/smoke.Home.test.jsx` — +3 tile tests (31 total).
+- Live server: employee summary shows 1 policy (SEED rows gone) and 8 Brand Vault items; real Google
+  for the org-restricted "test" policy → `502 NOT_SHARED` JSON. Playwright: six sections, no Drive URL
+  in the DOM, restricted-file toast, and a fulfilled download saved byte-for-byte with its filename.
+
+### Files
+
+Backend `home/{documentDownload,home.service,home.controller,home.routes}.js`,
+`services/googleDrive.service.js`, `modules/hr/hr.routes.js`, `modules/admin/admin.routes.js`,
+migration `20261019000001_home_documents_governance.js`. Frontend `pages/Home.{jsx,css}`,
+`pages/homeDocuments.js`, `features/hr/pages/Policies.{jsx,css}`, `features/admin/pages/BrandVault.jsx`.
+
+## §179 — Approvals: inbox over the modules, then tenant and transition hardening of the module decision routes (2026-10-19/20)
+
+Full finding list and status: `APPROVALS_GAP_ANALYSIS.md`. Supersedes §34/§35/§120's description of
+the Approval Center as a write path for module records.
+
+### 179.1 Approval Center = inbox (2026-10-19)
+
+`approvals.sources.js` is the registry for 11 request types (leave, regularization, OT, expense,
+PR, ECN, payment batch, travel, travel advance, requisition, offer) plus central `approvals` rows:
+pending rows, `canAct` (a mirror of the module's own authorization), the module endpoint that
+decides the row (`actions`), the requester's view and the approver's history. The UI runs the
+module endpoint; `POST /approvals/<type>:<id>/approve|reject` returns **409 USE_MODULE_ENDPOINT**
+for module records. Only requisitions, offers and central rows are decided by `/approvals`.
+One sidebar entry, **Approvals** (ALWAYS_VISIBLE), with tabs My Pending Approvals / My Requests /
+Approval History; `MyRequests` opens the same page on the My Requests tab.
+
+### 179.2 Module decision routes — company scope, authority, transitions (2026-10-20)
+
+Every rule below is enforced in the module route, so it holds for the module's own screen, the
+Approval Center and any direct API caller. A record in another company is reported exactly like a
+missing one (404). Company = `companyOf(req)` (token/scope, never the request body); a global
+super admin (null company) is unscoped, as everywhere else.
+
+**Leave** (`leaves.routes.js`, `leaves.repository.js`)
+- `loadLeaveInCompany()` gates approve/reject at manager, L2 and HR level, delegate, cancel,
+  withdraw, generic status update + its `/:id/approve|reject` aliases, HR bulk-approve, workflow
+  advance, `GET /applications/:id` and `GET /applications/:id/history` (history also needs
+  `canSeeApplication`, it had no visibility check).
+- L2 decision requires `department_head | l2_approver | admin | super_admin | hr_manager`; HR-final
+  requires `hr | hr_manager | admin | super_admin` — the roles the LeaveApprovals queues already
+  used. Both used to need only `leaves:approve`, which every manager holds.
+- `POST /delegate/:id`: caller must pass `authorizeManagerApproval` (same rule as travel/expense
+  delegation); delegate must be an active employee of the same company and not the requester;
+  only while L1 is open.
+- `updateStatus()` locks the row (FOR UPDATE) and allows only pending→approved/rejected/cancelled
+  and approved→cancelled. Reopening to `pending` then re-approving used to deduct balance twice.
+- Generic status route: a non-HR caller may cancel only their own leave (it cancelled anyone's).
+- Withdraw/cancel worked for nobody before 2026-10-19 (`$1` type error, then a CHECK on
+  `leave_approval_history.approval_level`; migration `20261019000002` allows level 0).
+
+**Travel** (`travel.routes.js`)
+- `PUT /requests/:id/status`: company-scoped; transitions Pending→Approved/Rejected/Cancelled and
+  Approved→Cancelled only; compare-and-set update (`WHERE status = <validated>`) so one of two
+  simultaneous decisions wins and the other gets 409 with no second engine transition, audit row,
+  notification or booking stub. Accepts lower-case status (ManagerDashboard sends it).
+- `level-approve`: company-scoped, Pending only, every write conditional on (status, level).
+  Notifications now go to `created_by` (a users.id) instead of `employee_id`.
+- Delegate (requests and advances): company-scoped, pending only, delegate must be an active
+  same-company employee and not the requester.
+- Advances finance-review / manager-review / resubmit / disburse: company-scoped, conditional on
+  the expected status. `finance-post`: company-scoped, Approved only. `PUT /expenses/:id/reimburse`
+  and `GET /requests/:id/approvals`: company-scoped.
+- Unchanged: the levels, the reporting-manager/delegate/HR/admin rule, the 72h workflow SLA.
+
+**ECN** (`engineering/ecn.routes.js`)
+- `loadEcn()` gates GET/PUT `/changes/:id`, items add/delete, submit, approve, reject, implement,
+  documents, signatures (all were id-only).
+- Approve/reject lock the change; with named approvers the caller must hold a **pending** approver
+  row (403 otherwise — approve used to return `success:true` for a non-approver, reject let any
+  `engineering:add` holder reject the whole change). The change is approved when no approver row
+  remains pending (parallel approval unchanged); one approver's rejection still rejects it.
+  A change created with no named approvers keeps the old rule: `engineering:add` decides it.
+
+**Payment batches** (`extended.routes.js`, `paymentBatch.service.js`, `paymentBatch.repository.js`)
+- `GET /:id`, `/:id/bank-file`, submit, approve, reject, process are company-scoped.
+- Transitions lock the batch: submit only from draft/rejected (it could push a processed batch
+  back to pending and have it paid again), approve/reject only from pending_approval (reject had no
+  check), process only from approved — two concurrent process calls pay once.
+
+Tests: `approvalsSecurity.integration.test.js` (26, real DB, tenants 999981/999982; 23 of them
+fail against the pre-change code), `approvalsInbox.integration.test.js`, `smoke.approvals`,
+`smoke.leaves`.
+
+### 179.3 Approval policies — self-approval and missing approvers (2026-10-20)
+
+Enforced in the module routes/services; the Approval Center registry (`approvals.sources.js`)
+mirrors each rule so the item is not offered to the person the module would refuse.
+
+**Leave — nobody decides their own leave.** `blockOwnLeaveDecision()` in `leaves.routes.js` runs
+on approve/reject at manager, L2 and HR level, the generic status route and its `/:id/approve|reject`
+aliases (approve/reject only — cancelling your own leave is unchanged), HR bulk-approve (the item is
+skipped with `SELF_APPROVAL_BLOCKED`), workflow advance, and delegate (choosing who decides your
+own leave is deciding it). The actor's employee is read from `users.employee_id`, not the token.
+Response: **403 `SELF_APPROVAL_BLOCKED`** with `level` and `eligible_alternates` (active same-company
+logins, other than the requester, that the level's rule accepts: L1 = reporting manager, delegate, or
+an HR/admin override role; L2 = department_head/l2_approver/admin/super_admin/hr_manager; HR =
+hr/hr_manager/admin/super_admin). The leave stays pending at the same level; when the count is 0 the
+message tells an administrator to provide an approver (reporting manager, delegate or role).
+A department head's own leave therefore goes to another L2-eligible user — it appears in their
+Approval Center inbox and not in the requester's. Hierarchy, entitlements, balance deduction,
+withdraw/cancel, history and notifications are unchanged.
+
+**ECN — decided only by named approvers.** `POST /changes/:id/submit` → **400 `APPROVERS_REQUIRED`**
+when the change has none. `approve`/`reject` on a submitted change with none → **409
+`APPROVER_CONFIGURATION_REQUIRED`**, nothing changes (it used to be approvable by anyone with
+`engineering:add`). Resolution: `PUT /changes/:id { approvers: [{ approver_id }] }` — accepted only
+while the change has no approvers (draft or submitted). Approvers named there or at creation are
+vetted: active login in the change's company, holds `engineering:add` (what the approve route
+needs), not the requester → otherwise **400 `INVALID_APPROVERS`**. No schema change; no approvers
+are invented. **BOM link:** `POST /production/bom/:id/version` raises its ECN with an impacted item
+but no approvers, so a BOM change now needs an approver named before submit → approve → implement
+(which promotes the BOM). The ECN page's detail modal shows an **approver picker** for a change with
+none (colleagues from `GET /approvals/delegates`, saved through the PUT above) and disables Submit
+until one is saved.
+
+**Payment batch — maker ≠ checker.** `approveBatch()` refuses when `payment_batches.created_by`
+equals the acting `users.id`: **403 `SELF_APPROVAL_BLOCKED`** with `eligible_alternates` (other
+active same-company users holding `finance:approve`), thrown under the batch row lock before any
+write — status stays `pending_approval`, no `approved_by`, no payment, no notification. Reject,
+submit and process are unchanged (the creator may process a batch someone else approved).
+
+Tests: `approvalPolicies.integration.test.js` (16, real DB, tenants 999983/999984 — incl. the full
+ECN path create → name approvers → submit → parallel approval → implement, and a batch with lines
+paying one payment per line once; of the original 14, 10 fail against the pre-policy code); `integration.planToProduce` (BOM
+version → ECN: submit refused, approver named, submit, approver approves, implement promotes BOM);
+frontend `ecnApproverPicker.test.jsx`.
+
+## §180 — One employee list per role, and who may read what about another employee (2026-10-20)
+
+Two passes on the same question: which screen is the employee list, and what
+does the server hand out about a colleague.
+
+### 180.1 Employee Directory left the HR menu
+
+The audit found HR → Employee Directory duplicated Employees → All Employees
+only for admin / super_admin / hr. For ordinary employees and for hr_manager /
+hr_exec / payroll_admin (who hold no `employees:view`) it was the ONLY list. So
+it was moved, not deleted.
+
+```mermaid
+flowchart LR
+  U[Signed-in user] --> Q{canOpenEmployeeMaster?<br/>= canRenderPage on EmployeesData}
+  Q -- yes --> M[Employees → All Employees<br/>EmployeesData · employee master]
+  Q -- no --> D[Employee Directory<br/>top-level, beside Org Chart<br/>read-only phonebook]
+  D --> P[Card → read-only panel<br/>from GET /employees/directory row]
+  OLD[/EmployeeDirectory URL/] --> Q
+```
+
+- **Menu.** `Employee Directory` is its own top-level section after Org Chart,
+  granted in `ROLE_SECTION_ALLOWLIST` to exactly the six roles that held `HR`
+  (manager, hr, employee, hr_manager, hr_exec, payroll_admin).
+- **One gate.** Layout.jsx's inline route checks were extracted to
+  `canRenderPage()` (menuCatalog.js); Layout calls it, and so do the sidebar row
+  and the `/EmployeeDirectory → /EmployeesData` redirect through
+  `canOpenEmployeeMaster()`. `canRoleOpenPage()` is looser (a Page-Access
+  "view" grant short-circuits it) and must not be used to decide a redirect.
+- **Cards** open a read-only panel built from the phonebook row; they no longer
+  open Employee Profile (which 403'd hr_manager / hr_exec / payroll_admin). The
+  page's fallback to `GET /employees` was removed.
+- **HR Dashboard** quick link to EmployeesData is labelled "All Employees".
+  Employee Records (4 tabs) and Org Chart's panel are unchanged.
+
+### 180.2 Reads about another employee — final rules
+
+Shared pieces: `backend/src/shared/employeeAccess.js`.
+
+| | HR seats¹ | payroll_admin | manager / dept head | the employee | anyone else |
+|---|---|---|---|---|---|
+| `GET /notes/:employeeId` (hr_notes) | ✅ company | ❌ 403 | ❌ 403 | ❌ 403 | ❌ 403 |
+| `GET /onboarding/progress/:id` | ✅ company, with item notes | ❌ 403 | ✅ only employees they manage², item notes stripped | ✅ own only, item notes stripped | ❌ 403 |
+| `GET /employees` | full rows | full rows | maskPII rows (unchanged) | picker rows³ | picker rows³ |
+| `GET /employees/:id` (other) | full | full | maskPII | phonebook row (`directory_view`) | phonebook row |
+| `GET /employees/:id` (self) | full | full | full | full **minus `notes`** | full minus `notes` |
+| `GET /employees/directory` | phone shown | phone shown | phone shown (manager) | phone withheld | phone withheld |
+
+¹ `HR_RECORD_ROLES` = admin, super_admin, hr, hr_manager, hr_exec.
+² `managesEmployee()`: direct or indirect manager by `reporting_manager_id`
+(same company), or the current head (`department_heads.ended_at IS NULL`) of
+the employee's department. The name-text `reporting_manager` fallback is not
+honoured for access.
+³ Picker row = id, office_id, name, first/last name, designation, department,
+sub_department, company_email, status, photo_url, location, joining_date,
+reporting_manager(_id), company/branch/zone/work_centre/default_shift ids,
+is_field_employee. No phone, PAN/Aadhaar, gender, qualifications, previous
+employers, exit reason, grade/band, biometric id or notes.
+
+**Scope.** Every one of these reads now refuses (403) a caller whose company
+cannot be resolved, instead of reading `companyOf() === null` as "every
+company". Only super_admin keeps the global read. Before, an unscoped
+`employee` login received every company's employee list.
+
+**hr_notes has no visibility column.** Nothing marks a note as meant for the
+employee or shareable with a line manager, so every note is treated as
+confidential HR. Showing some notes to the employee or a manager needs a
+`visibility` column first; no migration was made. The UI writes
+`employees.notes` via Edit Employee and shows hr_notes as a read-only history.
+
+**Writing hr_notes (`POST /notes`, no UI caller).** HR seats: any employee in
+their company (other company → 404). `department_head` without an HR seat:
+only an employee `managesEmployee()` says they currently manage — the same
+rule as onboarding, never a name match, always the caller's own company;
+unrelated, other-company and non-existent targets all get the same 403.
+Everyone else: 403. Department heads still cannot READ hr_notes.
+
+### Files
+
+- Frontend (180.1): `config/routes.jsx`, `config/menuCatalog.js`,
+  `components/Layout.jsx`, `components/Sidebar.jsx`,
+  `features/hr/pages/EmployeeDirectory.jsx`, `pages/HRDashboard.jsx`.
+- Backend: `shared/employeeAccess.js` (new), `notes/note.controller.js`,
+  `modules/hr/onboarding.routes.js`, `employees/employee.controller.js`,
+  `employees/employee.routes.js`, `employees/employee.service.js`.
+- Tests: `employeeDirectoryPrivacy.integration.test.js`,
+  `employeeDataAccess.integration.test.js` (backend, live DB, tenants
+  999941-999945); `employeeDirectory.routeAccess.test.jsx`,
+  `employeeDirectory.nav.test.jsx`, `smoke.EmployeeDirectory.test.jsx`,
+  `employeeProfile.onboardingAccess.test.jsx`.
+- Frontend (onboarding 403 state): `features/employees/pages/EmployeeProfile.jsx`.
+
+### Known limitations
+
+- Employee Profile's Onboarding tab now shows an access-denied panel on 403
+  (no Initialize, nothing about whether a checklist exists); other failures
+  still fall through to the empty state, as before.
+- Managers and department heads still receive maskPII'd list rows (personal
+  phone, last-4 PAN/Aadhaar) on `GET /employees`; that tier was left unchanged.
+
+## §181 — Exit requests and intern conversion: company scope at the mutation; a clean backend baseline (2026-10-20)
+
+Three backend failures (`employeeWriteScope`, `internConversionWorkflow`,
+`testCleanupScoping`) were each traced to a root cause. One of them was a live
+cross-tenant hole.
+
+### 181.1 Exit module — `backend/src/modules/hr/exit.routes.js`
+
+- **Company gate.** Every handler scoped with `($n::int IS NULL OR e.company_id = $n)`
+  on `cid(req)`. That is NULL for a super admin's global scope and ALSO for an
+  HR login whose company could not be resolved (`req.scope = null`), which
+  turned every predicate off. A router-level gate now refuses the second case
+  (`readScope()`, `shared/employeeAccess.js`). After the gate, NULL means
+  super admin and nothing else.
+- **POST `/exit/requests/:id/withdraw`.** The company predicate is now on every
+  mutation (exit_clearance reset, `employees` status restore with exactly-one-
+  row check, `users` re-activation), not only on the `FOR UPDATE` read.
+- **PUT `/exit/requests/:id`** read and wrote by id alone, so one company's HR
+  could edit another company's exit request. It is now scoped through
+  `employees` (exit_requests has no company_id); other company → 404.
+- **POST `/exit/requests`** now checks that the employee is in the caller's
+  company (404 otherwise) and that `employee_id` is an integer (400).
+- Unchanged: transitions, 409 rules, audit entries, HR-write roles.
+- **The other four id-keyed routes (second pass, same day).** Each now 400s a
+  malformed id, 404s an unknown or other-company target, and repeats the
+  company predicate on every write:
+  - `POST /exit/interview`: employee (and a named interviewer) must be in the
+    caller's company; the interview insert, `interview_done` flag and clearance
+    upsert are one transaction.
+  - `POST /exit/fnf/compute/:employee_id`: `computeFnf(db, id, { companyId })`
+    now REQUIRES a scope (`undefined` throws). It scopes the salary read and
+    the `net_payable` write. `fnfAutoTrigger.cron.js` passes each row's own
+    company. A PAID settlement is not recomputed (409).
+  - `PUT /exit/fnf/:id/approve`: scoped through the employee; a PAID
+    settlement is never moved back to `approved` (409, enforced in the UPDATE).
+  - `PUT /exit/clearance/:employee_id`: the upsert and the "access revoked"
+    login deactivation are limited to an employee of the caller's company.
+    Before, ticking it could disable another company's login.
+  Tests: `exitTenantScope.integration.test.js` (tenants 999946/999947).
+
+### 181.2 Intern conversion — `backend/src/modules/hr/internConversion.js`
+
+`linkConversion()` (inside the POST /employees transaction) writes
+`employees.source_intern_id` and `interns.converted_employee_id`. Both statements
+now carry the intern's company and must change exactly one row, or the
+conversion throws 409 `CONVERSION_COMPANY_MISMATCH` and the whole employee
+create rolls back. The only caller could not pass a mismatched pair; the rule
+now lives at the mutation instead of in the caller.
+
+### 181.3 Test baseline
+
+- `internConversionWorkflow`: `talent.routes.js` seeds 10 default
+  `interview_questions` for every active company on import. A dev-server
+  restart while the suite's tenants existed (2026-10-19, 3.4 s after creation)
+  left FK rows that blocked its company delete, so every later run failed in
+  `beforeAll` (18 skipped). Its cleanup now deletes interview_questions for its
+  own two tenants.
+- **Seeder moved to first use (2026-10-20, third pass).** The ten default
+  interview questions are no longer seeded at module load.
+  `modules/talent/defaultInterviewQuestions.js` seeds ONE company, the first time
+  its bank is read (`GET /talent/questions`, `/questions/stats`, the legacy alias).
+  It runs only for an active company with no questions at all, under a per-company
+  advisory lock, so it is idempotent under concurrency, and it never seeds the
+  null-company view. Boots and restarts no longer touch test tenants, so the 40
+  suites without the interview_questions delete are no longer exposed. Every real
+  active company already had its bank; companies created after boot now get one on
+  first use instead of after the next restart. Test: `interviewQuestionSeeding.integration.test.js`.
+- `testCleanupScoping`: the scanner read a string inside `expect(...)` (a SQL
+  sample fed to a regex test) as an unscoped teardown. A literal that is the
+  direct subject of `expect(` is now skipped; executed SQL, including
+  `expect(await db.query(...))`, is still read. Guard tests pin both.
+- `gdprPurge`: the "no real employee changed" global hash (every employee
+  outside its tenants) moved whenever a parallel suite created a row. It is
+  replaced by purge-scoped checks: the handler's recorded writes target only the
+  employee and its logins and change exactly those rows, and look-alike
+  bystanders in both companies stay byte-identical. A regression case shows the
+  old hash failing on an unrelated insert while the new checks hold.
+- `iot.gapclosure.test.js` now removes the login it created (by recorded id or
+  this run's unique TAG) and its notifications BEFORE deleting its company.
+  `users.company_id` is ON DELETE SET NULL, which is why the leaked accounts had
+  no company. A run-scoped guard fails the suite if anything with its TAG survives.
+  Accounts from earlier runs (297) are left untouched.
+- `exitWithdraw.integration.test.js` acts as a real test-owned user, so its audit
+  rows are attributable and removed by that user id. The 45 unattributed
+  `withdraw` rows already written are immutable audit history (no FK, no
+  retention job) and were left untouched.
+
+
+## §182 — Payroll: one eligibility rule, effective-dated statutory rules, and a release gate before approval (2026-10-20)
+
+Source documents: `PAYROLL_DATA_FLOW_AUDIT.md` (Part 1 audit, Part 2 remediation). Memory: [[project_payroll_data_flow_audit_2026-10-20]].
+
+**What changed in the architecture**
+
+- **One read path.** Every payroll figure (Run Payroll, Payslip Generator, Payslip Viewer, PDF, email, Form 16/130, arrears) is computed through `payroll.service.js` `buildPeriodContext()` → `payrollEngine.js`. Previously five paths computed from `employees.basic_salary` with different inputs.
+- **Eligibility (E1–E6)** in `payrollEligibility.js`: company, payable status, joining ≤ month end, exit ≥ month start, salary revision in force with Basic > 0, structure. `employees.basic_salary` is not a payroll source.
+- **Statutory rules** (`statutoryRules.js` + table `payroll_statutory_rules`): every rate, ceiling and slab is a dated version with `status` (verified / unverified / decision_required) and evidence. PF ceiling ₹15,000 (S.O. 2702(E), 29-May-2026) and ₹25,000 (S.O. 5109(E), 17-Sep-2026) are Gazette-verified. Two interpretation keys: `pf.wage_floor_basis`, `esi.wage_basis`.
+- **Settings** (`payrollSettings.js`): Payroll Settings and Setup Wizard write the same blob under two key families; one normaliser reads them, the save path writes both, and an invalid pay cycle (cutoff on/after pay day) is refused. Settings saves now carry their before-image into `audit_logs`.
+- **Release gate** (`payrollReleaseGate.js`, `GET /payroll/release-readiness`): approval is refused while the pay cycle is invalid, settings conflict, or any statutory rule in force is unverified, undecided, or changed inside the wage month. A blocker is cleared by recording a company version of the rule with its source. Drafts are never gated.
+- **Approval** re-validates bank/PAN against current employee data and blocks a salary revision effective mid-month (treatment undecided). On approval: GL payroll journal (de-duplicated **per company and per approval batch**), loan repayments (`payroll_loan_repayments`, loans close at zero), arrears marked paid.
+- **Payment** requires an approved row and re-checks bank details; writes the s.192 TDS ledger row and the salary-disbursement journal, both carrying the company.
+- **Statutory outputs** read approved/paid, non-test rows only: PF ECR (EPFO 11-field `#~#` layout, contribution wage), ESI challan, Form 138 / 24Q (validated; labelled by tax year), Form No. 130 / 16 (lifecycle; Part B summary after FY end).
+- **Test-data isolation**: `is_test` on `payroll_runs`, `payroll_loans`, `payroll_arrears`; a status CHECK (NOT VALID) on `payroll_runs`.
+
+**Separate, auditable actions**: generate/preview draft · approve · mark paid · email payslips · generate statutory statements/certificates. The generator cannot overwrite approved or paid rows.
+
+**Lifecycle position**: Recruitment → Employee → **Salary revision** → Attendance/Leave → **Payroll (draft → gate → approve → pay)** → Finance (GL, TDS) → Statutory returns → Exit/F&F. No dead ends: approval feeds Finance, Loans and Arrears; payment feeds TDS and the disbursement journal.
+
+**Files to inspect**: `backend/src/modules/payroll/*`, `backend/src/modules/finance/tds.routes.js`, `backend/src/modules/finance/services/payrollJournal.service.js`, `backend/src/modules/admin/settings-status.routes.js`, migrations `20261020000001`, `20261020000002`; `frontend/src/features/hr/pages/{Payroll,PayslipGenerator,PayslipViewer,SalaryStructure,PayrollSettings,PayrollForm16,PayrollForm24Q,PayrollCenter}.jsx`.
+
+**Manual testing order** (Payroll Center sections, §199): Overview (read the month) → Settings (save a valid cycle) → Salary Structures & Loans (Assign a revision) → Payroll Processing (eligibility, generate draft) → Release prerequisites (record rule confirmations) → Approve (fix any bank/PAN blocker) → Mark Paid → Payslip Viewer / email → PF ECR → Form 138 → Form 130/16 status.
+
+**QA / role matrix**: generate — HR roles; approve — admin, super_admin, finance_manager, payroll_admin; record a company rule version — admin, super_admin, payroll_admin (global version — super_admin only); employees see only their own finalised payslips.
+
+
+## §183 — CTC: what Pulse computes today, and the hire / increment paths into salary (2026-10-20)
+
+Source: `PAYROLL_DATA_FLOW_AUDIT.md` Part 3. Builds on §182.
+
+**There is no contractual CTC in Pulse.** Two figures exist and are named for what they are:
+
+- **Monthly gross** — what a salary structure prices: Basic ÷ (Basic % of the target) with the balancing component topping up to it (the structure screen calls it "monthly gross"; the stored calculation type keeps its legacy key `percentage_of_ctc`).
+- **Employer cost of the month** — `payroll_runs.ctc_monthly` (engine also returns `employer_cost_month`) = gross earned that month + employer PF + ESI + LWF. The same total is posted to the GL payroll journal and summed by `GET /payroll/dept-cost` (`total_employer_cost`). Shown on the payslip as "Employer cost this month".
+
+Removed: the engine's `ctc_annual` (this month × 12). Renamed: `gratuity_provision` → `gratuity_payable_if_exit_now` (outside every cost figure).
+
+**Workflow changes**
+
+```mermaid
+flowchart LR
+  OFFER[Offer letter<br/>offered_salary = ANNUAL CTC] -->|accepted| HIRE[hireCandidate]
+  HIRE --> EMP[Employee<br/>no salary revision]
+  EMP --> ELIG{Eligibility E5}
+  OFFER -.->|annual CTC shown in reason| ELIG
+  ELIG -->|HR converts to monthly Basic| ASSIGN[Salary Structure → Assign<br/>Basic ₹ per month]
+  INC[Increment recommendation<br/>same-company employee only] -->|push-payroll| REV[Revision effective date<br/>base = revision in force then]
+  ASSIGN --> REV2[employee_salary_assignments]
+  REV --> REV2
+```
+
+- **Recruitment → Payroll**: a hire no longer creates a salary revision from the offer (it used to write the annual CTC as the monthly Basic — EMP038). Run Payroll lists the hire as not eligible, with the accepted offer's annual CTC in the reason.
+- **Performance → Payroll**: `push-payroll` scales the revision in force on the increment's effective date, updates the employee-master Basic only when that revision is in force today, and refuses an employee of another company (also refused at `POST /recommendations`).
+
+**Open policy (no code until decided)**: CTC definition (gross only / + statutory employer contributions / + gratuity and benefits), salary capture model (component-wise vs CTC-driven — today Add Employee captures Basic + Special Allowance but payroll ignores the revision's Special Allowance), offer → first-salary conversion, increments on CTC vs Basic. Recommended target: one server `ctcOf(revision, structure, rules)` used by offers, Assign, increments, profile and payslips.
+
+**Files to inspect**: `backend/src/modules/payroll/payrollEngine.js`, `payroll.routes.js` (dept-cost), `payroll.service.js` / `payrollEligibility.js` (offer CTC in E5), `backend/src/modules/recruitment/repositories/recruitment.repository.js` (`hireCandidate`), `backend/src/modules/performance/routes/increments.routes.js`; frontend `SalaryStructure.jsx`, `PayrollSettings.jsx`, `Payroll.jsx`, `recruitment/pages/EmployeeAutoCreation.jsx`. Tests: `payrollCtc.test.js`, `integration.payrollEndToEnd.test.js`.
+
+**Manual test**: accept an offer → hire → Run Payroll shows "Accepted offer: Annual CTC ₹…" under not eligible → Assign a monthly Basic → eligible; approve and push an increment dated in the future → the new revision appears with that date, the profile's current Basic is unchanged until then.
+
+## §184 — CTC-driven salary entry: proposals, company structures and the `ctc_mode` switch (2026-10-21)
+
+**Shipped OFF.** Every company has `ctc_mode = false`; with it off nothing below is reachable and all paths behave as in §183. Formulas, tests, limitations and the rollout procedure: `PAYROLL_DATA_FLOW_AUDIT.md` Part 5.
+
+**What changes when a company switches it on (Payroll Settings → "CTC-driven salary entry")**: salary is entered as an annual CTC (or a monthly Basic) and saved as a **draft proposal** in `salary_revision_proposals`. Drafts are invisible to payroll, F&F, encashment and analytics. Only approval writes `employee_salary_assignments` — a new row carrying the approved component `breakdown`, `annual_ctc` and `ctc_policy_version`. The direct Assign endpoint returns 409 `CTC_MODE`.
+
+```mermaid
+flowchart LR
+  ASSIGN[Salary Structure → Assign<br/>annual CTC or monthly Basic] --> PROP
+  OFFER[Accepted offer<br/>Prepare salary proposal] --> PROP
+  HIRE[Add Employee with a Basic] --> PROP
+  INC[Increment push-payroll] --> PROP
+  PROP[(salary_revision_proposals<br/>draft)] -->|approve: approver ≠ preparer,<br/>policy + rules recorded,<br/>figures unchanged, month open| REV[(employee_salary_assignments<br/>+ breakdown)]
+  REV --> RUN[Payroll: earnings = approved components]
+  POL[(payroll_statutory_rules<br/>ctc.definition)] --> PROP
+  RULES[(statutory rules on the<br/>effective date)] --> PROP
+```
+
+**Connections added**
+
+- **Payroll ← Salary Structure**: an approved breakdown is paid as-is (prorated for LOP, joining and exit). Structure edits and component toggles no longer change it. Legacy revisions are still recomputed from the structure. E6 is satisfied by a breakdown.
+- **Payroll → payslip**: the payslip carries `contract.annual_ctc` (the revision in force), shown apart from the month's employer cost (`ctc_monthly`).
+- **Recruitment → Payroll**: `POST /recruitment/offers/:id/salary-proposal` turns an accepted offer's annual CTC into a draft for the hired employee (`employees.source_candidate_id`). One live proposal per offer, same company only.
+- **Employees → Payroll**: Add Employee with a Basic creates a draft proposal (inside a savepoint, so it never aborts the hire) instead of a revision.
+- **Performance → Payroll**: the increment base is the annual CTC in force on the effective date. Push-payroll creates a proposal on that date. A future-dated approval leaves `employees.basic_salary` unchanged until the revision is in force.
+- **Statutory rules → CTC**: the company's CTC definition is the effective-dated rule `ctc.definition`. The built-in definition is a proposal that blocks approval (`CTC_POLICY_NOT_RECORDED`), and any unverified CTC rule blocks approval too.
+- **Structures are company-aware** (all modes): `salary_structures.company_id` NULL = shared template (read-only except to super admin; "Copy to my company"). Company structures are invisible to other companies. The default structure resolves to the company's own default first.
+
+**Also fixed**: `increment_recommendations.submitted_by` / `approved_by` (FK → `employees`) were written with the login's user id. They now take `users.employee_id`.
+
+**Files to inspect**: `backend/src/modules/payroll/ctcService.js`, `salaryProposals.service.js`, `salaryStructure.routes.js`, `payrollEngine.js` (`approvedComponents`), `payroll.service.js` (revision lateral, `contract`), `payrollSettings.js` (`ctc_mode`), `payroll.controller.js` (`ctc.definition` validation); `recruitment/routes/recruitment.routes.js`; `performance/routes/increments.routes.js`; `backend/src/employees/employee.service.js`; migration `20261021000001_ctc_foundation`; frontend `SalaryStructure.jsx`, `PayrollSettings.jsx`, `Payroll.jsx`, `recruitment/pages/OfferManagement.jsx`. Tests: `payrollCtcService.test.js`, `integration.ctcProposals.test.js`, `salaryStructure.ctc.test.jsx`.
+
+**Manual test (a test company only)**: switch `ctc_mode` on → Assign shows Annual CTC / Monthly Basic → Preview lists every component, the employer items, gratuity, the annual CTC and any blocker → Prepare proposal → the employee is still not eligible in Run Payroll → a second authorised user approves (refused until `ctc.definition` and the CTC rules are recorded) → generate: the payslip shows the approved components and the "Contract: annual CTC" line.
+
+## §185 — Payroll: statutory jurisdiction gate and Tamil Nadu PT/LWF (2026-10-21)
+
+**Why:** PT and LWF follow the state each employee resolves to: the branch state, else the company state. Nothing checked that this was the company's real jurisdiction. Manifest (company 1) is recorded as Karnataka, and its "Head Office" branch as Delhi, although its establishment is in Srivilliputhur, Tamil Nadu. Details are in `PAYROLL_DATA_FLOW_AUDIT.md` Part 7.
+
+**Connections added**
+
+- **Payroll Settings → release gate**: three new settings, `statutory_state`, `pt_local_body` and `pt_local_body_name`, all empty by default. Approval is blocked with `JURISDICTION_UNCONFIRMED` until the state is recorded.
+- **Companies / Branches → release gate**: every employee in the period's payroll must resolve (`COALESCE(branches.state, companies.state)`) to the recorded state. If not, approval is blocked with `JURISDICTION_MISMATCH`, listing the employees. A wrong company or branch state therefore blocks approval instead of silently applying another state's PT and LWF.
+- **Engine and gate resolve the state the same way** (2026-10-21 addendum): a top-level `state` payroll setting, if present, applies to every employee; otherwise the branch state; otherwise the company state.
+- **Setup Wizard → release gate**: the wizard's professional-tax state (`company_settings.payroll.pt.state`) is never read by the engine and never copied into the jurisdiction. If it disagrees with `statutory_state`, approval is blocked with `JURISDICTION_CONFLICT`. The `JURISDICTION_UNCONFIRMED` message shows the company state and the wizard state, and names where to fix them.
+- **Company Profile → companies.state**: `/company-profile` reads and writes the caller's own company (it used to use the first row of `companies`). A save without a state keeps the stored state; the GSTIN prefix only fills a blank state. An explicit state that contradicts the GSTIN prefix is refused (422), matching the Company Profile page.
+- **Company GSTIN → release gate**: `COMPANY_GSTIN_STATE` blocks approval when the company state differs from the state its GSTIN is registered in (the GSTIN map is shared, in `src/shared/gstinStates.js`).
+- **Attendance / Leaves → payroll_runs**: attendance payroll sync (LOP, night shifts), leave LOP and leave encashment update only runs in `draft` / `pending`. They used to write into any run not yet paid, including approved ones. A static test guards every writer outside the payroll module.
+- **Attendance payroll sync is one company only**: the company comes from `companyOf(req)` and is required (400 for a global super admin or a user with no company — previously every statement then ran across all companies); every `payroll_runs` update also checks the employee belongs to that company.
+- **Leave encashment ownership**: a claim belongs to its employee's company. List, create, approve, reject and eligibility require a company context and act only on that company's employees and claims; anything else is 404. A rejection now sets `cancelled` (the table's allowed state — `rejected` failed its CHECK constraint).
+- **Payroll maker-checker**: `payroll_runs.generated_by` (migration `20261021000002`) = the user who last generated the draft; `POST /payroll/approve` refuses that user (403 `MAKER_CHECKER`, whatever roles they hold) and drafts with no recorded preparer (422 `PREPARER_UNKNOWN`). CTC proposal maker-checker is unchanged.
+- **Tamil Nadu PT**: levied by the local body, half-yearly (TN Urban Local Bodies Rules 2023 r.275(2) table, deducted in the August and January pay bills, r.277(2)). Only employees in service on the first day of the half-year are liable. For a TN jurisdiction the gate also requires `pt_local_body` to be recorded (`PT_LOCAL_BODY`). Urban bodies use the built-in table. A **village panchayat** is accepted only when the company has recorded the panchayat's own table as a company `pt.slabs` version whose TN entry declares `local_body: 'village_panchayat'` and a `local_body_name` equal to Payroll Settings, with explicit `deduct_months` and contiguous slabs (validated on recording and at approval). The built-in urban table is never used for a panchayat, and an urban body is refused a table declared for a panchayat.
+- **Engine**: `computePT(…, month, { fullMonth, joiningDate, year })` handles both monthly-slab states and the half-yearly form `{ basis: 'half_year', deduct_months, slabs }`. `normalizeState` is exported for the gate.
+
+**Files to inspect**: `backend/src/modules/payroll/payrollReleaseGate.js`, `payrollEngine.js` (`computePT`), `statutoryRules.js` (`TN_ULB_PT_2023`, `lwf.rates` 2022-12-02), `payrollSettings.js`; frontend `features/hr/pages/PayrollSettings.jsx` ("Statutory jurisdiction"). Tests: `payrollTamilNadu.test.js`, `integration.payrollEndToEnd.test.js` (jurisdiction steps).
+
+**Manual test (a test company only)**: generate a draft → Release readiness shows `JURISDICTION_UNCONFIRMED` → record a state that differs from the company state → `JURISDICTION_MISMATCH` → record Tamil Nadu with no local body → `PT_LOCAL_BODY` → set the company state to Tamil Nadu and the local body to a municipality → only rule blockers remain. A TN payslip shows PT in August and January only.
+
+## §186 — Payroll: loan recovery, the official payslip everywhere, report status semantics and self-service access (2026-10-21)
+
+**Why:** `PAYROLL_DATA_FLOW_AUDIT.md` Parts 11 and 12.
+- The loan screen showed an interest-bearing EMI that the server never charged.
+- The Payslip Generator recomputed approved months.
+- The Home widget printed its own partial payslip.
+- The register and department cost mixed drafts into final figures.
+- The self-service dashboard trusted any `?employee_id=`.
+
+**Connections changed**
+
+- **Loans & Advances → payroll draft → approval**:
+  - `loanSchedule.installmentFor()` is the one recovery rule: reducing-balance interest first, then principal, never more than principal plus this month's interest.
+  - Loan creation (`emi_schedule`), the draft (`buildPeriodContext` recoveries) and approval (repayment row and balance reduction) all use it.
+  - Approval refuses (409, "Regenerate") when a loan's installment changed after the draft.
+  - `payroll_loan_repayments.source` is `payroll`, `prepayment` or `waiver`, with interest and principal parts. Only payroll recoveries are one per month.
+  - New endpoint `POST /payroll/loan-advances/:id/prepay`. `close` refuses a balance unless it is waived with a reason.
+  - Test (`is_test`) loans are never listed or recovered.
+  - Installments are whole rupees (§195); their GL accounts are Finance's approved mapping, principal and interest split (§196).
+- **Payroll run → payslip**:
+  - `payroll_runs.earning_lines` stores every structure earning of the month.
+  - `shapePayslip()` builds the payslip from it. Runs saved earlier show one "not itemised" line, so earnings always add up to gross.
+- **Payslip Generator → approved run**: for an approved or paid month with no what-if inputs, `compute-slip` and `generate-pdf-data` return the stored run (`source: 'approved_run'`). A what-if on a finalised month is a preview, watermarked as such.
+- **Home → My Payslips widget → `/payroll/my-payslips`**:
+  - Each listed slip carries the `shapePayslip()` earnings, deductions and employer lists — the same as the Payslip Viewer and the PDF. The widget prints those lists and calculates nothing itself.
+  - A slip without them is replaced by `GET /payroll/payslips`. If that also fails, nothing is printed.
+  - The employee is resolved from the signed-in account (token, else `users.employee_id`).
+- **Self-service dashboard → payroll access rule**:
+  - `GET /self-service/dashboard` resolves the employee on the server through `payrollAccess.resolveReadableEmployee()`.
+  - Everyone gets their own record. With no `employee_id`, the own record is used.
+  - Another employee is readable only by `PAYROLL_READ_ROLES` (the payroll router's existing HR/Finance roles), and only within `companyOf(req)`.
+  - Refusals: 403 not permitted; 404 identical for another company and for no such employee; 400 malformed id.
+  - `ownPayslipOrForbidden` (payroll) uses the same module.
+  - YTD tax = finalised, non-test `payroll_runs` of the current FY.
+- **Payroll reports → status**:
+  - `GET /payroll/register` takes `basis=final` (default: approved and paid) or `basis=preparation` (drafts included, each row labelled "DRAFT - not approved"). The file name and the `X-Payroll-Basis` / `X-Payroll-Draft-Rows` headers say which.
+  - `GET /payroll/dept-cost`: `departments` / `grand_total` are finalised only, with `approved_count` and `paid_count`. Drafts are reported under `draft` with a label. `on_hold`, legacy and test rows are in neither (`excluded_rows`).
+  - There are no superseded rows: one row per employee and month (unique index).
+- **Analytics / Reports / AI / anomaly detector → payroll_runs**: test rows excluded.
+
+**Files to inspect**:
+- Backend, in `backend/src/modules/payroll/`: `loanSchedule.js`, `payrollAccess.js`, `payroll.routes.js` (loans, register, dept-cost), `payroll.service.js`, `payroll.controller.js` (`shapePayslip`, Generator, my-payslips).
+- Backend, elsewhere: `backend/src/modules/hr/selfservice.routes.js` (`/dashboard`).
+- Frontend: `components/dashboard/widgets/MyPayslipsWidget.jsx` and `features/hr/pages/SalaryStructure.jsx` (loans).
+- Migration `20261021000003`.
+- Tests: `payrollLoansPayslip.test.js`, `integration.payrollLoansPayslip.test.js`, `integration.payrollReportsAccess.test.js`, `salaryStructure.loans.test.jsx`, `myPayslipsWidget.test.jsx`.
+
+**Manual test (a test company only)**:
+1. As an employee, open Self-Service: the dashboard loads. Requesting `?employee_id=<a colleague>` returns 403.
+2. As HR, the same request for a colleague returns 200. For an employee of another company it returns 404.
+3. Generate a draft: `register` (default) returns 404 with the `basis=preparation` hint, and the preparation file lists the drafts labelled. `dept-cost` shows them only under `draft`.
+4. From Home → My Payslips, print an approved payslip that has a loan EMI: the deduction lines add up to Total Deductions.
+
+**Addendum (2026-10-21) — IT declarations, documents and document files**
+
+- **IT declarations → payroll access rule**:
+  - `GET /self-service/it-declarations`, `GET …/summary` and `POST …` resolve the employee through `payrollAccess.resolveReadableEmployee()`: own record, or the payroll HR/Finance roles within `companyOf(req)`. The request's `employee_id` is never trusted.
+  - `PUT …/:id`: the owner may edit only `submitted` declarations and never the status. Review status is set by payroll HR/Finance of the same company, not on their own declaration, and `reviewed_by` is set by the server. A record the caller may not touch returns 404.
+  - These declarations feed TDS (`buildPeriodContext` reads `submitted` and `approved`), which is why they follow the payroll rule.
+- **Documents → documents rule**:
+  - `/self-service/documents` keeps the router's HR roles. The own record is resolved from the account (`ownEmployeeId`).
+  - HR naming another company's employee gets 404.
+  - Malformed ids get 400 before any SQL runs.
+- **Document files → `/files/:filename`**: `employee_documents.file_url` files open for the document's own employee and for admin / HR of the same company (GET and HEAD answer the same way). They used to fall through to admin-only.
+- **Files to inspect**: `backend/src/modules/hr/selfservice.routes.js`, `backend/src/modules/files/secureFiles.routes.js` (`employeeDocumentOwner`). Test: `integration.selfServiceRecordsAccess.test.js`.
+
+- **Document links → `/files`** (2026-10-21): the self-service Document Vault ⬇ and HR Employee Documents "View / Open" use `employeeFiles.js` (`downloadEmployeeFile` / `openEmployeeFile`) — an authenticated `GET /files/<encoded name>`. They used to link the raw `/uploads/…` path, which nothing serves. Test: `selfServiceDocumentLinks.test.jsx`.
+
+## §187 — HR Announcements: login, company and audience on every read; permission on every write; archive, audit, read receipts and once-only notifications (2026-10-21)
+
+**Why:** the HR Announcements audit (2026-10-21) found:
+- `GET /announcements/active` had no login. With no company it ran `DELETE FROM announcements WHERE to_date < CURRENT_DATE` for **every company**, unaudited, on every dashboard load. It also returned every company's rows. On the dev database: 0 announcements left, sequence at 47, 11 audited creates (ids 9–19), 0 audited deletes.
+- No feed applied `target_type`, so an announcement for one employee reached everyone. Home also ignored `publish_at` and `from_date`.
+- No route checked `role_permissions` (`announcements`): any login could create, edit, pin or delete.
+- `POST /:id/read` had no caller. The audience count counted every company's employees, and staff who had left.
+- Notifications skipped logins whose `users.company_id` is NULL (24 of 36 linked logins), bypassed push and email, and never fired for scheduled posts.
+- Delete was a hard delete; the audit row had no company and no before-image.
+
+**Connections changed**
+
+- **One visibility rule — `backend/src/announcements/announcement.visibility.js`:**
+  - **Live** = `deleted_at IS NULL`, `is_active`, `from_date ≤ today ≤ to_date`, and `publish_at` (if set) has passed. Dates use the DB session time zone (Asia/Calcutta), as before.
+  - **Audience** = `all` / `department` (case- and space-insensitive on `employees.department`) / `employee` (`target_value` = `employees.id`). An unknown audience matches nobody.
+  - **Population** = active logins linked to an employee of the announcement's company (`employees.company_id`, not `users.company_id`) who has not exited (`employeeStatus.isCurrentSql`: Notice and Probation count, Left does not), filtered by audience.
+  - Consumers: `GET /announcements/active`, `GET /home/announcements`, the announcements slice of `GET /home/summary`, `POST /:id/read`, the admin list's `total_audience` / `read_count`, and notification recipients.
+  - `GET /home/events/upcoming` uses the same company / audience / archive / publish rules, but keeps announcements whose From date is still ahead (an upcoming event).
+  - Company-less callers get **403**. `company_id IS NULL` rows are no longer "global"; none exist.
+- **Routes — `announcement.routes.js`:**
+  - `verifyToken` on every route.
+  - `/active` and `/:id/read` are self-scoped and not behind the matrix. Many roles (e.g. `service_engineer`) hold no `announcements` row, and these routes only return what is addressed to the caller.
+  - Management routes check the matrix: list and create need `add`; edit, toggle and pin need `edit`; delete needs `delete`. The list needs `add` because it includes drafts, scheduled posts and other audiences.
+- **Team-scoped publishers — `announcement.controller.js`:**
+  - A caller with none of `super_admin`, `admin`, `hr`, `hr_manager`, `hr_exec` (i.e. manager / department_head) may target only their own department, or one employee in it.
+  - They may change only announcements they created, and the list shows only those.
+  - An `employee` target must belong to the caller's company.
+  - Body `company_id` is ignored.
+- **Lifecycle:**
+  - No GET writes. The list's old "auto-deactivate expired" UPDATE is gone.
+  - The list carries `lifecycle_status`: `archived` / `expired` / `inactive` / `scheduled` (From date ahead **or** `publish_at` ahead) / `active`. The HR page's Scheduled tab now uses the same rule.
+  - An expired post still cannot be re-activated (400).
+- **Delete → archive:**
+  - `DELETE /:id` sets `deleted_at` / `deleted_by` and unpins.
+  - The row and its read receipts stay; all lists and feeds exclude it, and a second delete is a 404.
+  - No code path deletes announcement rows any more.
+- **Audit → `AuditService.logAudit`:**
+  - create / update / delete carry `company_id`, the actor, and before/after rows. The archive row's `old_data_json` is the full announcement.
+  - `auditMutations` stands down, so there is one row per action.
+  - `POST /:id/read` is skipped by the floor (`isAnnouncementReadReceipt`). It would otherwise log every read as a "create" on the announcement; reads are recorded in `announcement_reads.read_at`.
+  - The 11 pre-existing creates with no company or snapshot cannot be reconstructed. There is nothing to restore them from.
+- **Read receipts — `POST /announcements/:id/read`:**
+  - The user is taken from the token; any `user_id` in the body is ignored.
+  - Only an announcement the caller can see now can be marked; otherwise 404.
+  - Idempotent on `UNIQUE (announcement_id, user_id)`.
+  - Feeds return the caller's `is_read` / `read_at`.
+  - Frontend: a read is recorded only by a deliberate open on My Announcements — superseded the widget-impression receipt first shipped here (§188).
+- **Notifications — `announcement.publisher.js` + `jobs/announcementPublish.cron.js` (every 5 min, IST):**
+  - Claim: `UPDATE … SET notified_at = NOW() WHERE notified_at IS NULL AND <live>`. In the same transaction, one `notifications` row per population member (`module_name 'Announcements'`, `notification_type 'announcement'`, `reference_id`).
+  - After commit, `notificationsRepository.dispatchSideEffects` sends push, and email per `notification_rules` `event_key 'announcement.published'` (no rule row exists, so no email).
+  - Runs on every save that leaves the post live. The job catches up scheduled times and From dates.
+  - Once only: re-saves, job re-runs and concurrent calls send nothing more. Edits after notification do not re-notify.
+  - Archived or expired posts never notify.
+- **Migration `20261021000004_announcements_archive_and_notify_marker`:** adds `deleted_at`, `deleted_by`, `updated_by`, `notified_at`. It stamps existing rows `notified_at = created_at` so the first job run cannot re-announce them (0 rows on dev), and adds a partial index for due rows.
+- **Widgets:**
+  - Home, Employee Dashboard and Self Service show `title`, `announcementText(message)` (DOMPurify, then plain text, for the compact rows) and `announcementDate`. Two of them read `description` / `date`, which the API never sent; Home printed tags as text.
+  - `AnnouncementsPanel` priority dots are keyed on `high`/`medium`/`low`. The panel is still mounted nowhere.
+- **Manager quick-post:** sends today to +7 days, `target_type 'department'`, the manager's department (`user.department`), and HTML-escaped text. It used to send no dates, so every post was a 400. With no department on record it does not post.
+- **HR page:** the delete dialog says "archived, not erased". API errors show `error` as well as `message` (403s).
+
+**Open decisions (not changed here)**
+- ~~`hr_manager` / `hr_exec` hold no `announcements` permission row~~ — granted VAE in §188.
+- **HR (`hr`) cannot archive:** the matrix has `can_delete = false`. Only admin and super_admin can.
+- **Manager publishing breadth:** set to own department only, as the safest reading. Whether managers may post company-wide, or may post at all, is undecided.
+- Whether an edit after publication should re-notify or reset reads. Whether email should go out (needs a `notification_rules` row). Whether `high` priority should alert differently.
+- Audience fixed at publish vs evaluated live. Today it is **live** for visibility and counts; notifications go to whoever was eligible when it went live.
+- Time zone: dates and `publish_at` are naive and read in Asia/Calcutta (fine for Manifest).
+- ~~A clicked bell notification still opens the HR Announcements page~~ — now My Announcements (§188).
+
+**Deferred (out of this pass):** attachments, mandatory acknowledgement, multi-select / group audiences, version-history UI, an un-archive action, a per-announcement read/unread list, and (done in §188) the 30-second module-level cache in `useAnnouncements`.
+
+**Files to inspect:**
+- Backend: `backend/src/announcements/announcement.{routes,controller,service,visibility,publisher}.js`, `backend/src/jobs/announcementPublish.cron.js`, `backend/src/home/home.{service,controller}.js`, `backend/server.js` (mount + cron).
+- Frontend: `frontend/src/features/hr/announcementFeed.js`, `frontend/src/pages/{Home,EmployeeDashboard,ManagerDashboard}.jsx`, `frontend/src/features/hr/pages/{Announcements,EmployeeSelfService}.jsx`, `frontend/src/features/hr/components/AnnouncementsPanel.jsx`.
+- Tests: `backend/src/__tests__/announcementsSafety.integration.test.js` (23 tests; registry tenants 999988/999989) and `frontend/src/__tests__/announcementWidgets.test.jsx` (6 tests).
+
+---
+
+## §188 — HR Announcements hardening: the bell's destination, a per-identity cache, HR role grants, the published rule, and read = opened (2026-10-21)
+
+**Why:** after §187 there were still four problems.
+- The bell sent an announcement notification to the HR administration page, which employees cannot open. `notificationTarget` skips pages a role cannot open, so for employees the click went nowhere.
+- `useAnnouncements` kept a 30-second module cache keyed by nothing, so it could hand one login's list to the next login in the same tab.
+- `hr_manager` and `hr_exec` held no `announcements` permission row, so §187's enforcement shut them out.
+- Widgets recorded a read whenever an announcement was merely displayed.
+
+**Connections changed**
+
+- **Bell → My Announcements:**
+  - `notificationTarget.js` maps `notification_type 'announcement'` and `module_name 'announcements'` to `MyAnnouncements`, which used to be `Announcements`. This covers the Topbar bell, the Notification Center and the (dead) dropdown.
+  - `MyAnnouncements` is a `PERSONAL_PAGES` page with no module. It shipped without a menu row; §189 added one.
+  - It reads `GET /announcements/active`, so it shows only the caller's company, audience and live announcements, and grants nothing.
+  - The HR page `Announcements` is still refused to employees.
+  - A `?ref` the caller cannot see shows a notice and nothing about it.
+- **Read = a deliberate open:**
+  - A read is recorded only when someone expands an announcement on My Announcements, or arrives there from the bell with `?ref=<id>`. It is recorded once; an already-read announcement sends nothing.
+  - `announcementFeed.markAnnouncementRead(id)` replaces §187's `useMarkAnnouncementsRead`, which recorded impressions.
+  - Home, the Employee Dashboard and Self Service list announcements and record **no** read.
+  - Server-side self-scoping is unchanged (§187). There were no read rows to reset.
+- **`useAnnouncements` cache:**
+  - The single slot is owned by an identity: `announcementCacheKey(user, roles, token)`, i.e. login id, company, roles and session token. The token is included because the login payload carries no `company_id`, and a company or permission change arrives as a new token.
+  - A different identity is a miss.
+  - An in-flight response is written to the slot and shown only if the identity that asked is still current.
+  - Signed out → nothing is fetched or shown.
+  - `clearAnnouncementCache()` resets the slot.
+  - The only consumer, `AnnouncementsPanel`, is mounted nowhere.
+- **Permissions — migration `20261021000005`:**
+  - `hr_manager` and `hr_exec` get `announcements` view/add/edit (VAE), the same as `hr` and as their own `documents` rows.
+  - Neither gets delete. Every HR role is still refused archive.
+  - The model withholds delete from HR on the publishing modules: `hr` only ever had delete on HR process modules, `hr_exec` has delete nowhere, and `documents` is 1110 for all three. Archive (the only delete there is) stays with `admin` / `super_admin`.
+  - The matrix has a single delete flag and cannot separate "archive" from a hard delete.
+  - The HR page hides **Delete** unless `hasPermission('announcements','delete')`.
+  - The controller already treated `hr_manager` and `hr_exec` as company-wide publishers. Managers and department heads stay team-scoped and own-post-only (§187). Employees remain view-only.
+- **`notification_rules` `announcement.published` (same migration, Manifest only):**
+  - Channel is `in_app`: the column default, and the convention of 53 existing rules. It is enabled, `is_system_default`, with `recipient_roles` `{employee}` (documentation only).
+  - **Delivery is unchanged.** The repository acts on a rule only when its channel includes `email`; the in-app row and push do not depend on the rule.
+  - The event now appears in Admin → Notification Rules, where an admin can enable email deliberately.
+  - Not enabled: email (a company-wide mailing needs a decision) and any `high`-priority escalation (none exists).
+  - **Limitation:** the shared `dispatchRuleChannels` joins `users.company_id = notification_rules.company_id`. Logins whose `users.company_id` is NULL — 24 of 36 linked logins, most of Manifest's employees — would get **no email even after it is enabled**. Shared-service change; not made here.
+- **Idempotency** is unchanged and re-verified: `notified_at` is the once-only marker. A company with the rule still gets one in-app row per person, and re-running the job or `publishIfDue` adds nothing. A row already notified is never re-notified.
+- **Edits after publication (current rule):**
+  - An edit overwrites the announcement in place, sets `updated_by` / `updated_at`, and writes an audit row with the full before and after.
+  - It does **not** re-notify, and does **not** reset read receipts.
+  - There is no version history beyond the audit trail.
+
+**Operational note:** a running dev server (`nodemon server.js`) applies pending migrations at boot, so a new migration file is applied the moment it is saved. Its publish cron also runs against the shared database every 5 minutes. Integration tests that race it must not assume their own call wins the claim; `announcementsSafety` asserts "at most once" instead.
+
+**Files to inspect:**
+- Frontend: `frontend/src/features/hr/pages/MyAnnouncements.{jsx,css}`, `frontend/src/features/hr/announcementFeed.js`, `frontend/src/hooks/useAnnouncements.js`, `frontend/src/features/notifications/notificationTarget.js`, `frontend/src/config/{menuCatalog.js,routes.jsx}`, `frontend/src/features/hr/pages/Announcements.jsx`, `frontend/src/pages/{Home,EmployeeDashboard}.jsx`, `frontend/src/features/hr/pages/EmployeeSelfService.jsx`.
+- Backend: `backend/src/database/migrations/20261021000005_announcements_hr_roles_and_published_rule.js`.
+- Tests: `backend/src/__tests__/announcementsSafety.integration.test.js` (30), `frontend/src/__tests__/{announcements.bellAccess,myAnnouncements.page,announcementWidgets}.test.jsx` (20 + 10 + 6), `frontend/src/__tests__/nav.menuCoverage.test.jsx` (`NOT_IN_MENU`).
+
+---
+
+## §189 — My Announcements in the menu; the recruitment suite stops leaking résumé uploads (2026-10-21)
+
+**Connections changed**
+
+- **Navigation → My Announcements:**
+  - New standalone workspace row `{ name: 'My Announcements', page: 'MyAnnouncements' }` in `NAV_ITEMS`, after Notifications, with no `module`.
+  - `'My Announcements'` joins `ALWAYS_VISIBLE` (`menuCatalog.js`), with the same reasoning as Approvals: every user receives announcements, and `GET /announcements/active` returns only their company's posts addressed to them. So every role draws the row, including roles with no `announcements` permission row (`service_engineer`, `sales_exec`, …).
+  - Being `ALWAYS_VISIBLE` also keeps the section out of the per-role allowlists and the Page Access configuration, so it cannot be hidden.
+  - Unchanged: the bell destination (§188), direct-URL access (`PERSONAL_PAGES`), and the HR administration page `Announcements`, which is still under HR and still refused to employees.
+  - `tests/nav-verify/nav.json` carries the new workspace menu; `nav.fixture` checks it. The page left `nav.menuCoverage`'s `NOT_IN_MENU`.
+- **Test hygiene — `integration.recruitmentRegression.test.js`:**
+  - The careers-apply test stored its résumé through `StorageService.uploadFile` (local disk: `uploads/<epoch-ms>_<name>`) and never removed it. That left one `*_meera.pdf` per run; 236 were found.
+  - The fixture name is now unique per run (`zz_ats_resume_<pid>_<time>.pdf`).
+  - `removeRunUploads()` deletes exactly the files matching that name, in the test's own `finally` and again in `afterAll`. A run leaves `uploads/` unchanged, including when an assertion fails after the upload.
+  - The 236 older files are referenced by no row in any table (all 3,622 text, JSON and array columns were scanned). They are left in place pending approval.
+- **Found, not changed here:** the candidate retention job (`jobs/candidateRetention.cron.js`) anonymised a candidate by setting `resume_file_url = NULL`, but did not delete the stored résumé file. Fixed in §190.
+
+**Files to inspect:**
+- Frontend: `frontend/src/config/routes.jsx` (`NAV_ITEMS`), `frontend/src/config/menuCatalog.js` (`ALWAYS_VISIBLE`), `tests/nav-verify/nav.json`.
+- Tests: `frontend/src/__tests__/myAnnouncements.nav.test.jsx`, `frontend/src/__tests__/nav.menuCoverage.test.jsx`, `backend/src/__tests__/integration.recruitmentRegression.test.js`.
+
+---
+
+## §190 — Candidate retention: an anonymised candidate's résumé file is deleted only when nothing else references it (2026-10-21)
+
+**Why:** `jobs/candidateRetention.cron.js` nulled `resume_file_url` / `resume_url` and relied on "the storage sweep" to remove the file. No storage sweep exists, so an anonymised candidate's CV stayed in `uploads/` for good, while the job's own header says the résumé file is part of what anonymisation erases.
+
+**Connections changed**
+
+- **Retention → queue (same transaction):**
+  - `anonymise()` now locks the candidate row (`FOR UPDATE`, still `anonymised_at IS NULL`, so a retried or overlapping run cannot anonymise twice).
+  - It reads `resume_file_url`, `resume_url` and `resume_gdrive_file_id` before nulling them, and inserts one `candidate_resume_purges` row per distinct reference (`ON CONFLICT (candidate_id, file_ref) DO NOTHING`).
+  - Committed anonymisation ⇔ queued files; a rollback queues nothing and touches no file.
+- **Queue → file — `jobs/candidateResumePurge.js` `purgeQueuedResumes()`, run after every retention run (which is also the retry):**
+  1. **Classify** (`classifyRef`):
+     - Local only: `/uploads/<name>`, where `<name>` is a plain file name (`[A-Za-z0-9][A-Za-z0-9._-]*`, no `..`) that resolves directly inside the upload directory.
+     - S3/R2 URLs and `gdrive:<id>` → `skipped_external`.
+     - Anything else → `unsafe_path`, never touched.
+  2. **Exclusive ownership:**
+     - One scan per run searches every text / varchar / char / json / jsonb / text-array column of every table for the queued names. It does not use a list of "known" columns: a new table holding a copy would otherwise be missed.
+     - Any hit → `retained_shared`, with `referenced_by` (e.g. `candidates.resume_file_url` from a bulk-imported copy, `employees.resume_file` of a hire).
+     - Log tables (`candidate_resume_purges`, `candidate_retention_log`, `audit_logs`, `access_denials`) do not count as references.
+     - The scan runs after the anonymisations committed, so when every sharer is anonymised the file is deleted once (the others record `already_absent`).
+  3. **Delete and verify:**
+     - `lstat` first: a missing file → `already_absent`; a directory or symlink → `unsafe_path`.
+     - Then `unlink`, then `lstat` again. If the file is still present (for whatever reason), the row is `failed` with `last_error` — never `deleted`.
+     - `failed` rows are retried on later runs up to `MAX_ATTEMPTS` (5). The run result's `files.failed` and `files.failed_permanently` and an `ERROR`-level log line report them.
+  - Each row is processed under `FOR UPDATE SKIP LOCKED`.
+- **Evidence:** the `candidate_resume_purges` row (status, attempts, `last_error`, `referenced_by`, timestamps) is the per-file record. `candidate_retention_log` keeps its single `anonymised` row: its CHECK admits only `anonymised` / `extended` / `withdrawn` / `exported`, and it was not widened.
+- **`runCandidateRetention({ companyId, uploadDir, unlink })`:**
+  - `companyId` scopes a run (used by tests; the nightly cron passes nothing and behaves as before).
+  - `uploadDir` and `unlink` are test seams.
+  - It now returns `files: { processed, deleted, already_absent, retained_shared, skipped_external, unsafe_path, failed, failed_permanently }`.
+- **Migration `20261021000006_candidate_resume_purges`:** new table, additive only.
+
+**Open policy decisions**
+- ~~There is no legal-hold flag on candidates~~ — added in §191.
+- **Google Drive copies** (`resume_gdrive_file_id`) and **S3/R2 objects** are recorded as `skipped_external` and **not deleted**.
+- **Candidates anonymised before this change** have no queue rows, so their files (if any) are not cleaned retroactively. There were 0 on this database.
+- **`audit_logs`** may hold snapshots of candidate rows, including personal data and file names. They are excluded from the reference check and not anonymised by this job.
+- A file **retained because an employee record uses it** is kept indefinitely. Its lifecycle then belongs to HR retention.
+
+**Files to inspect:** `backend/src/jobs/candidateRetention.cron.js`, `backend/src/jobs/candidateResumePurge.js`, `backend/src/database/migrations/20261021000006_candidate_resume_purges.js`, `backend/src/__tests__/candidateResumePurge.integration.test.js` (15 tests; registry tenants 999990/999991; files only in a private temp directory), `backend/src/__tests__/integration.recruitmentRegression.test.js` (sweep; its two retention runs are now company-scoped — unscoped, a test run could anonymise any real due candidate and purge other suites' queued files, which is how a parallel run first showed up).
+
+---
+
+## §191 — Candidate legal hold: retention and résumé purge stop for a held candidate (2026-10-21)
+
+**Why:** §190 left no way to stop the retention job. Every due candidate was anonymised and their exclusively-owned résumé deleted, including a candidate whose records are needed for litigation, a regulator's enquiry or a claim about the hiring decision.
+
+**Connections changed**
+
+- **Schema (migration `20261021000007_candidate_legal_hold`):**
+  - `candidates.legal_hold` (boolean, default false), plus `legal_hold_reason` (current reason), `legal_hold_by` (users.id) and `legal_hold_at`.
+  - `candidate_retention_log`: its CHECK now also admits `hold_placed` / `hold_amended` / `hold_released`, and `reason` is widened from varchar(60) to varchar(500) so a hold's reason is kept in full. Both are widenings; existing rows unchanged.
+- **Recruitment → hold — `POST` (place) / `PUT` (amend) / `DELETE` (release) `/recruitment/candidates/:id/legal-hold`, body `{ reason }` (5–500 characters, required for all three):**
+  - Gated on **`recruitment:approve`** on the server. In the matrix that is admin, super_admin and hr_manager. Not `edit`, which recruiters, hr_exec, managers and department heads hold; plain `hr` has no `approve` and is refused too.
+  - Own company only (`companyOf`). A company-less caller is refused, and another company's candidate is a 404.
+  - `modules/recruitment/candidateLegalHold.js` does each change in ONE transaction: it locks the candidate (`FOR UPDATE`), refuses an anonymised record (409, nothing left to hold) or a state that does not fit (place on held / amend or release on not held → 409), updates the candidate, and writes the `candidate_retention_log` row (`triggered_by`, full reason).
+  - After commit it calls `logAudit` (`legal_hold_place` / `_amend` / `_release`, company, actor, before/after hold fields). `auditMutations` stands down, so there is no duplicate generic row.
+- **Retention job:**
+  - `findDue()` excludes `legal_hold`.
+  - `anonymise()` re-reads `legal_hold` **under the same `FOR UPDATE` row lock** it anonymises under, before anything is queued. A hold committed while the job waits on the lock wins; a job that locks first anonymises, and the hold request then gets 409. There is no interleaving in which a held candidate is anonymised or queued.
+  - A hold overrides a consent withdrawal too.
+  - The run returns and logs **`held_skipped`**: due-but-held at selection, plus held between selection and the lock.
+- **Résumé purge (defence in depth):** a queued row whose candidate is held is never processed. It stays `pending`, is counted as `files.held`, and is re-checked under the row lock. In normal operation such a row cannot exist (held candidates are never anonymised, so nothing is queued).
+- **`GET /recruitment/privacy/summary`:** adds `on_legal_hold`; `due_for_purge` excludes held records.
+
+**Separate, policy-dependent follow-ups (not done here):**
+- deleting external copies (Google Drive / S3);
+- retroactive clean-up for candidates anonymised before §190;
+- redacting candidate snapshots in `audit_logs`;
+- handing a hired candidate's résumé to employee-document retention.
+
+Also open: whether plain `hr` (no `recruitment:approve`), or a dedicated legal/compliance role, should be able to place holds. There is no UI for holds yet; the endpoints are server-side only.
+
+**Files to inspect:** `backend/src/database/migrations/20261021000007_candidate_legal_hold.js`, `backend/src/modules/recruitment/candidateLegalHold.js`, `backend/src/modules/recruitment/routes/recruitment.routes.js` (legal-hold routes, privacy summary), `backend/src/jobs/candidateRetention.cron.js`, `backend/src/jobs/candidateResumePurge.js`, `backend/src/__tests__/candidateLegalHold.integration.test.js` (15 tests; registry tenants 999992/999993).
+
+---
+
+## §192 — HR Announcements: Super Admin verified end to end; ALWAYS_VISIBLE sections ignore Page Access in the route guard too (2026-10-21)
+
+**Verified (no change needed):** Super Admin (e.g. `superadmin@manifest.in`: role `super_admin`, company 1, no employee record) has full announcement administration in its own company through the existing implementation:
+- `role_permissions` `announcements` is full for `super_admin`. Note that `requirePermission` has no Super Admin bypass; the row is what grants it.
+- The controller treats `super_admin` as a company-wide publisher, with no department or ownership limits.
+- The frontend `hasPermission` and `menuAccess` short-circuit for `super_admin`, so neither the permission list nor Page Access can hide anything from it.
+- Workflow proven by `announcementsSafety.integration`'s Super Admin tests: draft (Inactive) → publish (toggle; notifies once) → visible in `/announcements/active` and Home → open/read → edit / pin → unpublish (toggle off) and re-publish (no re-notification) → archive. `DELETE` is the archive; there is no hard delete.
+- Limits that still hold: another company's announcements are a 404 on every route; a Super Admin with **no company** is refused (403), never given every company.
+- Admin keeps view/add/edit/archive in its company. HR Manager and HR Executive keep view/add/edit with no archive (§188). Employees read only.
+
+**Changed — `menuCatalog.js` `canRenderPage()` (the Layout route guard) and `canRoleOpenPage()` (bell / search resolver):**
+- A Page Access override on an `ALWAYS_VISIBLE` section (Home, Approvals, My Announcements) is now ignored, matching the Sidebar, which already drew those rows regardless.
+- Before, a stray `My Announcements: hidden` override (not creatable from the Page Access screen, and present nowhere in `menu_permissions` / `user_menu_permissions`) would have left a drawn menu row and the bell opening Access Denied for every role except Super Admin.
+- Page Access still restricts every other section, including the HR administration page for Admin, by design.
+
+**Added — My Announcements → HR Announcements (navigation only):**
+- My Announcements (the reader) shows a **"Manage announcements"** hero action that opens the administration page (`/Announcements`, HR → Announcements).
+- It is shown only when the caller has `announcements:add` and `canRenderPage` would open that page. Employees never see it, and nor does an admin whom Page Access keeps out of HR.
+- **Why:** a Super Admin landed on the reader from the top-level menu, found "No announcements right now" (Manifest had none), and had no pointer to where announcements are managed.
+- The reader is not an admin page; nothing else changed.
+
+**Tests:** `frontend/src/__tests__/announcements.superAdmin.test.jsx` (12; real `AuthProvider` with hostile Page Access, including the Manage link) and the Super Admin / employee blocks of `backend/src/__tests__/announcementsSafety.integration.test.js` (now 35).
+
+---
+
+## §193 — My Announcements leaves the menu; the page stays as the bell's destination (2026-10-21)
+
+**Why:** Home's Announcements card already lists every user's announcements, so the standalone **My Announcements** menu row (§189) duplicated it. Super Admins who opened it expected the management page and found an empty reader.
+
+**Connections changed**
+- **Removed:**
+  - the `My Announcements` row from `NAV_ITEMS` (`routes.jsx`)
+  - `'My Announcements'` from `ALWAYS_VISIBLE` (`menuCatalog.js`)
+  - its menu from `tests/nav-verify/nav.json`
+  - `MyAnnouncements` is back in `nav.menuCoverage`'s `NOT_IN_MENU` (reached from a notification).
+- **Kept:** the `MyAnnouncements` page (route + `PERSONAL_PAGES`, every role). It is where the bell opens an announcement in full (`?ref=<id>`) and where the read is recorded. Home shows a two-line preview and records nothing. Its "Manage announcements" action (§192) still points managers to HR → Announcements.
+- **Unchanged:** HR → Announcements is the only management page. `canRenderPage` / `canRoleOpenPage` still ignore Page Access for the remaining `ALWAYS_VISIBLE` sections (Home, Approvals).
+
+**Tests:** `frontend/src/__tests__/myAnnouncements.nav.test.jsx` (rewritten: no row in the real Sidebar for any role family; the page still opens for every role; employees still refused the HR page), plus `nav.menuCoverage`, `nav.fixture`, `nav.structure`, `announcements.bellAccess`, `announcements.superAdmin` and `myAnnouncements.page`.
+
+---
+
+## §194 — Home: an announcement opens in full when clicked (2026-10-21)
+
+Explicit user instruction; Home is a locked page, and only the announcement rows changed.
+
+**Connections changed**
+- **Home → My Announcements:**
+  - Each row of Home's Announcements card (`pages/Home.jsx`, `.hm-ann-row--link`) opens `setPage('MyAnnouncements', { ref: <id> })`, i.e. `/MyAnnouncements?ref=<id>`. That is the same destination the bell uses.
+  - It shows the full sanitised message and records the read once (§188). Back returns to Home.
+  - The row has `role="button"` and opens on click, Enter or Space; layout and colours are unchanged (a pointer cursor and a focus outline are added in `Home.css`).
+  - Home itself still records no read for merely listing an announcement.
+- **Navigation graph:** because Home now links to it, `MyAnnouncements` is reachable from the menu again and has left `nav.menuCoverage`'s `NOT_IN_MENU` (correcting §193, which had put it back). It still has no menu row of its own.
+
+**Tests:** `frontend/src/__tests__/announcementWidgets.test.jsx` (click, Enter and Space open `MyAnnouncements` with the right `ref`; no read recorded by Home; fails against the previous `Home.jsx`). Verified live on the running app in an isolated company: Home row → full text on My Announcements → read recorded once → Back to Home.
+
+---
+
+---
+
+## §195 — Payroll: loan recoveries balance the GL; installments are whole rupees (2026-10-28)
+
+**Why:** `PAYROLL_DATA_FLOW_AUDIT.md` Part 13. This is a verification pass over §186 (Loans & Advances) for Manifest.
+- The payroll journal posted on approval had **no credit for loan or advance installments**. Every month with a recovery would have posted an entry whose credits fell short of its debits by the installment. The note in section 90 that the payroll GL entry was "already fixed" covered statutory deductions only.
+- Payroll deducts **whole rupees**, but a final interest-bearing installment carried paise. The payslip deducted ₹3,630 while the repayment ledger recorded ₹3,629.67.
+
+**Connections changed**
+- **Payroll approval → GL (`postPayrollJournal`):**
+  - `payroll.controller.js approvePayroll` passes `loan_recovery`, the batch's `loan_deduction + advance_deduction`.
+  - The journal credits it to **1013 Employee Advances**. Like every other component, it is skipped (not posted unbalanced) if 1013 is missing.
+  - **Superseded by §196:** the accounts are now Finance's approved mapping, principal and interest are split, and an unmapped loan batch is refused at approval.
+  - `POST /finance/accounting/payroll-journal` accepts the same `loan_recovery`.
+  - **Not connected (decision open):** giving a loan (Dr 1013 / Cr Bank) is not posted by Pulse, so 1013 receives recoveries without the matching disbursement.
+- **`loanSchedule.installmentFor()`:**
+  - The last installment is the payoff **rounded up to a whole rupee**, and the paise go to the interest component. The payslip deduction and the `payroll_loan_repayments.amount` are therefore the same figure.
+  - `planLoan()` refuses a principal or EMI with paise, and a non-integer tenure. `parseInt` used to turn 2.5 months into 2.
+  - A part-prepayment must be whole rupees (`PREPAY_WHOLE_RUPEES`); only a prepayment of the full outstanding may carry paise.
+- **Loans form (`SalaryStructure.jsx`):**
+  - Cancel clears the form.
+  - The EMI field is optional when rate and tenure give an EMI; the computed EMI is sent.
+  - Inputs require whole rupees and whole months.
+  - The success message shows the server's installments, total repayable and interest.
+
+**Unchanged, verified:**
+- One payroll recovery per loan per month (partial unique index).
+- Drafts never change a balance.
+- A regenerate cannot touch an approved run.
+- Re-approving returns 400.
+- Maker-checker returns 403 for the preparer.
+- A draft whose loans changed is refused with 409. This includes Manifest's four September-2026 drafts, which still deduct the seed (`is_test`) loans.
+
+**Files:**
+- `backend/src/modules/payroll/loanSchedule.js`
+- `backend/src/modules/payroll/payroll.routes.js` (prepay)
+- `backend/src/modules/payroll/payroll.controller.js` (approve → GL)
+- `backend/src/modules/finance/services/payrollJournal.service.js`
+- `backend/src/modules/finance/accounting.routes.js`
+- `frontend/src/features/hr/pages/SalaryStructure.jsx`
+
+**Tests:**
+- `payrollLoansPayslip.test.js`: representative cases against the closed-form EMI.
+- `integration.payrollLoansPayslip.test.js`: ₹60,000 at 0% and at 12% through draft, rerun, maker-checker, approval, re-approval, regenerate, stale draft and GL balance.
+- `salaryStructure.loans.test.jsx`: open/Cancel, required fields, EMI auto-fill, server totals, rejection.
+
+**Manual test (test company only):**
+1. Create ₹60,000 / 12 months at 12%. The EMI is ₹5,331, total repayable ₹63,972 and interest ₹3,972.
+2. Generate the month twice. There is one draft row deducting ₹5,331.
+3. Approve as a different user. There is one repayment row (₹600 interest, ₹4,731 principal), the balance is ₹55,269, and the journal balances with a ₹5,331 credit to 1013.
+
+---
+
+## §196 — Payroll → GL: loan recoveries wait for Finance-approved accounts; principal and interest split (2026-10-28)
+
+**Why:** `PAYROLL_DATA_FLOW_AUDIT.md` Part 14. This replaces the §195 GL mapping, which credited the whole installment (interest included) to a hard-coded 1013. That account choice belongs to Finance.
+
+**Connections changed**
+- **Finance → loan account mapping (new):**
+  - `GET` / `PUT` / `DELETE /finance/accounting/loan-gl-mapping`.
+  - Read needs `finance:view`. Save and withdraw need `finance:approve`, and are recorded by `auditMutations('finance')` with the before-image.
+  - Stored in `company_settings` under `module = 'loan_gl_mapping'`: receivable (Asset), interest income (Revenue), disbursement (Asset, optional, stored only), approver and time. Each account is checked against `chart_of_accounts` on save and again on every use.
+  - The generic `POST /settings/:module` refuses this key (`SETTINGS_KEY_RESERVED`), so the approval stamp cannot be forged there.
+  - Service: `finance/services/loanGlMapping.service.js`.
+- **Payroll approval → loan mapping (new gate):**
+  - `approvePayroll` refuses a batch that recovers any loan or advance with **422 `LOAN_GL_MAPPING_REQUIRED`** unless the company's mapping is approved and valid.
+  - The check runs inside the approval transaction after the loan re-derivation and before any write. Runs stay pending, and no repayment, balance or journal changes.
+  - Batches without loan recoveries are unaffected. Maker-checker and the release gate are unchanged and still apply.
+- **Payroll approval → GL:**
+  - `approvePayroll` returns `loan_principal` / `loan_interest` summed from the installments it recorded.
+  - `postPayrollJournal` credits principal to the mapped receivable and interest to the mapped income account. It resolves the accounts itself and skips with `LOAN_GL_MAPPING_REQUIRED` if they are missing.
+  - It refuses any entry whose debits ≠ credits (`JOURNAL_UNBALANCED`; nothing written).
+  - It credits net pay 0 as 0 (it used to credit gross).
+  - `POST /finance/accounting/payroll-journal` takes `loan_principal` / `loan_interest` and follows the same rules.
+- **Not connected (decisions open):**
+  - Loan disbursement posting (Dr receivable / Cr bank).
+  - Repair of stale September 2026 drafts, and cleanup of seed loans 21–25 (see Part 14).
+
+**Files:**
+- New: `backend/src/modules/finance/services/loanGlMapping.service.js`.
+- Changed: `payrollJournal.service.js`, `accounting.routes.js`, `payroll/payroll.service.js`, `payroll/payroll.controller.js`, `admin/settings-status.routes.js`.
+
+**Tests:**
+- New: `integration.payrollLoanGlGate.test.js` (11).
+- Changed: `integration.payrollLoansPayslip.test.js` and `integration.payrollEndToEnd.test.js`. Both now set a fixture mapping for their throwaway company.
+
+**Manual test (test company only):**
+1. Create a loan, generate its first month, approve as a second user. Expect 422 `LOAN_GL_MAPPING_REQUIRED`, still pending, no repayment.
+2. As Finance, `PUT` the mapping. Approve again: 200, one repayment row, and a balanced journal with principal and interest on separate lines.
+3. `DELETE` the mapping. The next loan month is refused again.
+
+## §197 — Biometric & Access Control: punches reach attendance, honest device status, gate-pass and visitor lifecycles, working filters (2026-10-28)
+
+**Screen:** HR → Biometric & Access Control (`frontend/src/features/hr/pages/BiometricAccess.jsx`). It has three tabs, built from `features/hr/components/biometric/`. All routes are in `backend/src/modules/hr/biometric.routes.js`, mounted behind `verifyToken` for `/biometric`, `/gate-passes` and `/visitors`. The gates are unchanged from the earlier authorization pass: reads are `biometricRead` (`hr:view` OR `attendance:edit`), import and sync are `attendance:edit`, creates are `hr:add`, Mark returned is `hr:edit`, and **approve / cancel follow the department approver rule of §198** (not a role gate).
+
+**Route → UI connections (verified in the browser as `hr@manifest.in`, and by tests)**
+
+| UI action | Route | Tables |
+|---|---|---|
+| Stat cards and donut | `GET /biometric/dashboard` | employees, leave_applications, holidays, biometric_logs, visitors, attendance_general_settings, attendance_policies |
+| Device rows | `GET /biometric/devices` | biometric_devices, biometric_logs |
+| Sync Now | `POST /biometric/devices/:id/sync` | biometric_devices, biometric_logs, attendance_records |
+| CSV preview / Import | `POST /biometric/logs/import` (`dry_run` true / false) | biometric_logs, attendance_records |
+| Recent Punch Log and its filters | `GET /biometric/logs` — `from`, `to`, `q`, `employee_id`, `department`, `device_id`, `punch_type`, `page`, `page_size` | biometric_logs, employees, biometric_devices |
+| Gate pass list and filters | `GET /gate-passes` — `q`, `status`, `employee_id`, `from`, `to`, `page`, `page_size` | gate_passes, employees |
+| New Gate Pass | `POST /gate-passes` | gate_passes |
+| Approve / Cancel / Mark returned | `PUT /gate-passes/:id/approve`, `/cancel` (reason required), `/complete` — approver per §198 | gate_passes |
+| Print (gate pass) | none — prints the clicked row in its own window | — |
+| Visitor list and filters | `GET /visitors` — `q`, `host_employee_id`, `status` (inside / checked_out), `from`, `to`, `page`, `page_size` | visitors, employees |
+| New Visitor (check-in) / Check Out | `POST /visitors`, `PUT /visitors/:id/checkout` | visitors |
+| Badge | `PUT /visitors/:id/badge` after the badge prints | visitors |
+| Employee and host pickers | `GET /biometric/employees/options` (new; `hr:view`) | employees |
+
+`GET /gate-passes`, `/visitors` and `/biometric/logs` now return `{ rows, total, page, page_size, … }` rather than a bare array. BiometricAccess is their only caller; DeviceManagement uses `/devices` and `/devices/:id/punches`, which are unchanged.
+
+**Workflow changes**
+- **One ingestion path:** `applyPunch()` serves both device sync and CSV import, inside one transaction per request.
+  - The log row is written once. Migration `20261028000012` adds the unique indexes that every `ON CONFLICT DO NOTHING` had always assumed and never had, so re-import and re-sync no longer duplicate.
+  - The day's attendance record merges the punch (earliest in, latest out). Status is promoted from `absent` only (the §103 contract).
+  - A payroll-frozen month (`isPeriodFrozen`) or a frozen / soft-deleted day is logged with `processed=false` and attendance is not touched.
+  - Hours use `getFullDayHours`. Both helpers moved to `backend/src/shared/attendanceRules.js`, and `attendance.routes.js` imports them from there.
+  - Dates are company-timezone (it was `toISOString()`, i.e. UTC).
+- **CSV import:**
+  - Before, it wrote `biometric_logs` only; punches never reached attendance.
+  - `punch_type` is now required (it silently defaulted to `in`).
+  - `employee_id` accepts the employee code, a mapped biometric id or the internal id. A value matching two different people is refused as ambiguous.
+  - Times are validated (calendar dates, no future punches). Limits are 2 MB and 10,000 rows.
+  - The page previews with `dry_run` (the real import, rolled back) and imports only on confirm.
+- **Device sync:**
+  - Before, it always answered 500 after writing: it set `updated_at`, a column that did not exist. It now answers honestly:
+    - 502 + `offline` when the device cannot be read;
+    - 422 `not_configured` when the device has no IP;
+    - 503 when the SDK is missing;
+    - otherwise counts of what actually landed.
+  - **Test** (`POST /biometric/devices/:id/test`, used by Attendance → Settings → Devices) wrote the same missing column, so a reachable device answered 500. It now answers 200 and records `status`, `status_checked_at` and `last_error`. It checks only that the TCP port answers, not the attendance protocol, and its message says so.
+  - Device rows show "Not verified" until `status_checked_at` is set by a real test or sync. The five dev-seed devices carry a seeded `online` status from 2026-04-05 and are left untouched.
+- **Gate passes:**
+  - The stored lifecycle is `pending → approved → completed`, plus `cancelled`.
+  - `expired` (window passed) and `active` (approved, inside its window) are computed by SQL, so filters, counts and rows agree. The five SEED passes (stored `active`) now read *expired*.
+  - Transitions are conditional and return 409 naming the current state. The approver is the caller (`employeeOf`), not a body field.
+  - A pass whose `valid_to` has already passed is refused.
+- **Visitors:**
+  - The contact number is validated (10–15 digits).
+  - A second check-in for someone already inside returns 409: same phone, or same name and company when there is no phone. The check runs under an advisory lock.
+  - Check-out works once; a repeat returns 409 and no longer moves the time.
+  - Visitors Inside (card, header and filter) means every open visit, any date. The card used to count only today's check-ins.
+- **Dashboard:**
+  - The population is current employees (`CURRENT_STATUSES`, not deleted) minus approved leave. It was every `employees` row, including Left and resigned (Manifest: 35 → 31).
+  - Not Punched is null on a weekend or holiday.
+  - Late and early use Attendance Settings (09:00 + 10-minute grace, 18:00), replacing the hardcoded `>9h` / `<17h`.
+
+**Schema:** migration `20261028000012_biometric_access_integrity.js`.
+- `biometric_devices`: adds `status_checked_at`, `last_error`, `updated_at`.
+- `biometric_logs`: adds unique indexes on `(employee_id, punch_time)` and, for unmatched punches, `(device_id, devUserId, punch_time)`.
+- `gate_passes`: adds `approved_at`, `cancelled_at/_by`, `cancel_reason`, `completed_at/_by`, and CHECKs `gate_passes_window_forward` and `gate_passes_status_known`.
+- `visitors`: CHECK `visitors_checkout_after_checkin`.
+- All existing rows satisfy these; no row was modified.
+
+**Not connected / open decisions:**
+- **No physical device was dialled.** Sync processing is tested with a simulated driver (`deviceDriver.read`). The dev-seed IPs (192.168.1.101–105) are not known to be real. Until the hardware test below passes, treat device sync as unverified: the page labels every unchecked device "Not verified", and CSV import is the verified path.
+- **Hardware acceptance test (required before production reliance on sync).** Use one real ZKTeco-protocol device (ZKTeco or a compatible eSSL), registered with its real IP and port, in a test company or with test enrolments only:
+  1. **Test** answers 200; the row reads Online with a fresh "checked" time.
+  2. Enrol a test user whose device user id equals a test employee's code (or map it via `POST /biometric/employees/map`). Punch in and out on the device.
+  3. **Sync Now** reports the punches received. The Recent Punch Log shows them with the right local date and time, including one made between 00:00 and 05:30. The test employee's `attendance_records` row has the earliest in and latest out.
+  4. Sync again: the counts are all "already imported" and no row is added.
+  5. A punch by an unenrolled device user appears as "Unmatched device user …".
+  6. Unplug the device and Sync: 502, the row reads Offline with the error, nothing is imported.
+  7. Confirm the device's `attendance_direction` (in / out / both) filters as configured.
+  Record the device model and firmware. Devices from other vendors (Suprema, Matrix, HID) are not covered by node-zklib and need their own integration.
+- **OT threshold:** decided 2026-10-28 — 8 h + 30 min break = 8.5 h on site, on every capture path. See §198.
+- **Approver identity:** superseded by §198 — the approver is the pass holder's department head, else reporting manager, else HR. `hr@manifest.in` is still not linked to an employee, so a pass it approves on the HR path records no approver.
+- **Scope of Punched In:** it counts device and CSV punches only, not web or mobile clock-ins.
+- **Shared date formatter:** fixed in §198 (local day, standard comma form); this module now uses it.
+
+**Tests:**
+- New: `backend/src/__tests__/integration.biometricWorkflows.test.js` (33, including a Test-button check against a loopback TCP listener the test opens itself; tenants 999943 / 999919) and `frontend/src/__tests__/biometricAccess.test.jsx` (18).
+- Updated: `integration.biometricAuthz.test.js` (99). It adds the new routes to the gate lists, puts `punch_type` in the CSV probes and uses a future pass window.
+
+**Manual test (as an HR user):**
+1. Attendance Import. Seed devices read "Not verified". Choose a CSV with one bad row: the preview lists the row and nothing is saved until Import.
+2. Gate Passes. Status "Expired" lists the SEED passes. Create a visitor pass, Approve (it gets a number), Print (only that pass), then Cancel (a reason is required).
+3. Visitors. Check in → Inside 1. Check in the same phone again → refused. Badge prints and shows ✓. Check Out → Inside 0, and the Inside filter is empty.
+
+## §198 — Working day 8 h + 30 min = 8.5 h; gate passes approved by the department; device setup needs only the address; one date format; status-literal gate green (2026-10-28)
+
+**Decisions (account holder, 2026-10-28):** "8 hrs + lunch break 30 mins = 8.30 hrs"; "approver from the particular department" — department head, else reporting manager, else HR; device setup needs only its connection; date format the same everywhere (shared formatter plus the attendance and HR pages).
+
+**1. Working day and overtime**
+- `shared/attendanceRules.js` → `getShiftRule(companyId)` returns `{ workHours, breakMinutes, spanHours }`, read from Attendance Settings (`full_day_hours` + `break_duration`): the company row, else the global row. `getFullDayHours()` now returns `spanHours` — on-site hours that make a full day. With no settings row at all it is 8 h + 60 min, the old 9 h.
+  - ⚠ It used to read the company row only, which never matched Manifest's global rows, so every path used 9 h whatever the settings said.
+- **Every OT computation now uses it:** web `/clock` check-out (and its holiday comp-off check), the regularisation-approval recompute, `/qr/scan`, offline sync (was hardcoded 9), the auto-checkout cron (was hardcoded 9), and the biometric sync and CSV import. OT = time on site − 8.5 h.
+- **Settings changed (live config, approved):** `attendance_general_settings` rows 1 and 2 (global) — `break_duration` 60 → 30, `min_working_hours` 9.00 → 8.50. `full_day_hours` stays 8.00. The before values are kept in the session log. No `attendance_records` or payroll row was rewritten: OT is recalculated only when a new punch or correction arrives, and frozen months are never touched.
+
+**2. Gate-pass approver** (`shared/gatePassApprover.js`)
+- **The rule**, as one SQL lateral join (`GP_APPROVER_JOIN`), takes the first of:
+  1. the current head of the employee's department (`department_heads` matched to `employees.department` by name);
+  2. the employee's reporting manager;
+  3. HR (any `hr:edit` holder).
+
+  Each candidate must be a current employee of the same company and never the pass holder: a head's own pass goes to their manager. Visitor-only passes go to HR. HR does not approve over a department head or manager.
+- **`PUT /gate-passes/:id/approve`** — gated on signed-in, then the rule. A wrong caller gets 403 `NOT_THE_APPROVER`, naming the approver. This replaces the `hr:edit` gate: department heads hold no `hr` grant.
+- **`PUT /gate-passes/:id/cancel`** — HR at any allowed stage, or the designated approver while the pass is pending (a rejection). **`/complete`** stays `hr:edit`.
+- **`GET /gate-passes`** rows carry `approver_kind`, `approver_name`, `can_approve`, `can_cancel`. The Gate Passes tab shows "Awaiting <name> (Department head)" and shows the buttons only where the server allows them.
+- **Approval Center:** new source `gate` in `approvals.sources.js`. A pending pass appears in its approver's inbox, Approve calls the module route, and Reject calls `/cancel` with a required reason. `canAct` calls the same `approverDecision()` the route uses.
+- **Live data today:** Engineering (Anu Natesh), Finance, HR and Administration (Malar Natesh) have heads. If every current employee raised a pass, 12 would go to a head, 2 to a reporting manager and **17 to HR** (no head, no manager). Assigning department heads under Settings, or reporting managers, moves those out of HR.
+
+**3. Device setup — the connection only** (Attendance → Settings → Devices, `DeviceManagement.jsx`)
+- **Register:** the IP address is the only required field. Port defaults to 4370. The name fills in as "Device <ip>". Direction, vendor, type, serial and location are optional ("More details").
+  - The server validates the address: an IPv4 address or a host name, and a dotted number must be a valid IPv4 (`999.1.1.1` was accepted as a host name). It also validates port 1–65535, direction and type, and returns 400 naming the field.
+- **Test connection before saving:** `POST /biometric/devices/probe` (`attendance:add`) is a TCP check of the typed address. Nothing is stored.
+- **Comm key must be 0 on the device.** node-zklib 1.3.0 cannot send a comm key, so there is deliberately no comm-key field (it would store a secret the sync never uses). The form says so.
+- **Editing the address or port** clears `status_checked_at`, so the device reads "Not verified" until tested again.
+  - ⚠ The edit route had a parameter-type bug (`inconsistent types deduced for parameter $4`) that 500'd every device edit. It was found by the new test and fixed.
+- **Honest status:**
+  - Cards and rows show Online / Offline / Error only after a real Test or Sync, otherwise "Not verified".
+  - The Test banner read `reachable`, a field the route never sends, so a device that answered was shown as "Cannot reach". It now reads `connected`.
+  - Vendors other than ZKTeco and eSSL are labelled "CSV import only". They were listed as "Supported".
+  - The page says sync is not yet verified against hardware (§197's hardware acceptance test still applies).
+
+**4. Dates** — standard `05 Apr 26` / `05 Apr 26, 14:30`, local time
+- **Shared formatter** (`utils/dateFormatter.js`):
+  - `fmtDate` keeps the no-shift path for a bare `YYYY-MM-DD` only; a timestamp now shows its **local** day (it took the UTC date, so 00:00–05:30 IST read as the previous day everywhere it is used).
+  - `formatDateTime` uses the standard comma form.
+  - New `localDay()` / `localDayOf()` give the local calendar day.
+- **The Biometric module** uses the shared formatter (its private copies became aliases).
+- **Attendance and HR pages:**
+  - 29 "today" defaults built from `toISOString()` (the UTC date) → `localDay()`, plus 4 "N days ago" / local-date conversions → `localDay(-N)` / `localDayOf()`: 33 changes in 17 files.
+  - `TeamAttendance` built its week from local midnights then `toISOString()`, shifting every weekday back one day in IST. Fixed with `localDayOf`.
+  - Raw ISO dates on screen → `fmtDate`: Overtime and Regularization approvals, the AttendanceDashboard regularization list, Self-Service holidays, the Holiday Calendar duplicate message.
+  - `MyProbationReviews` → 2-digit year.
+  - Device punch log and AttendanceDashboard break times → 24-hour.
+- **Left as is:** month labels (Month YYYY), live clocks, values sent to the API, and the unused `AnnouncementsPanel.jsx`.
+
+**5. Status-literal gate** — `check-status-literals` read `p.status` as `projects.status` in `operations/services/lifecycleGates.service.js` (which queries projects), but `p` there is `punch_points`, whose real states include `closed` / `waived`. The alias was renamed `pp`. No behaviour change. `npm run check:schema` passes all four gates.
+
+**Files**
+- Backend — new: `shared/gatePassApprover.js`. Changed:
+  - `shared/attendanceRules.js`
+  - `modules/attendance/routes/attendance.routes.js`, `modules/attendance/routes/offlineSync.routes.js`, `jobs/attendance.cron.js`
+  - `modules/hr/biometric.routes.js`
+  - `modules/approvals/approvals.sources.js`
+  - `modules/operations/services/lifecycleGates.service.js`
+- Frontend — changed:
+  - `utils/dateFormatter.js`
+  - `features/attendance/pages/DeviceManagement.jsx`
+  - `features/hr/components/biometric/{biometricShared.js, GatePassesTab.jsx}`
+  - `features/approvals/pages/ApprovalCenter.jsx`
+  - the date files listed in point 4.
+
+**Tests**
+- Backend:
+  - `integration.biometricWorkflows.test.js` → 43 (approver rules, Approval Center source, device validation and probe, one OT threshold; OT expectation 0.42 → 0.92 h).
+  - `integration.biometricAuthz.test.js` → 102 (approve/cancel now decided by the approver rule; reachable by any signed-in role, 401 without a token).
+- Frontend:
+  - new `dateFormatter.test.js` (4) and `deviceManagement.test.jsx` (4);
+  - `biometricAccess.test.jsx` → 19;
+  - `myProbationReviews.page.test.jsx` expects the 2-digit year.
+
+**Manual test**
+1. Settings → Attendance shows break 30 min. A punch 09:05–18:30 gives 0.92 h OT.
+2. Raise a gate pass for an Engineering employee. HR sees "Awaiting Anu Natesh (Department head)" with no Approve. Anu sees it in Approval Center and approves.
+3. Register a device with only its IP, press Test connection, save. It shows "Not verified" until Test or Sync.
+
+---
+
+## §199 — Payroll Center: one destination in six workflow sections; old page keys redirect; honest empty, error and disabled states (2026-10-28)
+
+**Why:** Payroll Center had seven flat tabs, each page drew its own full banner under the hub's, and six of the pages could also be opened as separate pages from other screens. Several screens hid problems. A failed read showed "no records", and a failed settings read showed defaults that Save would write over the company's real settings. Form 138 said "the return file can be generated" when it only produces a data extract. Disabled buttons explained themselves only in hover text. Manifest Technologies only; no payroll calculation, API, permission or data change.
+
+**Screen:** HR → Payroll Center (`frontend/src/features/hr/pages/PayrollCenter.jsx`; section table `features/hr/components/payroll/payrollCenterTabs.js`).
+
+| Section (`?tab=`) | Page rendered (unchanged component, `embedded`) | Old tab id still accepted |
+|---|---|---|
+| Overview (`overview`, default) | `components/payroll/PayrollOverview.jsx` — new, read-only | — |
+| Payroll Processing (`processing`) | `Payroll.jsx` | `payroll` |
+| Salary Structures & Loans (`structures`) | `SalaryStructure.jsx` (Structures · Employee Assignments · Loans & Advances) | `structure` |
+| Payslips (`payslips`, `&view=generator` / `viewer`) | `PayslipGenerator.jsx` · `PayslipViewer.jsx` | `generate`, `view` |
+| Tax & Statutory (`statutory`, `&view=form16` / `form138`) | `PayrollForm16.jsx` · `PayrollForm24Q.jsx` | `form16`, `form24q` |
+| Settings (`settings`) | `PayrollSettings.jsx` → `ModuleSettingsPanel` | `settings` |
+
+**Workflow:** Settings → structures and assignments (eligibility) → generate and review the draft → approve and release (release gate, §184/§185) → payslips → Form 138 each quarter → Form 16 / Form No. 130 after the tax year. Overview shows the current month's position on each step from `GET /payroll/summary` and `GET /payroll/release-readiness`, the two endpoints Payroll Processing already uses. It writes nothing. A failed read shows "Could not load: …", never zeros.
+
+**Merged, kept, redirected**
+
+| Page key | Decision | Reason |
+|---|---|---|
+| `PayrollCenter` | the one menu row (HR group) | unchanged audience |
+| `Payroll`, `SalaryStructure`, `PayslipGenerator`, `PayrollSettings`, `PayrollForm16`, `PayrollForm24Q` | **routes kept**; redirected into the matching section | Setup Wizard, Settings Center, System Settings, HR Dashboard, Attendance → Payroll Sync and search open them by key |
+| `PayslipViewer` | **kept standalone, not redirected** | it is Finance → My Payslip and Employee Dashboard's payslip link; employees cannot open Payroll Center |
+
+**Redirect rule** (`payrollHubRedirect()` / `PAYROLL_HUB_PAGES` in `config/menuCatalog.js`, called by `components/Layout.jsx` before the route gate, like the §180 Employee Directory redirect): a viewer for whom `canRenderPage(role, 'PayrollCenter')` is true goes to `/PayrollCenter?tab=…`. Everyone else is gated on the old page exactly as before. So nobody gains or loses access. hr_exec (`HR_EXEC_EXCLUDED_PAGES`) and a Page Access "HR hidden" override are never redirected. `payrollCenter.routeAccess.test.jsx` checks every role × page against `canRenderPage`.
+
+**Shared layout:** the hub draws one hero and a scrolling tab strip in its dock. Each page takes `embedded` and drops its own hero. PayslipViewer keeps Print / PDF / Email / WhatsApp in a toolbar and says whose payslip is shown. The panel carries `.plh-tabpanel`, so no nested sticky dock can cover the tabs (§148). Before this change the panel did not carry it. `ModuleSettingsPanel` gained an opt-in `embedded` prop, which drops its hero and "Back to Settings"; the other six module settings pages are unchanged.
+
+**Empty, error and disabled states fixed**
+
+| Screen | Before | Now |
+|---|---|---|
+| Payroll Processing | a failed list read showed "No payroll records" + Generate; filters hiding all rows read the same | failed reads listed in an alert; "not known whether a draft exists"; filtered-out rows are named |
+| Payroll Processing | "Generate Payroll Now" offered with 0 eligible | the prerequisite is named, with a link to Salary Structures & Assignments (the header Generate button is unchanged: it also clears stale drafts) |
+| Payroll Settings (any module) | a non-404 load failure showed defaults; Save would overwrite the saved settings | alert; Save disabled until a load succeeds |
+| Form 138 / Form 24Q | "Validation passed — the return file can be generated"; a load failure was a toast; the disabled download said why only on hover; download enabled with no data (server 404) | "Pulse validation passed — the data extract can be downloaded" + "This is not a filed return…"; failures as "Not ready to file: N validation error(s)" with code and quarter; visible "Download unavailable: …" reason; disabled with no approved data |
+| Form 16 / Form No. 130 | a load failure read "No approved payroll in FY yet"; blockers hidden while the FY is in progress; the bulk button printed `Download Ready ({filtered.filter(e => e.can_generate).length})` literally | error with Retry; all blockers always shown; real count + "No certificate is ready to download" reason |
+| Payslip Generator | email / bulk email disabled reasons in hover text only; banner pointed to "Run Payroll" | visible reason (month not approved, or this employee's slip not approved); banner says Payroll Processing |
+
+**Form names.** Checked against the server and against secondary sources. The primary incometaxindia.gov.in pages return 403 to automated fetches, so they were not read. Form No. 138 is the quarterly statement of salary TDS under s.397(3)(b) of the Income-tax Act 2025 / Rule 219 of the Income-tax Rules 2026, replacing Form 24Q. Form No. 130 is the salary TDS certificate under s.395(4)(b) / Rule 215(1), replacing Form 16. Both apply from tax year 2026-27. The screens now name the form by the selected year (`components/payroll/taxFormNames.js`), using the rule the server already applies (`tds.routes.js` `form_label`, `payroll.controller.js` `isNewForms`). 2025-26 still reads Form 24Q / Form 16. The Form 138 download is still a data extract for the official utility (RPU/FVU), refused (422) while any error remains. Nothing on these screens files a return.
+
+**Not changed (decision needed):**
+- **Section code in Form 138 rows** — statutory label corrected to s.392 for 2026-27 in §200; RPU section codes still not emitted. Was: The server labels Form 138 deductee rows and the extract "Section 192" for 2026-27. Under the 2025 Act, salary TDS is s.392, and Form 138 uses its own section codes. Which code the extract should carry needs Finance/tax sign-off against the notified Rules and the utility's file format.
+- **My Payslip is unreachable for `employee` (pre-existing).** `PayslipViewer`'s only menu row is Finance → My Payslip, and 'Finance' is not in the employee section allowlist. Employee Dashboard's "View payslip" links therefore open Access Denied. Employees reach payslips through the Home widget. Granting the page (for example through `PERSONAL_PAGES`; the API already limits it to the caller's own payslip — PAYROLL_DATA_FLOW_AUDIT.md Part 12) is an access decision.
+- **Sub-pages have no section of their own (pre-existing).** The six payroll page keys have no NAV_ITEMS row, so the section allowlist does not apply to their direct URLs; only `Payroll` has a module gate (`hr`). The server gates every payroll endpoint (`PAYROLL_READ_ROLES`). Adding `inHub: 'PayrollCenter'` rows would narrow direct-URL access and is left for an access review.
+- ~~**`GET /settings/:module` returns `{}` on a database error**~~ — fixed in §200. Was: (`settings-status.routes.js`), which the screen cannot tell from "never saved". The new screen guard covers 4xx/5xx statuses only.
+
+**Files:** `frontend/src/features/hr/pages/{PayrollCenter.jsx, PayrollCenter.css, Payroll.jsx, SalaryStructure.jsx, PayslipGenerator.jsx, PayslipViewer.jsx, PayrollForm16.jsx, PayrollForm24Q.jsx, PayrollSettings.jsx}`, `frontend/src/features/hr/components/payroll/{PayrollOverview.jsx, payrollCenterTabs.js, taxFormNames.js}`, `frontend/src/components/core/ModuleSettingsPanel.jsx`, `frontend/src/components/Layout.jsx`, `frontend/src/config/menuCatalog.js`. Tests: `frontend/src/__tests__/payrollCenter.{routeAccess,shell,states}.test.jsx`.
+
+**Manual test**
+1. HR → Payroll Center opens on Overview. Each card's Open goes to its section. Six tabs, one banner; at 375 px the tab strip scrolls sideways.
+2. Open `/Payroll`, `/SalaryStructure`, `/PayslipGenerator`, `/PayrollSettings`, `/PayrollForm16` and `/PayrollForm24Q` as hr or payroll_admin. Each lands in its section. Back returns to the previous page.
+3. `/PayrollCenter?tab=form24q` opens Tax & Statutory → Form 138. `?tab=view` opens Payslips → Payslip viewer.
+4. Tax & Statutory → Form 138 → View Data for FY 2026-2027. With Manifest's TAN missing, the screen shows "Not ready to file", lists the errors, and disables the download with a reason. Switch FY to 2025-2026: the title reads Form 24Q.
+5. Form 16 / Form No. 130 for FY 2026-2027: each employee row lists its blockers, including "Financial year … ends on 2027-03-31", and the bulk button reads "Download Ready (0)".
+6. As an employee, Finance → My Payslip behaves as before (see the decision above).
+
+---
+
+## §200 — Settings read failure is an error, not "nothing saved"; Form 138 / Form 130 statutory references by tax year (2026-10-28)
+
+**Why:** follow-up to §199. A failed settings read still came back from the server as 200 `{}`, so no screen could tell it from an empty configuration. The Form 138 screens and extract still cited s.192 and "FY" for tax year 2026-27. Manifest Technologies only; no payroll, company or tax-calculation change; nothing generated, approved, emailed or filed.
+
+### 1. Settings fail-safe
+
+| Case | `GET /settings/:module` before | Now |
+|---|---|---|
+| No row saved | 200 `{}` | 200 `{}` (unchanged — a genuine empty configuration) |
+| Row saved | 200 settings | 200 settings (unchanged) |
+| Database read failed | 200 `{}` | **500** `{ success:false, code:'SETTINGS_READ_FAILED' }`; the driver message is logged, not returned |
+
+- `POST /settings/:module` read its before-image (and, for payroll, the blob `normalizeForSave` merges onto) through a swallowed `.catch(() => ({ rows: [] }))`. On a failed read the save went ahead merged onto `{}`, dropping every key the request did not resend, such as the Setup Wizard's. Now the failure reaches the route's catch: 500, nothing written.
+- `ModuleSettingsPanel` (all seven module settings screens). On a load failure it renders **no form and no Save bar**: only the error and **Retry**. A 200 body that is not a plain object (an HTML error page, an array) counts as a failed load. 404 still means "never saved". Save is refused while `loadError` is set.
+- **Shared-module impact checked.** Every other `GET /settings/<module>` caller handles a rejected promise: ComplianceSettings toasts; PerformanceSettings, KanbanBoard, ResourceManagement, useRecruitmentSettings and SetupWizard fall back to defaults; SalaryStructure uses `allSettled`. So none crashes. **PerformanceSettings** swallowed the error and kept defaults that its Save would write (its POST replaces the whole blob). **Fixed 2026-10-29:** the form and Save exist only after a successful read; a failed or malformed read shows the error and Retry (`features/performance/pages/PerformanceSettings.jsx`, test `performanceSettings.loadFailure.test.jsx`). `GET /settings/inventory`'s threshold overlay failing is now also a 500 (was `{}`).
+
+### 2. Tax-form references (tax year 2026-27 onward vs 2025-26)
+
+| Item | 2026-27 onward | 2025-26 and earlier (kept) |
+|---|---|---|
+| Salary TDS **deduction** | s.392, Income-tax Act 2025 | s.192, Income-tax Act 1961 |
+| Quarterly **statement** | Form No. 138 under s.397(3)(b), Rule 219 of the Income-tax Rules 2026 | Form 24Q under s.200(3), Rule 31A |
+| Annual certificate | Form No. 130 | Form 16 |
+| Year term | "Tax Year" | "FY" / "Financial year" |
+
+Where each appears: `tds.routes.js` `salaryTdsLabels()` (new). `GET /tds/form24q` now also returns `salary_tds_section`, `period_term` and `statute`, and each deductee's `section` is `392` / `192`. The `form24q-download` extract gains a statute line, "Tax Year" in its header, its column renamed **"Act Section"**, and a note that this is the statutory section, not an RPU section code. The Form 130 PDF reads "(s.392, Income-tax Act 2025)" and "Tax year". The Form 16 lifecycle blocker reads "Tax year … Form No. 130 is issued…". The Form 138 / Form 16 screens use `taxFormNames.js` `statementBasis()` / `periodTerm()`. The year picker reads "Tax Year 2026-2027" / "FY 2025-2026", and the statute line sits in the page body, so it shows when the page is embedded in Payroll Center (no hero). `form_type` and `form_label` are unchanged.
+
+**Not changed:** `tds_transactions.section = '192'` is the stored ledger key. `payroll.service.js` writes it on Mark Paid, and Form 138's deposit lookup and the TDS screens filter on it. It is not a statutory label, and changing it would need a data migration. No RPU **section code** is emitted or invented. Pulse's extract is an input to the RPU, not an FVU file.
+
+**References verified:**
+- Protean (TIN), "Key Features – RPU and FVU version 1.1" (tinpan.proteantech.in, the official e-TDS utility, read in full). "Form 24Q" becomes "Form No. 138". "Financial Year" becomes "Tax Year". The "(See Sections 192 and Rule 31A)" caption is removed. Effective for quarterly statements from FY 2026-27.
+- Income-tax Rules 2026 = Notification No. 22/2026, G.S.R. 198(E), 20-Mar-2026, in force 1-Apr-2026; Rule 219 = statement of deduction under s.397(3)(b). This is the department's listing as indexed by search; the incometaxindia.gov.in pages themselves return 403 to automated reads.
+- s.392 is the 2025 Act's "Salary" deduction section (department's section heading, as indexed), and the Form 138 title reads "…section 397(3)(b) of the Act in respect of salary paid to employee under section 392". Both are seen through search excerpts and secondary copies. **Confirm against the department's own pages in a browser before relying on the section numbers.**
+
+**Files:**
+- Backend:
+  - `backend/src/modules/admin/settings-status.routes.js`
+  - `backend/src/modules/finance/tds.routes.js`
+  - `backend/src/modules/payroll/payroll.controller.js`
+  - `backend/src/modules/payroll/payroll.service.js` (blocker text only)
+- Frontend:
+  - `frontend/src/components/core/ModuleSettingsPanel.jsx`
+  - `frontend/src/features/hr/components/payroll/taxFormNames.js`
+  - `frontend/src/features/hr/pages/{PayrollForm24Q,PayrollForm16}.jsx`
+- Tests:
+  - `backend/src/__tests__/{settingsReadFailure,tdsForm138Labels}.test.js` (pool mocked; no real database)
+  - `frontend/src/__tests__/payrollCenter.{states,shell}.test.jsx`
+  - `frontend/src/__tests__/smoke.Inventory.test.jsx` (its stub now returns a settings object for `/settings/*`)
+
+**Manual test**
+1. Payroll Center → Settings with the database stopped (or the request blocked in DevTools): the error and Retry appear, with no fields and no Save. Restore, press Retry: the saved values load.
+2. Tax & Statutory → Form 138 → Tax Year 2026-2027: the body reads "…s.397(3)(b)… deducted under s.392", and the year picker shows "Tax Year 2026-2027" and "FY 2025-2026". Switch to FY 2025-2026: "Form 24Q … s.200(3) … s.192".
+3. With validation passing (not the case for Manifest today: TAN missing), the extract header reads "Tax Year 2026-2027", and rows carry "Act Section" 392.
+
+---
+
+## §201 — Employee Self-Service: own records only, one entry point, no portal for a login without an employee (2026-10-29)
+
+> **Superseded in part by §202 (same day, management decisions):** self-service reimbursements now file on the one claim workflow (`expense_claims`); bank details are HR-only; colleagues' declarations, identity documents and claims need explicit grants instead of payroll/HR role lists; Self Service is NOT a `PERSONAL_PAGES` page. Rows below marked ⟶ §202 no longer describe the code.
+
+**Why:** The portal (HR → Self Service) showed for the Super Admin login, which has no linked employee: admins see every page, and the page loaded nothing and still offered forms. That alone was not a security defect. But three of its APIs trusted the client. `GET /self-service/reimbursements` with no `?employee_id=` returned every claim of every company. `POST` filed a claim for any `employee_id` in the body. `PUT /reimbursements/:id/approve` had no gate at all: any signed-in user could approve their own claim and name the approver. `PUT /self-service/employees/:id/profile` let any HR role rewrite any employee's bank account. For a login with no employee it compared `users.id` with `employees.id`. And because the form posted `''` for every untouched field and the SQL used `COALESCE($n, col)`, saving one field (a blood group) blanked the employee's bank account number, address and emergency contact.
+
+**Screen:** HR → Self Service (`frontend/src/features/hr/pages/EmployeeSelfService.jsx`). One page, five tabs: Dashboard · IT Declaration · Document Vault · Reimbursements · Profile Update. API: `backend/src/modules/hr/selfservice.routes.js`, mounted at `/self-service` (plus the two legacy aliases in `server.js`, unchanged).
+
+**Entry points**
+
+| Row / key | Decision | Reason |
+|---|---|---|
+| HR → Self Service (`EmployeeSelfService`) | the one entry point; row carries `employeeLinkOnly: true` | Sidebar.jsx drops it when `user.employee_id` is null (any role). The URL still opens and shows "No employee record is linked to this login". |
+| HR → My Dashboard (`EmployeeDashboard`) | kept, separate | the personal punch/payslip/leave dashboard. A different page from the portal's Dashboard tab, not a copy of it. |
+| HR → Employee Records → Documents (`EmployeeDocuments`) | kept, separate | HR's documents register. ⟶ §207: `employee_documents` holders only (tab and URL). Was: for non-HR users it showed only their own documents (same API, same rule), a second copy of the vault. |
+| Travel Desk → Expense Claims (`ExpenseClaims`, `expense_claims`) | kept, separate | a different claims system from the portal's Reimbursements (`reimbursement_claims`). See the decision below. |
+| e-Signatures → Document Vault (`DocumentMaster`) | unchanged | the company document register, not the employee vault. It only shares the label (pinned in `employeeSelfService.nav.test.jsx`). |
+
+No route was removed or renamed.
+
+**Who may open the page:** ⟶ §202 (removed from `PERSONAL_PAGES`; HR-menu roles only, server-enforced by `self_service`). Was: `EmployeeSelfService` is now in `PERSONAL_PAGES` (`config/menuCatalog.js`, same as `EmployeeDashboard`), so every role can open the URL. It is also in `MANAGER_HR_SCOPED_PAGES`, so managers see the row; before this, a manager was refused the only screen that files their own declarations and claims. The HR management pages are unchanged: employee, manager, department_head and sales_exec are still refused Payroll Center and Exit & Probation.
+
+**Server rules (the security boundary)**
+
+| Endpoint | Own record | Someone else's record |
+|---|---|---|
+| `GET /dashboard`, `GET/POST/PUT /it-declarations` | unchanged (§ Payroll Part 12, `payrollAccess.js`) | payroll HR/Finance roles, own company only |
+| ⟶ §202 (410, claims moved) `GET /reimbursements` | own claims; `?employee_id=` resolved by `resolveReadableEmployee` | payroll HR/Finance roles, own company only. No "everyone" mode. |
+| ⟶ §202 `POST /reimbursements` | filed for the caller only; status always `submitted`; amount > 0 | nobody, HR included (money out) |
+| ⟶ §202 `PUT /reimbursements/:id/approve` | never on one's own claim (403) | `payroll:approve`, own company; only from `submitted` (else 409); `approved_amount` ≤ claimed, defaults to it; `approved_by` = the reviewer's employee id, never from the body |
+| `PUT /employees/:id/profile` | ⟶ §202: own record only: address, emergency contact, blood group (bank fields refused, HR-only). Was: account number, IFSC, bank name too. Blank = keep; a masked `XXXX…` account is ignored; IFSC / account / blood group validated; the reply masks the account | nobody here. HR uses Edit Employee (`PUT /employees/:id`), which has its own gate. |
+| `GET/POST/PATCH/DELETE /documents` | own documents (upload, delete while unverified) | ⟶ §202: `employee_documents` view/add/edit/delete. Was: read = `hr:view`, upload for someone = `hr:edit`, verify/reject = `hr:edit`, delete = `hr:delete` (the matrix the HR Documents page already gates its buttons on). This replaces a hard-coded role list that read only the primary role. |
+| `GET/HEAD /files/<vault file>` (`secureFiles.routes.js`) | the owner | ⟶ §202: `employee_documents:view`. Was: `hr:view`, same company. `finance_manager` used to open every colleague's vault upload by a role list. |
+
+A login with no linked employee (`ownEmployeeId()` null), Super Admin included, gets 403 "No employee record is linked to this account" on every own-record call. Its administrative reach is unchanged: company documents and a colleague's dashboard through its matrix grants, inside its company.
+
+**HR-controlled fields:** salary, designation, department, status and company are not columns the profile statement can reach, whatever the body carries (tested). There is no self-service change-request workflow for them.
+
+**Page fixes:** the profile tab now reads the record's real columns (`current_address`, `emergency_name`, `account_number` masked). Before, it read `address` / `emergency_contact` / `bank_account`, keys the record does not have. It sends only changed fields. The account input starts empty ("leave blank to keep"). The bank confirmation appears only when a bank field changed. "Apply Leave" opens `ApplyLeave`; it used to set a `leaves` tab that does not exist.
+
+**Not changed (decision needed):**
+- ✅ Decided in §202 — HR-only, Accounts notified. Was: **Employees change their own bank account with no HR approval.** Pre-existing behaviour, kept (now validated). Payroll pays into it from the next cycle. A maker-checker step (HR verifies before payroll uses it) is a management decision.
+- ✅ Decided in §202 — one claim record (`expense_claims`). Was: **Two reimbursement systems.** `reimbursement_claims` (this portal) has no reviewer screen and no payment path. Nothing in payroll or finance reads an approved claim. `expense_claims` (Travel Desk) has both. Retire the portal tab in favour of Expense Claims, or build review and payment for it.
+- ✅ Decided in §202 — explicit `expense_claims` / `it_declarations` grants. Was: **Who reads colleagues' claims and declarations.** `PAYROLL_READ_ROLES` includes `manager` and `finance_manager`, so they can read any same-company employee's claims and IT declarations by id. This is the existing payroll rule, kept for consistency.
+- ✅ Decided in §202 — `employee_documents`, payroll_admin holds none. Was: **`payroll_admin` holds `hr:view`**, so it reads every same-company employee's vault documents (Aadhaar, passport). The matrix decides; whether payroll needs identity documents is a policy call.
+- ✅ Decided in §202 — stays hidden, and the URL is refused too. Was: **The menu row for roles without the HR section** (department_head, sales_exec, finance, …). They can open the page by URL; it has no row in their menu.
+- ⟶ §202 (identified: 5 QA artefacts + 26 pilot role accounts with NULL). Was: **5 Manifest employees have `''` bank account / IFSC / address.** The profile bug above could have caused this, but so could Add Employee, which writes `''` for empty fields. The data was not changed.
+- ✅ Fixed in §202 — `verified_by` is the reviewer's employees.id. Was: `PATCH /documents/:id` writes `verified_by` = users.id.
+
+**Files:** `backend/src/modules/hr/selfservice.routes.js`, `backend/src/modules/files/secureFiles.routes.js`, `frontend/src/features/hr/pages/EmployeeSelfService.jsx`, `frontend/src/config/{menuCatalog.js,routes.jsx}`, `frontend/src/components/Sidebar.jsx`. Tests: `backend/src/__tests__/integration.selfServiceRecordsAccess.test.js` (real DB, two throwaway companies), `frontend/src/__tests__/employeeSelfService.{nav,routeAccess,page}.test.jsx`.
+
+**Manual test**
+1. Sign in as an employee → HR → Self Service. Profile Update shows your address, emergency contact and a masked account. Change only the emergency contact and save: no bank confirmation appears, and the bank details are unchanged afterwards.
+2. Type a new account number: the bank confirmation appears; after saving, the account shows `XXXX` + the last four digits.
+3. Sign in as Super Admin (no linked employee): no Self Service row under HR. Open `/EmployeeSelfService`: a notice, no tabs.
+4. Sign in as a manager: HR shows My Dashboard and Self Service only.
+5. As an employee, call `GET /api/v1/self-service/reimbursements?employee_id=<colleague>`: 403. Call `PUT /api/v1/self-service/reimbursements/<own claim>/approve`: 403.
+
+---
+
+## §202 — One claim record; HR-only bank details; explicit grants for declarations, claims and identity documents; mandatory bank & address (2026-10-29)
+
+**Why:** Management decisions on the §201 review. Before this change:
+- There were two claim systems. Self-Service wrote `reimbursement_claims`, which had no reviewer and no payment path. Travel wrote `expense_claims`, which had both.
+- A third, dormant writer existed: Finance `/finance/expenses` set any claim `Approved` from any status, Paid included, and posted a new journal entry on every call.
+- Employees could change their own bank account.
+- Colleagues' records were opened by role lists: `PAYROLL_READ_ROLES` let manager and finance_manager read any declaration, and the `hr` module let payroll_admin open every Aadhaar and passport.
+- Bank numbers reached the audit log in full.
+
+### Authoritative claim record
+
+One row in `expense_claims` per claim, moved only by `backend/src/modules/travel/travel-reimbursement.routes.js` (`/reimbursement/...`).
+
+```mermaid
+flowchart LR
+  ESS["Self-Service → Reimbursements"] -->|POST /reimbursement/claims + /submit| D[Draft → Submitted]
+  TRV["Travel → Expense Claims"] -->|same endpoints| D
+  D -->|L1 reporting manager / delegate / HR / admin| MA[Manager Approved]
+  MA -->|L2 expense_claims:edit| AV[Accounts Verified]
+  AV -->|L3 expense_claims:approve| MG[Mgmt Approved]
+  MG -->|L4 expense_payments:approve · PUT /pay| P[Paid]
+  AC["Approval Center"] -.acts through the same endpoints.-> MA & AV & MG
+  P --> ADV[travel_advances settled] & TCT[travel_cost_transactions · one row]
+```
+
+| Step | Owner | Rule |
+|---|---|---|
+| file / edit / submit | the claimant | always for the signed-in employee. `employee_id`, name and department come from the employee record; a body `employee_id` that is not the caller's is 403. Created as `Draft`. Only a draft can be edited or submitted. |
+| L1 manager | reporting manager, delegate, HR or admin (`shared/managerApprovalAuthz.js`) | never on one's own claim; delegation stays inside the company and never goes to the claimant |
+| L2 accounts verification | `expense_claims:edit` | was `allowRoles('finance')`: finance_manager and accounts_exec could not verify |
+| L3 management approval | `expense_claims:approve` | |
+| L4 payment | `expense_payments:approve` | records a payment made outside Pulse (reference, date, mode). A bank mode (NEFT/RTGS/IMPS/UPI/bank transfer) needs a valid account and IFSC (`validateStatutoryProfile`, the payroll rule). A personal-borne claim cannot be paid. |
+| read | the claimant, their reporting manager or the claim's delegate, `expense_claims:view` | everything inside the caller's company. Another company's claim reads as 404. |
+
+**One of each:**
+- **Transitions:** each one is a single `UPDATE … WHERE status = <expected>`. A second or simultaneous attempt gets 409.
+- **Payment:** locks the claim row and writes the advance settlement, `Paid`, the level-4 ledger row and the cost transaction in one transaction. The cost row is guarded by `NOT EXISTS`.
+- **Ledger rows:** `expense_claim_approvals` rows open with `NOT EXISTS`. The table has no unique key, so the old `ON CONFLICT DO NOTHING` never fired.
+- **Duplicate claims:** the same bill number, or the same date, type and amount, on a non-rejected claim of the same employee is refused with 409 `DUPLICATE_CLAIM`. The check runs under a per-employee advisory lock.
+- **Claim numbers:** taken from the global maximum under an advisory lock. `claim_number` is unique across all companies, and the old per-company `COUNT(*)+1` collided.
+
+**Notifications:** submitted, approved, rejected and paid go to the claimant through `recipientIds: [employee_id]`. The old code passed the employee id as a *user* id. `paid` had no `EVENT_MAP` entry, so it was a silent no-op.
+
+**Retired, not deleted:**
+- `/self-service/reimbursements` (GET, POST, `/:id/approve`) answers 410 `CLAIMS_MOVED`. The `reimbursement_claims` table and its 5 seed rows (status `active`) are untouched and read-only.
+- `/finance/expenses` POST, `/:id/approve` and `/:id/reject` answer 410. Nothing in the UI called them. The GETs stay, and `GET /finance/expenses/:id` is now company-scoped.
+- **Accounting:** no GL journal is posted for a claim at any step (decision below). `expense_claims.journal_entry_id` remains the single link if one is added.
+
+### Bank details
+
+> ⟶ **§204:** a change no longer takes effect on the HR save — it is a pending request that a different HR reviewer approves; Accounts is notified on approval. The rows below describe who may enter details and how they are read and masked; "saved" now means "proposed".
+
+| Who | What |
+|---|---|
+| Employee (Self-Service) | sees the account number masked. `PUT /self-service/employees/:id/profile` refuses any bank field with 403 `BANK_DETAILS_HR_ONLY`; it now takes address, emergency contact and blood group only. |
+| HR with `employee_bank:edit` | creates and changes bank details on Add / Edit Employee (`employee.controller.js`). Others (hr_exec, payroll_admin) get 403 `BANK_DETAILS_PERMISSION` and nothing in that request is saved; their other edits work, and a masked number sent back by the form counts as unchanged. IFSC is upper-cased and spaces are stripped from the account number. Both formats are checked with the payroll rule. |
+| Accounts / Finance | after a saved change: in-app `bank_details_changed` to the company's users holding `finance:edit` (not the HR user). The message carries the employee's name and code only — no number, IFSC or bank. Nothing changes in another system and no payment is triggered. |
+| Reading | the unmasked account number only with `employee_bank:view`, or on one's own record. Everyone else sees `XXXX`+last 4 (GET one and list). |
+| Audit | `logAudit` masks `account_number` / `bank_account` / `aadhaar_number` / `pan_number` / `passport_number` / `driving_license_number` to the last 4 in both before and after images, for every module. A bank change also writes an `employee_bank_details` entry naming the fields changed and the HR user who saved them. |
+
+### Mandatory employee details
+
+| Checkpoint | Rule |
+|---|---|
+| Add Employee (form + `POST /employees`) | bank account number, IFSC and current address are required (400 `REQUIRED_FIELDS` lists them) |
+| Edit Employee | an on-record value cannot be cleared. A record that never had one stays editable for other changes. |
+| Employees dashboard → Data Quality | `missingBankDetails` and `missingAddress` counts. Missing bank details count as **critical** (drill-down "Missing joining date, probation end date or bank details"). SQL and `MISSING_FIELD_TESTS` stay in step (`employeeDataQuality.contract.test.js`). |
+| Payroll approval / payment | unchanged and already blocking: `validateStatutoryProfile` refuses approval, and `markPaid` re-checks at payment |
+| Claim payment (bank mode) | the same check (above) |
+
+**The records found:**
+- **5 records with `''`:** EMP005 "Test1 sdas", EMP006 "Test1 fsdaf", EMP010 "John Doe", EMP011 "Test AutoQA", EMP012 "TestNaN Guard". All are QA artefacts, not genuine omissions. Every bank and address field is blank together, which matches Add Employee writing `''` for empty inputs.
+- **26 more with NULL:** the "Pilot …" role-test accounts plus 2 candidate-conversion records.
+- **Only 4 Manifest employees have bank details at all — and all 4 fail the payroll format rule** (account 3–8 digits, invalid IFSC; see §205 A), so none is payable by bank today.
+- No values were invented or changed.
+
+### Explicit grants (migration `20261029000001_self_service_explicit_permissions.js`)
+
+Additive role rows for every role (false where not granted; existing rows are never overwritten). Applied by the dev server's boot-time `runMigrations()`.
+
+| Module | super_admin / admin | hr | hr_manager | hr_exec | payroll_admin | finance / finance_manager | accounts_exec | manager / employee |
+|---|---|---|---|---|---|---|---|---|
+| `self_service` | v a e | v a e | v a e | v a e | v a e | — | — | v a e |
+| `it_declarations` (a colleague's) | v a p | — | v a p | — | v a p | — | — | — |
+| `employee_documents` | v a e d | v a e d | v a e d | v a e | — | — | — | — |
+| `employee_bank` | v e | v e | v e | — | — | — | — | — |
+| `expense_claims` | v e p | — | — | — | — | v e | v e | — |
+| `expense_payments` | v p | — | — | — | — | v p | — | — |
+
+`v`=view `a`=add `e`=edit `d`=delete `p`=approve. The policy is pinned by `selfServicePermissionSeed.test.js`.
+
+**How the grants apply:**
+- **Own records** (`selfservice.routes.js resolveEmployeeFor`) need `self_service` plus a linked employee. A login with none, Super Admin included, gets 403.
+- **A colleague's declarations** need `it_declarations` inside the company; review needs `:approve` and is never one's own. The self-service dashboard is one's own only.
+- **Identity documents:** `employee_documents` for the vault list, upload, verify/reject (never one's own document) and delete. The same grant covers the files, both the vault and the identity uploads on the employee row (PAN, Aadhaar, cheque, bank statement, résumé, offer letter), in GET and HEAD (`secureFiles.routes.js`). The profile photo keeps its old rule. `verified_by` is now the reviewer's employees.id.
+- **The Approval Center** expense source uses the same grants for L2/L3 and never offers a claimant their own claim (`approvals.sources.js`).
+
+### Navigation
+
+- **Self Service** (HR → Self Service) is for the HR-menu roles, by menu and by URL. It was removed from `PERSONAL_PAGES` (`menuCatalog.js`), so a role without the HR section gets Access Denied by address too. The server enforces the same boundary with `self_service`.
+- The row is still hidden for a login with no linked employee (§201).
+- HR management screens are unchanged and closed to employees.
+- **Expense Claims:** the approval buttons follow `expense_claims:edit` / `:approve` and never show on one's own claim. The free-text "Employee Name" and Department inputs are gone; the server takes both from the record.
+- **Travel → Payment:** Pay needs `expense_payments:approve` and is never offered on one's own claim.
+- **Employee Documents:** the HR register follows `employee_documents`, not `hr`.
+- **Add Employee:** marks address, account number and IFSC required and checks their formats.
+
+**Data / migration impact:**
+- One additive migration: 156 permission rows across 6 modules (26 roles × 6).
+- No employee, bank, payroll, claim, document or accounting row was changed.
+- The legacy `expense_claims` rows with lowercase statuses (`pending` 3, `approved` 5, from the retired Finance path or seed) are outside every workflow state and stay as they are.
+- `reimbursement_claims` (5 rows, `active`) is read-only history.
+
+**Not changed (decision needed):**
+- **GL posting of reimbursements.** No step posts a journal (the retired Finance path posted DR 5022 *Telephone & Internet* / CR 2040 *Salary & Wages Payable* on approve, repeatedly — see §205 C). Which accounts, and accrual at management approval or at payment, is Finance's call.
+- **Legacy claim rows:** 8 `expense_claims` rows with lowercase `pending`/`approved` and 5 `reimbursement_claims` rows. Migrate, close or leave as history.
+- **`employee_bank` for hr_exec.** As seeded, hr_exec cannot create an employee: bank details are mandatory and need the grant. The form shows "Ask an HR manager". Grant it in Roles Setup if hr_exec should onboard.
+- ✅ Decided in §203 — HR/admin take level 1 only when the requester has no active reporting manager. Was: **HR/admin override at claim L1** (shared with Leave and Travel requests).
+- ✅ Built in §203 — HR → IT Declaration Review. Was: **No IT declaration review screen**.
+- **Bank-detail verification is the HR save itself.** There is no separate maker-checker step and no "verified" stamp column. The audit entry records who saved.
+
+**Files:**
+- Backend: `src/modules/travel/travel-reimbursement.routes.js`, `src/modules/hr/selfservice.routes.js`, `src/employees/{employee.controller.js, employee.service.js}`, `src/modules/files/secureFiles.routes.js`, `src/modules/finance/routes/finance.routes.js`, `src/modules/approvals/approvals.sources.js`, `src/services/{AuditService.js, WorkflowNotificationService.js}`, `src/middlewares/auth.middleware.js` (`can()`), `src/database/migrations/20261029000001_self_service_explicit_permissions.js`.
+- Frontend: `features/hr/pages/{EmployeeSelfService.jsx, EmployeeDocuments.jsx}`, `features/travel/pages/{ExpenseClaims.jsx, TravelPayment.jsx}`, `features/employees/{pages/AddEmployee.jsx, pages/EmployeesDashboard.jsx, employeeListFilter.js}`, `config/menuCatalog.js`.
+- Tests:
+  - backend `integration.{selfServiceRecordsAccess, expenseClaimsWorkflow, employeeBankDetails}.test.js` and `selfServicePermissionSeed.test.js`;
+  - updated `employeeDataQuality.contract`, `integration.{employeeCreateNoPassword, employeeLoginInitialPassword, workforceCategory}`, `smoke.employees`;
+  - frontend `employeeSelfService.{page, routeAccess, nav}.test.jsx`, `claimAndDocumentGrants.test.jsx` and `addEmployeeBankRequired.test.jsx`; the four Add Employee form suites fill the new fields through `__tests__/helpers/addEmployeeRequired.js`. Also updated: backend `integration.payrollReportsAccess` (the dashboard is own-only) and `internConversionWorkflow.integration` (conversion posts the mandatory fields).
+
+**Manual test**
+1. As an employee, Self-Service → Reimbursements → New Claim. The claim appears as "Waiting for your reporting manager" and is the same claim (same number) in Travel → Expense Claims.
+2. As their manager, approve it: in the Approval Center or Expense Claims. As finance_manager, Accounts Verify. As admin, Management Approve. As finance_manager, Travel → Payment → Pay (NEFT). If the employee has no bank details, the payment is refused with a message naming HR. Pay again: "Already paid".
+3. File the same bill number twice: 409 "looks like claim EC-… filed again".
+4. As an employee, Profile Update: bank details are read-only ("maintained by HR").
+5. As hr_exec, Edit Employee → change the account number → refused, nothing saved. As hr_manager → saved; a Finance user receives "Employee bank details changed" with no number.
+6. As payroll_admin, Employee Records → Documents shows only "My Documents"; opening a colleague's PAN file is 403.
+7. As sales_exec, `/EmployeeSelfService` → Access Denied.
+8. Employees dashboard → Data Quality counts the employees missing bank details as critical.
+
+---
+
+## §203 — IT Declaration Review screen; level-1 approval = reporting manager or delegate, HR/admin only as fallback; bank verification assessed; legacy claims reviewed (2026-10-29)
+
+### IT Declaration Review (HR → IT Declaration Review)
+
+`frontend/src/features/hr/pages/ITDeclarationReview.jsx`. Route `ITDeclarationReview` and its HR menu row both carry `module: 'it_declarations'`, so the Sidebar drops the row and Layout refuses the URL for anyone without the grant. Holders, from the §202 seed: super_admin, admin, hr_manager, payroll_admin. hr, hr_exec, managers and employees hold the HR menu but not this row.
+
+```mermaid
+flowchart LR
+  E["Self-Service → IT Declaration"] -->|POST /self-service/it-declarations · duplicate → 409| R[(it_declarations row · submitted)]
+  V["HR → IT Declaration Review"] -->|GET /it-declarations/review · it_declarations:view| R
+  V -->|PUT /it-declarations/:id · it_declarations:approve · not own| R
+  R -->|approved / submitted rows| TDS[Payroll TDS]
+  V -->|GET /it-declarations/:id/history| AL[(audit_logs · it_declaration)]
+```
+
+| Endpoint (`selfservice.routes.js`) | Rule |
+|---|---|
+| `GET /it-declarations/review?financial_year=&status=submitted\|approved\|rejected\|all` | `it_declarations:view`; the caller's company only; each row carries the employee's name, code and department, who reviewed it, the latest remark, and `can_review` (`:approve` and not the caller's own) |
+| `PUT /it-declarations/:id` (existing) | review = `it_declarations:approve`, same company, never one's own (403). New: **rejection needs `remarks`**, and a no-op status is 409. Each review writes an audit entry: `module` it_declarations, `reference_type` it_declaration, action approve / reject / reopen / update, old → new status, remarks, reviewer. |
+| `GET /it-declarations/:id/history` | the owner, or `it_declarations:view` in the declaration's company; others get 404. Returns the audit events. |
+| `POST /it-declarations` (existing) | **duplicate guard**: the same employee, year, section, amount and description (trimmed, case-insensitive) on a non-rejected declaration is refused with 409 `DUPLICATE_DECLARATION` |
+
+There is no new table: the screen reads and moves the employees' own rows. The rejection reason lives in the audit history; `it_declarations` has no remarks column. The 5 live declarations (status `active`, seed) appear under "All" and nothing changed them.
+
+### Level-1 ("reporting manager") approval — `shared/managerApprovalAuthz.js`
+
+Shared by leave L1 approve/reject/delegate, travel requests and advances, expense claims, and sales discount approvals. The Approval Center's `managerApproves()` mirrors it.
+
+| # | Rule | Before |
+|---|---|---|
+| 1 | nobody decides their own request (manager, delegate or override) → `self` | not in the helper: Leave and claims blocked it themselves; Travel and pricing relied on the override |
+| 2 | the record's delegate | unchanged |
+| 3 | the requester's reporting manager, **if that manager is still employed** | an exited manager still qualified |
+| 4 | HR (`hr`, `hr_manager`, `hr_exec`) or admin, **only when the requester has no active reporting manager** (none set, the manager left or was deleted, or the record points at the requester) → `no_manager_fallback`; otherwise `has_manager` (403) | a blanket override: any HR or admin could approve anyone's level 1 |
+
+Why a fallback and not a removal: 31 of 35 Manifest employees have no reporting manager on record. Removing step 4 would leave their leave, travel and claim requests with no possible approver. Company scoping stays with the callers, each of which loads the record inside the caller's company. Role reading is unchanged (primary role, as the callers pass it). `DENIED_MESSAGE` now states the rule.
+
+### Bank-detail verification and second-person approval — assessment only (not built)
+
+> ⟶ **Phase 1 built in §204** (request table, maker-checker, verification stamp, Accounts after approval, informational unverified count). Phase 2 (blocking on unverified) is still a decision.
+
+Today a change saved by an HR user with `employee_bank:edit` takes effect at once: the save *is* the verification. The audit log records who saved it (masked), and Accounts is notified.
+
+**Proposed design** (needs a decision before any code):
+1. An `employee_bank_change_requests` table: employee, company, proposed account / IFSC / bank / branch, requested_by, requested_at, status (`pending` → `approved` / `rejected` / `withdrawn`), decided_by, decided_at, reason. The employees row changes only on approval.
+2. Maker-checker: the approver must hold `employee_bank:approve` (a new flag on the existing module) and must not be the requester. The Approval Center would gain a source for it.
+3. `employees.bank_verified_at` / `bank_verified_by`, stamped on approval. **Existing details stay NULL** (unverified). Nothing is back-filled.
+4. Accounts is notified on approval, not on request, so Finance never acts on an unapproved change.
+5. Readiness: phase 1 *shows* "bank details unverified" on Data Quality and payroll readiness. Phase 2, a separate decision, *blocks* payroll approval and claim payment on unverified details.
+
+**Impacts to decide:**
+- Add Employee: the first bank details would also wait for the checker, so a new hire can't be paid until they're approved.
+- The 4 Manifest employees with bank details are already blocked by the payroll format check: their details are invalid. Phase 2 adds no new block for them; they need correcting, not verifying (§205 A).
+- Two HR people with `employee_bank` are needed per company; today hr, hr_manager and admin hold it.
+
+### Legacy rows — reviewed, preserved (read-only, 2026-10-29)
+
+| Rows | What they are | Relationships | Reachable by a workflow? |
+|---|---|---|---|
+| `expense_claims` 1–8 (`EXP-001`…`008`), 5 `approved` + 3 `pending`, ₹1,09,700 | seed rows of 1–14 Mar 2026, company 1 | **no employee** (`employee_id` NULL). Approval-ledger rows on 1–5, line items on 1, 4, 5, 7 and 8. No journal, payment, cost row or travel request. | no: lowercase statuses match no workflow step, and with no employee no claimant or manager exists |
+| `reimbursement_claims` 21–25, `active`, ₹1.25–2.75 lakh each | seed of 20 Aug 2026 | employees 1, 2, 3, 5; **employee 4 does not exist**. `approved_by` = employee ids. Placeholder claim types. | no: the endpoints are retired (410) |
+
+**Live data-flow defect found (not changed; tied to the GL decision):** `finance/statements.routes.js` sums claims with `status = 'approved'` (lowercase) and `NOT IN ('draft','rejected')` (case-sensitive). Only the seed rows match `approved`, so the statements count ₹74,500 of seed claims and would never count a claim paid through the workflow (`Paid`). The `NOT IN` also lets workflow `Draft` rows through. Fix this together with the GL posting decision.
+
+**Not changed (decision needed):** GL posting of claims and the statements definition above; the bank maker-checker (design above); what to do with the 13 legacy rows; `employee_bank` for hr_exec; an Approval Center source for IT declarations (the screen above is the only reviewer path today).
+
+**Files:**
+- Backend: `src/shared/managerApprovalAuthz.js`, `src/modules/approvals/approvals.sources.js`, `src/modules/hr/selfservice.routes.js`, `src/modules/travel/travel-reimbursement.routes.js` (comments).
+- Frontend: `features/hr/pages/ITDeclarationReview.jsx`, `config/routes.jsx`.
+- Tests: backend `integration.selfServiceRecordsAccess.test.js` (review queue, history, duplicates) and `integration.expenseClaimsWorkflow.test.js` (level-1 rule, race between manager and delegate); frontend `itDeclarationReview.test.jsx`; the menu fixture `tests/nav-verify/nav.json` gains the HR row.
+
+**Manual test**
+1. As payroll_admin: HR → IT Declaration Review lists the year's submitted declarations. Approve one; reject one without a reason (the confirm button stays disabled), then with a reason. History shows both.
+2. As hr_manager with their own declaration filed: it is listed with "another reviewer decides" and no buttons.
+3. As hr or hr_exec: no menu row, and `/ITDeclarationReview` is Access Denied.
+4. As an employee: file the same 80C declaration twice → "already on file".
+5. A claim from an employee who has a manager: as admin, Manager Approve → refused with the rule message; as the manager → approved. Mark the manager "Left" (on a test record), and admin can approve.
+
+---
+
+## §204 — Bank-detail maker-checker (Phase 1): new and changed details wait for a second HR person; Accounts notified after approval; propose-only path (2026-10-29)
+
+**Why:** §202 made bank details HR-only, but one HR save still changed them at once. Management approved Phase 1 of the §203 design:
+- new and changed details stay pending until a *different* authorised HR reviewer approves them;
+- Accounts is notified only after approval;
+- payroll is not blocked yet;
+- existing details are not marked verified.
+
+```mermaid
+flowchart LR
+  M["Add / Edit Employee<br/>(maker: employee_bank:add or :edit)"] -->|bank fields stripped from the row| P[(employee_bank_change_requests · pending · one per employee)]
+  P -->|"approve — employee_bank:edit, ≠ maker, same company"| W[employees row written<br/>bank_verified_at / _by stamped]
+  W --> N["Accounts: bank_details_changed<br/>(finance:edit holders, no digits)"]
+  P -->|"reject (reason) / withdraw"| X[closed — employee row unchanged]
+  Q["HR → Bank Detail Approvals<br/>(employee_bank:view)"] -.reads.-> P
+```
+
+| Step | Who | Rule |
+|---|---|---|
+| propose (Add or Edit Employee) | `employee_bank:add` (propose only) or `:edit` | bank keys never reach the employees row. Other fields save as usual. The response carries `bank_change_request {id, status:'pending'}` and the dialog says it awaits approval. Format is checked first (payroll rule). A second proposal while one is pending is refused with 409 `BANK_CHANGE_PENDING` *before* anything in the request is saved (one pending per employee, partial unique index). On Add Employee the new hire is created without bank details plus a `create` request. |
+| approve `POST /employees/bank-change-requests/:id/approve` | `employee_bank:edit`, same company, **not the maker** (403 `SAME_PERSON`) | one transaction: the row is locked as pending, the proposed set is re-validated, then the `employees` bank columns and `bank_verified_at` / `bank_verified_by` are written and the request marked approved. **Then** Accounts is notified. A second approve is 409. |
+| reject `…/reject {reason}` | `employee_bank:edit`, not the maker; a reason is required | the employee row is unchanged; no notification |
+| withdraw `…/withdraw` | the maker, or an `:edit` holder | the employee row is unchanged |
+| queue `GET /employees/bank-change-requests?status=` | `employee_bank:add` or `:edit`; the caller's company | full numbers only with `employee_bank:view`, masked otherwise. `can_decide` / `can_withdraw` per row. |
+
+**Audit:** `employee_bank_details` entries for propose / approve / reject / withdraw (fields changed, request id, maker, verifier). Numbers are masked by `logAudit`.
+
+**Data Quality:** `unverifiedBankDetails` counts details on record with no `bank_verified_at` (every pre-existing row). It is informational: not part of *critical* or *needs attention*, and nothing is blocked on it.
+
+**Phase 2 (not done, separate decision):** block payroll approval and claim payment on *unverified* details. Note: a new hire's details already reach payroll only after approval. Until then the row has none, and the existing missing-bank checks apply as they always have.
+
+### hr_exec onboarding without bank access (assessed; code path built, not granted)
+
+The matrix supports a clean split on the existing `employee_bank` module, with no new permission system:
+
+| Flag | Meaning |
+|---|---|
+| `can_add` | **propose only**: enter details on Add / Edit Employee as a pending request. The user sees stored account numbers masked (`withBankMasking` needs `:view`), cannot approve, and can withdraw their own proposal. |
+| `can_edit` | review: approve or reject other people's proposals (and propose) |
+| `can_view` | see unmasked numbers, open Bank Detail Approvals |
+
+As seeded (§202), hr_exec holds none of these, so it still cannot create an employee (bank details are mandatory). The form says "Ask an HR manager". Granting `employee_bank → Add` to hr_exec in Roles Setup would let hr_exec onboard without seeing or approving bank details. This was **not granted**: it is a management decision. It is proven with a user-level grant in `integration.employeeBankDetails.test.js`.
+
+**Migration `20261029000002_bank_change_requests.js`:** additive. A new table, a partial unique index and two nullable columns on `employees`. Applied by the dev server's boot-time `runMigrations()`. After it: 0 requests and 0 verified rows. No bank or employee value changed.
+
+**Files:**
+- Backend: `src/employees/{bankChange.service.js (new), employee.controller.js, employee.routes.js, employee.service.js (unverified count)}`, the migration.
+- Frontend: `features/hr/pages/BankChangeApprovals.jsx` (new; HR menu row and route `module: 'employee_bank'`), `features/employees/pages/AddEmployee.jsx` (pending message), `config/routes.jsx`, `tests/nav-verify/nav.json`.
+- Tests: backend `integration.employeeBankDetails.test.js` (rewritten for the maker-checker); frontend `bankChangeApprovals.test.jsx`, `addEmployeeBankRequired.test.jsx`.
+
+**Manual test**
+1. As hr_manager, Edit Employee → change the account number → save. The dialog says the change awaits approval, and the employee still shows the old number.
+2. As the same hr_manager, HR → Bank Detail Approvals: the row says "another HR person approves", with no Approve button.
+3. As a second HR user (hr or admin): Approve. The employee now shows the new number, and a Finance user receives "Employee bank details changed" with no digits.
+4. Change it again and Reject without a reason: the confirm button stays disabled. With a reason, the employee is unchanged.
+5. Edit the same employee twice while a change is pending: the second save is refused and nothing in it is saved.
+6. As hr_exec: changing bank details is refused (as before).
+
+---
+
+## §205 — Decision readiness: bank-verification Phase 2 rollout, hr_exec propose-only grant, claims GL posting and statement reconciliation (2026-10-29)
+
+Documentation only. Nothing here is enabled, granted, posted or changed. All facts were read from the live database on 2026-10-29 without writing.
+
+### A. Bank verification — Phase 2 (blocking payment on unverified details)
+
+**Where things stand.** Since §204, every new or changed set of bank details is approved by a second HR person and stamped `bank_verified_at` / `bank_verified_by`. Nothing is blocked on the stamp yet. **No Manifest employee is verified today.**
+
+**The four existing records are not verifiable as they stand.** All four fail the payroll format rule (`validateStatutoryProfile`: account 9–18 digits, IFSC `AAAA0XXXXXX`), so payroll approval and payment *already* refuse them:
+
+| Employee | Status | Account number | IFSC |
+|---|---|---|---|
+| EMP001 Malar Natesh | Active | 3 digits — invalid | invalid |
+| EMP002 Natesh Mayavel | Active | 4 digits — invalid | invalid |
+| EMP003 Anu Natesh | Active | 5 digits — invalid | invalid |
+| EMP039 "Testf f" | Probation | 8 digits — invalid | invalid |
+
+They look like placeholder or test entries. They cannot simply be verified: approval re-validates the details and would refuse them. **HR must enter the correct details (Edit Employee) and a second HR person approves them (Bank Detail Approvals). That is the verification.** The other 31 Manifest employees have no bank details at all. The 5 `''` records are QA artefacts (§202).
+
+✅ **Built in §206** (verify-as-is; source `verify`). Was: **Prerequisite to build before enforcing (implementation blocker):** a *verify-as-is* action. Today a request is created only when a field *changes*. A future record whose valid details predate §204 would have no way to get a stamp without being re-typed. Proposed: "Request verification" on Edit Employee creates a request with `source='verify'` and no field changes, and the approval stamps without rewriting. The `chk_ebcr_source` CHECK would need `'verify'` added.
+
+**Enforcement points (each already checks the format; Phase 2 adds "and verified"):**
+
+| # | Path | Today |
+|---|---|---|
+| 1 | Payroll approval (`payroll.service.js approvePayroll` → `validateStatutoryProfile`) | blocks missing or invalid account / IFSC |
+| 2 | Payroll mark-paid (`markPaid`, re-check at payment) | blocks missing or invalid |
+| 3 | Claim payment, bank modes (`travel-reimbursement.routes.js PUT /claims/:id/pay`) | blocks missing or invalid |
+| 4 | Payroll register / bank export (`GET /payroll/register`) | exports `account_number` as stored; no check. Phase 2 should mark or omit unverified rows. |
+
+**Safe rollout:**
+1. **Switch.** One flag, `BANK_VERIFICATION_ENFORCED`, *default OFF*. This differs from the opt-out convention in `config/featureFlags.js`, so it needs its own reader or the convention extended. Off = today's behaviour. One shared check, "is the account present, valid and verified", is used by all four points.
+2. **Shadow period (flag off).** Payroll release readiness and the claim Payment screen show *"would be blocked: bank details unverified"* per employee, without blocking. Data Quality already counts `unverifiedBankDetails`.
+3. **Clean-up.** HR corrects the four records above and a second HR person approves each one. HR enters missing details for active employees who are to be paid by bank. Target: shadow list empty for the next payroll month.
+4. **Test before enforcement** (isolated fixtures, flag forced ON in the test):
+   - payroll approval and mark-paid refuse an unverified employee and accept a verified one;
+   - claim payment by NEFT refuses an unverified claimant and allows cash/cheque modes;
+   - the register marks or omits unverified rows;
+   - a change approved mid-month takes effect at the next approval or mark-paid (both re-read the employee row);
+   - a pending, unapproved change never pays to the proposed account.
+5. **Enable** for one payroll cycle with a named owner on payday, who can turn the flag off.
+
+**New and changed details after Phase 2:** unchanged from §204. They stay pending until a second HR person approves, and payroll keeps paying to the *last verified* details until then. The only addition is that an employee with no verified details is blocked.
+
+### B. hr_exec propose-only bank permission (management decision)
+
+**Exact grant:** `role_permissions` row (role `hr_exec`, module `employee_bank`) → **`can_add = true`**, with `can_view`, `can_edit`, `can_delete`, `can_approve` and `can_export` left **false**. In Roles Setup this is *Bank details → Add* only. Currently the row is all-false, and no user-level `employee_bank` override exists for any user.
+
+| With the grant, hr_exec can | hr_exec still cannot |
+|---|---|
+| create employees (bank details mandatory) and enter or change bank details on Add / Edit Employee, as pending requests | see stored account numbers (masked; needs `:view`) |
+| list the requests by API and withdraw its own | approve or reject any request (`:edit`), including its own |
+
+✅ **Prepared in §206** (`:add` holders open the page and see only their own requests; nothing granted). Was: **UI gap if granted:** the Bank Detail Approvals page and menu row require `employee_bank:view`, so hr_exec would not see its pending requests on screen, only the "awaiting approval" message after saving. Either accept that, or let `:add` holders open the page as read-only. That is a small code change and was not made.
+
+### C. Claims — GL posting and statement reconciliation (Finance decision)
+
+**Today:** no claim step posts a journal. One authoritative record per claim (`expense_claims`, §202). `journal_entry_id` exists as the single link and is empty on every row. The retired Finance path had debited **5022 "Telephone & Internet"** (its code comment said "Office Expenses") and credited **2040 "Salary & Wages Payable"**, on every approve call.
+
+**Decisions Finance needs to make:**
+
+| # | Question | Options / facts |
+|---|---|---|
+| 1 | When to post | (a) accrual at **Mgmt Approved** (DR expense / CR employee-reimbursement payable) **and** settlement at **Paid** (DR payable / CR bank or cash); or (b) one entry at **Paid** only (DR expense / CR bank or cash) |
+| 2 | Expense account(s) | candidates on the COA: **5026 Travelling & Conveyance**, **5150 Travel & Entertainment**, **5014 Staff Welfare** (medical), **5022 Telephone & Internet** (internet claims). One account, or a map from expense type to account? |
+| 3 | Payable account | 2040 is *Salary & Wages* Payable. Use it, or open a separate employee-reimbursements payable? |
+| 4 | Bank / cash account for payment | the claim records `payment_mode`. Which bank account each mode settles from (`bank_accounts`) |
+| 5 | GST on claims | `gst_amount` is stored separately and accounts verify `gst_verified`. Claim input GST (receivable), or expense it gross? |
+| 6 | Travel advances | at payment the net is paid after the advance is adjusted. How the adjusted advance is credited (advance receivable account) |
+| 7 | Account approval | payroll's GL mapping waits for Finance-approved accounts (§196). Use the same gate for claims? |
+
+The implementation would follow the existing posting rules: one journal per claim and step, guarded by `journal_entry_id` or an equivalent unique key, inside the claim's transaction, company-scoped.
+
+**Statement reconciliation (`finance/statements.routes.js`), as the code reads claims today:**
+
+| Report (route) | Claim rule | Value it reads | Effect on live data |
+|---|---|---|---|
+| Income statement (`/income-statement`, `/export/income-statement`) | `status NOT IN ('draft','rejected')` (case-sensitive), by `created_at` | `amount` (excludes GST) | FY 2025-26: ₹1,09,700, all 8 legacy rows (5 `approved` + 3 `pending`), none of which has an employee. FY 2026-27: ₹10,000, one workflow `Draft` (an unsubmitted claim) |
+| Cash flow (`/cash-flow`, `/export/cash-flow`), break-even (`/breakeven-analysis`), ratios (`/ratios`) | `status = 'approved'` (lowercase) | `amount` | FY 2025-26: ₹74,500 (the 5 legacy `approved`). FY 2026-27: ₹0. **A claim paid through the workflow (`Paid`) is never counted.** |
+
+So the reports disagree with each other and with the workflow. **Finance to decide:** which statuses count (proposed: income statement on the accrual basis, from `Mgmt Approved` onward; cash flow on `Paid` by `paid_at` / `payment_date`), which date (expense date, approval date or payment date), and whether `total_amount` (with GST) or `amount`. Ideally the statements read the journals once GL posting exists, so there is one source.
+
+**Legacy rows in this decision** (unchanged, §203):
+
+| Rows | Total | Statement impact | Options |
+|---|---|---|---|
+| `expense_claims` 1–8 (EXP-001…008), no employee, March 2026 | ₹1,09,700 (₹74,500 `approved`, ₹35,200 `pending`) | inflate FY 2025-26 expenses (all 4 reports above), and keep counting under any rule that matches lowercase `approved` / `pending` | keep and exclude by rule (e.g. `employee_id IS NOT NULL`, or workflow statuses only); close them to a terminal status; or soft-delete (`deleted_at`). Needs Finance sign-off, since FY 2025-26 figures change. |
+| `reimbursement_claims` 21–25, `active` | ₹10,00,000 | none: no report reads this table | keep as read-only history, or archive |
+
+### D. IT declarations
+
+HR → IT Declaration Review (§203) stays the **only** reviewer screen. Approval Center integration has not been built and waits for explicit approval.
+
+### Remaining decisions (one list)
+1. Phase 2: approve the rollout above, the flag, and who owns the payday switch. (Verify-as-is is built: §206.)
+2. Correct the four invalid bank records (HR data entry plus second-person approval). Not an IT change.
+3. hr_exec: grant `employee_bank` → Add only, or not. (Own-requests-only access is prepared: §206.)
+4. Finance: questions C1–C7, the statement definition, and the treatment of the 8 legacy claims (FY 2025-26 impact).
+5. `reimbursement_claims` 21–25: keep or archive.
+6. Approval Center integration for IT declarations.
+
+---
+
+## §206 — "Verify as-is" bank-detail requests; propose-only holders see only their own requests (2026-10-29)
+
+**Why:** §205 A named one blocker before Phase 2. A request was created only when a bank field *changed*, so valid details that predate the maker-checker (§204) could not be verified without re-typing them. Phase 2 payment enforcement stays **off**.
+
+### Verify as-is
+
+| Step | Who | Rule |
+|---|---|---|
+| request: `POST /employees/:id/bank-verification-request` (Edit Employee → Bank Details → **Request verification**, shown when details are on record and `bank_verified_at` is empty) | `employee_bank:add` or `:edit`, the caller's company | the account number **and** IFSC must be present (else 400 `NOTHING_TO_VERIFY`) and pass the payroll format rule (else 400 `BANK_DETAILS_INVALID`: correct them on Edit Employee instead). Already verified → 409 `ALREADY_VERIFIED`. One pending request per employee → 409 `BANK_CHANGE_PENDING`. Creates a request with `source='verify'`, `fields_changed = {}` and the details on record as `proposed_*`. **Nothing on the employee changes; nobody is notified.** |
+| approve (same endpoint as §204) | `employee_bank:edit`, **not the requester** (403 `SAME_PERSON`) | stamps `bank_verified_at` / `bank_verified_by` **only if the record still holds exactly the requested details** (account, IFSC, bank, branch). Otherwise 409 `DETAILS_CHANGED` and nothing is stamped. **No bank value is rewritten.** Then Accounts gets `bank_details_changed` with `context.action = 'verified'` ("verified … as they are on record (no change)"). No digits. |
+| reject / withdraw | as §204 | the record is unchanged |
+| audit | | `employee_bank_details`: `request_verification`, then `approve` / `reject` / `withdraw`. Values masked. |
+
+The four live records (§205 A) fail the format rule, so verify-as-is refuses them by design. They need correcting through a change request.
+
+**Migration `20261029000003_bank_change_request_verify_source.js`:** `chk_ebcr_source` widened to `('create','edit','verify')`. A constraint change only; applied at the dev server's boot.
+
+### Propose-only holders (prepared, not granted)
+
+`employee_bank:add` without `:edit` (the hr_exec option in §205 B; **no role holds it**):
+- `GET /employees/bank-change-requests` returns **only the requests the caller made**, numbers masked, `can_decide = false` (the server filters).
+- Approve and reject stay `:edit` only.
+- The Bank Detail Approvals page and its HR menu row now carry `moduleActions: ['view', 'add']`, so an `:add` holder can open them. The page says "You see only the bank-detail requests you entered".
+
+`moduleActions` is a new optional field read by `canRenderPage` (`menuCatalog.js holdsModuleGrant`) and the Sidebar's row filter: any one of the listed actions opens the page; the default is view only, so every other page is unchanged.
+
+**Not changed:** no role was granted anything. Payment enforcement (`BANK_VERIFICATION_ENFORCED`) does not exist yet and stays off until management names the payday owner and HR has corrected and independently approved the relevant details. No live employee or bank row was written: after the tests there are 0 requests and 0 verified rows.
+
+**Files:**
+- Backend: `src/employees/{bankChange.service.js, employee.controller.js, employee.routes.js}`, `src/services/WorkflowNotificationService.js` (verified wording), the migration.
+- Frontend: `features/employees/pages/AddEmployee.jsx` (Request verification), `features/hr/pages/BankChangeApprovals.jsx`, `config/{menuCatalog.js, routes.jsx}`, `components/Sidebar.jsx`.
+- Tests: backend `integration.employeeBankDetails.test.js` (+5: invalid / missing refused, grant and company scope, maker ≠ checker with stamp only and Accounts after approval, changed-since refused, own-only list); frontend `bankChangeApprovals.test.jsx` (+2), `addEmployeeBankRequired.test.jsx` (+2).
+
+**Manual test**
+1. On a *test* employee with valid but unverified details: Edit Employee → Bank Details → Request verification. The dialog confirms and nothing on the record changes.
+2. As the same HR user, Bank Detail Approvals shows the row with no Approve button. As a second HR user, approve it: the record is stamped and Finance gets "verified … as they are on record".
+3. Request verification on an employee with invalid details: refused with "Correct them on Edit Employee instead".
+
+---
+
+## §207 — Employee Records: the documents register is HR's; own documents live only in the Self Service vault (2026-10-29)
+
+**Why:** HR → Employee Records opened on the Employee Documents tab for every HR-menu role. For anyone without `employee_documents` (employee, manager, payroll_admin, …) the tab called the same `GET /self-service/documents` as Self Service → Document Vault and showed the same rows: their own documents, twice, under two names. Nothing leaked, because the server already scoped the list (§201/§202). The duplication was in the navigation.
+
+**Decisions**
+
+| Function | Page / API | Decision | Reason |
+|---|---|---|---|
+| Employee Documents | `EmployeeDocuments` → `/self-service/documents` | kept, **HR register only**: route `module: 'employee_documents'` | lists documents across employees; verify/reject, expiry filters, "Export filtered". The route gate also hides the hub tab (TabHub checks the tab page's module) and refuses `/EmployeeDocuments` by URL. Admins pass, as for every module route. |
+| Document Vault | Self Service tab → same API | kept, the one place for one's **own** documents | ownership is server-side: `resolveEmployeeFor`/`ownEmployeeId`, company-scoped. |
+| HR Documents | `Downloads` → `/hr/downloads` (`hr_downloads`) | kept | company-wide forms and templates (title, category, file, visible_to, download count). Not employee records, so no duplication with Employee Documents. |
+| Policies | `Policies` → `/hr/policies` | kept | its own workflow: publish, activate, acknowledgements, reminders. |
+| Asset Management | `EmployeeAssets` → `/employee-assets` | kept | allocation and return of company assets. |
+| e-Signatures → Document Vault | `DocumentMaster` | unchanged | the company document register; shares the label only (§201). |
+
+No sidebar row was duplicated: each of the four pages is one tab of Employee Records, and their `inHub` rows are not drawn. No route, page, table or document row was removed. The seed-looking and expired documents in the register were not touched.
+
+**Other entry points:** Workforce Analytics' "Employee Documents" card now asks for `employee_documents:view` (it had no gate and would have dead-ended). `EmployeeDocuments` left `EMPLOYEE_SELF_SERVICE_PAGES` (`menuCatalog.js`); the employee keeps Assets, Policies, HR Documents and Self Service.
+
+**Permissions enforced (server, unchanged from §202):** list/upload/verify/reject/delete of a colleague's document = `employee_documents` view/add/edit/delete, same company (another company's employee → 404); never verify one's own; files via `/files/<name>` for the owner or `employee_documents:view` in the company, GET and HEAD alike. The export is built from the rows the server returned, so it can never contain more than the list.
+
+**Not changed (decision needed):** ✅ Fixed in §208 — the tile is drawn only for `employee_documents:view`. Was: the Employees Dashboard (`EmployeesDashboard`, gated on `employees:view`, which managers hold) has a "Documents" Needs-attention tile that opens `EmployeeDocuments`. A viewer without `employee_documents` now lands on Access Denied from it. Hiding the tile needs a dashboard change, and dashboards are a locked area, so it waits for instruction.
+
+**Files:** `frontend/src/config/routes.jsx`, `frontend/src/config/menuCatalog.js`, `frontend/src/features/hr/pages/EmployeeReports.jsx`. Tests: `frontend/src/__tests__/employeeRecords.documentsAccess.test.jsx` (new); fixtures in `workforceAnalytics.{page,exports}.test.jsx` now carry the grant; backend `integration.selfServiceRecordsAccess.test.js` (ownership, HR grants, cross-company, files) re-run.
+
+**Manual test**
+1. As an employee: HR → Employee Records shows Asset Management, Policies and HR Documents, with no Employee Documents tab. `/EmployeeDocuments` → Access Denied. Self Service → Document Vault lists your own documents.
+2. As hr_manager: the Employee Documents tab opens first, with the employee filter, Verify and Export filtered.
+3. As payroll_admin: no Employee Documents tab, and the Workforce Analytics documents card is gone.
+
+---
+
+## §208 — Employees Dashboard Documents tile follows employee_documents; HR Documents refuse a login without a company and credit the uploader's employee record (2026-10-29)
+
+**1. Documents tile.** The Employees Dashboard (`EmployeesDashboard`, route gate `employees:view`) has a "Documents" tile in Needs attention. It opens HR's register (`EmployeeDocuments`, gated on `employee_documents` since §207). A manager holds `employees:view` but not `employee_documents`, so the tile led them to Access Denied. The tile is now drawn only for `employee_documents:view` (admins pass, as `hasPermission` does for them). Nothing else on the dashboard changed: no layout, style or other tile, and no grant.
+
+**2. HR Documents company scope.** `/hr/downloads` (list, create, edit, download count, delete) read the company from `req.scope` and filtered with `($1::int IS NULL OR company_id = $1)`. A login with no company context, including a Super Admin with no company (global scope), could therefore read, edit, count and delete every company's forms, and could create forms with no company. `GET /home/resources` lists the same table with the same filter.
+- All five endpoints resolve the company with `companyOf(req)`. With none, they answer **403 `No company context for this login`** before any SQL runs. The SQL is now plain `company_id = $n`.
+- `GET /home/resources` refuses the same way. (No screen calls it today.)
+- `/downloads/:id/increment` now answers 404 for a row outside the company. It used to answer 200 and change nothing. The page ignores the result.
+- `captureBefore` may still read the row for a refused request. The audit layer records only 2xx responses, so nothing reaches the log.
+- **Effect:** a company-less login, Super Admin included, no longer sees HR Documents. Live data: all 5 `hr_downloads` rows belong to company 1, and none were changed.
+
+**3. Who created a form (`created_by`).** `POST /hr/downloads` used to write `req.user.userId` (a users.id) into `created_by`, which references `employees(id)`. Creating a form failed with a 500 (FK violation) when the user's id was not also an employee id; when it was, the form was credited to whichever employee had that number.
+- `created_by` is now the caller's employees.id from `employeeOf()` (`shared/scope.js`). The employee must belong to the company the form is written to.
+- A login with no linked employee, or linked to another company's employee, gets **403 `No employee record is linked to this account`** and no row is created. The company check (403 without a company) still runs first.
+- `company_id` and `created_by` in the request body are ignored.
+- **Effect:** a Super Admin or service login with no employee record can no longer add HR Documents; an HR person with an employee record does it.
+- The 5 live rows keep their stored `created_by` values (42, 29, 34, 41, 40), which may be users.ids. They were not re-attributed.
+
+**Files:** `frontend/src/features/employees/pages/EmployeesDashboard.jsx`, `backend/src/modules/hr/hr.routes.js`, `backend/src/home/home.controller.js`. Tests: `frontend/src/__tests__/probationWindows.test.jsx` (Documents tile, with and without the grant), `backend/src/__tests__/integration.hrDownloadsCompanyScope.test.js` (new, real DB: two throwaway companies, synthetic employees and two company-less logins; permitted create credited to the employee id, which differs from the users.id; create refused with no linked or another-company employee; permitted list, edit, count and delete; cross-company 404 with the row unchanged; 403 on all six endpoints for hr_manager and super_admin without a company).
+
+**Manual test**
+1. As a manager: Employees Dashboard shows no Documents tile; the other tiles are unchanged. As hr_manager, the tile opens Employee Documents.
+2. As an HR user of company 1: HR → Employee Records → HR Documents lists the forms as before.
+3. As a login without a company: HR Documents shows the load error, and `GET /api/v1/hr/downloads` → 403.
+
+## §209 — Succession Center: explicit `succession` permission, company scope fails closed, every assessment change kept in history, neutral 1×1 label, no automatic assessments (2026-10-29)
+
+Phase 1 of the succession review: security and correctness only. Phase 2, deciding how test and demo employees are told apart from real ones, is **not implemented** and is waiting for approval (see "Open decision" below). No employee row and no existing succession row was changed.
+
+**1. Who can open it: the `succession` permission.** `succession.routes.js` used to check two role lists against the single `req.user.role`. Three problems followed:
+- A user's non-primary roles were ignored.
+- The live `hr` role was in neither list, so HR got 403 everywhere.
+- `manager` and `department_head` could read every colleague's performance, potential and flight-risk ratings company-wide.
+
+Migration `20261029000004` adds the matrix module `succession` and gives every role a row:
+
+| Role | Grant |
+|---|---|
+| super_admin, admin, hr, hr_manager | view, add, edit, delete, export |
+| every other role (manager, department_head, hr_exec, employee, …) | none |
+
+- **Routes:** reads need `view`. Writes need `add` (POST), `edit` (PUT/PATCH) or `delete` (DELETE). `?format=csv` on a report also needs `export`. All checks go through `requirePermission`, which takes the union of every role the user holds and fails closed.
+- **Turning it on for someone else:** grant `succession` in Roles Setup. That is how the module is enabled for a leadership role when Manifest is ready. Two limits apply:
+  - `manager` keeps its scoped HR menu (`MANAGER_HR_SCOPED_PAGES`), so a grant alone gives a manager API access but not the menu row.
+  - A custom role with no section allowlist sees the row as soon as it holds the grant.
+- **Frontend:** the HR → Lifecycle row "Succession Center" and the seven succession routes (`SuccessionCenter`, `SuccessionPlanning`, `LeadershipPipeline`, `DevelopmentPlans`, `EmployeeSuccessionPools`, `SuccessionReports`, `SuccessionSettings`) carry `module: 'succession'`. Without the grant, Sidebar drops the row and Layout shows Unauthorized for the URL. Before this, the row had no `module`, so every holder of the HR section could see it.
+- **Effect on live logins (company 1):** `hr@manifest.in` can now open the module; before, the backend refused it. `admin@` and `superadmin@` are unchanged. Employee logins never had access and still don't.
+
+**2. Company scope fails closed.** A router-level guard answers **403 `Succession data needs a company — this login has none`** before any SQL runs. Before, a login with no company, including a global-scope Super Admin, reached `cidClause(null)`, which added no filter at all. `cidClause` now throws if it is ever reached without a company.
+
+**3. Company isolation.** Ids taken from the path or the body are now checked against the caller's company:
+
+| Endpoint | Before | Now |
+|---|---|---|
+| `GET` / `PUT /critical-roles/:id/candidates` | Keyed on the role id alone. The PUT deleted another company's succession plan. | 404 unless the role is the caller's. Every candidate must be the caller's employee (400). Delete and insert are scoped to the company. |
+| `GET` / `POST` / `DELETE /pools/:id/members…`, `DELETE /pools/:id` | Keyed on the pool id. Deleting a pool emptied the membership before checking the company. | 404 unless the pool is the caller's. An added member must be the caller's employee. |
+| `PATCH /alerts/:id/read` | Marked any company's alert as read. | Scoped; 404 otherwise. |
+| `/development-plans/:id/actions…` (POST/PATCH/DELETE) | Keyed on the plan id; any company could edit another's actions and progress. | 404 unless the plan is the caller's. The action owner must be the caller's employee. |
+| `GET /development-plans/:id` mentors | Unscoped. | `ma.company_id` filter. |
+| `POST /assessments`, `POST /assessments/sync-from-performance` | `talent_assessments` is UNIQUE (employee_id) across all companies, so `ON CONFLICT … DO UPDATE` could overwrite another company's assessment. The history snapshot was keyed on the employee alone. | The employee must be the caller's (400). The upsert's DO UPDATE is limited to the caller's row (409 if the existing row belongs to another company). The snapshot is scoped to the company. |
+| `POST` / `PATCH /critical-roles` holder; `POST /pipeline/entries`; `POST /development-plans`; `POST /mentoring` | Referenced employees, levels, roles and plans were not checked. | Each must be the caller's: 400 otherwise. Pipeline levels may also be shared defaults (NULL company). |
+| `PATCH /pipeline/levels/:id` | Could edit a shared (NULL-company) default level. | Only the caller's own levels. Live: all 5 levels belong to company 1, so nothing changes in practice. |
+| Report subqueries (`successor_to_roles`, `succession_roles`, `active_plans`) | Could pick up another company's roles or plans. | Same-company only. |
+
+**4. Assessment history.** `talent_assessment_history` gains three nullable columns:
+- `change_action`: `edited`, `deleted`, `reassessed`, `performance_sync` or `performance_review`
+- `changed_by_user_id`: the users.id of whoever made the change
+- `assessment_id`
+
+Before this, only a re-assessment through POST kept history. `PATCH` overwrote the row in place, and `DELETE` left no trace. Now every change copies the version it replaces into history first, in the same transaction:
+- `PATCH /assessments/:id`
+- `DELETE /assessments/:id` (the deleted rating stays readable through `GET /assessments/:employeeId/history`)
+- `POST /assessments` when it replaces an existing row
+- `sync-from-performance`
+- the performance-review finalize sync in `performance.routes.js`
+
+The finalize sync also updates only the same company's assessment now. On a history row, `assessed_by` is the assessor of that older version, and the history endpoint adds `changed_by_name` for whoever made the change. The 5 existing history rows were not altered: their action and actor were never recorded and are not guessed now. `PUT /critical-roles/:id/candidates` now records the whole previous slate as its audit before-image. `captureBefore` used to record an unrelated plan row whose id happened to equal the role id.
+
+**5. Neutral label.** The low-performance / low-potential cell is now labelled **"Low Performance / Low Potential"** in three places, replacing "Deadwood":
+- the nine-box cell labels (`CELL_LABELS`)
+- the `quadrant` column of `/reports/nine-box-summary`
+- the nine-box UI (`SuccessionPlanning.jsx`)
+
+The label is computed from the scores and never stored, so no stored value changed.
+
+**6. No automatic assessments.** The import-time `RUN_SUCCESSION_SEED` block is removed. It used to give the first 12 employees of the whole table made-up performance, potential, flight-risk and readiness ratings, real people included. Ratings are now written only by authorised requests. The 5 existing rows noted "Auto-generated seed assessment" (company 1, ids 1, 2, 4, 5, 6) are **kept as they are**. Whether to keep, re-assess or retire them is HR's decision.
+
+**Phase 2, employee classification (done 2026-10-29).** The `employees` table had no authoritative test flag: status, names and scores are not evidence, and the seed manifest created no employees.
+
+- **The flag:** migration `20261029000006` adds `employees.is_test BOOLEAN NOT NULL DEFAULT false`, in the same shape as `payroll_runs.is_test`.
+  - It is set only for employees the user named. In Manifest that is **EMP005 (id 5) and EMP006 (id 6)**, set by a guarded data step with backup, checksum and audit entries `audit_logs` 176599 / 176600.
+  - It is not set by the migration, because ids differ between databases.
+  - It is not in the employee update allowlists, so the employee API cannot set it.
+- **Scope, user decision: Succession only.** `succession.routes.js` `notTest(col)` / `NOT e.is_test`.
+  - **Left out:**
+    - grids: assessments, nine-box, candidates, pool members, pipeline entries, development plans, mentoring;
+    - counts: candidate counts, pool member counts, every dashboard figure, bench strength;
+    - all six reports and their CSV exports.
+  - **Still readable by id:** a flagged employee's assessment history and a development plan's detail page (audit and detail views).
+  - **Alerts** are per role, not per employee, and unchanged.
+  - **Writes:** new assessments, syncs, candidates, role holders, pipeline entries, plans, action owners, mentoring and pool members for a flagged employee → **400 `TEST_EMPLOYEE`**.
+  - **Stored rows are kept:** `PUT /critical-roles/:id/candidates` no longer deletes a flagged employee's hidden candidacy when it replaces the slate.
+- **Nothing else reads the column.** The other `is_test` uses are on `payroll_runs`, `payroll_loans` and `payroll_arrears`. All are alias-qualified or single-table, so none became ambiguous.
+- **Missing employee:** rows that point at a missing employee (employee_id 4) behave exactly as before (`NOT EXISTS`). They are not deleted.
+
+**Performance-review finalize: HR reviewer fixed (2026-10-29).** `POST /performance/reviews/:id/finalize` used to write the caller's users.id into `performance_reviews.hr_reviewer_id`, which references `employees(id)`. Finalize failed with a 500 unless an employees row happened to carry that number, and then it named the wrong person. It now stores the caller's linked employee (`employeeOf()`, i.e. `users.employee_id`), or NULL for a login with no employee record such as `admin@`. The login itself is still the actor in `audit_logs` and in `talent_assessment_history.changed_by_user_id`. Existing reviews were not touched.
+
+**Performance-review manager submit: manager fixed (2026-10-29).** `POST /performance/reviews/:id/manager-review` wrote users.id into `performance_reviews.manager_id`, which references `employees(id)` and is read as the reviewing manager (`manager_name`, the manager filter). It now stores `employeeOf()`. A login with no linked employee gets **400 `NO_LINKED_EMPLOYEE`** before anything is written. A manager review needs a manager of record, unlike finalize, where the HR reviewer is optional. Role check, company filter (404 for another company's review) and the absence of a status precondition are unchanged.
+
+**Performance-review manager submit: decimal ratings, one transaction (2026-10-29).** Before this, every manager review with a `final_rating` returned a 500: the sync passed the stored numeric (`"4.0"`) into the INTEGER `talent_assessments.performance_score`. The review had already been saved outside any transaction, and the sync was not company-guarded and wrote no history.
+
+- **Scoring policy (user decision, 2026-10-29): decimals are kept, never rounded.** Review ratings carry decimals: `final_rating` / `manager_rating` are numeric(3,1), `calibrated_rating` is numeric(3,2), and the live reviews hold 3.5, 3.9 and 4.3. Migration `20261029000005` changes `performance_score` to **numeric(3,2)** in `talent_assessments`, `talent_assessment_history` and `succession_perf_sync_log`.
+  - numeric(3,2) rather than (3,1), so finalize's 2-decimal calibrated rating also fits exactly.
+  - The 1–5 CHECKs are kept, and existing values converted exactly (3 → 3.00). The migration was applied by the dev server on save, and a full before/after snapshot of the four tables compared identical.
+  - `down()` refuses while any fractional score exists.
+  - The 9-box bands (`scoreToAxis`, the report CASE) are ranges, so 3.5 falls in the top band.
+- **Validation** (`shared/ratings.js` `ratingProblem`), because PostgreSQL silently rounds extra decimals:
+
+  | Route | Fields | Allowed | Otherwise |
+  |---|---|---|---|
+  | manager-review | `manager_rating`, `final_rating` | 1–5, at most 1 decimal | 400 `INVALID_RATING` with `field` |
+  | succession `POST /assessments`, `PATCH /assessments/:id`, `sync-from-performance` | `performance_score` | 1–5, at most 2 decimals | 400 |
+
+- **Atomic:** review update, history snapshot and assessment upsert run on one client in one transaction (`syncReviewToAssessment`, which finalize now shares). Any failure rolls the review back. If the existing assessment row belongs to another company, nothing changes and the answer is **409 `ASSESSMENT_OTHER_COMPANY`**.
+- **History:** the replaced assessment is copied with `change_action = 'performance_review'` and `changed_by_user_id` = the manager's users.id, the same convention as finalize.
+- **Frontend:** `PerformanceReviews.jsx` shows the server's message for a 4xx (`features/performance/submitErrorMessage.js`). For a 5xx or a network error it keeps "Failed to submit manager review", since that text can be raw internals. The succession edit form converts the score to a number, so the whole-number buttons still highlight; a fractional score highlights none and is saved back unchanged.
+- **Display:** pg returns numeric as a padded string (`"3.00"`). Succession screens format the performance score with `fmtScore` (`frontend/src/utils/format.js`): `3.00` → `3/5`, `3.50` → `3.5/5`, `3.75` → `3.75/5`, `4.30` → `4.3/5`.
+  - It drops trailing zeros only and never rounds; stored values are unchanged.
+  - Used in: the score bars in `SuccessionPlanning.jsx`, plus the Perf cells in Succession Planning, Talent Pools, Leadership Pipeline and Succession Reports.
+- **Finalize, same rules (2026-10-29):** `POST /reviews/:id/finalize` now checks `calibrated_rating` before any write: 1–5, at most 2 decimals (its column is numeric(3,2)). Otherwise it answers 400 `INVALID_RATING` with `field: 'calibrated_rating'`.
+  - An absent or empty rating still finalizes and syncs `final_rating` instead.
+  - The review update, history snapshot and assessment upsert run in one transaction. An assessment held by another company → 409 `ASSESSMENT_OTHER_COMPANY`, and the review is not finalized.
+  - The audit entry is written after commit. `hr_reviewer_id` is the linked employee or NULL, as before.
+- **Self-review, same rule (2026-10-29):** `POST /reviews/:id/self-review` checks `self_rating` before the review is read or written: 1–5, at most **1** decimal (its column is numeric(3,1), so a second decimal would be rounded). Otherwise it answers 400 `INVALID_RATING` with `field: 'self_rating'`.
+  - An absent rating is still accepted. An empty string is refused rather than causing a 500.
+  - Nothing else changed. The self-review still does not sync to the talent assessment.
+- **Self-review ownership (2026-10-29):** for an `employee`-role caller, the review's `employee_id` is now compared with the caller's linked employee (`employeeOf()`), where it used to be compared with users.id.
+  - The old check refused the real owner, and let a login whose users.id happened to equal the reviewed employee's id submit that person's review.
+  - No linked employee → **403 `NO_LINKED_EMPLOYEE`**. Someone else's review → **403 `NOT_REVIEW_OWNER`**. Both responses carry `message` so the screen shows it.
+  - The UPDATE is now company-scoped like the lookup.
+  - **Owner-only for every role (2026-10-29, later the same day):** HR, managers and admins used to skip the check. They now get the same 403s. HR corrects a review through `PUT /reviews/:id`.
+  - The self-assessment drawer used to swallow every error and say "submitted successfully". It now shows the error and stays open.
+- **`PUT /reviews/:id` — HR correction (2026-10-29).** No screen or test called it. It used to write any listed field, `status` included, with no validation and no company filter (`WHERE id = $1`). Rules now:
+
+  | Rule | Response |
+  |---|---|
+  | HR+ only (`isHRPlus`, unchanged) | 403 |
+  | A company is required (fail closed) | 403 |
+  | Lookup `FOR UPDATE` and update by `id AND company_id`, soft-deleted excluded | 404 |
+  | `status` is not editable: it moves only through self-review / manager-review / finalize | 400 `WORKFLOW_FIELD` |
+  | A `completed` review is locked: finalize already synced its rating to the talent assessment | 409 `REVIEW_COMPLETED` |
+  | Numbers checked against their columns before any write: `self/manager/final_rating` 1–5 with 1 decimal; `calibrated_rating` 1–5 with 2 decimals; `kra_score`, `behavioral_score`, `salary_revision_percentage` 0–100 with 2 decimals (the form's 0–100) | 400 `INVALID_RATING` with `field` |
+  | Text fields must be text; `review_period` / `review_type` at most 50 characters; `promotion_recommendation` must be a boolean | 400 `INVALID_FIELD` |
+  | No editable field sent (it used to answer 200 with null) | 400 `NO_FIELDS` |
+
+  - Audit: the mount's `auditMutations('performance')` logs the edit, and `captureBefore('performance_reviews')` now supplies the previous version.
+  - It does not sync to succession. The rating is synced when the review is finalized.
+  - `performanceRepository.updateReview` now requires a company and no longer lists `status`.
+- **Review role checks span every role held (2026-10-29).** `isHRPlus` / `isManagerPlus` in `performance.routes.js` read only the primary `req.user.role`, so a secondary `hr` role was ignored and `hr_manager` was in neither list. They now use `hasRole()` over `user_roles`:
+  - HR+ = `hr`, `hr_manager`, `admin`, `super_admin`.
+  - Manager+ = those plus `manager`.
+  - `hr_exec`, `department_head` and `employee` are still refused. Company scoping is unchanged: a secondary HR role still gets 404 for another company's review.
+  - `calibration.routes.js` now uses the same multi-role check (see below).
+- **Review reads by an employee (2026-10-29).** `GET /review/current` and `GET /history` (the Performance Reviews page), plus `GET /reviews` and `GET /reviews/:id`, used to filter an employee by users.id, which is not an employees.id.
+  - Your own review was not found, and a review of an employee whose id equalled your users.id was returned instead.
+  - `/review/current` and `/reviews` also dropped the filter when it was empty, so they returned the company's latest or every review.
+
+  Now:
+  - All four use `employeeOf()`. `/review/current` applies it to every role, since it is "my review"; the other three apply it to non-managers.
+  - With no linked employee: `/review/current` → `null`, `/history` and `/reviews` → `[]`, `/reviews/:id` → 403.
+  - `?employee_id=` cannot widen an employee's list. Managers and HR still read company-wide, and company scoping is unchanged.
+- **Calibration sessions (2026-10-29).**
+  - `isHR` / `isMgr` span every role held: HR = `hr`, `hr_manager`, `admin`, `super_admin`, and reads also allow `manager`.
+  - `POST /sessions` stores `created_by` = the linked employee (an FK to employees; it used to get users.id), or NULL without one.
+  - `POST /sessions` and `/sessions/:id/finalize` need a company (403).
+  - Finalize returns the session from its own company-scoped `UPDATE … RETURNING`, and 404 if none. Its follow-up read used to have no company filter and could return another company's session.
+- **Calibration adjustment (`POST /performance/calibration/sessions/:id/adjust`, 2026-10-29).** No screen calls it. It failed on every call: its `ON CONFLICT (session_id, review_id)` has no matching unique index. Beyond that:
+  - it wrote users.id into `adjusted_by` and `hr_reviewer_id`, both of which reference employees;
+  - it updated the review by `id` alone, from any company;
+  - it never checked that the employee was the review's.
+
+  Now:
+  - A company is required (403).
+  - The session is locked `FOR UPDATE` within the company (404), and a `completed` session is refused (409 `SESSION_COMPLETED`).
+  - The review is locked within the company (404), its employee must match (400 `EMPLOYEE_MISMATCH`), and a `completed` review is refused (409 `REVIEW_COMPLETED`, the same lock as `PUT`).
+  - Ratings are numeric(3,2): 1–5 with 2 decimals, otherwise 400 `INVALID_RATING`.
+  - `adjusted_by` / `hr_reviewer_id` hold the linked employee (NULL when there is none, as in finalize).
+  - The adjustment is updated or inserted by hand under the session lock. Everything is one transaction, so a failed write-back leaves neither the review nor an adjustment row.
+  - The review's assessment is not synced here; finalize syncs it.
+
+**Files:**
+- `backend/src/modules/hr/succession.routes.js`
+- `backend/src/modules/performance/routes/performance.routes.js` (finalize sync only)
+- `backend/src/database/migrations/20261029000004_succession_permissions_and_history.js` (new)
+- `frontend/src/config/routes.jsx`
+- `frontend/src/features/hr/pages/SuccessionPlanning.jsx`
+
+**Tests:**
+- `backend/src/__tests__/integration.successionSecurity.test.js` (new, real DB). Uses two throwaway companies with synthetic employees and succession rows. Covers:
+  - permission per role and for a multi-role user
+  - the 403 without a company
+  - cross-company 404s and 400s with the other company's rows unchanged
+  - a history row for edit, re-assessment, deletion and the performance sync
+  - reads and the router import creating nothing
+  - the new label
+- `frontend/src/__tests__/succession.menuAccess.test.jsx` and `succession.routeAccess.test.jsx` (new): the menu row and the URL, with and without `succession:view`.
+
+**Manual test**
+1. As `hr@manifest.in`: HR → Lifecycle → Succession Center opens, and the nine-box shows the 1×1 cell as "Low Performance / Low Potential".
+2. As an employee or manager login: there is no Succession Center row; `/SuccessionCenter` shows Unauthorized; `GET /api/v1/succession/assessments` → 403.
+3. As HR, edit an assessment, then open its history: the previous version is listed with action "edited" and your name.
+
+
+## §210 — Succession Center end-to-end: Planning tab clickable again, saved settings persist and take effect, coverage reads Ready Now / Developing / No Successor, 9-Box Summary matches the grid, plan progress follows its actions, exports server-only (2026-10-30)
+
+A functional pass over all six Succession Center sections after §209. Each defect below was reproduced (in Chromium, through the API, or against the live data) and is pinned by a regression test. No employee, succession or settings row in Manifest was changed.
+
+**Verified connections (unchanged).** One menu row, HR → Lifecycle → **Succession Center** (`SuccessionCenter`, `module: 'succession'`), hosts six tabs. Each tab is its own page, also routable on its own:
+
+| Tab (`?tab=`) | Page | API (`/api/v1/succession/…`) |
+|---|---|---|
+| Planning (`planning`): sub-tabs 9-Box Grid, Critical Roles, Bench Strength | `SuccessionPlanning.jsx` | `nine-box`, `critical-roles` (+ `/:id/candidates`), `dashboard`, `assessments` (+ `/:employeeId/history`), `alerts`, `alerts/:id/read`, `reports/bench-strength?format=csv` |
+| Leadership Pipeline (`pipeline`) | `LeadershipPipeline.jsx` | `pipeline/levels`, `pipeline/entries` |
+| Development Plans (`plans`): All Plans, plan detail, Mentoring | `DevelopmentPlans.jsx` | `development-plans` (+ `/:id`, `/:id/actions…`), `mentoring` |
+| Talent Pools (`pools`) | `EmployeeSuccessionPools.jsx` | `pools` (+ `/:id/members…`) |
+| Reports (`reports`): Bench Strength, Talent Risk, 9-Box Summary, Development Progress, Readiness Distribution, Leadership Pipeline | `SuccessionReports.jsx` | `reports/<id>` (`?format=csv` needs `succession:export`), `settings` |
+| Settings (`settings`) | `SuccessionSettings.jsx` | `settings` (GET / PUT) |
+
+The other dependencies are the employee picker (`GET /employees?status=active`), departments (`GET /admin/config/departments`), the role registry (`useRoleCatalog`) and the performance-review finalize sync (§209).
+
+**1. Planning (and every tab) stopped responding after a scroll.** `SuccessionCenter` mounts six full `PageShell` pages directly, without the host-side `.plh-tabpanel` guard. Once a tab's body scrolled, its sticky, opaque dock froze over the hub's tab strip. At 1366×768 and 1280×720, `elementFromPoint` at the centre of all six tab buttons returned the child's `.plh-hero` on Leadership Pipeline and Talent Pools, and on Settings at 1440×900. A click on Planning therefore landed on the child's hero and did nothing until the user scrolled back up. This is the nested-shell trap from §148.
+- **Fix:** the body is wrapped in `<div className="plh-tabpanel" role="tabpanel">`, the guard `TabHub` uses.
+- The tab buttons now show which tab is selected (`role="tab"`, `aria-selected`, ghost style for the others). The hub had computed the selected tab and then never used it, so all six buttons looked identical.
+- **Verified:** at three viewports, after scrolling, all six buttons are on top and Planning opens Succession Planning from every tab. It also works after navigating away and back. No console errors and no failed requests.
+
+**2. "Covered" with 0% bench strength: what the screens said and what they meant.**
+- **What was measured:**
+  - Bench strength = critical roles with a **ready-now** successor ÷ all critical roles.
+  - The Bench Strength report labelled a role **"Covered"** if it had **any** successor at any readiness.
+  - The donut caption said "critical roles covered" while showing the ready-now share.
+- **What Manifest holds:** all 5 `succession_plans` rows have `readiness_level = 'SEED readiness level'`. That value is outside the vocabulary and is counted in no readiness column. Every role had one visible successor, so every role read "Covered", while ready-now, 1–2 years and 3–5 years were all 0 and the bench was 0%.
+- **Fix (existing rule, no new one):** the report now uses the Critical Roles tab's own three states:
+  - **Ready Now**: `has_ready_now`
+  - **Developing**: `has_any_successor`
+  - **No Successor**: neither
+- The donut caption reads "with a ready-now successor". Live Manifest now shows 4 roles, 0 ready, bench 0%, all four "Developing".
+- **Ambiguity documented, not guessed:** a successor whose readiness is outside the vocabulary counts as a successor ("Developing"), but in no readiness column. So the report's successor count can exceed ready-now + 1–2 + 3–5. The seeded rows are the only such case.
+
+**3. Readiness and the other vocabularies are enforced on write.** None of these columns has a CHECK constraint, which is how the seeder's placeholder strings got in. The API accepted any string too. Writes are now checked against the lists the screens offer; anything else gets **400 `INVALID_VALUE`** with `field`:
+- readiness: `ready-now`, `1-2-years`, `3-5-years`, `not_ready`
+- risk: `low`, `medium`, `high`
+- review frequency: `monthly`, `quarterly`, `half-yearly`, `annually`
+- plan status: `active`, `paused`, `completed`, `cancelled`
+- action status: `pending`, `in_progress`, `completed`, `cancelled`
+- mentoring status: `active`, `completed`
+
+Which writes are checked, and what else is refused:
+- **Checked:** assessments (POST / PATCH), critical-role `risk_level`, the candidate slate, pipeline entries, plan and action status, mentoring status.
+- **Integer scores:** `potential_score` and `leadership_score` must be whole numbers 1–5 (400 `INVALID_RATING`). They used to reach the CHECK and return a 500.
+- **Candidate slate:** a duplicate candidate → 400 `DUPLICATE_CANDIDATE` (it was a 500 from the unique index).
+- **Legacy values:** the edit forms re-send stored values, so a stored legacy value may be re-sent **unchanged for the same row**. HR can still save a slate or pipeline entry that holds a seeded row, but cannot write a new non-vocabulary value.
+
+**4. Settings: saved values persisted but never showed, and two were not used.**
+- **Thresholds lost on save:** the HiPo columns were created unquoted, so PostgreSQL stores them as `hipo_threshold_*`. GET returned those keys, while the screen and the no-row default use `hiPo_threshold_*`. After a reload the screen showed 4 / 3 whatever was saved, and the next save of **any** setting wrote 4 / 3 back.
+  - **Fix:** `settingsOut()` returns one shape, the camelCase keys, whether or not a row exists. PUT returns the same shape and the screen shows what was stored.
+- **Validation:** PUT checks the toggles (boolean), threshold and frequency vocabularies, HiPo thresholds (1–5 whole numbers) and `notify_roles` (a list of codes). A refusal stores nothing.
+- **Failed load:** the screen used to show the defaults as if saved, and Save overwrote the real values. Now it shows an error and offers no Save.
+- **Thresholds that did nothing:** the HiPo thresholds and the flight-risk threshold were stored and read by nothing.
+  - The dashboard's high-potential list used a fixed `potential ≥ 4`. It now applies the saved "Potential ≥ N **and** Performance ≥ M", as the Settings labels describe, and returns `hipo_thresholds`.
+  - The Talent Risk report highlighted `high` only. It now highlights rows at or above the saved threshold.
+- **Alert switches:** the zero- and single-successor switches were a `<label>` with no input, and only the 44px track was clickable. Clicking the label did nothing, and the keyboard could not reach the control. Each row is now one `role="switch"` button.
+- **What is automated and what is not:**
+
+  | Setting | Effect |
+  |---|---|
+  | Zero / single successor alert | Recorded in `succession_alerts` when a role is created, or a candidate slate is saved, with 0 / 1 candidates |
+  | HiPo thresholds | Bench Strength high-potential list |
+  | Flight risk threshold | Talent Risk highlight |
+  | Review frequency | Informational; triggers nothing |
+  | Notification recipients | Stored only; **no code sends any message** |
+
+  The page used to say these roles "receive" alerts. It now says no message is sent.
+
+**5. Alerts could not be read.** No screen called `GET /alerts` or `PATCH /alerts/:id/read`, so the banner's unread count could never go down. The banner now has **Review alerts**, which lists the unread alerts, each with **Mark read**. The count follows.
+
+**6. 9-Box Summary disagreed with the grid.** The report's SQL CASE had no branch for **Inconsistent Players** (2_1) or **Underperformers** (1_2). Both fell to ELSE and were reported as "Core Contributors", while the grid (`scoreToAxis` + `CELL_LABELS`) placed them correctly. The report now uses the grid's own banding. The CSV has the same columns in the same order.
+
+**7. Development-plan progress went stale.** `overall_progress` was recalculated only when an action was edited. Adding an action to a finished plan left it at 100%, and deleting one kept the old figure. `recalcPlanProgress()` now runs after every action add, edit and delete, using the existing rule (completed ÷ all actions). A plan with no actions reads 0, which is what the screens already showed for NULL. `overall_progress` on the plan PATCH must be 0–100. Mentoring `session_count` must be a whole number ≥ 0. No screen increments it; it is shown as stored.
+
+**8. "By" columns named the wrong person.** `talent_assessments.assessed_by`, `development_plans.created_by` and `employee_talent_pools.created_by` are read by joining **employees**, but were written with **users.id**. Live assessment 3 holds 41 (superadmin@pulse.com, which has no employee record). They now store `employeeOf(req)`, or NULL for a login without one. Two columns keep their meaning, users.id, because they have no FK and no reader: `succession_perf_sync_log.synced_by` and pipeline `created_by` / pool-member `added_by`. **Existing values were not changed.**
+
+**9. Other fixes.**
+- **Exports are server-only.** Reports' Export CSV used to rebuild the file in the browser whenever the server refused, so a user without `succession:export` still got the file, without the formula guard. Planning's Bench Strength export always built it in the browser. Both now go through `features/hr/utils/successionCsv.js` (`format=csv`), show the server's reason on refusal, and the Reports button is hidden without the export grant.
+- **Errors are visible.** The dashboard's `Promise.allSettled` turned any failed query into a 0. One failure is now a 500, and Planning shows an error banner instead of silent zeros.
+- **Deletes report missing rows.** Deleting a pipeline entry, plan, action, mentoring assignment or pool member that doesn't exist now answers 404; it used to answer 200 "Deleted".
+
+**Security and isolation.** §209's suite (150 tests) still passes unchanged. That covers permission per role and multi-role, the 403 without a company, and every cross-company id. The new endpoint uses are covered too: one company's settings never reach another, and another company's alert gives 404.
+
+**Seed and test data, provenance (not changed).**
+- **Seeder rows:** the 2026-08-20 empty-table seeder (`scripts/seed/seed-empty-tables.mjs`, rollback manifest `scripts/seed/_manifest.json`) inserted ids 21–25 in each of: `succession_plans`, `development_plans`, `development_actions`, `employee_talent_pools`, `leadership_pipeline_levels`, `leadership_pipeline_entries`, `mentoring_assignments` and `succession_alerts`. That is where the "SEED …" names, readiness values and alert texts come from.
+- **Employees they point at:** EMP001–003 (real), employee 4 (does not exist) and EMP005 "Test1 sdas" (flagged `is_test`, §209, so hidden).
+- **Critical roles 1–4** were created 2026-04-05 and are not in the manifest.
+- **Leaked fixtures:** the §209 suite leaked 3 `leadership_pipeline_levels` ('ZZSUCC L') and 6 entries under deleted companies 15593 / 15595 / 15597. They are invisible to every login. Its sweep now deletes pipeline rows and settings.
+
+**Open decisions (business input).**
+- Remove the seeder's succession rows? (`node scripts/seed/unseed.mjs --only=<tables>`)
+- Delete the 9 leaked fixture rows?
+- What should a successor with a non-vocabulary readiness count as? (Item 2.)
+- Should manual `overall_progress` be allowed on a plan that has actions?
+- Should notification recipients ever send?
+
+**Files:**
+- Backend: `backend/src/modules/hr/succession.routes.js`
+- Frontend:
+  - `frontend/src/features/hr/pages/SuccessionCenter.jsx`
+  - `SuccessionPlanning.jsx`, `SuccessionReports.jsx`, `SuccessionSettings.jsx`
+  - `frontend/src/features/hr/utils/successionCsv.js` (new)
+- No migration.
+
+**Tests:**
+- `backend/src/__tests__/integration.successionFunctional.test.js` (new, 34 tests, real DB, two throwaway companies)
+- `frontend/src/__tests__/successionCenter.shell.test.jsx` (new, 3 tests; mutation-checked: it fails without `.plh-tabpanel`)
+- `frontend/src/__tests__/succession.settingsReports.test.jsx` (new, 10 tests)
+- `integration.successionSecurity.test.js`: sweep fixed. Its failure-injection pattern no longer reads as an unscoped UPDATE to `testCleanupScoping`.
+- `succession.scoreDisplay.test.jsx`: now mocks `useAuth`.
+
+**Manual test (as `hr@manifest.in`):**
+1. Open Succession Center, then Talent Pools, and scroll down. Click Planning: Succession Planning opens. Repeat from each tab.
+2. Settings: set HiPo to 5 / 2 and frequency to Annually. Click the "Single Successor Alert" text; it toggles. Save, then reload: the values are shown. Change only the flight-risk threshold and save: the HiPo values are unchanged.
+3. Planning → Bench Strength: the donut says "with a ready-now successor", and the high-potential heading shows the saved thresholds. Click **Review alerts** and **Mark read**: the count drops by one.
+4. Reports → Bench Strength: no "Covered"; each role is Ready Now, Developing or No Successor. Talent Risk highlights rows at or above the threshold.
+5. In a plan, add two actions and complete one (50%). Add a third (33%). Delete it (50%).
+
+
+## §211 — Succession follow-up: Unclassified readiness, progress derived from actions, notifications informational only, leaked fixtures removed, seed-row deletion proposal (2026-10-30)
+
+These are the user-approved follow-ups to the §210 decisions. No employee, payroll or Manifest succession row was changed. One data change was made: 9 leaked fixture rows were deleted (item 4).
+
+**1. Unclassified readiness.** A successor whose stored `readiness_level` is NULL or outside `ready-now` / `1-2-years` / `3-5-years` / `not_ready` is now reported as **Unclassified**. In Manifest that is all five seeded rows ('SEED readiness level').
+- **Where it counts:** in the successor total, and in none of the readiness categories. One SQL definition, `readinessClass()` in `succession.routes.js`, feeds every count.
+- **Dashboard:** `readiness_summary` reports `unclassified` instead of the raw string.
+- **Bench Strength report:** gains `not_ready` and `ready_unclassified`. Ready Now + 1–2 + 3–5 + Not Ready + Unclassified now equals Successors for every role. The screen shows both columns.
+- **Every screen:** an unrecognised readiness reads "Unclassified", never the raw stored text. This covers the badge on Planning, Reports, Pipeline and Pools, and the Planning readiness chart. The value is deliberately kept out of the label maps, because the forms build their dropdown options from them.
+- **Coverage is unchanged:** a role whose only successors are Unclassified still reads **Developing** (it has a successor, and none is ready now).
+- **Writes:** new invalid values are still refused (400 `INVALID_VALUE`, §210). Stored values are kept, and may be re-sent unchanged, until their provenance and treatment are approved (item 5).
+
+**2. Development-plan progress.**
+
+| Plan state | Progress |
+|---|---|
+| Has actions | Always completed ÷ all actions, recalculated on every action add, edit and delete (§210). A `PATCH /development-plans/:id` that sends `overall_progress` → **409 `PROGRESS_FROM_ACTIONS`**, and nothing in that request is applied. The check is inside the UPDATE statement, so a concurrently added action cannot slip past it. Other edits (title, notes, status, dates) work as before. |
+| No actions | A manual `overall_progress` (0–100) is stored and kept. No screen sets it today; the API allows it. Once the first action is added, the derived value takes over. |
+
+If a plan's last action is deleted, its progress reads 0, after which a manual value may be set again.
+
+**3. Notifications stay informational.** Nothing sends a message, and no background job reads `notify_roles` or `review_frequency`. Settings copy:
+- the subtitle: "review frequency and recipients are for reference only";
+- Notification Recipients: "For reference only … No message is sent to them";
+- Review Frequency: "(for reference; nothing is scheduled or sent)".
+
+The §210 phrase "saved for when notifications are switched on" is removed. Alerts remain rows in `succession_alerts`, shown and marked read in the Planning banner.
+
+**4. Data: the 9 leaked fixture rows were deleted.**
+- **Rows:** `leadership_pipeline_entries` 26–31 and `leadership_pipeline_levels` 26–28 ('ZZSUCC L'). The §209 suite leaked them; its sweep was fixed in §210.
+- **Script:** `_backups/cleanup_zzsucc_pipeline_leak.mjs`. It ran as a dry run first, then for real, in one transaction that re-checked every condition and would stop on any mismatch:
+  - exactly these ids and this shape;
+  - companies 15593 / 15595 / 15597 and the six employees no longer exist;
+  - no other entry references the levels, and the only inbound FK is the entries' own level columns;
+  - no company 1 row is in the set.
+- **Audit:** `audit_logs` 179072 / 179073 (module `succession`, action `delete`, before-image in `old_data_json`).
+- **Backup:** `_backups/zzsucc_pipeline_leak_2026-10-30T05-27-08-611Z.json`, SHA-256 `8bce9a31…6525a`, owner-only ACL, with `RESTORE_zzsucc_pipeline_leak.md`.
+- **Unaffected:** company 1 still has its 5 levels and 5 entries.
+
+**5. Proposal, not executed: deleting the seeder's succession rows.** The rows are listed in `scripts/seed/_manifest.json` (2026-08-20). None was edited after seeding, and none has audit history.
+- **Excluded, as instructed:**
+  - every row that references employee 4 (it does not exist), in any employee column;
+  - the five auto-generated assessments (`talent_assessments`, which the manifest does not list).
+- **Excluded because of a dependency:** some parents would cascade to, or null, an employee-4 row.
+- `unseed.mjs` is not to be used.
+
+| Table | Delete | Keep (reason) |
+|---|---|---|
+| `succession_alerts` | 21, 22, 23, 25 | 24 (employee_id 4) |
+| `succession_plans` | 21, 22, 23, 25 | 24 (candidate 4) |
+| `mentoring_assignments` | 21, 22, 23, 25 (delete before plans so nothing is set NULL) | 24 (mentee/mentor 4) |
+| `development_actions` | 21, 22, 23, 25 | 24 (owner 4) |
+| `development_plans` | 21, 23, 25 (their actions go with them, or above) | 24 (employee 4); **22**: deleting it would cascade-delete action 24 (owner 4) and null mentoring 24's plan |
+| `employee_talent_pools` | 21, 23, 25 | 24 (created_by 4); **22**: its member is employee 4 and would be cascade-deleted |
+| `employee_pool_members` | (21,2), (23,3), (25,1). **Not in the manifest**, though the notes are the seeder's sentence bank; needs explicit approval | (22,4), (24,5) |
+| `leadership_pipeline_entries` | 21, 22, 23, 25 | 24 (employee 4) |
+| `leadership_pipeline_levels` | 21, 22, 25 | 23, 24: entry 24 points at them, and ON DELETE SET NULL would change it |
+
+- **Totals:** 29 manifest rows plus 3 unmanifested pool members. 11 seed rows stay.
+- **Effect on Manifest's screens:** CFO, VP Sales & Marketing and Production Manager → **No Successor**. Head of Engineering keeps one successor, a missing employee shown as Unclassified. Bench stays 0%. Unread alerts drop from 2 to 1.
+- **If approved:** run it the same way as item 4: one guarded transaction that re-checks every row, a JSON backup with checksum and owner-only ACL, one audit entry per table, and a restore script with a dry run. The manifest will still list the ids afterwards, so `unseed.mjs` must never be run against them.
+
+**Files:**
+- `backend/src/modules/hr/succession.routes.js`
+- `frontend/src/features/hr/pages/`: `SuccessionReports.jsx`, `SuccessionPlanning.jsx`, `SuccessionSettings.jsx`, `LeadershipPipeline.jsx`, `EmployeeSuccessionPools.jsx`
+- Tests:
+  - `integration.successionFunctional.test.js` (36)
+  - `succession.settingsReports.test.jsx` (12)
+- No migration.
+
+## §212 — Succession seed rows removed from Manifest (approved data cleanup, 2026-10-30)
+
+This executes the §211 item-5 proposal as approved: 29 seeder rows plus the three `employee_pool_members` pairs (21,2), (23,3) and (25,1). No code changed.
+
+- **Script:** `_backups/cleanup_succession_seed_21-25.mjs`. It ran as a dry run first, then for real, in one REPEATABLE READ transaction that would roll back on any mismatch. Inside that transaction it re-checked, before deleting:
+  - provenance: every target is in `scripts/seed/_manifest.json`;
+  - company 1, the 2026-08-20 creation date and no later edit;
+  - every employee and plan reference against the report, and no employee-4 reference;
+  - the inbound foreign keys;
+  - that no retained row is the child of a target;
+  - fingerprints of the unrelated tables.
+- **Deleted, in dependency order:**
+  - alerts 21, 22, 23, 25
+  - mentoring 21, 22, 23, 25
+  - actions 21, 22, 23, 25
+  - succession plans 21, 22, 23, 25
+  - pool members (21,2), (23,3), (25,1)
+  - pools 21, 23, 25
+  - development plans 21, 23, 25
+  - pipeline entries 21, 22, 23, 25
+  - pipeline levels 21, 22, 25
+
+  32 rows in all.
+- **Audit:** `audit_logs` 180161–180169, one entry per table.
+- **Backup:** `_backups/succession_seed_21-25_2026-10-30T06-13-57-671Z.json`, SHA-256 `ec248e22…dc5af9e`, owner-only.
+- **Restore:** `restore_succession_seed_21-25.mjs`, dry-run verified (all 32 rows restored exactly, then rolled back), with `RESTORE_succession_seed_21-25.md`.
+- **Correction to §211:** all five `employee_pool_members` rows **are** seed-manifest rows. §211 called the three approved pairs "not in the manifest" because the filter it used never matched that table's name; the cleanup's own guard caught it.
+- **Kept, unchanged and still linked:**
+  - alert 24
+  - succession plan 24 (candidate 4)
+  - mentoring 24 and action 24, both on plan 22
+  - development plans 22 and 24
+  - pools 22 and 24, with members (22,4) and (24,5)
+  - pipeline entry 24, which still points at levels 23 and 24
+  - levels 23 and 24
+- **Not touched** (fingerprints identical before and after): talent_assessments, their history, performance_reviews, employees, critical_roles, succession_settings, succession_perf_sync_log, calibration. Nor were the seed manifest and `unseed.mjs`.
+- **Manifest screens now:**
+  - CFO, VP Sales & Marketing and Production Manager: **No Successor**.
+  - Head of Engineering: 1 successor, the missing employee 4, Unclassified, so Developing.
+  - Bench strength 0%, zero-successor roles 3, unread alerts 1.
+
+## §213 — Probation Management and Exit Management are separate HR pages; the "Exit & Probation" hub is now Exit Management (2026-10-30)
+
+**Problem.** HR › Lifecycle had one row, **Exit & Probation** (`ExitCenter`), a `TabHub` with three tabs: Probation, Offboarding, Exit Management. Each tab drew its own hero under the hub's, so the screen showed an "Exit & Probation" banner over a "Probation Management" title, with Probation / Offboarding / Exit Management buttons. Confirming a new joiner and processing someone who is leaving were presented as one workflow.
+
+**Navigation now (HR › Lifecycle):**
+
+| Row | Page key | What it holds |
+|---|---|---|
+| Probation Management | `Probation` | Probation records, status counts, end dates, decisions/reviews, department-head assignments (DepartmentHeadsPanel), history, notification log and notify. Unchanged page, now its own row. |
+| Exit Management | `ExitCenter` (hub, retitled) | Tab **Exits & Settlement** (`ExitManagement`: Active Exits incl. initiate / withdraw resignation, F&F Calculator with approve/pay, Exit Interviews + analytics, Clearance Tracker) and tab **Offboarding Checklist** (`Offboarding`: per-employee checklist, assignee notify, complete offboarding, template config, CSV export). |
+| Succession Center | `SuccessionCenter` | unchanged |
+
+Offboarding stays a tab under Exit Management: its list is the employees who are leaving and it hands off to the exit desk ("+ Initiate Offboarding"), so it is a step of the exit workflow, not an independent module.
+
+**What changed (frontend only):**
+- `config/routes.jsx` NAV_ITEMS (HR): new visible row `Probation Management → Probation` (its `inHub: 'ExitCenter'` row removed — the visible row now carries its section); `ExitCenter` row renamed `Exit Management`. `Offboarding` and `ExitManagement` keep their `inHub: 'ExitCenter'` rows, so `getSectionForPage()` resolves exactly as before.
+- `features/hr/pages/ExitCenter.jsx`: title "Exit Management"; TABS = `exit` (ExitManagement), `offboarding` (Offboarding). Tab ids unchanged, so `?tab=exit` / `?tab=offboarding` links still work. `?tab=probation` (pre-split links) redirects to `/Probation` (same HR section, so no access change).
+- `ExitManagement.jsx` / `Offboarding.jsx` honour `embedded`: inside the hub they draw no hero (the hub's banner is the page header). Offboarding's hero actions move to a `.plh-toolbar` row when embedded; its "+ Initiate Offboarding" switches to the hub's `exit` tab when embedded and still opens `/ExitManagement` standalone.
+- `components/GlobalSearch.jsx`: label "Probation Management".
+- `tests/nav-verify/nav.json` regenerated for the HR rows, hub list and ExitCenter tab ids.
+- `__tests__/nav.hubs.test.jsx`: visible-submenu cap raised 12 → 13 (HR now has 13 visible rows).
+
+**Unchanged:** every route key (`Probation`, `ExitCenter`, `ExitManagement`, `Offboarding` all still open by direct URL, standalone pages keep their own hero), every API (`/probation*`, `/exit/*`, `/hr/offboarding*`), permissions and role visibility (the gate is the HR section allowlist; hr sees both rows, manager / employee / department_head / sales_exec are refused all four pages as before), notification targets (`probation_*` → `Probation`, `fnf_ready_for_approval` → `Offboarding`), MyProbationReviews (department heads, via Approvals).
+
+**Verified:** `__tests__/exitProbationNav.test.jsx` (new: rows, hub tabs, legacy redirect, no nested hero, Offboarding actions survive embedding); full frontend suite 93 files / 1526 tests passing; production build OK; live browser check as hr (both rows in the HR flyout, no "Exit & Probation"; one banner per screen; tab switching; Initiate → exit tab; `?tab=probation` → `/Probation`; all four direct URLs open; 0 console errors) and as manager and employee (no rows; all four URLs refused).
+
+
+## §214 — TCO audit against the full cost framework: four arithmetic defects fixed (cycle stock, day count, credit base, payment terms), mixed-currency ranking refused, advisory tenant leak closed, gap list for the rest (2026-10-30)
+
+**Scope.** Audit of the existing TCO implementation (§128, §128.1, the 09-17 freight fix, the `/analytics/tco-portfolio` rollup) against a full TCO specification: purchase cost, discounts, freight, duties, ordering, tooling, carrying, quality, delivery failure, financing, packaging, recoveries, supplier comparison, weighted scoring, saved versions. Manifest only. No new module was created: everything below is in `engines/tcoEngine.js` (pure), `services/tco.service.js`, and the three existing callers.
+
+**Where TCO lives (unchanged map).** `tcoEngine.computeTco/rankOptions` ← `scoreRfqQuotes()` (`GET /procurement/rfqs/:id`, RFQ award modal in `VendorManagement.jsx`, frozen into `procurement_award_decisions` on award) · `GET /inventory/catalog/items/:id/sourcing` (Component 360, `ItemDetail.jsx`) · `POST /procurement/tco/advisory` (PO drawer, `PurchaseOrders.jsx`) · `rfxScoring.service` (cost criterion). Rates: `procurement_settings` TCO columns, edited on ProcurementSettings → Total Cost of Ownership. Weighted supplier scoring is a separate engine (`rfxScoringEngine.js`, §136) and is not mixed into the money figure.
+
+### Defects found and fixed (each measured, then pinned by a test)
+| # | Defect | Before | After |
+|---|---|---|---|
+| 1 | Cycle stock was skipped whenever the compared lot ≥ the horizon's demand (guard `horizonQty > qty`), i.e. a component bought once a year carried **no** cycle stock | 12,000 units @ ₹500, 20%: ₹0 | ₹600,000 (Q/2 × v × h) |
+| 2 | Carrying ran on 12 × 30.44 = 365.28 days; credit terms on 365 | textbook ₹50,000 → ₹50,038.36 | ₹50,000; one configurable basis (`tco_day_count_basis`, 365/360) for carrying, credit and early-payment financing |
+| 3 | Cycle stock used the MOQ-rounded order, so the over-buy was carried twice (here **and** on the MOQ line) | — | cycle on the requirement Q; excess only on its own line |
+| 4 | Credit-terms benefit was financed on landed value, including customs duty and carrier freight that never ride on vendor credit | 60 days on ₹10k goods + ₹5k duty/freight: ₹295.89 | ₹197.26 (vendor-invoiced amount: goods + charges the vendor quoted + non-creditable tax) |
+| 5 | `parsePaymentTermsDays` took the FIRST number | "2/10, net 30" → 2 days; "30% advance, balance 60 days" → −30; "100% advance" → −100 | `parsePaymentTerms()` in the engine: net days + cash discount; split advance terms → null (stated, not invented) |
+| 6 | No early-payment discount at all | — | 2/10 net 30 modelled as two exclusive cash flows; TCO carries ONE (optimal unless a `payment_strategy` is selected); payload `payment_terms` shows discount, incremental financing cost, net benefit |
+| 7 | `currency` stored on `rfq_quotes` / `item_vendor_prices` but ignored | USD 10 beat INR 500 | foreign price without `fx_rate` → `computable:false, reason:'no_fx_rate'`, never ranked; UI says "needs exchange rate"; base = `procurement_settings.default_currency` |
+| 8 | `alternativesForItem()` (advisory) read `item_vendor_prices`, `inventory_items`, `vendors` by id with no company filter | company B posting A's item id received A's negotiated prices and vendor names | scoped; foreign item → no alternatives. `scoreRfqQuotes` item lookup and Component 360 price book also scoped |
+
+Migration `20261030000001_tco_day_count_basis.js` (INTEGER NOT NULL DEFAULT 365, CHECK IN (360,365)); settings PUT 422s anything else. ⚠ `loadTcoParams` swallows SQL errors and falls back to defaults, so code that SELECTs a new settings column must never run ahead of its migration: every company would silently lose its saved rates.
+
+### Spec component status (what is NOT done, explicitly)
+| Component | Status |
+|---|---|
+| Purchase cost, ordering (D/Q × S), cycle carrying (Q/2 × v × h), pipeline, safety stock, MOQ over-buy | ✅ implemented, spec tests A–C pass |
+| Freight | ⚠ quoted amount / per-unit / observed % / assumed %. **No shipment model**: no weight × distance × rate, TL/LTL, minimums, accessorials, fuel surcharge. Items carry no shipping weight. |
+| Duties / non-recoverable tax | ✅ amount or %, GST counts only its non-creditable share. ⚠ duty % is applied to goods value, not assessable (CIF) value |
+| Tooling | ⚠ amortised over horizon volume only; no "expense in full" choice, no useful-life method |
+| Quality | ⚠ observed reject rate × landed × (1 + rework%) only. No estimated `purchase cost × rate` method; no cost-per-defect from `vendor_ncr`/`debit_notes`; recovered rejects (debit notes) are not netted |
+| Delivery failure | ⚠ expediting per late order only. **No back-order or lost-sales estimate** (spec tests F, G unsupported) |
+| Price tiers / volume discounts | ❌ one price per vendor per item; `discount_pct` folded into net price, not shown as its own line |
+| Recoveries, rebates, salvage | ❌ no source table; not modelled |
+| FX rates | ❌ no rate table; foreign prices are refused, not converted |
+| Usable units | ⚠ rejects are charged as replacement cost and the per-unit figure divides by ordered qty. That is coherent (dividing by usable units as well would double-count), but yield/scrap beyond GRN rejects is not modelled |
+| Saved, versioned comparison; calculation version; export | ❌ only frozen award rows (`procurement_award_decisions`). No user-saved scenario, no assumption overrides, no engine version stamp |
+| Dedicated TCO workbench page | ❌ comparisons live inside Component 360 / RFQ modal / PO drawer. `/analytics/tco-portfolio` has **no UI caller** |
+| Completeness | ⚠ per-line `basis` + amount-weighted `confidence` + `assumptions[]`; no hard "incomplete" state blocking a comparison |
+
+Found, not fixed: ProcurementSettings → Currency → "Default Currency" is a dead control. The PUT never writes `default_currency`.
+
+**Tests.** `tcoEngine.test.js` 31 → 62 (spec A–C worked by hand; 360/365; full-year lot; MOQ no double count; currency; 13 payment-terms strings; credit base; 2/10 net 30 take / pay-net / decline). New `integration.tcoAdvisoryTenant.test.js` (real DB + router, TAG `ZZFXADV`): cross-tenant advisory; day-count PUT 422/200 and read-back. Mutation-checked: with the scoping removed, the cross-tenant test fails. Playwright `--project=tco`: new day-count save → reload → restore test; breakdown asserts the cycle line.
+**Verified.** Backend 207/207 files, 5,031 passed, 9 skipped (`--maxWorkers=2`; two default-parallelism runs were killed by a node.exe access violation 0xC0000005 partway through, unrelated to the tests); frontend 93 files / 1,526 passed; production build OK; `check:sql-refs` PASS; Playwright tco 9 passed + RFQ-modal test run separately with RFQ 5 flipped to `sent` and restored to `draft`.
+
+
+## §215 — Exchange-rate foundation for comparisons: Finance-approved rates only, documented quote overrides, awards raise the PO in the quote currency, Default Currency persists, settings never reset to defaults (2026-10-30)
+
+**User decisions (2026-10-30):** company-level rate table; Finance maintains and approves; never a default or stale rate; no usable rate → "needs exchange rate" and the quote is not ranked; a quote-specific override is allowed only with a reason and an audit trail, where Finance permits; the applied rate and its source are frozen in the award snapshot. Order of work: Default Currency + FX first, then freight/weight (metric, tonne-km), then tiers/rebates/recoveries, then the TCO Workbench. Release conditions: migrations ship with the code, and failed settings reads must never fall back to defaults; testing uses throwaway companies only.
+
+**Reused, not duplicated.** Finance already had `forex_rates` (one current row per currency) and `forex_rate_history` (one row per company, currency and effective date, with a source), served by `finance/forex.routes.js` and `ForexManagement.jsx` (embedded as the Forex tab of `/PaymentBatch`; `/ForexManagement` redirects there). ⚠ §214's "no FX table" line was wrong: the search pattern `%fx%` does not match "forex". History rows gained a review state; no second rate table was added.
+
+### Flow
+```
+Finance enters rate (POST /forex/rates, source rbi|bank|finance_approved|manual) ─┐
+Fetch live (POST /forex/rates/fetch, source api) ─────────────────────────────────┤→ forex_rate_history status='draft', entered_by_user_id
+                                                                                   │
+Another user with finance:approve → POST /forex/rate-history/:id/approve|reject ───┘→ status='approved' (approved_by_user_id, approved_at)
+                                                                                      (enterer = approver → 409 SELF_APPROVAL)
+finance/services/fxRate.service.resolveFxRates(company, currencies, {base, asOf, maxAge})
+   latest APPROVED row with rate_date ≤ as-of date (DB/IST date), age ≤ tco_fx_max_age_days, else ok:false (no_approved_rate|stale)
+   base ≠ INR → cross rate through INR (needs an approved base rate too), labelled 'cross_rate'
+fxFieldsFor(currency, resolved, base, override) → engine fields; rfq_quotes override beats the table
+   ↓ consumed by: scoreRfqQuotes (RFQ modal + award snapshot) · Component 360 · PO advisory · RFx cost score (both branches) · TCO portfolio (open events)
+Award (PATCH /rfqs/:id/award/:vendor): foreign quote with no usable rate → 409 FX_RATE_REQUIRED, rolled back;
+   otherwise PO.currency = quote currency, PO.exchange_rate = applied rate; the decision snapshot gets the SAME rate map
+   (tco_breakdown.fx + tco_basis.fx_applied for every quote)
+```
+
+### Schema — `20261030000002_fx_rate_approval_and_quote_override.js`
+- `forex_rate_history`: `status` (draft|approved|rejected, NOT NULL DEFAULT 'draft'), `entered_by_user_id`, `approved_by_user_id`, `approved_at`, `review_note`, `updated_at`; CHECK on the source vocabulary; CHECK that an approved row has an approver and a time; partial index on approved rows. ⚠ The 18 existing rows became `draft`: nobody approved them, so company 1 has **no approved rate** until Finance approves one. No live quote or price is in a foreign currency today, so no comparison changes.
+- `rfq_quotes`: `fx_rate_override`, `fx_override_reason` (CHECK ≥ 10 characters), `fx_override_by_user_id`, `fx_override_at`. Cleared automatically if the quote is re-submitted in another currency.
+- `procurement_settings.tco_fx_max_age_days` (1–366, default 30).
+
+### Routes
+| Route | Gate | Notes |
+|---|---|---|
+| `GET /forex/rate-history?status=&currency=` | finance:view | review list, names of enterer/approver |
+| `POST /forex/rate-history/:id/approve` · `/reject` | finance:approve | draft only; approver ≠ enterer; reject needs a note |
+| `POST /forex/rates` | finance:edit | ISO code, positive rate, source vocabulary; re-entering an approved date sends it back to draft; default date = DB date (was the UTC date) |
+| `PUT/DELETE /procurement/rfqs/:rfqId/quotes/:quoteId/fx-override` | **finance:approve** (not a procurement grant) | open RFQs only (closed/cancelled → 409 RFQ_FROZEN); foreign-currency quotes only; audited |
+| `POST /procurement/rfqs/:rfqId/responses/:vendorId` | procurement:edit | currency must be a 3-letter ISO code (was stored verbatim) |
+| `PUT /procurement/settings` | admin | **merges over the saved row** (read FOR UPDATE): an absent field is unchanged, never reset to its default. It used to reset approval limits, TCO rates and segregation of duties on any partial save. Now persists `default_currency` (ISO, 422 otherwise) and returns the stored row |
+
+### Settings loader (release condition 1)
+`tco.service.loadTcoParams` no longer `.catch`es: a failed read throws `TcoParamsUnavailableError`. Every caller shows "TCO unavailable" with the reason: RFQ detail (`tco_basis.tco_available=false`), Component 360 (banner), advisory (503), RFx (`cost_basis_key:'unavailable'`), portfolio (`tco_unavailable_reason`). The award records no decision row rather than a row built on defaults. A NULL company now gets defaults, not "whichever company sorts first".
+
+### UI
+- **Procurement Settings → Currency:** Default Currency now saves; its description says what it drives. The "Enable Multi-Currency POs" toggle was removed: it was never stored and nothing read it. **TCO tab:** new "Exchange Rate Max Age (days)". Saving now shows what the server stored.
+- **Finance → Payment Batch → Forex → Rate Approval** (new tab): status filter; Approve/Reject for finance:approve; "You entered this" in place of buttons on your own rate. The manual rate form gained Source and shows save errors (it used to `catch (_) {}`). The date defaults now use the local date.
+- **RFQ award modal:** amounts in the quote's own currency (formatINR printed "₹10" for USD 10); "needs exchange rate" with the reason; applied rate shown (`USD @ ₹84.5000 · <date>` or `· override`); override form for finance approvers; the chart plots converted values only; award errors now display in the modal (saveError was rendered only in other modals).
+
+### Not done / known
+- `tcoPortfolio.loadOpenOpportunities` re-implements quote scoring with thinner inputs (vendor-master terms; no observed quality or delivery). It now applies the FX rule, but it is still a duplicate of `scoreRfqQuotes`; it folds into the Workbench step.
+- The PO form's own `exchange_rate` field is no longer used by the advisory. PO creation outside the award path does not yet validate its rate against approved rates.
+- Each test award consumes one value of the global `seq_po_purch` sequence, leaving a gap in live PO numbering (pre-existing for every award suite).
+
+**Tests.** Engine 64 (+2: FX provenance, unavailable reason). New `integration.fxFoundation.test.js` (real DB, TAG `ZZFXRATE`, permission stub that grants exact `module:action` pairs): 25 tests covering the resolver (draft, stale, other company, cross rate), approval (finance:edit vs finance:approve, self-approval, cross-tenant, re-entry → draft), RFQ provenance, override (gate, reason, base-currency refusal, cleared on currency change), award (409 + rollback, PO currency/rate, frozen snapshot unaffected by a later rate change, frozen override), settings (Default Currency persist/validate, partial save keeps other values, unreadable settings throw). Mutation-checked three ways: resolver ignoring approval, award ignoring a missing rate, PUT defaulting absent fields; each fails its test. Playwright `--project=fx` (new; throwaway company ZZFXE2E via `backend/scripts/e2e-fx-fixture.mjs`, own approver token): 6 passed. The live-settings day-count test moved here from `tco-comparison.spec.ts`.
+**Verified.** Backend 208/208 files, 5,058 passed, 9 skipped (`--maxWorkers=2`); frontend 93 files / 1,526 passed; production build OK; `check:sql-refs` PASS; Playwright tco 8 passed + 1 skip (draft RFQ; covered in fx), fx 6 passed. Live data checked after: company 1 settings untouched since §214, RFQ 5 draft, 0 award decisions, 0 overrides, 7 POs, 7 price-book rows.
+
+
+## §216 — Freight as weight × distance × rate (tonne-km): item shipping weight with provenance, freight lanes, maker-checker rate cards, explicit completeness in every comparison, frozen in award snapshots (2026-10-30)
+
+**User decisions (2026-10-30):**
+1. Keep the 2% fallback **temporarily** as labelled "Assumed freight – X%". It is configurable, never classed as quoted, observed or modelled, and never described as a verified landed cost.
+2. Lanes are keyed by company, vendor and receiving warehouse; comparisons use the designated main receiving point. No receiving location is added to RFQs or POs.
+3. Modes are road, rail, air and ship; FTL/LTL/FCL/LCL are optional service levels.
+4. FREIGHT_CATEGORY is a controlled, extensible vocabulary: General, Fragile, Hazardous, Oversize.
+5. A straight-line distance may prefill a labelled estimate; a person confirms the distance and its source.
+6. An award is allowed with incomplete freight. Status and missing reasons are frozen, the award is never marked "followed", and award, completeness and recommendation status are separate.
+7. Rate cards are maker-checker with no self-approval; an approved rate is never edited.
+8. Procurement edit maintains lanes and creates rate-card drafts; a separate Procurement approver approves them.
+
+Out of scope: minimum and accessorial charges, fixed shipment charges, tiers, rebates, recoveries, the Workbench.
+
+### Formula and precedence (shared engine, `engines/tcoEngine.js`)
+```
+modelFreight(model):  freight = Σ_lines (qty × kg per unit ÷ 1000) × distance_km × rate_per_tonne_km(line category)
+                      any missing input → complete=false, amount=null, missing[] names it (item + qty for weight)
+
+computeTco freight:   quoted amount → quoted per unit → MODELLED → observed % (past POs/GRNs)
+                      → "Assumed freight – X%" (only if tco_assumed_freight_enabled) → none
+line:                 'Freight / inbound logistics', group 'landed' (classification unchanged),
+                      basis quoted|modelled|observed|assumed, freight_source on the line
+tco.completeness:     complete (quoted/modelled/observed) | provisional (assumed) | incomplete (none)
+tco.freight:          { source, amount, model{inputs, lane, receiving point, mode, lines[rate card, fx], formula}, missing[] }
+rankOptions:          incomplete options never win and are excluded from the spread;
+                      comparison_status = incomplete if any option is incomplete, else provisional if any is assumed, else complete;
+                      recommendation.status = withheld_incomplete | provisional | made
+```
+Modelled freight goes to a carrier, so it is **not** in the vendor-invoiced credit base. Only quoted freight is (unchanged from §214). Rate cards are converted to the base currency in the loader, so a foreign-currency **quote** never re-converts a freight rate.
+
+### One loader for every consumer — `services/freight.service.js loadFreightInputs()`
+- **Lane:** `freight_lanes` for (company, vendor, `procurement_settings.main_receiving_warehouse_id`).
+- **Mode:** the quote's, else the lane default.
+- **Weight per line:** the vendor-quoted kg per unit (single-line RFQs only), else the item master's, with its basis and unit. A unit mismatch is reported as a missing input.
+- **Rate:** `pickRateCard` takes the approved card in force today, preferring an exact service level, then an exact category, then the latest `effective_from`. A foreign-currency card is converted through the approved-rate resolver (§215), or the input is reported missing as `fx`.
+- **No `.catch`**, so a missing table surfaces as an error.
+
+Used by: `scoreRfqQuotes` (RFQ modal and award snapshot; **all** RFQ lines are weighed, so multi-line freight is the total consignment), Component 360 (`itemSourcing.routes`), the PO advisory (`/procurement/tco/advisory`), RFx cost scoring (an incomplete bid gets **no** cost measure) and the portfolio rollup (incomplete events claim no saving; rows carry `comparison_status`).
+
+### Schema — `20261031000001_freight_weight_lanes_rates.js`
+| Object | Change |
+|---|---|
+| `inventory_items` | `shipping_weight_kg` (>0), `shipping_weight_basis` (quoted/observed/estimated/assumed), `shipping_weight_uom`, `freight_category`. Nullable, no default, **no backfill**. CHECK: a weight needs a basis and a unit |
+| `rfq_quotes` | `shipping_weight_kg_per_unit`, `transport_mode`, `service_level` (CHECKed) |
+| `freight_lanes` (new) | company/vendor/warehouse FKs, UNIQUE triple; `distance_km` > 0; `distance_source` quoted/observed/estimated/manual (**required**); default mode and service level; `confirmed_by_user_id` NOT NULL, `confirmed_at` |
+| `freight_rate_cards` (new) | mode, service level, category, `rate_per_tonne_km`, ISO currency, `effective_from`, source, status draft→approved\|rejected, approved→retired; entered/approved/retired by and when; CHECK approver ≠ maker; **trigger `freight_rate_card_freeze`** blocks any change to terms once a card leaves draft, and any status change from rejected/retired |
+| `procurement_settings` | `main_receiving_warehouse_id` (FK warehouses; PUT validates same company), `tco_assumed_freight_enabled` NOT NULL DEFAULT TRUE (keeps live behaviour) |
+| `procurement_award_decisions` | `comparison_status`, `recommendation_status` (CHECKed). Pre-§216 rows stay NULL |
+| `master_values` | FREIGHT_CATEGORY shared seeds; registry key `freight-categories` (`modules/master/vocabularies.js`) |
+
+### Routes (`routes/freight.routes.js`, mounted at `/procurement/freight`, audited)
+| Route | Gate |
+|---|---|
+| `GET /lanes`, `GET /lanes/suggest-distance` (great-circle vendor city → warehouse; **returns an estimate, writes nothing**) | procurement:view |
+| `PUT /lanes` (upsert; source required; both ends must be the company's), `DELETE /lanes/:id` | procurement:edit |
+| `GET /rate-cards?status=` | procurement:view |
+| `POST /rate-cards` (draft; category checked against the master) | procurement:edit |
+| `POST /rate-cards/:id/approve\|reject\|retire` (maker ≠ checker → 409 SELF_APPROVAL; reject needs a note; approved_by records the reviewer, as in §215) | **procurement:approve** |
+
+Item weight goes through `PUT/POST /inventory/items` (`inventoryItem.repository freightItemValues`). The four fields are validated together, and a blank weight clears the weight, its basis and its unit. Quote freight fields go through `POST /procurement/rfqs/:rfqId/responses/:vendorId`.
+
+### Award
+Allowed with incomplete freight. `procurement_award_decisions` stores:
+- `comparison_status` and `recommendation_status`;
+- `followed_recommendation` NULL whenever the recommendation was withheld;
+- `tco_breakdown.freight` (the winner's inputs, provenance, lane, rate card, FX and missing list);
+- `tco_basis.freight_applied` for every quote.
+
+Immutability is tested: after the award, the test changes the item weight, lane distance, rate card (retired) and exchange rate, and the decision row is byte-identical.
+
+### UI
+- **Item Master:** shipping weight in kg per *UOM* (with a warning if the item's unit has changed), weight basis (required with a weight), freight category.
+- **Procurement Settings → Freight** (new tab): main receiving point, the assumed-freight toggle and % (moved here from the TCO tab and relabelled), and `components/FreightSettingsPanel.jsx`:
+  - lanes, with "Suggest straight-line distance" → "Use as estimate" prefilling km and `estimated`; Save stays disabled until a source is chosen;
+  - rate cards: drafts, approve/reject/retire, "You created this" in place of buttons, status filter, version history.
+- **RFQ modal:**
+  - a "No recommendation — freight incomplete" banner listing who is missing what (it would previously have rendered "null is both the lowest quote…");
+  - a provisional banner;
+  - a per-quote freight tag (quoted / modelled with kg × km / observed / "Assumed freight – X% (not a verified landed cost)" / "Needs freight input: …");
+  - the chart greens only the engine's winner and greys incomplete vendors.
+- **Component 360:** the same banners, a "Modelled" badge, "needs freight input" and "assumed freight" tags.
+- **PO drawer advisory:** "No comparison — freight inputs are missing" in place of "no cheaper vendor"; provisional note.
+
+### Deployment order and rollback
+1. Run `20261031000001` **before** deploying this code. `loadTcoParams` selects the new settings columns and throws `TcoParamsUnavailableError` without them; the freight loader queries the new tables without a catch. Every comparison would then show "TCO unavailable", never a wrong number.
+2. Order relative to §214/§215: `20261030000001` → `20261030000002` → `20261031000001`.
+3. `down()` **refuses** while any item weight or category, quote freight field, lane, rate card, designated receiving point or §216 decision status exists. Otherwise it removes only what it added, including the four shared category seeds. This is tested inside a rolled-back transaction.
+
+### Live data after deploy (observed, read-only)
+- Company 1 has no main receiving point, no lanes, no rate cards and no item weights, and assumed freight is ON. Every live comparison therefore reads **provisional**, labelled assumed freight, with `distance, transport_mode, weight` named as missing (checked on RFQ 5 via GET).
+- Rankings are unchanged: 2% as before, now labelled.
+- **There is no quote-entry screen** anywhere in the app. Quotes arrive only through `POST /rfqs/:id/responses/:vendorId`, so the quote freight fields have no UI. This gap predates §216.
+
+### Tests
+- `tcoFreight.test.js`: 23 tests, hand-worked. Formula, multi-line total weight at per-line rates, missing weight naming item and quantity, unit mismatch, missing distance and rate, FX as its own reason, empty lines, precedence, provisional/incomplete, the credit base, no FX double conversion, ranking exclusion and withheld recommendation, and `pickRateCard` specificity and versioning.
+- `integration.freightWeight.test.js` (real DB, TAG `ZZFRTWT`, exact-grant permission stub): 28 tests.
+  - Maker-checker: grants, self-approval, the database refusing an in-place edit, rejection note, finality, cross-company.
+  - Lanes: source required, foreign ends refused, the suggestion writes nothing.
+  - Settings: main receiving point must be the company's. Item validation: basis required, unit stored, blank clears, category from the master.
+  - All three consumers. RFQ: modelled Rs 300, incomplete vendor never wins, multi-line missing weight named, quoted weight beats the item master, assumed → provisional. Component 360. PO advisory.
+  - Cross-company: B's lane, and an inconsistent B-owned lane naming A's vendor and warehouse, are both ignored.
+  - FX: card blocked, then converted (Rs 420).
+  - Awards: incomplete recorded as withheld/NULL; snapshot immutability; rollback refusal.
+- **Mutation-checked:**
+  - incomplete options allowed to win → fails 2 tests;
+  - lane query unscoped → initially survived (the vendor and warehouse filters masked it); the inconsistent-lane test was added, and it now fails;
+  - incomplete award marked followed → fails.
+- Playwright `--project=freight` (new; throwaway company ZZFRE2E via `backend/scripts/e2e-freight-fixture.mjs`; approver token; never awards): 6 passed. Covers the incomplete banner, approving the maker's card, the lane suggestion → confirm with source, modelled 250 kg × 346 km in the RFQ modal, Component 360, and Item Master weight save.
+
+**Verified.**
+- Backend 210/210 files, 5,109 passed, 9 skipped (`--maxWorkers=2`).
+- Frontend 93/1,526 passed. Production build OK. `check:sql-refs` PASS.
+- Playwright: freight 6, fx 6, tco 8 + 1 skip (draft live RFQ; read-only).
+- Live data before and after: company 1 settings untouched since §214, RFQ 5 draft, 0 decisions, 7 POs, 7 price-book rows, 0 lanes, 0 cards, 0 weights.
+
+
+## §217 — An eligible quote that cannot be converted (no / stale / unusable approved FX) makes the comparison incomplete and withholds the recommendation, in every TCO consumer (2026-10-30)
+
+**User decision (2026-10-30):**
+- A quote with missing, stale or otherwise unusable approved FX is excluded from ranking.
+- If any otherwise eligible quote is excluded that way, the overall comparison is **incomplete** and the lowest-TCO recommendation is withheld, showing the affected vendor and the exact FX reason.
+- Normal logic resumes when every eligible quote converts.
+- The approved-rate resolver (§215) and the award-time FX snapshot are unchanged.
+- No older or unapproved rate is ever used.
+
+**Before:** §215 left the quote unranked but crowned a winner among the others. The unconverted quote might have been the cheapest: in the test fixture, USD 5 × 84 = ₹420 against ₹500, so INR "won" only because USD could not be read.
+
+**Engine (`tcoEngine.rankOptions`):**
+- `fxExcluded` = scored options with `computable:false, reason:'no_fx_rate'`. These are *eligible* quotes, because they have a price.
+- Unpriced quotes (`no_price`, `no_quantity` — for example invited vendors who have not responded) are not eligible and block nothing.
+- FX-excluded and freight-incomplete options together form `incompleteOptions`. Any of them → `comparison_status:'incomplete'`, `best_tco_id:null`, and `recommendation:{status:'withheld_incomplete', incomplete:[{vendor_id, label, reason:'fx'|'freight', missing:[…]}]}`.
+- An FX entry carries `{input:'fx', reason: no_approved_rate | stale | base_rate_unavailable, currency, latest_rate_date, message}` straight from the resolver.
+
+**Consumers checked:**
+| Consumer | Result |
+|---|---|
+| RFQ comparison and award snapshot (`scoreRfqQuotes`) | Inherits the rule. An award while FX is unusable records `comparison_status:'incomplete'`, `recommendation_status:'withheld_incomplete'`, `followed_recommendation: NULL`, with `tco_basis.fx_applied[].unavailable`. Awarding the foreign quote itself is still refused (409 FX_RATE_REQUIRED, §215) |
+| Component 360 | Inherits via `rankOptions` (`summary.tco_comparison_status`, `tco_recommendation.incomplete`) |
+| PO advisory | Inherits per line; overall `comparison_status` is the weakest line; no advisory is issued |
+| Portfolio rollup | Inherits: an incomplete event claims no saving (unchanged code path) |
+| RFx cost scoring | Uses `computeTco` per bid and its own weighted engine. New `withholdIfIncomplete()` in `rfxScoring.service`: if any **priced** bid has no cost measure (FX or freight), **no** bid gets a cost score, because cost is benchmarked relative to the field and a partial field misstates it. Returns `cost_status:'incomplete'`, `cost_incomplete:[…]`, `cost_basis_key:'incomplete'`. The cost weight then counts as unscored, which `rankBids` already treats honestly (too_close_to_call / low coverage). The scoring engine is unchanged |
+
+**UI:**
+- The RFQ modal and Component 360 banner reads "No recommendation — comparison incomplete." Each vendor line says "**Vendor** — Exchange rate: …" or "— Freight: …", with the resolver's message.
+- The PO advisory reads "freight or exchange-rate inputs are missing".
+
+**Tests:**
+- `tcoEngine.test.js`: the USD-vs-INR test is updated to the new rule; new tests for a stale reason and date, all-converted → normal, and an unpriced quote not blocking. 67 pass.
+- New `integration.fxCompleteness.test.js` (real DB, TAG `ZZFXCMP`), 8 tests:
+  - RFQ: no rate, draft rate, stale rate (incomplete, exact reason); fresh rate → normal winner;
+  - an award while FX is unusable is recorded as withheld;
+  - Component 360 and the PO advisory are incomplete;
+  - RFx cost is withheld, then complete once the rate is approved.
+- Mutation-checked:
+  - FX exclusion removed → 8 tests fail;
+  - RFx partial cost scores allowed → 1 fails.
+- Playwright `fx`: the draft-rate test now expects the withheld banner and the vendor + "Exchange rate: No approved USD rate" line.
+
+## §218 — Vitest runs no longer consume the live purchase-order sequence (2026-10-30)
+
+**Finding:**
+- `shared/docNumber.nextPurchaseOrderNumber()` is the **only** caller of `nextval('seq_po_purch')`, the one global sequence real PO numbers come from. The award route and the PO repository both call it.
+- PostgreSQL sequences are **not transactional**, so every throwaway-company award or PO in a test consumed a live value permanently, even when its rows were rolled back or swept.
+- Read-only on 2026-10-30: `seq_po_purch.last_value` = **9,361** (9,358 earlier that day; §215/§216 awards took 3) against **2** live PO-numbered orders, highest PO0007. The next real PO would be PO9362.
+- Per the user's instruction the sequence was **not** reset, reseeded or decremented, and no PO was renumbered.
+
+**Fix (test-only; production code, sequence and format unchanged):**
+- `src/__tests__/setup.js` (vitest `setupFiles`, loaded only by vitest) does `vi.mock('../shared/docNumber.js')`, keeping every real export and replacing only `nextPurchaseOrderNumber`.
+- The replacement returns `ZZT-PO-<pid>-<time36>-<n>`: no database call, unique across workers for the UNIQUE `po_number` index, ≤ 50 characters, and recognisable if one leaks.
+- `PULSE_TEST_REAL_PO_SEQUENCE=1` opts out, for a deliberate test against a disposable database only.
+
+**Guard — `poSequenceIsolation.contract.test.js`:**
+1. Only `shared/docNumber.js` (outside migrations and tests) mentions `seq_po_purch`. A new direct caller would bypass the mock, so it fails the build.
+2. Under vitest the imported generator returns `ZZT-PO-…`, unique.
+3. Calling it does not move `last_value` (a read-only check).
+
+**Verified:**
+- `last_value` read **9,361 before and after the full backend suite** (212 files, including every award/PO-creating suite).
+- It was also unchanged across the Playwright fx/freight/tco runs and the §217 mutation runs, which included awards.
+- `integration.fxCompleteness` asserts an awarded PO number matches `^ZZT-PO-`.
+- Not mutation-tested on purpose: removing the mock would itself consume live sequence values.
+
+**Limits (not changed; would need a production or environment change):**
+- `tests/suites/03-crud/procurement-hardening.spec.ts` (Playwright, superadmin, **live dev server**) creates a real PR → convert-to-po → approve in the live company. It consumes `seq_po_purch` and writes live data. A vitest mock cannot reach a separately running server, so it is **not run** in these passes.
+- `backend/scripts/procurement-lifecycle-probe.mjs` and `scripts/sca/sca-registry.mjs` can create POs outside vitest.
+- The other document sequences (`seq_rfq`, `seq_pr`, `seq_grn`, …) are still consumed by tests that create those documents; out of scope here.
+- The real fix for all of these is a separate test database (or a server-side test mode, which changes production numbering behaviour), and was not attempted.
+
+
+## §219 — RFQ quote entry: a dialog in the RFQ Quotes modal for invited vendors, with freight per unit, freight in its own currency, quoted weight per stated unit, and the vendor's quotation reference (2026-10-30)
+
+**Before:** no screen recorded a vendor's quote. `send-to-vendors` creates an empty `rfq_quotes` row per invited vendor, and the only writer was `POST /procurement/rfqs/:rfqId/responses/:vendorId` (API only, replaces every field, accepts any vendor of the company).
+
+**User decisions (2026-10-30):**
+- Invited vendors only.
+- Procurement edit permission; RFQ must be open.
+- Load the complete stored quote before editing.
+- Freight as an amount **or** per unit, never both, in its own currency if stated.
+- Values preserved as entered; conversion only with the approved resolver.
+- No fall-through from unusable quoted freight to modelled freight.
+- TCO precedence unchanged.
+
+### Schema — `20261031000002_rfq_quote_entry_fields.js`
+- `rfq_quotes` gains `freight_per_unit`, `freight_currency`, `shipping_weight_uom`, `vendor_quote_ref`, `quote_date`. All nullable, **no defaults, no backfill**, so live quotes are unchanged.
+- CHECKs:
+  - `freight_amount` and `freight_per_unit` not both set;
+  - `freight_per_unit` ≥ 0;
+  - `freight_currency` is an ISO code;
+  - a quoted weight requires its unit.
+- Every live row satisfied them before they were added (0 live quotes carried freight or a quoted weight).
+- `down()` refuses while any of the five columns holds data; this is tested inside a rolled-back transaction.
+
+### Routes (`procurement.routes.js`)
+| Route | Gate | Notes |
+|---|---|---|
+| `GET /rfqs/:rfqId/quotes/:quoteId` | procurement:view | The complete stored quote, plus `line_count` and `line_unit`, company-scoped through the RFQ. 404 when the quote is not on that RFQ |
+| `PUT /rfqs/:rfqId/quotes/:quoteId` | procurement:edit | Updates an **existing** row only. An uninvited vendor has no row, so the restriction holds by construction. 409 `RFQ_NOT_OPEN` for closed, cancelled or draft. A price is required. A currency change clears an FX override (as §215). Audited |
+| `POST /rfqs/:rfqId/responses/:vendorId` | procurement:edit | Unchanged contract; now validated by the same `readQuoteBody()` and writes the new columns |
+
+`readQuoteBody()` is one reader for both write paths:
+- money ≥ 0, with blank meaning NULL (never 0);
+- tax 0–100; whole-number days and months; ISO currencies;
+- dates as YYYY-MM-DD, with validity not before the quote date; reference ≤ 80 characters;
+- freight amount XOR per unit; a freight currency only with a freight figure;
+- a quoted weight needs its unit, and vice versa;
+- a quoted weight is **refused on a multi-line RFQ**, where the freight model would silently ignore it;
+- mode and service level from the §216 vocabularies.
+
+⚠ Tightening: the POST now refuses a quoted weight without a unit (0 live rows were affected; one §216 test fixture updated).
+
+### TCO integration (shared; formula and precedence unchanged)
+- `tco.service.quoteFreightFields(q, fx, base)` restates freight quoted in `freight_currency` into the quote's currency: `freight × rate(freight→base) / rate(quote→base)`, approved rates only (the quote's FX override is honoured for the quote side).
+- **Unusable freight FX** → the option carries `charges_fx_unavailable`. The engine returns `computable:false, reason:'no_fx_rate'` with "Freight quoted in GBP: …", and §217 makes the comparison incomplete. The quoted freight is **not** dropped and the **model is not used in its place**; a test proves this with a complete model present.
+- `freight_per_unit` feeds the engine's existing quoted-per-unit slot.
+- The breakdown's `freight.fx` records `{from, to, factor, rate_to_base, rate_id, as_quoted}`, so the award snapshot freezes the as-quoted figure and the rate used.
+- The quoted weight's own unit (`shipping_weight_uom`) is passed to the freight loader. A unit other than the line's is reported as `weight_uom`, never converted.
+- FX maps (RFQ comparison, award, RFx, portfolio) now resolve freight currencies as well as quote currencies.
+
+### UI
+- `components/QuoteEntryDialog.jsx`, opened from "Enter quote" / "Edit quote" on each invited vendor's row in the RFQ Quotes modal (`VendorManagement.jsx`).
+  - Shown only for procurement:edit and an open RFQ.
+  - Rendered after the quotes modal at z-index 1100 (the §177 "dialog under the modal" trap).
+- It GETs the stored quote, then PUTs the whole form.
+- Sections:
+  - **Price:** price, total, currency, delivery, terms, validity, quotation ref and date, tax.
+  - **Freight & charges:** a radio for "amount for the consignment" vs "rate per unit" (the unused field is cleared on save), freight currency, insurance, duty, packaging, other. "Blank is not quoted, not zero."
+  - **Shipping:** quoted kg per unit and its unit (disabled on multi-line RFQs), mode, service level, MOQ, warranty.
+  - **Notes.**
+- Server field errors are shown in the dialog. After saving, the modal re-scores.
+
+### Tests
+- `integration.quoteEntry.test.js` (real DB, TAG `ZZRQENTRY`), 23 tests:
+  - create on the invited placeholder, as entered;
+  - GET returns the complete quote;
+  - edit replaces it, with blank staying NULL;
+  - 9 validation cases plus multi-line weight refused;
+  - permission 403; invited-only 404; company isolation both ways; closed and draft 409;
+  - freight per unit (₹1,200); EUR freight restated (100 × 96 = ₹9,600, stored as "100.00 EUR");
+  - GBP freight with no rate → incomplete with **no model fall-through**;
+  - weight-unit mismatch reported;
+  - award snapshot freezes the as-quoted EUR freight, and edits are refused after award;
+  - rollback refusal.
+- Mutation-checked:
+  - both freight bases allowed → fails;
+  - unusable freight FX allowed to fall through to the model → fails;
+  - quote need not belong to the RFQ → fails.
+- Playwright `--project=quote-entry` (throwaway company ZZQEE2E via `scripts/e2e-quote-fixture.mjs`), 2 passed:
+  - enter with server validation shown, then EUR freight;
+  - edit loads the stored values; switching to per unit clears the amount; other fields are preserved.
+
+
+## §220 — An isolated test database for writing test tools: pulse_e2e, a fail-closed guard, its own backend and frontend, and an inventory of document-sequence consumers (2026-10-30)
+
+**User decision (2026-10-30):** the browser spec and scripts that write to company 1 must run against a separately configured test database. They fail closed if they are not connected to an explicitly recognised one, and never fall back to the developer database. Production numbering is not changed, and no sequence is reset, decremented or renumbered. Setup and execution guide: `backend/scripts/test-db/README.md`.
+
+### Components (`backend/scripts/test-db/`)
+| File | Role |
+|---|---|
+| `guard.mjs` | `assertTestDatabase` — requires `PULSE_TEST_DB=1`; name `^pulse_e2e(_[a-z0-9]+)?$`; not the `.env` DB (read from the file); marker row `pulse_test_environment(id=1, marker, database_name)` naming **this** database, so a copy is refused. `assertTestServer` — refuses `:5000`, then plants a one-off vendor in E2ETEST and requires the API to return it (a server on another DB cannot). `testJwtSecret` — a test-only signing secret that must differ from `.env` `JWT_SECRET`, so test tokens are 401 on the developer server. `mintTestToken`, `guardOrExit` |
+| `setup.mjs` | Creates or refreshes `pulse_e2e`: name allowlist; refuses an existing unmarked DB; normal migration runner (baseline bootstrap + all migrations) with `DATABASE_URL` removed; marker; seeds through the guard |
+| `seed.mjs` | (Guarded.) E2ETEST company, `e2e.superadmin@pulse-e2e.test` (super_admin, no password), warehouse as main receiving point, item + price, rated vendor (PO approval needs rating history), `system_wizard` completed |
+| `start-backend.mjs` | Sets `DB_NAME`, `PORT=5100`, `PULSE_TEST_DB=1`, the test JWT secret, removes `DATABASE_URL`, runs the guard on the pool `server.js` will use, **then** imports `server.js`. Refuses port 5000. `server.js` is unmodified (dotenv never overrides set variables) |
+| `run.mjs` | Runs a guarded script with exactly that environment |
+| `assert-server.mjs` | Exit 0 only when DB and server checks both pass (used by Playwright) |
+
+- **Playwright:** `playwright.testdb.config.ts` starts its own backend on :5100 and Vite on :5174 (`VITE_API_URL=http://localhost:5100/api`), with `reuseExistingServer:false`. Its state file is `tests/.auth/testdb-user.json`, which `auth.setup.ts` now honours via `PULSE_AUTH_FILE`; `helpers/page-helpers.ts` honours `PULSE_FRONT_BASE`. Both keep their old defaults.
+- `procurement-hardening.spec.ts` lost its hardcoded :5173/:5000. Its `beforeAll` requires the test environment and runs `assert-server.mjs`, throwing otherwise. It moved out of `playwright.config.ts` (project removed, path added to `testIgnore`).
+
+### Guarded tools (each refuses before its first write)
+- **Browser spec:** `tests/suites/03-crud/procurement-hardening.spec.ts` (PR → PO → GRN).
+- **Scripts:**
+  - `procurement-lifecycle-probe.mjs` — PR/PO/GRN/bills. Its `PROBE_BASE` default of `:5000` is gone, its default user moved from `superadmin@manifest.in` to the E2E admin, and the server is proven before `cleanup()`.
+  - `sca/exercise-chain.mjs` — production orders, MRP, receipts, dispatch over HTTP. The `:5000` default and `admin@manifest.in` are gone; it uses a test token and the server check.
+  - `sca/rebuild-supply-chain-data.mjs` — SCA-REF sales orders, shipments, stock.
+  - `sca/seed-traceable-chain.mjs` — SO → GRN → batch → serial.
+  - `seed-recruitment-demo.js` — `seq_cand` candidates.
+  - `smoke-employee-access.js` — service-desk tickets. The `:5000` default is gone; it uses the server check.
+- ⚠ §218 listed `sca/sca-registry.mjs` as a writer. That was wrong: its `ep('POST …')` probes are **static** (a regex over router source), so it is read-only and left unguarded.
+
+### Verified
+- `pulse_e2e` was created from the baseline plus 144 migrations, marker written, E2ETEST seeded.
+- All six scripts, run against the developer DB without the flag and again **with** `PULSE_TEST_DB=1`, exited 1 with the exact reason. The developer DB's fingerprint (every sequence plus the affected table counts) was **identical** before and after.
+- The launcher refused `--db=Pulse`.
+- `procurement-lifecycle-probe` via `run.mjs`: pointed at :5000 it was refused before any request; on the test backend, **85 passed / 0 failed**. A per-sequence diff showed **no developer sequence moved** (an earlier aggregate-MD5 check in the same session did change; the per-sequence re-run did not, so that earlier change was not attributable to the probe, and not provably anything else).
+- `npx playwright test -c playwright.testdb.config.ts`: 5 passed + 1 self-skip (no receipts yet on a fresh DB), then **6 passed** on re-run. `seq_pr`, `seq_po_purch` and `seq_grn` each moved by one **in pulse_e2e**; the developer document sequences did not move.
+- Run directly under a throwaway config pointed at the dev servers, the spec's `beforeAll` threw, 4 tests did not run, and the developer document sequences were unchanged. Under `playwright.config.ts`: "No tests found".
+- `testDbGuard.test.js`: 18 tests covering every refusal branch, copied markers, a narrow allowlist, the developer port, a distinct JWT secret, and `setup.mjs` refusing `Pulse`, `pulse_ci_test` and `postgres`.
+- The live PO sequence stayed at **9,361** throughout.
+
+### Inventory — document sequences and who consumes them (2026-10-30, read-only)
+Generators: `shared/docNumber.js` (`nextval('seq_…')` per document type). A full **vitest** run (`--maxWorkers=2`), measured before and after, consumed:
+
+> seq_cert +9 · seq_cw +15 · seq_ecn +7 · seq_emp +136 · seq_ftkt +3 · seq_grn +22 · seq_inv +36 · seq_ips +2 · seq_ipu +12 · seq_je +83 · seq_je_acct +22 · seq_lc +54 · seq_lpr +1 · seq_pay +2 · seq_pb +4 · seq_po_prod +32 · seq_pr +23 · seq_prj +48 · seq_rfq +3 · seq_savings +14 · seq_sdp +2 · seq_so +2 · seq_wc +14 · seq_wr +18 · **seq_po_purch +0** (§218 isolation)
+
+Cumulative live values already far exceed live document counts: for example `seq_grn` 17,774, `seq_pr` 10,885, `seq_emp` 7,120, `seq_po_purch` 9,361 against 2 POs.
+
+**Remaining consumers, not changed in this task:**
+- the vitest suite (above; it runs against the developer DB);
+- Playwright `tests/suites/06-db-consistency.spec.ts` (creates employees, leaves and projects on :5000);
+- scripts writing throwaway `ZZ…` companies (`audit/anomaly-fixture.mjs`, `audit/tenant-fixture.mjs`, `audit/mutating-actions-probe.mjs`, `audit/audit-floor-coverage-probe.mjs`, `bgv-audit-drive.mjs`, `iot-capacity-test.mjs`, `zzve-*.mjs`). These insert literal numbers or non-document rows, but column defaults may still pull sequences.
+
+**Not resolved:** the whole-table-count tests `integration.biometricAuthz` (gate_passes) and `ticketCategoryBreakdown` (tickets) each failed once in a parallel full run, because a concurrent suite added a row. Both pass alone. This is a pre-existing shared-state flake class.
+
+## §221 — Test-environment hardening: moving the backend suite and the db-consistency browser spec onto pulse_e2e; two parallel flakes fixed (2026-11-02; Option C reference seed applied — 6 history-bound assertions open)
+
+**Flakes fixed (exact races):**
+- `ticketCategoryBreakdown.integration.test.js`: `inRolledBackTx` takes the checksum of the whole `support_tickets` table before and after `migration.up()`. Under READ COMMITTED each SELECT saw tickets that other workers committed in between, so the count went 16 to 17. The transaction now runs `BEGIN ISOLATION LEVEL REPEATABLE READ`, which gives one snapshot. The assertion is unchanged and still covers the whole table. On pulse_e2e, a concurrent insert moved the checksum 0 to 1 under READ COMMITTED and 0 to 0 under REPEATABLE READ.
+- `integration.biometricAuthz.test.js`: the gate-pass and visitor "nothing was written" counts were whole-table, and `integration.biometricWorkflows` writes gate passes for tenants 999943/999919 in parallel. Both counts are now scoped to what the request could write (`company_id = 1 OR company_id IS NULL`). Verified: a row for another tenant leaves the count unchanged, while a NULL-company row and a company-1 row are each still caught.
+- `integration.attendancePayrollSyncScope.test.js` read `DB_NAME` and host from the `.env` file BEFORE `process.env`, so it would have stayed on the developer DB under a test-DB run. Connection fields now take `process.env` first. The password is still read from the file first.
+
+**Browser:** `06-db-consistency.spec.ts` is now excluded from `playwright.config.ts` and runs only under `playwright.testdb.config.ts` (project `db-consistency`). Its bases come from the environment, and `beforeAll` fails closed unless `PULSE_TEST_DB=1`, neither base is :5000 or :5173, and `assert-server.mjs` proves that the backend serves the marked DB. On pulse_e2e, 13 tests pass and 1 fails: employee create returns 400 because the test-DB masters lack department `Engineering` and designation `Engineer`. The seed is still to be extended.
+
+**Blocker for the backend suite:** a trial run on pulse_e2e (`DB_NAME=pulse_e2e PULSE_TEST_DB=1`, `--maxWorkers=2`) failed 32 files, about 80 tests, and skipped 254 more through failing `beforeAll` hooks. Those suites read developer reference data: GL accounts 1013/4006, an active SLA policy, the Hardware ticket category, zone North, a company-1 biometric device, employees in company 565, master vocabularies, and other rows. Full-suite isolation needs a data decision first: clone the developer DB, make the suites self-seed, or add a curated reference seed. Developer sequences were unchanged across both trials (`seq_po_purch` 9,361; `seq_lc` 8,263).
+
+### §221.1 — Option C: a curated reference seed, a guarded runner, CI on pulse_e2e_ci (2026-11-02)
+
+**Root cause.** A fresh database is built from `baseline.sql`, and `baseline-data.sql` carries only `companies`, `roles` and `role_permissions`. Every reference row that pre-baseline migrations, the setup wizard (`seeds/defaultSeed.js`) or an admin screen would have written is absent. CI's `pulse_test` had the same gap.
+
+**Dependency matrix.** "Fixed id" means the test hard-codes a row id; "value" means it looks the row up by a business value.
+
+| Test file | Missing reference | Keyed by | Genuine or accidental | Seed block |
+|---|---|---|---|---|
+| salesInvoicingPhase3F, phase3G/H/I, salesDispatchDuplication, warehouseLifecycle, fulfilmentPhase3E, procurementReverification, iot.gapclosure (posting), ctcProposals | global chart of accounts | value (account code) | genuine: posting guards refuse lines with no account | COA: migrations 20260603000001 + 20260604000007 + 20260613000005 |
+| payrollEndToEnd, payrollLoansPayslip, payrollLoanGlGate | accounts 1013 (Asset) and 4006 (Revenue) | value | genuine | COA |
+| approvalsInbox, approvalsSecurity | travel workflow, manager step, 72 h SLA | value (`module='travel'`) | genuine | migration 20260806000005 |
+| employeeCode.contract | department 'IT'; company-1 employee with office_id EMP001 | value; fixed company 1 | genuine (EMP001 is the canonical code being tested) | defaultSeed lists; synthetic EMP001 |
+| biometricWorkflows, 06-db-consistency (browser) | department 'Engineering'; designation 'Engineer' | value | genuine | defaultSeed lists |
+| probationReviewStaleness | ≥ 8 active departments and one designation | value | genuine | defaultSeed lists |
+| approvedRunImmutability, encashmentOwnership | any leave type | value (FK only) | genuine | defaultSeed leave types (company 1) |
+| ticketCategoryBreakdown | 'Hardware', 'Software', 'Network', 'Other' and others | value | genuine | defaultSeed ticket categories |
+| ticketCategories | an active SLA policy | value | genuine | four Service Desk defaults (company 1) |
+| employeeAssetScope, masterVocabularies | active zone 'North'; a retired zone | value | genuine ('North' is in the product vocabulary) | 'North' plus 'E2E Retired Zone' (the retired-zone test now asserts instead of returning early) |
+| biometricAuthz | device in company 1 | fixed company 1 | genuine | synthetic device, 192.0.2.10 |
+| biometricAuthz | 'SEED Visitors 1..5' hosted by employees 1..5 | value plus fixed host ids | **accidental**: developer residue from an old seeding probe | synthetic stand-ins (name and host only) |
+| bgvIntegration, employeeTenantScope, viewEmployeeSurface | an employee in company **565** | **fixed id** | **accidental**: 565 is a leftover ZZGEN tenant in dev | synthetic company 565 'E2E Foreign Reference Tenant' (code E2EREF565) plus one employee; `companies_id_seq` moved past 565 |
+| advancedInventoryInvariants (global-scope test) | lots in more than one tenant | value | genuine | zero-quantity lot in E2ETEST |
+| inventoryKpi | item × warehouse fan-out | value | genuine | second warehouse in E2ETEST |
+| biometricWorkflows | attendance working day of 8 h + 30 min | value | genuine (§198 decision) | one global `attendance_general_settings` row |
+| successionSecurity | employee ids never equal recent user ids | sequence spacing | **accidental**: dev keeps `employees_id_seq` ahead of `users_id_seq` | test DB only: `employees_id_seq` ≥ `users_id_seq` + 100000 |
+
+**History-bound: NOT seeded (stop-and-report).** These assertions check what an old migration did to the developer database's past rows. A synthetic copy would assert nothing, so they fail on every fresh database, CI included:
+- `advancedInventoryInvariants`: `fk_suggestions_converted_pr` is NOT VALID; and exactly one grandfathered row exists (suggestion 9 → PR 1451).
+- `attendanceContract`: the frozen legacy `attendance` table holds Title-Case statuses (dev: 4).
+- `traceabilityClosure`: legacy `bin_locations` rows carried into `warehouse_bins` (dev: 12); GRNs carrying `quality_status_prior` (dev: 9).
+- `iot.gapclosure`: `iot_legacy_quarantine` rows from 20260915000001 (dev: 35).
+
+These need a decision (see the report): mark them as developer-history checks, or rewrite them to assert the migration's logic on a fixture.
+
+**Seed rules.** All in `scripts/test-db/seed.mjs`, behind the guard:
+- idempotent (two consecutive runs give identical counts);
+- no developer rows read;
+- no contact, bank, salary, ID, biometric template or attendance data.
+
+`defaultSeed.js` is not called. Its `ON CONFLICT (name)` on the masters no longer matches the normalised partial unique indexes, so it fails on this schema. The same lists are inserted with `WHERE NOT EXISTS` instead.
+
+**Test change (one).** `biometricAuthz` "own-tenant device passes the scope check" picked `company_id = 1 OR company_id IS NULL LIMIT 1`. The route's predicate is `company_id = $2`, so a NULL-company device (from the dev-mode demo seeder in `biometric.routes.js`) 404'd. It now picks `company_id = 1 ORDER BY id`. On dev this is the same row.
+
+**Runner guard.**
+- `vitest.config.js` has `globalSetup: ['./scripts/test-db/vitest.globalSetup.mjs']`, which runs `assertTestDatabase` through `src/config/db.js` before any file loads.
+- `npm run test:db` sets `DB_NAME=pulse_e2e` and `PULSE_TEST_DB=1`, and removes `DATABASE_URL`.
+- The globalSetup lives outside `src/__tests__` because `sharedPoolLifecycle.contract` forbids `pool.end()` there.
+
+Refusals verified, each before any test ran:
+
+| Case | Refused because |
+|---|---|
+| plain `vitest` | no flag |
+| flag set with `DB_NAME=Pulse` | name is not a test-DB name |
+| `DB_NAME=pulse_e2e` without the flag | no flag |
+| `DB_NAME=pulse_e2e_nope` | cannot reach the database |
+| `DATABASE_URL` → dev overriding `DB_NAME=pulse_e2e` | connected to "Pulse" |
+
+`npm run test:db` with a dev `DATABASE_URL` in the shell still verified `pulse_e2e`.
+
+**CI changes.**
+- The service database is now `pulse_e2e_ci`, and the job env sets `PULSE_TEST_DB=1`.
+- New step `mark-ci.mjs pulse_e2e_ci`. It refuses outside `CI=true`, for a non-pattern name, when `current_database()` differs, or when the server is not localhost.
+- New step `test-db/seed.mjs` after `seed-test-fixtures`.
+
+**Results.** Full suite twice on pulse_e2e, `--maxWorkers=2`: **7 failed | 5157 passed | 9 skipped (5173)**, identical both times. The failures were the 6 history-bound assertions plus `sharedPoolLifecycle`; that last one was caused by the first globalSetup location and has since been fixed and re-run green. The gate-pass and ticket-category flakes did not recur. Developer sequences were identical before and after (all 681, e.g. `seq_po_purch` 9,361).
+
+**Fresh-database rehearsal (what CI gets).** `setup.mjs pulse_e2e_fresh` built a database from zero: baseline, 144 migrations, marker, seed. Two full runs followed:
+- run 1: 12 failed | 5152 passed. That is the 6 history-bound assertions plus 6 in `procurementReverification` (D5, D8 ×4, D15: a PO approval returned 400, then GRNs 422).
+- run 2: **6 failed | 5158 passed**, the history-bound six only.
+
+`procurementReverification` passes alone (31/31) and in two parallel runs of the procurement suites (131/131). It also failed once in the pre-seed trial. It is an **open intermittent parallel flake**. Cause not yet identified: its `approvedPo()` helper does not assert the approve response, so the reason is lost.
+
+**Browser.** `playwright.testdb.config.ts` (setup, procurement-hardening, db-consistency): **18 passed, 1 failed**.
+- The failure is `[EMP-CONSISTENCY-2]`. Its 400 is now `REQUIRED_FIELDS: Bank account number, IFSC code, Current address`, the product's create rule. The spec payload predates that rule, so this is not a data gap. The Engineering / Engineer master gap is closed.
+- Developer sequences were unchanged across the browser run.
+
+**Not done (gated on full isolation):** moving the FX, freight and quote-entry browser suites to the test-DB config, and guarding the dev writers listed above.
+
+## §222 — procurementReverification "intermittent" failure: a first-run-on-a-new-database fixture defect, not a race (2026-11-02)
+
+**Symptom.** Six tests failed on the first full run against a newly built test database and passed on every later run: D5 GST carry-over, D8 ×4 IQC release, D15 approval notification. Passing alone or in parallel subsets looked like a parallel race. It was not one: those runs happened *after* a first run had already changed the database.
+
+**Exact cause.**
+- `PATCH /procurement/purchase-orders/:id/approve` enforces `min_vendor_rating` (3.0) against the vendor's **stored** `quality_rating`, `delivery_rating` and `price_rating` columns, after checking that a `vendor_ratings` history row exists.
+- `scripts/seed-test-fixtures.mjs` inserted a 4/4/4 history row for TSTV-1 straight into `vendor_ratings`, so the stored columns stayed **0.0/0.0/0.0**. The app normally keeps them in step: `POST /vendor-ratings` recomputes them as the average of the history.
+- The suite's own fixture check tested for history only, so it passed. Every approval was then refused: `400 "Vendor rating (0.0) is below minimum required (3.0)"`.
+- The suite's no-employee sweep test posts a rating through `/vendor-ratings`. That recompute set TSTV-1 to 4.0 permanently, so every later run, on any database that had run the suite once, passed.
+- The 400 never surfaced: `approvedPo()` and D5 did not check the approve response, so the failure showed two steps later as GRN 422 (PO still draft).
+
+**Evidence.**
+- Fresh `pulse_e2e_r1`: TSTV-1 stored 0.0/0.0/0.0.
+- Its first full run failed the same 6 tests, all with the vendor-rating message above.
+- After that run TSTV-1 read 4.0/4.0/4.0, and the file then passed 31/31 with no change.
+
+**Fix (smallest).**
+1. `seed-test-fixtures.mjs`: after inserting the history row, set TSTV-1's stored ratings to `ROUND(AVG(score),1)` of its history, the same expression the route uses.
+2. `integration.procurementReverification.test.js`:
+   - `expectOk(res, step)` asserts 2xx and prints the response body. It is used for the PR approve, convert and PO approve in `approvedPo()`, and for D5's PR and PO approves. D15's assertion message now includes the body.
+   - `beforeAll` checks the gate's own inputs: the fixture vendor's stored average against `min_vendor_rating`. A mismatch fails the file with the reason.
+   - No assertion was removed or relaxed. No production code changed.
+
+**Regression check.**
+- With the fix, a fresh `pulse_e2e_r2` had TSTV-1 at 4.0, and the suite's first-ever run passed 31/31.
+- Forcing TSTV-1 back to 0/0/0 on r2 made the file fail in `beforeAll` with "Fixture vendor 1 averages 0.0 against a minimum rating of 3.0 …". Re-running `seed-test-fixtures` restored 4.0, and the file passed.
+- Five consecutive runs passed 31/31 each.
+- Fresh `pulse_e2e_r3`, two full parallel runs: procurementReverification passed both.
+
+**Also seen on r3 run 1 only (not investigated, not changed):**
+- `exitTenantScope`: "repeated and concurrent cross-company attempts are all refused".
+- `supplierLoopClosure`: 401 where 201 was expected at :218.
+- `internships`: a file-level error at :146.
+
+None appeared in the earlier fresh runs or in r3 run 2, so they are probably separate parallel flakes.
+
+**Developer DB.** Unchanged except `health_checks_id_seq` (20032 → 20038). Those rows are the dev server's own health-monitor cron, from a backend `npm run dev` started 22:56 outside this work.
+
+## §223 — Three intermittent backend failures: root causes found, fixes PROPOSED, not applied (2026-11-02)
+
+All three are genuine parallel-timing failures, not first-run initialisation. Each passes alone, and each was reproduced deterministically on a guarded test database. No code was changed.
+
+### 1. exitTenantScope — "repeated and concurrent cross-company attempts are all refused" (audit_rows 13 → 14)
+**Cause.** `snapshot()` counts `audit_logs WHERE reference_id IN (employee id, exit-request id)` with no record type. `reference_id` is a bare id shared by every module. A brand-new leaver already counted 3 rows on r2, and 13 in the failing run: GRNs, purchase requests, candidates and interns that happen to share the id. Any parallel suite auditing such a record between the before and after snapshots moves the count. The refused calls wrote nothing.
+
+**Repro** (one rolled-back transaction): one unrelated `procurement/grn <id>` audit row moved the suite's count from 3 to 4. A type-scoped count stayed 0 → 0 and still caught a real `exit_request` audit row (0 → 1).
+
+**Proposed fix (test only).** Count the audit trail of this leaver's own records, by pair:
+- `(reference_type IN ('exit_request','fnf_settlement') AND reference_id = er)`;
+- `(reference_type IN ('exit_clearance','employee') AND reference_id = emp)`.
+
+These are every type `exit.routes.js` writes. The assertion stays strict.
+
+### 2. supplierLoopClosure — "moves that supplier's quality score when the NCR lands" (401, expected 201)
+**Cause.** `beforeAll` picks its actor with `SELECT … FROM users JOIN user_roles JOIN roles WHERE code IN ('admin','super_admin') AND is_active LIMIT 1`, with **no ORDER BY**. The plan probes roles into a hash of `user_roles`, so the pick is any matching row, typically a newer one. It can be a transient admin created by another suite's fixture (`createIsolatedCompany` and others). When that suite tears its user down, `verifyToken` re-reads the user and returns `401 auth_inactive`. The failing run logged `auth_inactive userId 613`. User 613 is no seeded account, and it no longer exists.
+
+**Repro** (rolled back): with a transient `super_admin` present, the suite's query returned it (1160) instead of the seeded 101.
+
+**Proposed fix (test only).** Own the actor: create one admin user in the suite's own tenant 999913 and remove it in `sweep()`. The minimal alternative is `ORDER BY u.id`, which picks the seeded `admin@test.com`.
+
+### 3. internships — file-level "deadlock detected" (and its siblings)
+**Cause: production import-time DDL.** `recruitment.routes.js` runs, fire-and-forget, every time it is imported:
+
+`ALTER TABLE interview_schedules ALTER COLUMN candidate_id TYPE INTEGER USING …`
+
+It does the same for two `offer_letters` columns. All three columns are already `integer`, so the statement changes nothing, but it still:
+- takes ACCESS EXCLUSIVE on `interview_schedules`;
+- then takes ACCESS EXCLUSIVE on `candidates`, to rebuild the `candidate_id` foreign key.
+
+A concurrent `DELETE FROM employees` or `DELETE FROM companies` takes the same two tables in the opposite order:
+- it gets ROW EXCLUSIVE on `candidates` from `candidates.l1/l2_interviewer_id` → employees ON DELETE SET NULL;
+- then it needs `interview_schedules`, for `interviewer_id` SET NULL or `company_id` CASCADE.
+
+Those two orders deadlock.
+
+**Evidence.** A temporary diagnostic hook printed Postgres's DETAIL in parallel runs of 8 suites: "Process X waits for RowExclusiveLock on relation interview_schedules; blocked by Y. Process Y waits for AccessExclusiveLock on relation candidates; blocked by X." The hook was a vitest setup file outside the repo; it is now removed. A two-connection repro with the verbatim ALTER produced the identical cycle.
+
+**Victims seen.** The cleanup of internships, internConversionWorkflow and exitTenantScope, and a `recruitmentWorkbench` work-queue request (500 = deadlock). That was 5 of 13 parallel subset runs; it also happens in production whenever the server boots while employees or companies are being deleted.
+
+**Proposed fix (production, needs approval).** Make the three ALTERs conditional: run each only when `information_schema.columns` shows the column is not already `integer`. Or retire them into the migration chain, since the columns are integer everywhere checked. Behaviour is unchanged where the column is already integer, which is every database checked. A test-side retry on 40P01 would only hide it.
+
+## §224 — The three §223 fixes, applied and verified (2026-11-03)
+
+**Changed files**
+- `backend/src/modules/recruitment/routes/recruitment.routes.js` (production): removed the import-time `for` loop that ran three unconditional `ALTER … TYPE INTEGER` statements on `interview_schedules.candidate_id`, `offer_letters.candidate_id` and `offer_letters.job_opening_id`. A comment points to the migration. The `CREATE TABLE IF NOT EXISTS` bootstrap above it is unchanged; it is out of scope, and a no-op on existing tables.
+- `backend/src/database/migrations/20261103000001_recruitment_id_columns_integer.js` (new). Per column it reads `information_schema.columns`:
+  - absent → skip;
+  - `integer` → **no ALTER**;
+  - legacy type → it first counts non-blank values that are not integer text. If there are any, it **refuses** with the count, so no data is destroyed. Otherwise it runs `ALTER … TYPE INTEGER USING NULLIF(btrim(col::text),'')::integer`.
+
+  `down()` is a deliberate no-op, because the UUID typing was the defect.
+- `backend/src/__tests__/exitTenantScope.integration.test.js`: the `snapshot()` audit count is scoped by type and id: `exit_request`/`fnf_settlement` for the exit-request id, `exit_clearance`/`employee` for the employee id. The before/after `toEqual` is unchanged.
+- `backend/src/__tests__/integration.supplierLoopClosure.test.js`: `beforeAll` creates the suite's own admin (`looproof.admin@test.invalid`) in tenant 999913, with `user_scope` and `syncPrimaryRole('admin')`. `sweep()` deletes it before the tenant; `user_roles` and `user_scope` cascade. No borrowed admin remains.
+- `backend/src/__tests__/recruitmentIdColumnsMigration.integration.test.js` (new, 3 tests, no DDL). It checks that:
+  - the route file contains no `ALTER TABLE`;
+  - the three columns are integer;
+  - a re-run of the migration issues only three catalogue reads and zero ALTERs.
+
+**Verification** (test databases only; the dev DB was not accessed)
+
+| Check | Result |
+|---|---|
+| Each fixed file alone | exitTenantScope 46/46, internships 57/57, supplierLoopClosure 23/23; new test 3/3 |
+| Twelve-suite concurrency (the eight below + supplierLoopClosure, employeeTenantScope, addEmployeeTenantGuards, companyProfileScope), 4 workers, ×3 | 396/396 each, 0 deadlocks |
+| Eight-suite §223 reproduction, ×13 completed | 333/333 each, **0 deadlocks** (captured with the same pg hook that caught 5 of 13 runs before the fix) |
+| Full suite ×2 on a freshly built `pulse_e2e_r4` | **6 failed / 5161 passed / 9 skipped (5176)** both times; only the six history-bound assertions |
+| Recruitment router import | one statement (`CREATE TABLE IF NOT EXISTS`, no-op), zero ALTERs, no table rewritten (relfilenode identical); did not block while another session held ROW EXCLUSIVE on candidates + interview_schedules |
+| Migration: already integer | 0 ALTERs |
+| Migration: legacy uuid, empty | → integer |
+| Migration: legacy text `' 42 '` / `''` / NULL | → 42 / NULL / NULL |
+| Migration: legacy text holding a real UUID | **refused**; type and value untouched |
+
+The last four migration cases ran in rolled-back transactions, via a guarded one-off script.
+
+**Notes**
+- One extra eight-suite run (run 6 of 15) exited silently after the guard passed, reporting no tests. That is the intermittent vitest runner exit documented in `vitest.config.js`, not a test result, so 13 completed runs were counted from 15 started.
+- On a database still carrying a legacy non-integer value, migrations now stop at 20261103000001 with an explicit message. The old fire-and-forget ALTER failed silently there instead.
+
+## §225 — PROPOSAL: turning the six dev-history assertions into migration-fixture tests (2026-11-03, awaiting approval, nothing implemented)
+
+| Assertion (file) | What it really checks | Migration(s) under test |
+|---|---|---|
+| FK is NOT VALID; suggestion 9 → PR 1451 kept (advancedInventoryInvariants ×2) | the grandfathering branch of PART 2 | 20260926000013 (branch on dangling rows: NOT VALID vs VALIDATED) |
+| frozen `attendance` holds Title Case (attendanceContract) | no migration — the app's "present" match must be case-insensitive | none; production predicate `sqlAttendancePresent` / `isIn` (statusSets.js) |
+| legacy bins carried into warehouse_bins; bin_locations gone (traceabilityClosure) | mapping and cutover | 20260915000017 → 20260916000001 |
+| GRN `quality_status_prior` kept with a note (traceabilityClosure) | derive / withdraw with the prior value preserved | 20260916000003 → 20260916000004 |
+| `iot_legacy_quarantine` rows with full `row_data` (iot.gapclosure) | archive-then-delete of out-of-vocabulary rows; constraints validated | 20260915000001 (predecessor constraints from 20260914000001) |
+
+**Key finding.** Two of these migrations, 20260915000017 (`addFk`) and 20260926000013, check `pg_constraint` by constraint name with no schema filter. A private-schema replay inside the test database would therefore see public's constraints and skip its own work. On a single-schema app that is not a production defect. It does, however, rule out schema-level isolation.
+
+**Proposed design.** Run each fixture in a per-file scratch **database**:
+- name `pulse_e2e_mig<tag><pid>`, which matches the guard pattern;
+- created from template0 and given the marker naming itself;
+- checked with `assertTestDatabase`, and dropped in afterAll.
+
+Into it go only the pre-migration tables the migration touches, taken from their creating migrations. The real migration modules then run through the runner's shim, and the expected results are read off each migration's own SQL. No shared table is locked, which avoids the §223 deadlock class, and nothing can resolve to public objects.
+
+## §226 — Migration fixture tests replace the six dev-history assertions (2026-11-03)
+
+**Mechanism.** `src/__tests__/helpers/migrationFixtureDb.js` provides `withFixtureDb(tag, fn)`, which builds a brand-new scratch database per scenario, `pulse_e2e_mig<tag>h<host>p<pid>t<time>r<rand>`. In order, it:
+1. verifies the suite DB with `assertTestDatabase`;
+2. checks that the `postgres` maintenance connection reaches the same server (same address and port, and it sees the verified DB);
+3. runs `CREATE DATABASE … TEMPLATE template0`;
+4. writes the marker naming the new DB, then runs `assertTestDatabase` on it;
+5. hands the caller `apply(mod)` = `BEGIN; mod.up(makeKnexShim(client)); COMMIT`, with ROLLBACK on error, exactly as `runMigrations()` applies a migration;
+6. in `finally`, runs `DROP DATABASE … WITH (FORCE)` on the exact name this process created.
+
+**Stale databases** are swept on entry, for the same tag only. A database is dropped only when all of these hold:
+- same host tag;
+- the owning pid is dead on this host;
+- zero connections;
+- it carries a marker naming itself.
+
+`makeKnexShim` is now exported from `config/migrations.js`, with no behaviour change.
+
+**New test files**
+
+| File | Migrations | Scenarios |
+|---|---|---|
+| `migrationFixture.suggestionFk` | 20260926000013 | dangling → NOT VALID, row byte-identical, new dangling refused 23503, SET NULL on delete, tenant fill + NOT NULL, idempotent, VALIDATE refused until resolved; none dangling → VALIDATED; untenanted lot → NOT NULL skipped with warning, trigger fills and refuses a mismatch |
+| `migrationFixture.iotQuarantine` | 20260915000001 (before-state from 20260914000001, constraint text checked verbatim against that file) | bad state, bad severity, old 'open' default, bad operator, SEED latest/telemetry → exact quarantine rows, reasons, whole `row_data`; valid rows kept; all 7 constraints VALIDATED; all 26 steps run (no skip); idempotent. A device_status the migration cannot fix → exactly that one step reported skipped |
+| `migrationFixture.grnQualityEvidence` | 20260916000003 → 000004 (baseline + 20260915000018/20260911000013/20260915000019) | pass / fail / conditional derived; passed-without-inspection withdrawn; untouched and deleted rows untouched; exemption overridden by a failure kept with its note; exemption overridden without one restored; serial dispatch withdrawn; both triggers refuse unsupported and allow evidenced claims; conflicts view; idempotent as a pair |
+| `migrationFixture.binCutover` | 20260915000017 → 20260916000001 (baseline + 20260915000008) | new bin and twin mapped once each; lines remapped; mapping re-runnable; cutover carries columns, drops FKs and table, keeps legacy line ids; an unplaceable bin → cutover refused and rolled back whole |
+| `migrationFixtureDb.contract` | — | named inside TEST_DB_PATTERN and marked; dropped after success, after a throwing body, and after a failed migration; refuses before creating anything without PULSE_TEST_DB; stale sweep drops only a marked DB of a dead pid, keeping an unmarked one and a live one |
+
+**Live assertions replaced with database-independent invariants**
+
+| File | Before | Now |
+|---|---|---|
+| advancedInventoryInvariants | "NOT VALID" | the FK exists, `ON DELETE SET NULL`, references purchase_requests. If VALIDATED, zero dangling; if NOT VALID, at least one dangling (otherwise it should be validated) |
+| advancedInventoryInvariants | "exactly suggestion 9" | every dangling pointer is a grandfathered `converted_to_pr` |
+| attendanceContract | "frozen table is Title Case" | the production predicates `sqlAttendancePresent/Absent/Leave/Off`, evaluated by Postgres on mixed-case statuses. Present matches any casing; **Late is present, and only present** (`ATTENDANCE_PRESENT` includes 'late'; the buckets are disjoint) |
+| traceabilityClosure | "carried > 0" | `bin_locations` gone, `uq_warehouse_bins_legacy` present, no legacy id twice |
+| traceabilityClosure | "corrected rows > 0" | no prior value without a note, and the release trigger installed |
+| iot.gapclosure | "quarantine counts > 0" | `row_data` is jsonb NOT NULL, and every archived row is whole and has a reason |
+
+**Migration defect demonstrated (not fixed; see report).** In 20260915000017, a legacy `bin_locations` row with NULL `row_no` or `shelf` (both nullable in the legacy schema) makes the migration fail with `23502 null value in column "row_code" of relation "warehouse_bins"`, because `warehouse_bins.row_code`/`shelf_code` were NOT NULL. Every database where 017 already ran is unaffected, and fresh databases have no legacy bins. Fixing an applied migration changes its checksum, so the decision is left to the user.
+
+
+## §227 — Legacy bins with a blank row or shelf: compatibility migration 20260915000016a (2026-11-03)
+
+**Defect (found in §226).** 20260915000017 inserts `NULLIF(bl.row_no::text,'')` / `NULLIF(bl.shelf,'')` into `warehouse_bins.row_code` / `shelf_code`, which are NOT NULL. The legacy `bin_locations.row_no` / `shelf` are nullable. One such bin failed 017 with 23502. Because `server.js` runs migrations before it listens, that stopped the server from booting.
+
+**Why a new file and not an edit of 017.**
+- The runner never re-runs an applied migration, so an edit would change nothing on any database that already ran 017.
+- It would change 017's checksum. `runMigrations` and `/api/health` then warn ('warn'), and `pre-deploy.js` / `post-deploy.js` exit 1 until `migrate:repair-checksums` is run.
+- 017 is therefore untouched. Its checksum is still `59679c26…eb391`, the value in every ledger read, and the fixture asserts it.
+
+**Ordering, verified against the runner itself.**
+- `migrationFiles()` (now exported, with no behaviour change) lists `…016_component_installations` → `…016a_legacy_bin_blank_row_shelf` → `…017_location_hierarchy` → `…018` (positions 415–418), with `20260916000001` at 423.
+- The runner applies any file missing from `schema_migrations`.
+  - On `pulse_e2e`, already cut over, `setup.mjs` applied 016a **after** 017/001 and logged "bin_locations is gone … nothing to do". No archive table was created, and there were no integrity warnings.
+  - On a fresh `pulse_e2e_r7` the order was 016 → 016a → 017 → 001. The archive table was created, and it is empty because a fresh database has no legacy bins.
+
+**Migration** (`src/database/migrations/20260915000016a_legacy_bin_blank_row_shelf.js`). It runs inside the runner's per-migration transaction.
+1. If `to_regclass('bin_locations')` is NULL, it logs and returns.
+2. `CREATE TABLE IF NOT EXISTS legacy_bin_location_archive`, with columns `bin_location_id`, `row_data jsonb`, `blank_fields text[]`, `reason`, `archived_at`, `migration`, and `UNIQUE (bin_location_id, migration)`.
+3. It archives every legacy row whose `NULLIF(BTRIM(row_no),'') IS NULL OR NULLIF(BTRIM(shelf),'') IS NULL`, whole (`to_jsonb`), recording which fields were blank. `ON CONFLICT DO NOTHING` means a re-run never archives twice and the stored row is always the original.
+4. It sets only the blank field to `'-'`, the product's own "not recorded" value (`warehouse.routes.js` uses `COALESCE(row,'-')` on create and `trim() || '-'` on edit). Populated values are untouched.
+
+Placement is left entirely to 017, so a zone with no warehouse still makes 001 refuse.
+
+**down().** If `bin_locations` or the archive is absent, it does nothing. Otherwise it restores each originally blank field **on its own**, from `row_data`, and only while the field still holds `'-'`: a value corrected since is kept. The archive is never dropped.
+
+**Fixture** (`migrationFixture.binCutover`, +6 tests, 8 in total). It checks:
+- runner order and 017's checksum, both on file and in the suite DB's ledger;
+- that 017 fails with 23502 on blank bins without 016a;
+- NULL, '', whitespace-only and row-or-shelf-only bins: the archive equals the original `to_jsonb`, `blank_fields` is exact, only blank fields become `'-'`, populated and untouched bins are unchanged, a second run archives 0, and 017 → 001 then succeed with `'-'` in the canonical rows and the legacy-only columns carried;
+- that a zone-without-warehouse bin is archived and normalised, 017 skips it, 001 still refuses, and the archive survives;
+- that a late run after the cutover is a no-op for both up and down;
+- atomicity: a forced failure after the archive INSERT leaves no archive table and no changed value;
+- that down() restores fields independently, keeps a value corrected after the migration, keeps the archive, and that re-applying afterwards archives nothing twice.
+
+## §228 — HR P0 containment: F&F suspended, exit status via workflow, policy acknowledgement identity (2026-11-03)
+
+Temporary containment from `HR_P0_REMEDIATION_DESIGN_2026-11-03.md` Appendix A; report `HR_P0_CONTAINMENT_REPORT_2026-11-03.md`. Not committed or deployed. The permanent fixes (P0-1 … P0-7) are not built.
+
+**Switches** (`backend/src/shared/hrContainment.js`, ON unless the env var is `off`, read per call):
+- `HR_CONTAINMENT_FNF` — Exit → F&F. `jobs/fnfAutoTrigger.cron.js` returns `{skipped}` before any query; `POST /exit/fnf/compute/:id` still computes but adds `provisional`, `settlement_actions_suspended`, `containment_notice`; `PUT /exit/fnf/:id/approve` and `POST /exit/fnf/:id/pay` → **423 `FNF_SETTLEMENT_SUSPENDED`** (after the HR role gate, before any DB work). ExitManagement shows a provisional banner and no Approve / Mark as Paid; a failed compute shows the error (the invented ₹1,45,200 fallback is gone).
+- `HR_CONTAINMENT_EXIT_STATUS` — `PATCH /employees/:id/status` to `Left` → **409 `USE_EXIT_WORKFLOW`** (no screen sends it); `POST /hr/offboarding/:id/complete` finalises only when the latest non-cancelled exit request has `fnf_status='paid'`, else **409 `EXIT_NOT_SETTLED`**.
+
+**Not switched — correctness fix:** policy acknowledgement (`hr.routes.js` `ownEmployeeInCompany()`). `POST /hr/policies/:id/acknowledge` and `GET /hr/policies/my-acknowledgements` use the caller's own `employees.id` in `companyOf(req)`; the body is never read for identity (it used to store the body id or the `users.id`, while the register joins `employees.id`). No company → 403; no linked employee in the company → 403 "No employee record is linked to this account"; policy outside `company_id = caller OR NULL` → 404; retired → 409. Policies.jsx sends no body.
+
+**MD-14 approved (same day) — every employee write that ends employment goes through Exit Management.** `employee.routes.js` `exitStatusViaWorkflow` (same `HR_CONTAINMENT_EXIT_STATUS` switch) on `PUT /employees/:id` (status `Left`), `POST /employees` (created as `Left`) and `DELETE /employees/:id` (soft delete as `terminated`) → **409 `USE_EXIT_WORKFLOW`** for a CURRENT employee; a record already in an exit status may still be edited or soft-deleted. The guard is route-level: direct service callers (fixtures, `updateEmployee()` in tests) are unaffected. **All Employees → Terminate** keeps its dialog (last working day + reason) but writes nothing: it opens `ExitCenter?tab=exit&initiate=<id>&lwd=&reason=&name=`, and ExitManagement (`features/hr/exitHandOff.js` `initiateHandOff`) opens Initiate Exit pre-filled (reason → separation type: Resignation/Termination/Absconding/Retirement; others left for HR) with a new Reason field → `POST /exit/initiate` (employee → Notice; the LWD cron sets the exit status). Add/Edit Employee no longer offers `Left` (kept only for a record already Left).
+
+**Exit lifecycle while contained:** no path in Pulse finalises an exit through F&F (pay suspended, so Offboarding Complete is refused). The only remaining route to an exit status is `exitStatusSync.cron.js` on the LWD of an initiated exit (it sets status, not `exit_date` — P0-2).
+
+**Not done (decisions):** C4 login deactivation (per-account HR confirmation), C7 TDS declaration filter (MD-15). Read-only monitor: `node backend/scripts/hr/hr-containment-report.mjs [--company id] [--month YYYY-MM]` (C4 exited employees with an active login; C2 leavers per payroll month with `excluded_by_e2` / `draft_at_risk`).
+
+Tests: `hrP0Containment.integration.test.js` (23; every switch also tested off), `hrP0Containment.ui.test.jsx` (5); `exitTenantScope.integration` runs with `HR_CONTAINMENT_FNF=off` to keep covering the logic behind the switch.
+
+## §229 — PC-01: payroll backend access control from the permission matrix (2026-11-04)
+
+**Why:** Payroll Center routes were gated by hard-coded role lists (`PAYROLL_READ_ROLES`, `HR_ROLES`, `FINANCE_ROLES`, `PROPOSAL_APPROVERS`, `req.user.role` in increments). `hr_exec` and `manager` read every salary; any HR role could mark a run paid; `hr` could switch CTC mode or PT off; a line manager listed and created increments for the whole company; push-to-payroll outside CTC mode wrote the salary revision and `employees.basic_salary` with no approval; Form 24Q (every employee's salary and TDS) opened on `finance:view` alone. A user-level deny in `permissions` had no effect on any of it.
+
+**Matrix (migration `20261104000001_payroll_access_control_permissions`):** five new modules, rows for every role.
+
+| Module | Granted |
+|---|---|
+| `salary_proposals` approve | super_admin, admin, payroll_admin, hr_manager, finance_manager |
+| `payroll_payment` approve | finance_manager only (Q1; temporary until PC-02) |
+| `payroll_statutory_config` edit | super_admin, admin, payroll_admin (D3/Q2) |
+| `payroll_tds_extract` export | super_admin, admin, finance_manager, finance, accounts_exec — NOT payroll_admin (D6/Q4) |
+| `increment_team` view + add | manager, department_head (direct reports only, D7/Q5) |
+
+Two existing `payroll` flags changed: finance_manager `can_approve` false→true (D1, Finance approves payroll and arrears), hr_manager `can_approve` true→false. `up` refuses unless each flag has the expected old value; `down` restores both and deletes the five modules' rows (verified row-for-row identical on pulse_e2e).
+
+**Route mapping:**
+
+| Gate | Routes |
+|---|---|
+| `payroll:view` | list, summary, trend, compliance, eligibility, cycle, release-readiness, GET statutory-rules, form16 status/pdf, employee/:id, payslips/:id, payslip-pdf, history, dept-cost, arrears GET/compute, loan-advances GET/repayments, compute-slip, generate-pdf-data, bulk-generate; salary-structures GETs, assignments, proposals GET, ctc-preview; `GET /employees/:id/salary-revisions` (D5; 403 without a company unless global super-admin); increments budget-summary; company-wide increment list |
+| `payroll:add` | generate, run, save-slip; salary-structure create/copy |
+| `payroll:edit` | POST arrears, loan-advances create/prepay/close; structure PUT/assign, POST proposals; company-wide increment create; push-payroll |
+| `payroll:export` | register CSV, PF ECR, ESI challan, statutory bonus (D4) |
+| `payroll:approve` | approve, `arrears/:id/approve` |
+| `payroll_payment:approve` + `payerIsNotPreparer` | `POST /payroll/:id/mark-paid` — 403 `PAYER_IS_PREPARER` when `payroll_runs.generated_by` is the caller, 409 `PREPARER_UNKNOWN` when it is null (D2) |
+| `payroll_statutory_config:edit` | POST statutory-rules (incl. CTC policy); `POST /settings/payroll` when `ctc_mode`, `statutory_state`, `pt_local_body(_name)`, `pf_enabled`, `esi_enabled`, `professional_tax` or `pt.state` changes — compared on normalised values, so the Setup Wizard family (`pt.enabled`, …) cannot route around it; 403 `STATUTORY_CONFIG_PERMISSION` with `keys` (Q3) |
+| `payroll_tds_extract:export` | `/tds/form24q`, `/tds/form24q-download` (path match ignores case and trailing slash); other TDS routes stay `finance:view` |
+| `salary_proposals:approve` | proposals approve / reject |
+| unchanged | `/payroll/my-payslips`; `/payslips` and `/email-payslip` keep `ownPayslipOrForbidden` (any `payroll:view` holder, else own record only) |
+
+`payrollAccess.js` `canReadAnyPayroll(req)` = `can(req,'payroll','view')` replaces `PAYROLL_READ_ROLES`. Increments: `recommendationScope()` — company-wide via `payroll:view`/`payroll:edit`, else `increment_team:view/add` limited to `employees.reporting_manager_id = <caller's employee>` (list filtered, `:id` and POST for a non-report → 404, no linked employee → 403). Bands, approve and reject need `performance:approve`. Push-payroll outside CTC mode → 409 `SALARY_PROPOSAL_REQUIRED`, nothing written; the direct-write branch was removed (Q6).
+
+**Not changed:** maker-checker on approval, release gates, preparer tracking, employee self-service, the frontend (HR-menu roles without `payroll:view` now see 403s in Payroll Center), `employee.service.js` `SALARY_ROLES` field stripping (hr_exec still sees master Basic on employee reads — outside PC-01).
+
+Tests: `integration.pc01PayrollAccess.test.js` (201: 12 roles × 14 endpoints, company isolation, direct-report scope, push-payroll, mark-paid, Q3 settings, 24Q, self-service, role union, user-level deny); 47 of them fail against the pre-PC-01 code. `payrollEndToEnd` / `ctcProposals` pay as a separate finance_manager; `smoke.payroll` stubs `requirePermission` (no DB).
+
+## §230 — PC-01 closure: salary visibility, Payroll Center navigation, maker-checker tests (2026-11-04)
+
+**Basic salary (employee APIs).** `maskPII` (employee.service.js) returns the full row to every `HR_PII_ROLES` caller before its `SALARY_ROLES` check, so hr_exec read every colleague's master Basic through `GET /employees`, `/employees/:id`, `/employees/ex`, the PUT response and the full-row answers of `PATCH /:id/status`, `/ex/:id/exit-details`, `/ex/:id/rehire`. `employees/salaryVisibility.js` `withSalaryMasking(req, payload)` now drops `basic_salary` from every row but the caller's own unless they hold `payroll:view`; the controller applies it before bank masking (`maskForCaller`), the three routes on their own responses. `SALARY_ROLES` still governs the bank/PF block for non-HR roles only. `PUT /employees/:id` carrying `basic_salary`, `special_allowance` or `salary_revision_id` needs `payroll:edit` (403 `SALARY_PERMISSION`, nothing written). Add Employee's first salary is NOT gated (decision pending). Edit Employee shows "Restricted — needs payroll access" when the server withholds Basic.
+
+**Alternate salary paths:**
+
+| Path | Before | Now |
+|---|---|---|
+| `GET /attendance/analytics/overtime-cost` | no permission at all; no-company login read every tenant; cost = hours × mult × Basic/26/9 per department (one OT earner → their Basic) | cost columns null + `cost_restricted` without `payroll:view` (hours/counts unchanged); 403 without a company unless global. AttendanceAnalytics hides the cost tiles/columns and says why |
+| `GET /ai/anomalies` (reports:view) | TDS Mismatch rows named the employee with TDS and annual tax | TDS Mismatch only for `payroll:view` |
+| `POST /ai/chat` payroll branch (reports:view) | company payroll totals | `PERMISSION_REQUIRED` without `payroll:view` |
+| reports catalog, `/analytics` salary bands / benchmarks, `/ai/payroll`, F&F compute, GDPR export | already `payroll:view` / HR write / admin | unchanged |
+| leave encashment list / create | `rate_per_day` (Basic/26) to hr_exec (all) and managers (reports); `employee` holds `leaves:add`, so can create a claim for a colleague and read their rate | NOT changed — decision pending |
+| `anomalyDetection.cron.js` | runs unscoped; TDS Mismatch (named, with amounts) notified to every finance / finance_manager / admin in EVERY company | NOT changed — reported |
+
+**Navigation.** Route entries `PayrollCenter`, `Payroll` (was `module: 'hr'`), `SalaryStructure`, `PayslipGenerator`, `PayrollSettings`, `PayrollForm16` → `module: 'payroll'`; `PayrollForm24Q` → `payroll_tds_extract` / `['export']`; HR → Payroll Center row `module: 'payroll'`. Inside the hub the Form 138 view has `grant: ['payroll_tds_extract','export']` (`visibleViews`, `resolvePayrollTab(tab, view, allowed)`), so payroll_admin / hr / hr_manager land on Form 16. Payroll Processing shows Generate / Re-run on `payroll:add`, Approve on `payroll:approve`, Pay / Mark All Paid on `heldGrant(permissions,'payroll_payment','approve')` — the raw grant, because `hasPermission()` is true for admin on everything and admin has no payment grant (Q1). IncrementPlanning: bands + approve/reject on `performance:approve`, budget on `payroll:view`, push on `payroll:edit` (was role lists).
+
+**Tests:** `integration.pc01MakerChecker.test.js` (7: preparer refused `MAKER_CHECKER` while holding payroll:approve; a Finance preparer refused too; a different finance_manager approves that period and company only; 8 roles refused; another company's approver sees no runs — one synthetic approval in a throwaway company), `integration.pc01SalaryVisibility.test.js` (12; 9 fail with the guards disabled). Frontend: `payrollCenter.shell` (Form 138 withheld), `payrollCenter.states` (Generate without payroll:add, Pay only on the payment grant), `payrollCenter.routeAccess` fixture now carries the PC-01 grants.
+
+## §231 — PC-01 closure decisions 1–5 (2026-11-04)
+
+**1. Salary proposal approval — Finance and the administrators.** Migration `20261104000002_salary_proposal_approval_finance_only`: `salary_proposals.can_approve` hr_manager true→false, payroll_admin true→false (each only if it still holds the expected value; `down` restores both). Approvers now: super_admin, admin, finance_manager. 1,354 rows before and after, 2 changed, overrides untouched; rollback verified row-for-row on pulse_e2e.
+
+**2. Company-wide increments.** `increments.routes.js` `readsAllIncrements(req)` = `performance:approve` OR `payroll:edit` — the list, `GET /recommendations/:id` and `GET /budget-summary`. finance_manager (payroll:view only) is refused all three; payroll_admin and hr_manager (payroll:edit — they push approved increments) and hr (performance:approve) keep them; line managers keep direct reports (`increment_team`). IncrementPlanning shows the Budget tab on the same rule.
+
+**3. Leave encashment.** `POST /leave-encashment`: a claim for the caller's own employee record, otherwise `payroll:edit` (403 `ENCASHMENT_FOR_OTHERS`); a body carrying `rate_per_day`, `gross_amount`, `tds_amount` or `net_amount` → 400 `ENCASHMENT_AMOUNT_COMPUTED`; `tds_rate` needs `payroll:edit` (403 `ENCASHMENT_TDS_RATE`). The list and the create response drop those four fields unless the caller holds `payroll:view` or the claim is their own (`withoutMoney`). LeaveEncashmentPage offers only the signed-in employee in the picker without payroll:edit and hides the money totals when amounts are withheld.
+
+**4. Anomaly cron per company.** `runAnomalyDetectionCheck({ companyIds })` runs `detectAnomalies(companyId)` for each active company (or the given ids) and notifies only that company's users. TDS Mismatch goes to `getReceiversWithGrant('payroll','can_view', companyId)` — a user-level `permissions` row replaces the role grants, else the union across roles (as `can()`); finance / accounts_exec no longer receive it. Other types keep their role routing, now company-scoped.
+
+**5. Add Employee.** `POST /employees` with a non-empty `basic_salary`, `special_allowance` or `salary_revision_id` needs `payroll:edit` (403 `SALARY_PERMISSION`, nothing created); blank values are treated as absent and removed; without salary fields the employee is created as before. The create response goes through `withSalaryMasking`. AddEmployee shows the salary read-only ("Recorded by Payroll") and sends no salary key without payroll:edit. (Edit Employee's salary was already payroll:edit, §230.)
+
+Tests: `integration.pc01ClosureDecisions.test.js` (22; 13 fail on the old code + old matrix — the 9 that pass are the positive cases and the §230 edit guard), `pc01ClosureForms.test.jsx` (5; 3 fail on the old pages).
+
+## §232 — PC-02a payroll payment controls: evidence, atomic clearing, recovery-only journal, bank masking (2026-11-04)
+
+Decisions PD-1, PD-2, PD-3, PD-15, PD-16 (`PAYROLL_PC02_DECISION_REGISTER.md`). Audit: `PAYROLL_PC02_PAYMENT_CONTROL_AUDIT.md`.
+
+**Migration `20261104000003_payroll_payment_controls`.**
+- Permissions (expected-value checked; `down` restores them):
+  - `payroll.can_approve` payroll_admin true→false (PD-2);
+  - `payroll_payment.can_approve` admin and super_admin false→true (PD-3).
+- `payroll_runs` gains `paid_at`, `paid_by` (users.id), `value_date` and `reconciled_at` (written only by reconciliation; none yet).
+- `ux_payroll_runs_payment_reference`: one run per UTR, case-insensitive.
+- `ux_journal_entries_payroll_reference`: one live entry per company + `payroll_run` / `salary_disbursement` reference; reversals excluded.
+
+**Recording a payment** (`POST /payroll/:id/mark-paid`, `payroll.service.js markPaid`).
+- Body: `{ month, year, reference, value_date, payment_mode }`.
+- The reference is a UTR, stored trimmed and upper-case (6–35 letters/digits, `-` `/`); otherwise 400 `UTR_REQUIRED`.
+- The value date is required, not in the future, and not before approval.
+- `payment_mode` is one of neft, rtgs, imps, bank_transfer or cheque.
+- One transaction, under a row lock:
+  - status → paid, with `payment_reference`, `value_date`, `paid_at`, `paid_by`;
+  - clearing JE Dr 2040 / Cr 1001, dated the value date, `created_by` = payer, posted through `journalRepo.postEntry` (posting guards);
+  - the s.192 TDS row.
+- Any refusal rolls all of it back and the run stays approved: `CLEARING_ACCOUNTS_MISSING`, `CLEARING_JOURNAL_REFUSED` (lock date or closed period), `CLEARING_JOURNAL_EXISTS`, `UTR_ALREADY_USED`.
+- The same run with the same UTR → 200 `already_paid`, nothing written. A different UTR → 409 `ALREADY_PAID`.
+- `paymentSeparation` (routes) refuses the preparer (`PAYER_IS_PREPARER`) and the approver (`PAYER_IS_APPROVER`), and refuses runs with no recorded preparer or approver (`PREPARER_UNKNOWN`, `APPROVER_UNKNOWN`). This applies to every role, administrators included.
+- Audit actions: `payment_recorded` (reference, value date, amount, journal id, authority) or `payment_replay`, plus `payment_admin_authority` whenever the payer acts as admin / super_admin rather than finance_manager.
+- **Paid ≠ reconciled:** responses say `reconciled: false`.
+- UI (Payroll.jsx): Pay opens Record payment (UTR, value date, mode). There is no bulk Mark All Paid; bulk confirmation comes with Finance salary batches (PC-02b), which retire this endpoint.
+
+**Payroll journal** (`finance/services/payrollJournal.service.js`).
+- Company-or-shared accounts (`DISTINCT ON (code) … company_id = $2 OR NULL`).
+- Draft entry + lines through `journalRepo`, then `postEntry` (balanced, accounts usable, lock date, open period).
+- Uniqueness checked in the posting transaction under an advisory lock, backed by the index.
+- A guard refusal returns `{ skipped, code, reason }`; it never posts.
+- `recoverPayrollJournals({ companyId, month, year })`:
+  - groups the period's approved / paid runs by `approved_at` (one approval transaction = one batch, reference `YYYY-MM:<min run id>`, the same as approval posts);
+  - derives every amount from the runs and `payroll_loan_repayments`;
+  - posts only the missing batches.
+- `POST /accounting/payroll-journal` (`finance:approve`) takes `{ month, year }` only. Any amount or reference key → 400 `AMOUNTS_NOT_ACCEPTED`. Responses: 201 posted, 409 all already posted, 422 refused (e.g. locked), 404 none approved in the caller's company. Audited as `payroll_journal_recovery`.
+- **Not changed:** the approval-time accrual is still called after the approval commits (F-03; not in the approved decisions).
+
+**Bank account masking** (payroll router).
+- A `res.json` wrapper masks `bank_account` / `account_number` at any depth to `XXXX` + last 4 unless the caller holds `employee_bank:view`. This covers the payroll list, payslips (including their spread run fields) and every other JSON route.
+- The register CSV applies the same rule. IFSC, PAN and UAN are not masked.
+- Export NEFT is shown only with `employee_bank:view` (admin, super_admin, hr, hr_manager). finance_manager has no export until PC-02b.
+
+**Tests:**
+- `integration.pc02aPaymentControls.test.js` (23; 20 fail on the pre-PC-02a code; the other 3 are matrix rows).
+- `pc02aPaymentDialog.test.jsx` (4; all fail on the old page).
+- Updated suites: `payrollEndToEnd`, `ctcProposals` (payments carry a UTR and value date), `pc01PayrollAccess` (PD-2 / PD-3 matrix; fixture runs carry an approver), `pc01MakerChecker` (the preparer holding approve is an admin; payroll_admin is refused).
+
+## §233 — F-03: payroll approval and its accrual journal in one transaction (2026-11-04)
+
+**Before.** `approvePayroll` (`payroll.service.js`) committed the status change, loan repayments and arrears; `payroll.controller.js` then posted the accrual, best-effort. A refused or failed journal (missing accounts, unbalanced, locked or closed period) left the period approved with `console.error` as the only record. Its payslips were released (every reader keys off `status IN ('approved','paid')`) and its runs were payable, with no expense or Salary Payable in the GL.
+
+**Now.**
+- `postAccrualInTransaction(client, …)` (`finance/services/payrollJournal.service.js`) posts inside the caller's transaction and throws `PayrollJournalError` on every refusal, inside a savepoint:
+  - 400 `PERIOD_INVALID` / `COMPANY_REQUIRED`;
+  - 422 `AMOUNT_INVALID`, `ACCOUNTS_MISSING`, `JOURNAL_UNBALANCED`, `LOAN_GL_MAPPING_REQUIRED`, or a posting-guard code (lock date, closed period, unusable account);
+  - 409 `ACCRUAL_JOURNAL_EXISTS`.
+  It uses company-or-shared accounts and posts through `journalRepo.postEntry`. Uniqueness is checked under an advisory lock, backed by `ux_journal_entries_payroll_reference`.
+- `approvePayroll` calls it after the loan and arrears updates and before COMMIT. Reference `YYYY-MM:<lowest run id>`; amounts from the runs it holds `FOR UPDATE`; loan principal and interest from the repayment rows it just wrote.
+- Any refusal → `PayrollHttpError` 422 (409 for an existing journal), `code: 'ACCRUAL_JOURNAL_REFUSED'`, `journal_code`, "Nothing was approved". The whole approval rolls back: runs stay pending, no approver, no loan or arrears change, no journal. Payslips therefore stay unreleased and payment is refused ("must be approved").
+- An all-zero batch is approved with `gl_posting.skipped: nothing_to_accrue`.
+- The controller no longer posts. The response's `gl_posting` is the journal that was committed, and the approval audit records `accrual_journal_entry_id`.
+- `postPayrollJournal` (standalone, its own transaction) wraps the same core for `recoverPayrollJournals` / `POST /accounting/payroll-journal` (§232), unchanged in behaviour.
+- **Retry** = approve again once the cause is fixed. There is no intermediate state and no migration.
+- **Concurrency:** the pending runs are locked `FOR UPDATE`, so the second approver finds none (400) and one journal exists.
+- **Unchanged:** maker-checker, the release gate and permissions.
+
+**Tests:** `integration.f03ApprovalAccrual.test.js` (9). Covered: locked period; closed accounting period; pre-existing journal; payslip and payment blocked while pending; retry posts one balanced journal; concurrent approvals; recovery adds nothing; maker-checker. The 5 failure-path tests fail on the pre-F-03 code.
+
+## §234 — PC-02b-0 B-01: Finance bank accounts are company-scoped (2026-11-04)
+
+**Before.** Every `/finance/bank-accounts/:id` route acted on the id as given: read, update, delete, transactions, unreconciled, statement lines (read and import), auto-match, manual-match and reconcile. A finance user of one company could read or change another company's bank account and its reconciliation. `manualMatch(line, txn)` took both ids without checking they belonged to the URL's account, in two separate statements. A finance login with no company listed and summarised every company's accounts, and could create an unowned one.
+
+**Now** (`finance/routes/extended.routes.js`, `repositories/bankAccount.repository.js`).
+- `bankScope(req)`: a login with no company → 403 `NO_COMPANY`. A global super admin (no company, `isGlobal`) keeps the cross-company scope. Applied to the list, the summary and create.
+- `ownedBankAccount(req)`: the `:id` must be a positive integer and an undeleted account of the caller's company. Anything else (another company's, missing, deleted, malformed) → 404 before the handler runs. Applied to every `:id` route.
+- The repository writes carry the same predicate (`$c IS NULL OR company_id = $c`; null = global or internal caller): `findById`, `update`, `softDelete` and `completeReconciliation`. Update and delete now also skip deleted accounts, and a second delete is 404.
+- `importStatementLines` re-checks ownership inside its transaction (`FOR KEY SHARE`).
+- `manualMatch(account, line, txn, company)` locks the account, the line and the transaction in one transaction, and matches only when both belong to that account. Otherwise it changes nothing, and the route answers 404.
+- **Not changed:** permissions; `autoMatch` logic (already per account); payment batches (`createTransaction` still calls `findById(id)` unscoped); reconciliation-integrity rules (B-08).
+
+**Tests:** `integration.b01BankAccountScope.test.js` (16). Covered: company B on all 10 routes against A's ids (404, A's fingerprint unchanged); list and summary; cross-account manual match; malformed ids; the same-company workflows; no-company and global-super logins; repository predicates. 8 fail on the pre-B-01 code.
+
+## §235 — PC-02b-0 B-02: payment-batch processing is atomic with its journals (2026-11-04)
+
+**Before.** `processBatch` (`finance/services/paymentBatch.service.js`) posted the Dr AP / Cr Bank journal only when the request carried `accounts_payable_id` and `bank_account_chart_id`. The Payments screen (`PaymentBatch.jsx`) sends no body, so every batch processed from the UI wrote payments, bill allocations, bill balances and bank debits with **no journal**. A caller could also name any account. The batch's bank account was used unchecked: any company's, inactive, or none. The running bank balance was read outside the transaction, so every line of a batch got the pre-batch balance.
+
+**Now.**
+- **Mapping** (`paymentGlMapping.service.js`): Finance's approved per-company mapping in `company_settings` module `payment_gl_mapping`, holding `{ accounts_payable_account_code, bank_ledgers: { <bank_account_id>: <code> } }`.
+  - The payable account must be an active Liability. Each bank ledger must be an active Asset of sub-type bank. Each mapped bank account must be an active, undeleted account of the company.
+  - It is re-validated at every use.
+  - `GET /finance/accounting/payment-gl-mapping` (finance:view); `PUT` / `DELETE` (finance:approve, audited).
+  - The generic `POST /settings/payment_gl_mapping` is refused (`SETTINGS_KEY_RESERVED`).
+  - It lives here because `bank_accounts.chart_account_id` (integer) cannot reference `chart_of_accounts.id` (uuid). That is B-03.
+- **`POST /finance/payment-batches/:id/process`:**
+  - `accounts_payable_id` or `bank_account_chart_id` in the body → 400 `ACCOUNTS_NOT_ACCEPTED`.
+  - `processBatch(batchId, companyId)` runs one transaction:
+    - lock the batch (`approved`, else 409);
+    - check the company (`BATCH_COMPANY_REQUIRED`) and that a bank account is set (`BANK_ACCOUNT_REQUIRED`);
+    - lock the bank account, which must be the batch company's, active and undeleted (`BANK_ACCOUNT_INVALID`);
+    - mapping approved with a ledger for that bank account (`PAYMENT_GL_MAPPING_REQUIRED` + problems);
+    - items read in the transaction, non-empty (`BATCH_EMPTY`), none already paid (`LINE_ALREADY_PAID`), amounts > 0 (`LINE_AMOUNT_INVALID`);
+    - per line: payment → allocation + bill balance → JE Dr payable / Cr bank ledger via `journalRepo.postEntry` (guards; a refusal → 422 `PAYMENT_JOURNAL_REFUSED`) → `payments.journal_entry_id` → bank transaction (balance read `FOR UPDATE` in the same transaction; reference = payment number) → item processed;
+    - batch processed → COMMIT.
+  - Any failure rolls everything back and the batch stays approved. Retry and concurrent calls → 409, nothing written.
+  - `bank_transactions.journal_entry_id` stays null: it is an INTEGER and journal ids are uuids (same drift as B-03).
+- **Rollout:** processing is refused until Finance approves a mapping for the company's paying bank accounts (fail closed). There is no UI for the mapping yet (API only).
+
+**Tests:** `integration.b02BatchAccounting.test.js` (12). Covered: mapping validation, reservation and permission; refusals with every write unchanged (no mapping, wrong bank's mapping, foreign or inactive bank account, locked period, client ledger ids, other company); full success with balanced 2001/1002 journals and a correct running balance; retry; concurrency. 11 fail on the pre-B-02 code.
+
+## §236 — PC-02b-0 B-03: bank ledger and journal links are uuid foreign keys (2026-11-04)
+
+**Before.** `bank_accounts.chart_account_id` and `bank_transactions.journal_entry_id` were INTEGER (migrations 20260426000001, 20260604000003, 20260819000019; baseline.sql), while `chart_of_accounts.id` and `journal_entries.id` are uuid. Neither could hold a real link. The ledger-derived bank balance was switched off by the type check (`hasChartAccountLink`), and the reports cash total that depends on it was dormant **with no company scope**.
+
+**Migration `20261104000004_bank_ledger_uuid_links`.**
+- Up:
+  - pre-flight checks the types (no-op if already applied);
+  - renames both integer columns to `*_legacy_int`, keeping every value (D1). Dev: 5 bank accounts (1–5), 5 bank transactions (1–5), all unmappable and never guessed;
+  - adds uuid columns with FKs `ON DELETE RESTRICT` (D2) and indexes `idx_bank_accounts_chart_account_id`, `idx_bank_transactions_journal_entry_id`;
+  - back-fills `chart_account_id` only from approved `payment_gl_mapping` rows with an active Asset/bank account of the company or the shared chart (dev: 0).
+- Down: refuses while any uuid link exists; otherwise drops the uuid columns and restores the legacy columns and values exactly.
+
+**Code.**
+- **D3, posting vs display:** posting uses only the approved mapping (`paymentGlMapping.service.js`). `chart_account_id` is the display link, written only by `setPaymentGlMapping` / `clearPaymentGlMapping`. One transaction locks the company's bank accounts, validates (company/shared account, Asset + sub-type bank, active; active company bank account), writes the mapping and syncs the links (mapped accounts linked, the company's others unlinked). A refused mapping changes nothing.
+- **Bank-account API:** `bankAccount.repository.js` `create` / `update` refuse `chart_account_id` with 400 `LEDGER_LINK_FROM_MAPPING`; the routes now return that status instead of a 500.
+- **D4, company-scoped balances:** the ledger movement counts only `je.company_id IS NOT DISTINCT FROM ba.company_id` in `findAll`, `findById` and the `/bank-accounts/summary` route. `reports.service.js` `getFinanceDashboard` cash total (ledger and stored-balance branches) is filtered by `opts.companyId`, which `GET /finance/dashboard` passes as `companyOf(req)`.
+- **B-02:** processing stores the payment journal's uuid in `bank_transactions.journal_entry_id`, still in the same transaction.
+- A running server caches `hasChartAccountLink()` from its first call; restart it to enable ledger-derived balances after migrating.
+
+**Tests:**
+- `migrationFixture.bankLedgerUuid.integration.test.js` (4, scratch databases): legacy values kept exactly; FKs RESTRICT; back-fill only from approved, valid mappings; down refused while linked; exact restore; up again; no-op re-run.
+- `integration.b03BankLedgerLinks.test.js` (11): mapping/link sync (approve, replace, refused, withdraw); API refusal; list, record, summary and dashboard balances isolated though both companies post to shared 1002; the B-02 journal link; posting from the mapping despite a drifted link; locked-period rollback. All 11 fail on the pre-B-03 code.
+
+## §237 — PC-02b-0 B-04: bank files are released once, stored, immutable and audited (2026-11-04)
+
+**Before.** `GET /finance/payment-batches/:id/bank-file` (`finance:view`) rebuilt the file on every request, in any batch status, from the live, unverified `vendors.account_number` / `ifsc`. Nothing was stored, hashed or audited, and processing never referred to the file.
+
+**Migration `20261104000005_payment_batch_files`.**
+- Table `payment_batch_files`: one row per batch (unique `batch_id`), with `company_id`, `format`, `file_name`, `content`, `sha256`, `line_count`, `total_amount`, `beneficiaries` (jsonb snapshot), `released_by`, `released_at`. FKs to batch, company and user are `ON DELETE RESTRICT`.
+- A trigger refuses every UPDATE, DELETE and TRUNCATE (B4-6). As first shipped, DELETE passed if the transaction ran `SET LOCAL pulse.allow_bank_file_purge = 'on'`; §238 removed that bypass.
+- Down refuses while any released file exists; otherwise it drops the table and function. Existing batches, including the `active` seed batches 22–26, are untouched (B4-7).
+
+**Release: `POST /finance/payment-batches/:id/release` (`finance:approve`, body `{format}`).** `paymentBatch.service.js` `releaseBankFile` runs in one transaction: lock the batch; require status `approved`, an active same-company bank account and no existing file; build the snapshot; check the lines sum to the batch total; render; hash; insert the file; write the audit row. Any failure leaves no file and no event.
+
+Each line must have (B4-1):
+- a positive 2-decimal amount, and no payment yet;
+- a `supplier_id` that is a non-deleted vendor of the batch's company, not inactive, blocked, blacklisted, suspended or rejected;
+- a Finance-verified `vendor_bank_details` row of that company. This is the primary row when one exists (an unverified new primary refuses the line, rather than paying the older account); with no primary, the single verified row (several is refused);
+- a 9–18 digit account and a valid IFSC.
+
+One bad line refuses the whole release: 422 `BENEFICIARY_INVALID` with `problems: [{item_id, supplier, reason}]`, which never contain an account number. The beneficiary name comes from the vendor master, not the line's typed name. Other codes: 409 `BATCH_NOT_APPROVED`, 409 `FILE_ALREADY_RELEASED`, 400 `FORMAT_INVALID`, 422 `BATCH_TOTAL_MISMATCH`, `BANK_ACCOUNT_REQUIRED`, `BANK_ACCOUNT_INVALID`.
+
+**Download: `GET /finance/payment-batches/:id/bank-file` (`finance:approve`).** Serves the stored bytes only, after verifying SHA-256, with `Cache-Control: no-store` and `X-Content-SHA256`. Nothing is regenerated, so later vendor changes cannot alter it. The audit row commits before the bytes are sent. Refusals: 404 (missing or another company's batch), 409 `FILE_NOT_RELEASED`, 409 `FILE_FORMAT_FIXED` (a `format` other than the released one), 409 `FILE_INTEGRITY_FAILED` (serves nothing and records the failure).
+
+**Processing.** `processBatch` now calls `assertReleasedFileMatches` after the bank, mapping and line checks and before any write: 422 `FILE_NOT_RELEASED`, or 409 `FILE_BATCH_MISMATCH` with `problems`. It checks the company, the hash, a re-render of the snapshot against the stored content, line count, file and batch totals against the lines in paise, and line id, amount and supplier against the snapshot. A zero-line batch releases a header-only file, so it can still be processed as before.
+
+**Access and audit.** Batch reads (`findAll`, `findById`) expose `bank_file` metadata only (format, file name, hash, count, total, released by and at). `audit_logs` actions `BANK_FILE_RELEASED`, `BANK_FILE_DOWNLOADED`, `BANK_FILE_INTEGRITY_FAILED`: module `finance`, reference `payment_batch`, the batch's company, the acting user, IP and user agent, and metadata only.
+
+**Code removed.** `getBankFileData` and `getItemsWithBankDetails`. Rendering moved to `finance/services/bankFileFormat.js`, with the same four formats and `csvCell` escaping. Amounts are now always 2 decimals.
+
+**Frontend (`PaymentBatch.jsx`).** An approved batch offers Release Bank File (format picker) and no Process button until released. A released batch offers Process and a direct Bank File download with no format choice. Both are hidden from roles outside `FINANCE_APPROVE_ROLES`. A refused release lists each line's reason.
+
+**Tests:**
+- `migrationFixture.paymentBatchFiles.integration.test.js` (3, scratch databases): checks and FKs, seed batches untouched, immutability and the purge switch, rollback refusal, down/up/no-op.
+- `integration.b04BankFileRelease.test.js` (23): permissions, cross-company access, every beneficiary refusal, atomic failure, concurrent release, immutability, byte-identical repeat downloads, live vendor changes, hash mismatch, processing mismatches. All 23 fail on the pre-B-04 code.
+- `b04BankFileRelease.test.jsx` (4, frontend).
+- `helpers/paymentGlFixture.js` gains `verifiedVendorFixture` and `dropBeneficiaryFixtures`, which test cleanups must call before deleting batches or users (RESTRICT). See §238 for how cleanup passes the trigger.
+
+## §238 — PC-02b-0 B-04: the bank-file purge bypass is removed; the role boundary is a separate step (2026-11-04)
+
+**Defect.** The §237 trigger let a DELETE through when the transaction ran `SET LOCAL pulse.allow_bank_file_purge = 'on'`. Any database user can set a custom setting, so it protected nothing.
+
+**Migration `20261104000006_bank_file_immutability_no_bypass`.** The trigger function refuses UPDATE, DELETE and TRUNCATE with no condition. PUBLIC holds no destructive right on the table and no EXECUTE on the function (a trigger does not need it to fire). No rows change. Down refuses while any released file exists; otherwise it restores the `20261104000005` function exactly.
+
+**A trigger does not bind a superuser or the table's owner.** The application connects as `postgres` (`backend/.env`; `.env.production` names the same role), which is a superuser and the owner. So those credentials can still skip the trigger with `SET session_replication_role = 'replica'` or `ALTER TABLE ... DISABLE TRIGGER`. **The database does not stop the application's own credentials until the application moves to an ordinary role.**
+
+**The boundary: `backend/scripts/db/bank-file-least-privilege.mjs`.** A DBA tool run with superuser credentials from `BANK_FILE_ADMIN_DATABASE_URL`, after migrations. Nothing under `src/` imports it.
+- Moves the table and function to a NOLOGIN owner role (`pulse_bank_file_owner`).
+- Leaves the application role SELECT and INSERT on the table, and USAGE on its sequence.
+- Refuses a superuser, CREATEROLE or BYPASSRLS application role, or one that can use the owner role, and verifies the result before committing.
+- Has not been applied to dev or `pulse_e2e`. It refuses `postgres`, and no other role exists there.
+
+Moving the application to an ordinary role means re-owning the database objects (668 tables in `pulse_e2e`) and giving migrations and the import-time DDL in route files separate privileged credentials.
+
+**After the tool is applied:** migrating or rolling back this table needs the privileged credentials. On a new database, run the tool straight after migrations, because the application's role owns the table until then.
+
+**Test cleanup.** `helpers/paymentGlFixture.js` `withBankFileTriggerSkipped` calls `assertTestDatabase`, then runs one transaction with `SET LOCAL session_replication_role = 'replica'`, which needs a superuser. It is the only cleanup path; `src/modules` holds no bypass, and a test scans for one.
+
+**Tests:**
+- `migrationFixture.bankFileNoBypass.integration.test.js` (4, scratch databases): the setting opened DELETE before the migration and opens nothing after it; rollback refusal, exact restore and re-apply; a real non-superuser login limited to SELECT and INSERT, with every route round the trigger refused; the tool's refusals. Cluster-wide test roles are uniquely named and dropped.
+- `integration.b04BankFileRelease.test.js` gains 2 tests: the setting on the application's own role, and the source scan.
+
+## §239 — DB-01C2: schema parity for `legacy_bin_location_archive`, and a schema comparison tool (2026-11-05)
+
+**Why the schemas differed.** `20260915000016a` creates the archive only when `bin_locations` still exists. `baseline.sql` predates the cutover, so a fresh install runs 016a against `bin_locations` and gets an empty table; a database already cut over gets none.
+
+**Migration `20261105000001_legacy_bin_archive_parity`.** `CREATE TABLE IF NOT EXISTS` with 016a's exact definition. It preserves any existing rows and never drops or empties the table. Where role `pulse_app` exists, it gets SELECT only and no right on the sequence. `down()` deliberately does nothing but report, because it cannot tell an empty table from one holding the only copy of legacy bins; rollback removes only the ledger row.
+
+**Unchanged on purpose.** 016a, `20260926000013` and `baseline.sql`. `fk_suggestions_converted_pr` stays `NOT VALID` wherever a pointer dangles (dev: suggestion 9 → PR 1451); new writes are still checked.
+
+**Dev ledger.** Dev's stored checksum for 016a (`543b9b0d…`) is the first draft, which the dev server auto-applied 7 seconds after it was written; a comment typo was then fixed (`0005eb8a…`). The `up`/`down` code is identical. The repair needs explicit approval and is not part of this section.
+
+**`scripts/db/schema-compare.mjs <urlA> <urlB>`.** Read-only; exit 1 on any genuine difference. Three classes, all listed in the output:
+- *genuine*: tables, columns, constraints, indexes, triggers (including disabled state), functions (including `SECURITY DEFINER` and config), sequences, views, extensions.
+- *expected*: real `device_telemetry_YYYY_MM` partitions and what they carry; the FK as `NOT VALID` only while that database really holds a dangling pointer.
+- *cosmetic*: PostgreSQL's two print forms of one varchar IN-list; function bodies differing only in comments and whitespace.
+
+**Do not regenerate the baseline from dev.** It would bake in the `NOT VALID` FK and dev's extra partitions. Generate it from a clean migrated database.
+
+**Tests.** `migrationFixture.legacyBinArchiveParity.integration.test.js`, `schemaCompare.integration.test.js`.
+
+## §240 — DB-01C2: the server no longer migrates itself; request handlers run no DDL (2026-11-05)
+
+**Startup.** `server.js` calls `assertMigrationsApplied()` instead of `runMigrations()`. `readMigrationState()` runs in a `READ ONLY` transaction and creates nothing, so `verifyApplied()` and `/api/health` no longer need DDL rights. **A pending migration refuses startup**, naming the files and the command. A checksum warning is logged and does not refuse, because it means the ledger and a file disagree, not that the schema is behind.
+
+**Consequences.** Migrating is now a separate step: `npm run migrate`, with the migrator's credentials.
+- `nodemon` no longer applies a new migration file on restart, so a draft can no longer be applied by accident. After creating one, run `npm run migrate` and restart.
+- `docker-compose.yml` runs `npm run migrate` before starting, because that demo stack has one login.
+- `render.yaml` and `backend/railway.toml` are unchanged. **Any deployment built from this code needs a migration step first, or the server will refuse to start.**
+
+**Migration `20261105000002_document_number_sequences`.** Creates `delivery_note_number_seq` (previously in no schema source) and `quotation_number_seq` if absent, keeps any existing value, and grants USAGE to `pulse_app` where it exists. `down()` does nothing, because dropping a sequence would reissue document numbers. The `CREATE SEQUENCE` statements in `POST /delivery/deliveries` and `POST /crm/opportunities/:id/create-quotation` are gone; both returned HTTP 500 under a role with no DDL rights.
+
+**Not changed here.** The startup DDL in route files (about 170 statements) still runs at import. Under a restricted role each refusal is logged and the server continues. Removing it is separate work, and includes the three conditional `DROP TABLE` statements in `sales.routes.js`.
+
+**Tests.** `integration.db01cRuntimeWithoutDdl.test.js`.
+
+## §241 — DB-01C2: IoT partitions through a fixed-purpose function; backups report failure (2026-11-05)
+
+**Migration `20261105000003_device_telemetry_partition_function`.** `ensure_device_telemetry_partition(year, month)` is `SECURITY DEFINER` with a fixed `search_path`. It takes two integers, builds the name itself, accepts only last month through twelve months ahead, and returns whether it created a partition. PUBLIC execution is revoked; `pulse_app` gets EXECUTE where it exists. It sets no time zone, so bounds meet existing partitions as before. `down()` removes the function and keeps every partition. `jobs/iotPartitions.cron.js` now calls it instead of running `CREATE TABLE`.
+
+**Still requiring the owner.** Dropping expired partitions (`IOT_PARTITION_DROP_ENABLED`, off by default) and the job's `ANALYZE`, whose failure is still swallowed by an existing `.catch`.
+
+**Backups.** `runBackup` now rejects when `pg_dump` is missing, fails or produces an invalid file, and removes the partial file. The schedule runs it through `runJob`, so failure is logged as `[job:backup] FAIL`. `BACKUP_DB_USER` and `BACKUP_DB_PASSWORD` supply a separate login. `scripts/db-backup.js` no longer lets `.env` overwrite a value already in the environment; `db-restore.js` already behaved this way. `pre-deploy.js` and `post-deploy.js` still have the same `.env` overwrite (corrected in §245, which also fixes them; `generate-baseline.js` never had it).
+
+## §242 — DB-01: the sales routes no longer drop tables at startup (2026-11-05)
+
+**Removed.** Three blocks in `modules/sales/routes/sales.routes.js` that ran on every server start: if `company_id` on `sales_events`, `competitors` or `sales_settings` was a uuid, drop the table and recreate it empty. Each `CREATE TABLE IF NOT EXISTS` stays, so nothing else about startup changes.
+
+**Why it was safe.** `company_id` is integer in `baseline.sql` and on every database checked, and no migration creates it as a uuid, so the branch could not fire on a known schema. The blocks date from before 2026-07-19. The tables themselves are live and stay; only the destructive check is gone.
+
+**If a database with a uuid `company_id` ever exists.** The rows now survive and the sales queries for that table fail with a type error, instead of the table being silently emptied. Fixing it would be a deliberate migration that decides what to do with the data. `scripts/db/schema-compare.mjs` reports such a column as a genuine difference.
+
+**Not changed.** Two similar startup statements remain: the conditional `ALTER TABLE subscriptions DROP COLUMN company_id` in the same file, and `DROP TABLE IF EXISTS talent_pool_members CASCADE` in `modules/talent/talent.routes.js`.
+
+**Test.** `salesStartupNoDestructiveDdl.integration.test.js` imports the real module in a child process against scratch databases, including the exact state that used to trigger the drop.
+
+## §243 — DB-01: the sales routes no longer replace subscriptions.company_id at startup (2026-11-05)
+
+**Removed.** The startup block in `modules/sales/routes/sales.routes.js` that, if `subscriptions.company_id` was a uuid, ran `DROP COLUMN company_id` then `ADD COLUMN company_id INTEGER`. `CREATE TABLE IF NOT EXISTS subscriptions` stays.
+
+**The risk.** The rows survived with `company_id` NULL. Every sales subscription route and the renewal job filter by that column, so those subscriptions disappeared from every company's view with no error. The column is the tenant boundary, not obsolete.
+
+**Why it was safe to remove.** `company_id` is integer in `baseline.sql` and on every database checked, and no migration mentions the table, so the branch could not fire on a known schema.
+
+**If a database with a uuid `company_id` ever exists.** Rows and owners now survive, and the scoped queries fail with a type error. A conversion needs a person to decide which integer company each uuid means, so it cannot be automatic. `scripts/db/schema-compare.mjs` reports such a column as a genuine difference.
+
+**A database where this block already ran** would hold rows with `company_id` NULL. They are invisible to the application and need a person to assign them; dev has none.
+
+**Test.** `salesStartupNoDestructiveDdl.integration.test.js` replays the old block on a scratch database to show the loss, and loads the real module against the same state to show nothing changes.
+
+## §244 — DB-01: the talent routes no longer drop talent_pool_members at startup (2026-11-05)
+
+**Removed.** The startup block in `modules/talent/talent.routes.js` that dropped `talent_pool_members` (with CASCADE) if `candidate_id` was a uuid. `CREATE TABLE IF NOT EXISTS talent_pool_members`, its indexes and its `ALTER` steps stay.
+
+**The risk.** Every membership row was lost, and the table came back without `company_id`, `tags`, `reason`, `source_stage` and `added_by_user_id`, which only migrations add and which never run twice. `candidateIntelligence.repository.js` writes those columns, so recruitment would then have failed.
+
+**Why it was safe to remove.** No code path produces a uuid `candidate_id`. `20260610000001`'s header says UUID, but its code creates INTEGER. `20260917000030` adds a foreign key to the integer `candidates.id`, which PostgreSQL refuses on a uuid column, so a database that has applied it cannot be in that state unless altered by hand afterwards. Dev and the test database have applied it; `candidate_id` is integer in both and in `baseline.sql`.
+
+**Not changed.** `20260610000001` still holds the same conditional drop. Historical migrations are not edited. It has already run on dev and the test database, and fresh installs take it from the baseline snapshot, so it runs only on a database older than June 2026.
+
+**Test.** `talentStartupNoDestructiveDdl.integration.test.js` replays the old block on a scratch database to show the loss, and loads the real module against the same state, the integer schema and a missing table.
+
+## §245 — DB-01: deploy scripts no longer let .env overwrite supplied credentials (2026-11-05)
+
+**Fixed.** `scripts/pre-deploy.js` and `scripts/post-deploy.js` assigned every `backend/.env` value over the environment, so a credential supplied for the run was silently replaced. Both now set a value only if it is undefined, as `db-backup.js` does.
+
+**Why it mattered.** `npm run deploy` runs `pre-deploy`, `migrate`, `post-deploy`, and `migrate` already honoured the environment. With supplied credentials and a `.env` naming another database, the checks and their backup used one database while the migration changed the other.
+
+**Unchanged.** `generate-baseline.js` already kept supplied values (`if (!(k in process.env))`). `db-restore.js` also keeps them, but treats an empty value as missing.
+
+**Consequence.** A leftover `DB_*` variable in a shell now takes effect in these scripts, as it already did for `migrate` and the server. Both scripts print the database they use, and since §246 warn when it differs from `.env`.
+
+**Test.** `scriptEnvLoading.test.js` lifts each script's real loader and `DB` block from its source and runs only those, against a temporary `.env`. The deploy scripts are never executed.
+
+## §246 — DB-01: operational tools resolve their database as the app does (2026-11-05)
+
+**`config/dbTarget.js`.** `resolveDbTarget()` prefers `DATABASE_URL`, as `config/db.js` does, otherwise `DB_*` with the existing defaults. It decodes URL parts and carries `sslmode`, and a malformed URL raises an error that does not repeat the URL. It opens no connection. `pgToolEnv()` builds the environment for pg_dump and psql.
+
+**Used by.** `pre-deploy.js`, `post-deploy.js`, `generate-baseline.js`, `db-backup.js`, `db-restore.js` and `jobs/backup.cron.js`. Before this, all but `db-restore.js` ignored `DATABASE_URL` and went to localhost on a host that supplies only the URL. `db-restore.js` read it but did not decode a percent-encoded password. The backup job's `BACKUP_DB_USER` and `BACKUP_DB_PASSWORD` still take precedence over the login.
+
+**Other fixes.**
+- `pre-deploy.js` no longer demands `DB_HOST` and friends when `DATABASE_URL` is set (`requiredDeployEnv()`).
+- `pre-deploy.js` and `post-deploy.js` warn when the environment selects a different target from `.env` (`dbTargetOverrides()`). Passwords and URLs are named, never shown. Under `post-deploy --strict` a warning fails the run.
+- Their `fileChecksum` now normalises line endings as the migration runner does, so a Windows checkout no longer reads as a modified migration.
+- `db-restore.js` now keeps an explicitly empty value, like the others.
+
+**Caution.** `generate-baseline.js` now honours `DATABASE_URL` too. It prints the database it captures; check that line, because a baseline should only come from a clean migrated database.
+
+**Not exercised.** The scripts themselves have not been run; tests lift their loader, target and checksum code from source.
+
+**Test.** `scriptEnvLoading.test.js`, `integration.db01cRuntimeWithoutDdl.test.js`.

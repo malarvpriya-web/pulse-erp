@@ -41,12 +41,44 @@ pool.query(`
 // =====================================================
 // BANK ACCOUNTS
 // =====================================================
+// Company ownership (PC-02b-0 B-01, 04 Nov 26). Every /bank-accounts/:id route
+// used to act on the id as given — read, update, delete, transactions,
+// statement import, auto / manual match, reconcile — so a finance user of one
+// company could read or change another company's bank account and its
+// reconciliation. Now each one first resolves the account inside the caller's
+// company (another company's id is the same 404 as a missing one), and the
+// repository writes carry the same predicate. A login with no company is
+// refused; only a global super admin (no company, isGlobal) acts across them.
+function bankScope(req, res) {
+  const cid = getCompanyId(req);
+  if (cid == null && !req.scope?.isGlobal) {
+    res.status(403).json({ error: 'No company context for this login', code: 'NO_COMPANY' });
+    return undefined;
+  }
+  return cid ?? null;
+}
+async function ownedBankAccount(req, res) {
+  const cid = bankScope(req, res);
+  if (cid === undefined) return null;
+  const id = Number(req.params.id);
+  if (!Number.isSafeInteger(id) || id < 1 || String(id) !== String(req.params.id).trim()) {
+    res.status(404).json({ error: 'Bank account not found' });
+    return null;
+  }
+  const { rows } = await pool.query(
+    `SELECT id FROM bank_accounts WHERE id = $1 AND deleted_at IS NULL AND ($2::int IS NULL OR company_id = $2::int)`,
+    [id, cid]);
+  if (!rows.length) { res.status(404).json({ error: 'Bank account not found' }); return null; }
+  return { id, cid };
+}
+
 router.post('/bank-accounts', requirePermission('finance', 'add'), async (req, res) => {
+  const cid = bankScope(req, res);
+  if (cid === undefined) return;
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
-    const cid = getCompanyId(req);
     const uid = req.user?.userId ?? req.user?.id ?? null;
 
     // Store last 4 digits for display; backend never returns the raw account_number
@@ -125,15 +157,17 @@ router.post('/bank-accounts', requirePermission('finance', 'add'), async (req, r
     res.status(201).json(safeAccount);
   } catch (error) {
     await client.query('ROLLBACK');
-    res.status(500).json({ error: error.message });
+    res.status(error.status || 500).json({ error: error.message, ...(error.code ? { code: error.code } : {}) });
   } finally {
     client.release();
   }
 });
 
 router.get('/bank-accounts', requirePermission('finance', 'view'), async (req, res) => {
+  const cid = bankScope(req, res);
+  if (cid === undefined) return;
   try {
-    const accounts = await bankAccountRepo.findAll({ ...req.query, company_id: getCompanyId(req) });
+    const accounts = await bankAccountRepo.findAll({ ...req.query, company_id: cid });
     res.json(accounts);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -142,8 +176,9 @@ router.get('/bank-accounts', requirePermission('finance', 'view'), async (req, r
 
 // KPI summary — must be registered before /:id to avoid route conflict
 router.get('/bank-accounts/summary', requirePermission('finance', 'view'), async (req, res) => {
+  const companyId = bankScope(req, res);
+  if (companyId === undefined) return;
   try {
-    const companyId = getCompanyId(req);
     const params    = companyId != null ? [companyId] : [];
     const cidSQL    = companyId != null ? 'AND ba.company_id = $1' : '';
 
@@ -164,6 +199,9 @@ router.get('/bank-accounts/summary', requirePermission('finance', 'view'), async
            FROM journal_lines jl
            JOIN journal_entries je ON je.id = jl.entry_id
            WHERE jl.account_id = ba.chart_account_id
+             -- B-03 (D4): this company's postings only — a shared-chart account
+             -- (company_id NULL, e.g. 1002) carries every company's lines.
+             AND je.company_id IS NOT DISTINCT FROM ba.company_id
              AND je.status = 'posted'
              AND je.entry_date <= CURRENT_DATE
          ) glm ON true`
@@ -200,7 +238,9 @@ router.get('/bank-accounts/summary', requirePermission('finance', 'view'), async
 
 router.get('/bank-accounts/:id', requirePermission('finance', 'view'), async (req, res) => {
   try {
-    const account = await bankAccountRepo.findById(req.params.id);
+    const own = await ownedBankAccount(req, res);
+    if (!own) return;
+    const account = await bankAccountRepo.findById(own.id, own.cid);
     if (!account) return res.status(404).json({ error: 'Bank account not found' });
     res.json(account);
   } catch (error) {
@@ -210,17 +250,22 @@ router.get('/bank-accounts/:id', requirePermission('finance', 'view'), async (re
 
 router.put('/bank-accounts/:id', requirePermission('finance', 'edit'), captureBefore('bank_accounts'), async (req, res) => {
   try {
-    const account = await bankAccountRepo.update(req.params.id, req.body);
+    const own = await ownedBankAccount(req, res);
+    if (!own) return;
+    const account = await bankAccountRepo.update(own.id, req.body, own.cid);
     if (!account) return res.status(404).json({ error: 'Bank account not found' });
     res.json(account);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(error.status || 500).json({ error: error.message, ...(error.code ? { code: error.code } : {}) });
   }
 });
 
 router.delete('/bank-accounts/:id', requirePermission('finance', 'delete'), captureBefore('bank_accounts'), async (req, res) => {
   try {
-    const account = await bankAccountRepo.softDelete(req.params.id);
+    const own = await ownedBankAccount(req, res);
+    if (!own) return;
+    const account = await bankAccountRepo.softDelete(own.id, own.cid);
+    if (!account) return res.status(404).json({ error: 'Bank account not found' });
     res.json({ success: true, account });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -231,7 +276,9 @@ router.get('/bank-accounts/:id/transactions', requirePermission('finance', 'view
   try {
     const end = req.query.end_date || new Date().toISOString().split('T')[0];
     const start = req.query.start_date || new Date(Date.now() - 90 * 86400000).toISOString().split('T')[0];
-    const transactions = await bankAccountRepo.getTransactions(req.params.id, start, end);
+    const own = await ownedBankAccount(req, res);
+    if (!own) return;
+    const transactions = await bankAccountRepo.getTransactions(own.id, start, end);
     res.json(transactions);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -240,7 +287,9 @@ router.get('/bank-accounts/:id/transactions', requirePermission('finance', 'view
 
 router.get('/bank-accounts/:id/unreconciled', requirePermission('finance', 'view'), async (req, res) => {
   try {
-    const transactions = await bankAccountRepo.getUnreconciledTransactions(req.params.id);
+    const own = await ownedBankAccount(req, res);
+    if (!own) return;
+    const transactions = await bankAccountRepo.getUnreconciledTransactions(own.id);
     res.json(transactions);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -249,7 +298,9 @@ router.get('/bank-accounts/:id/unreconciled', requirePermission('finance', 'view
 
 router.get('/bank-accounts/:id/statement-lines', requirePermission('finance', 'view'), async (req, res) => {
   try {
-    const lines = await bankAccountRepo.getStatementLines(req.params.id);
+    const own = await ownedBankAccount(req, res);
+    if (!own) return;
+    const lines = await bankAccountRepo.getStatementLines(own.id);
     res.json(lines);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -258,7 +309,10 @@ router.get('/bank-accounts/:id/statement-lines', requirePermission('finance', 'v
 
 router.post('/bank-accounts/:id/statement-lines', requirePermission('finance', 'edit'), async (req, res) => {
   try {
-    const lines = await bankAccountRepo.importStatementLines(req.params.id, req.body.lines || []);
+    const own = await ownedBankAccount(req, res);
+    if (!own) return;
+    const lines = await bankAccountRepo.importStatementLines(own.id, req.body.lines || [], own.cid);
+    if (lines === null) return res.status(404).json({ error: 'Bank account not found' });
     res.status(201).json(lines);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -267,7 +321,9 @@ router.post('/bank-accounts/:id/statement-lines', requirePermission('finance', '
 
 router.post('/bank-accounts/:id/auto-match', requirePermission('finance', 'edit'), async (req, res) => {
   try {
-    const result = await bankAccountRepo.autoMatch(req.params.id);
+    const own = await ownedBankAccount(req, res);
+    if (!own) return;
+    const result = await bankAccountRepo.autoMatch(own.id);
     res.json(result);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -276,8 +332,11 @@ router.post('/bank-accounts/:id/auto-match', requirePermission('finance', 'edit'
 
 router.post('/bank-accounts/:id/manual-match', requirePermission('finance', 'edit'), async (req, res) => {
   try {
-    const { statement_line_id, transaction_id } = req.body;
-    const result = await bankAccountRepo.manualMatch(statement_line_id, transaction_id);
+    const own = await ownedBankAccount(req, res);
+    if (!own) return;
+    const { statement_line_id, transaction_id } = req.body || {};
+    const result = await bankAccountRepo.manualMatch(own.id, statement_line_id, transaction_id, own.cid);
+    if (!result) return res.status(404).json({ error: 'Statement line or transaction not found on this bank account' });
     res.json(result);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -286,7 +345,10 @@ router.post('/bank-accounts/:id/manual-match', requirePermission('finance', 'edi
 
 router.post('/bank-accounts/:id/reconcile', requirePermission('finance', 'approve'), async (req, res) => {
   try {
-    const account = await bankAccountRepo.completeReconciliation(req.params.id);
+    const own = await ownedBankAccount(req, res);
+    if (!own) return;
+    const account = await bankAccountRepo.completeReconciliation(own.id, own.cid);
+    if (!account) return res.status(404).json({ error: 'Bank account not found' });
     res.json(account);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -362,7 +424,7 @@ router.get('/payment-batches/summary', requirePermission('finance', 'view'), asy
 
 router.get('/payment-batches/:id', requirePermission('finance', 'view'), async (req, res) => {
   try {
-    const batch = await paymentBatchService.getBatchById(req.params.id);
+    const batch = await paymentBatchService.getBatchById(req.params.id, getCompanyId(req));
     if (!batch) return res.status(404).json({ error: 'Payment batch not found' });
     res.json(batch);
   } catch (error) {
@@ -375,98 +437,92 @@ router.get('/payment-batches/:id', requirePermission('finance', 'view'), async (
 // 'write', which is not a defined action and always returned 400.)
 router.post('/payment-batches/:id/submit', requirePermission('finance', 'edit'), async (req, res) => {
   try {
-    const batch = await paymentBatchService.submitForApproval(req.params.id);
+    const batch = await paymentBatchService.submitForApproval(req.params.id, getCompanyId(req));
     res.json(batch);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(error.status || 500).json({ error: error.message });
   }
 });
 
 router.post('/payment-batches/:id/approve', requirePermission('finance', 'approve'), async (req, res) => {
   try {
     const uid = req.user?.userId ?? req.user?.id;
-    const batch = await paymentBatchService.approveBatch(req.params.id, uid);
+    const batch = await paymentBatchService.approveBatch(req.params.id, uid, getCompanyId(req));
     res.json(batch);
   } catch (error) {
-    res.status(error.message.includes('not awaiting') ? 400 : 500).json({ error: error.message });
+    res.status(error.status || 500).json({
+      error: error.message,
+      ...(error.code ? { code: error.code, eligible_alternates: error.eligible_alternates } : {}),
+    });
   }
 });
 
 router.post('/payment-batches/:id/reject', requirePermission('finance', 'approve'), async (req, res) => {
   try {
     const uid = req.user?.userId ?? req.user?.id;
-    const batch = await paymentBatchService.rejectBatch(req.params.id, uid, req.body.reason || '');
+    const batch = await paymentBatchService.rejectBatch(req.params.id, uid, req.body.reason || '', getCompanyId(req));
     res.json(batch);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(error.status || 500).json({ error: error.message });
   }
 });
 
+// B-02: the ledger accounts come only from Finance's payment mapping — an
+// account id in the request is refused, not used (it used to be the only
+// source, and the Payments screen sent none, so no journal was posted).
 router.post('/payment-batches/:id/process', requirePermission('finance', 'approve'), async (req, res) => {
   try {
-    const batch = await paymentBatchService.processBatch(req.params.id, req.body);
+    const sent = ['accounts_payable_id', 'bank_account_chart_id'].filter(k => k in (req.body || {}));
+    if (sent.length) {
+      return res.status(400).json({ code: 'ACCOUNTS_NOT_ACCEPTED', error: `${sent.join(', ')} cannot be supplied — the accounts come from Finance's payment account mapping` });
+    }
+    const batch = await paymentBatchService.processBatch(req.params.id, getCompanyId(req));
     res.json(batch);
   } catch (error) {
-    res.status(error.message.includes('must be approved') ? 400 : 500).json({ error: error.message });
+    res.status(error.status || 500).json({
+      error: error.message,
+      ...(error.code ? { code: error.code } : {}),
+      ...(error.problems ? { problems: error.problems } : {}),
+      ...(error.journal_code ? { journal_code: error.journal_code } : {}),
+    });
   }
 });
 
-// Bank file download for NEFT/RTGS bulk payment upload
-router.get('/payment-batches/:id/bank-file', requirePermission('finance', 'view'), async (req, res) => {
+// PC-02b-0 B-04: a batch's bank file is released once from Finance-verified bank
+// details and stored. Both routes need finance:approve (the content holds
+// beneficiary accounts); batch reads carry only the file's metadata.
+const bankFileError = (res, error) => res.status(error.status || 500).json({
+  error: error.message,
+  ...(error.code ? { code: error.code } : {}),
+  ...(error.problems ? { problems: error.problems } : {}),
+});
+const bankFileActor = (req) => ({
+  userId: req.user?.userId ?? req.user?.id, ip: req.ip, userAgent: req.get('user-agent'),
+});
+
+router.post('/payment-batches/:id/release', requirePermission('finance', 'approve'), async (req, res) => {
   try {
-    const { format = 'generic' } = req.query;
-    let batch, items;
-    try {
-      ({ batch, items } = await paymentBatchService.getBankFileData(req.params.id));
-    } catch (e) {
-      // The service throws a plain Error for an unknown id — that is a 404,
-      // not the 500 the outer catch was turning it into.
-      if (/not found/i.test(e.message)) return res.status(404).json({ error: e.message });
-      throw e;
-    }
-
-    // Check for missing bank details
-    const missing = items.filter(it => !it.account_number || !it.ifsc_code);
-    if (missing.length > 0) {
-      return res.status(422).json({
-        error: 'Some suppliers are missing bank details',
-        missing_suppliers: missing.map(m => m.party_name || m.supplier_name),
-      });
-    }
-
-    // Build CSV rows per bank format
-    let header, rows;
-    if (format === 'sbi') {
-      header = 'PRODUCT_CODE,PAYMENT_AMT,BENE_ACC_NO,BENE_IFSC_CODE,BENE_NAME,PAYMENT_REF,REMARKS';
-      rows = items.map(it =>
-        `NEFT,${it.amount},${it.account_number},${it.ifsc_code},"${it.party_name}",${batch.batch_number},${it.bill_number || ''}`
-      );
-    } else if (format === 'hdfc') {
-      header = 'PAYMENT TYPE,AMOUNT,BENE ACCOUNT,IFSC,BENE NAME,EMAIL,MOBILE,PAYMENT REF';
-      rows = items.map(it =>
-        `NEFT,${it.amount},${it.account_number},${it.ifsc_code},"${it.party_name}",,${it.mobile || ''},${batch.batch_number}`
-      );
-    } else if (format === 'icici') {
-      header = 'Beneficiary Name,Beneficiary Account No,Beneficiary IFSC,Amount,Payment Mode,Remarks';
-      rows = items.map(it =>
-        `"${it.party_name}",${it.account_number},${it.ifsc_code},${it.amount},NEFT,${batch.batch_number}`
-      );
-    } else {
-      // Generic CSV
-      header = 'Party Name,Account Number,IFSC Code,Amount,Payment Mode,Reference,Bill Number';
-      rows = items.map(it =>
-        `"${it.party_name}",${it.account_number},${it.ifsc_code},${it.amount},${it.payment_method || 'NEFT'},${batch.batch_number},${it.bill_number || ''}`
-      );
-    }
-
-    const csv = [header, ...rows].join('\n');
-    const filename = `batch-${batch.batch_number}-${format}.csv`;
-
-    res.setHeader('Content-Type', 'text/csv');
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-    res.send(csv);
+    const file = await paymentBatchService.releaseBankFile(
+      req.params.id, req.body?.format ?? 'generic', getCompanyId(req), bankFileActor(req));
+    res.status(201).json(file);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    bankFileError(res, error);
+  }
+});
+
+// The stored bytes, hash-verified; never regenerated. A `format` other than the
+// released one is refused rather than ignored.
+router.get('/payment-batches/:id/bank-file', requirePermission('finance', 'approve'), async (req, res) => {
+  try {
+    const file = await paymentBatchService.downloadBankFile(
+      req.params.id, req.query.format, getCompanyId(req), bankFileActor(req));
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${file.file_name}"`);
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('X-Content-SHA256', file.sha256);
+    res.end(file.bytes);
+  } catch (error) {
+    bankFileError(res, error);
   }
 });
 
@@ -746,10 +802,28 @@ router.get('/pdc/history', requirePermission('finance', 'view'), async (req, res
 // =====================================================
 // EXPENSE CATEGORIES
 // =====================================================
+//
+// ⚠ This used to read the `expense_categories` TABLE — 11 curated rows written
+// only by the seed script and read by nothing, while two different hardcoded
+// lists in the frontend wrote the actual claim categories. §173 folded all
+// three into the two-level EXPENSE_TYPE / EXPENSE_CATEGORY master, so this now
+// answers from there. It returns id, name, parent_name, sort_order, is_active.
+// `description` is NOT carried over: the master holds no descriptions, and
+// filling that key with the parent name to preserve the old shape would be a
+// field that lies. Nothing calls this endpoint, so there is nothing to break.
+//
+// The table itself is left in place, unread. Dropping it is a separate call.
 router.get('/expense-categories', requirePermission('finance', 'view'), async (req, res) => {
   try {
+    const companyId = req.scope?.company_id ?? null;
     const result = await pool.query(
-      'SELECT * FROM expense_categories WHERE is_active = true ORDER BY name'
+      `SELECT m.id, m.value AS name, p.value AS parent_name, m.sort_order, m.is_active
+         FROM master_values m
+         LEFT JOIN master_values p ON p.id = m.parent_id
+        WHERE m.type = 'EXPENSE_CATEGORY' AND m.is_active = true
+          AND (m.company_id IS NULL OR m.company_id = $1)
+        ORDER BY p.value, m.sort_order NULLS LAST, m.value`,
+      [companyId]
     );
     res.json(result.rows);
   } catch (error) {
@@ -814,7 +888,7 @@ router.get('/analytics/gst-claimable', requirePermission('finance', 'view'), asy
 router.get('/ratios', requirePermission('finance', 'view'), async (req, res) => {
   try {
     const { as_of_date } = req.query;
-    const ratios = await financialRatiosService.calculateRatios(as_of_date || new Date().toISOString().split('T')[0]);
+    const ratios = await financialRatiosService.calculateRatios(as_of_date || new Date().toISOString().split('T')[0], getCompanyId(req));
     res.json(ratios);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -830,7 +904,7 @@ router.get('/ratios/comparative', requirePermission('finance', 'view'), async (r
     priorYear.setFullYear(priorYear.getFullYear() - 1);
     const currentDate  = req.query.current_date  || today.toISOString().split('T')[0];
     const previousDate = req.query.previous_date || priorYear.toISOString().split('T')[0];
-    const comparison = await financialRatiosService.getComparativeRatios(currentDate, previousDate);
+    const comparison = await financialRatiosService.getComparativeRatios(currentDate, previousDate, getCompanyId(req));
     res.json(comparison);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -849,7 +923,10 @@ router.post('/tickets', requirePermission('finance', 'edit'), async (req, res) =
     });
     res.status(201).json(ticket);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    // The repository refuses an unknown category with statusCode 400. A blanket
+    // 500 here reported a caller's bad input as a server fault, which is the
+    // difference between "pick a real category" and "the helpdesk is down".
+    res.status(error.statusCode || 500).json({ error: error.message });
   }
 });
 
@@ -915,12 +992,90 @@ router.get('/tickets/dashboard/stats', requirePermission('finance', 'view'), asy
   }
 });
 
+// ── Ticket categories ────────────────────────────────────────────────────────
+//
+// Until §173 this was a GET and nothing else: `ticket_categories` could not be
+// changed from a module page OR from Master Data Setup, so adding a category
+// meant a database insert. The writes below are what make it a master rather
+// than a fixture.
+//
+// Names are unique case-insensitively (ux_ticket_categories_name). That index
+// is load-bearing beyond tidiness: support_tickets stores the category as TEXT
+// as well as by id, and the migration's backfill matches the two on name.
 router.get('/ticket-categories', requirePermission('finance', 'view'), async (req, res) => {
   try {
     const result = await pool.query(
       'SELECT * FROM ticket_categories WHERE is_active = true ORDER BY name'
     );
     res.json(result.rows);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.post('/ticket-categories', requirePermission('finance', 'add'), async (req, res) => {
+  const name = String(req.body?.name ?? '').trim();
+  const description = String(req.body?.description ?? '').trim() || null;
+  if (!name) return res.status(400).json({ error: 'Category name is required' });
+  if (name.length > 100) return res.status(400).json({ error: 'Category name must be 100 characters or fewer' });
+  try {
+    const { rows } = await pool.query(
+      `INSERT INTO ticket_categories (name, description, is_active)
+       VALUES ($1, $2, true) RETURNING *`,
+      [name, description]
+    );
+    res.status(201).json(rows[0]);
+  } catch (error) {
+    // A retired category still occupies the unique name, so say which case it
+    // is — "already exists" sends someone hunting a row that is not in the list.
+    if (error.code === '23505') {
+      const { rows } = await pool.query(
+        'SELECT id, is_active FROM ticket_categories WHERE LOWER(BTRIM(name)) = LOWER(BTRIM($1))', [name]
+      );
+      return res.status(409).json({
+        error: rows[0] && rows[0].is_active === false
+          ? `"${name}" exists but was removed. Restore it instead of adding a second one.`
+          : `"${name}" is already a ticket category.`,
+        existing: rows[0] ?? null,
+      });
+    }
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.put('/ticket-categories/:id', requirePermission('finance', 'edit'), captureBefore('ticket_categories'), async (req, res) => {
+  const name = String(req.body?.name ?? '').trim();
+  if (!name) return res.status(400).json({ error: 'Category name is required' });
+  try {
+    const { rows } = await pool.query(
+      `UPDATE ticket_categories
+          SET name = $1, description = COALESCE($2, description)
+        WHERE id = $3 RETURNING *`,
+      [name, String(req.body?.description ?? '').trim() || null, req.params.id]
+    );
+    if (!rows[0]) return res.status(404).json({ error: 'Not found' });
+    // The tickets carry the category as text too, so a rename that only touched
+    // the master would leave every existing ticket showing the old name and no
+    // longer matching its own category row.
+    await pool.query(
+      'UPDATE support_tickets SET category = $1 WHERE category_id = $2', [name, req.params.id]
+    );
+    res.json(rows[0]);
+  } catch (error) {
+    if (error.code === '23505') return res.status(409).json({ error: `"${name}" is already a ticket category.` });
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Soft delete. Tickets already filed under it keep their category text — a
+// retired category stops being offered, it does not rewrite history.
+router.delete('/ticket-categories/:id', requirePermission('finance', 'delete'), captureBefore('ticket_categories'), async (req, res) => {
+  try {
+    const { rowCount } = await pool.query(
+      'UPDATE ticket_categories SET is_active = false WHERE id = $1', [req.params.id]
+    );
+    if (!rowCount) return res.status(404).json({ error: 'Not found' });
+    res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

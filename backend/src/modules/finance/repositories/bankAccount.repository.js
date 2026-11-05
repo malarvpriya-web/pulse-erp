@@ -58,8 +58,19 @@ function withDerivedBalance(row) {
   };
 }
 
+export function rejectLedgerLink(data) {
+  if (data && Object.prototype.hasOwnProperty.call(data, 'chart_account_id')) {
+    throw Object.assign(new Error('The ledger account of a bank account is set through Finance\'s payment account mapping (PUT /finance/accounting/payment-gl-mapping), not here'),
+      { status: 400, code: 'LEDGER_LINK_FROM_MAPPING' });
+  }
+}
+
 class BankAccountRepository {
+  // chart_account_id (the ledger link, B-03) is NOT accepted here: it is kept in
+  // step with Finance's approved payment mapping (paymentGlMapping.service.js)
+  // and only that writes it (D3). A caller supplying it gets LEDGER_LINK_FROM_MAPPING.
   async create(data) {
+    rejectLedgerLink(data);
     const {
       account_name, account_number, bank_name, branch, ifsc_code,
       account_type, currency, opening_balance, opening_date,
@@ -80,7 +91,7 @@ class BankAccountRepository {
         account_name, account_number, last4, bank_name, branch, ifsc_code,
         account_type || 'current', currency || 'INR',
         parseFloat(opening_balance || 0), opening_date || null,
-        chart_account_id || null, company_id ?? null,
+        null, company_id ?? null,
         is_primary || false, od_limit || null,
         swift_code || null, micr_code || null,
       ]
@@ -88,11 +99,14 @@ class BankAccountRepository {
     return result.rows[0];
   }
 
-  async update(id, data) {
+  // companyId: the caller's company (B-01) — another company's account is not
+  // matched and reads as missing. null = global scope (super admin, internal).
+  async update(id, data, companyId = null) {
+    rejectLedgerLink(data);
     const allowed = [
       'account_name','account_number','bank_name','branch','ifsc_code',
       'account_type','currency','opening_balance','opening_date',
-      'chart_account_id','is_primary','od_limit','swift_code','micr_code','is_active',
+      'is_primary','od_limit','swift_code','micr_code','is_active',
     ];
     const sets = [];
     const params = [];
@@ -102,21 +116,25 @@ class BankAccountRepository {
         sets.push(`${key} = $${params.length}`);
       }
     }
-    if (!sets.length) return this.findById(id);
+    if (!sets.length) return this.findById(id, companyId);
     params.push(id);
+    const idParam = params.length;
+    params.push(companyId ?? null);
     sets.push(`updated_at = CURRENT_TIMESTAMP`);
     const result = await pool.query(
-      `UPDATE bank_accounts SET ${sets.join(', ')} WHERE id = $${params.length} RETURNING *`,
+      `UPDATE bank_accounts SET ${sets.join(', ')}
+        WHERE id = $${idParam} AND deleted_at IS NULL AND ($${params.length}::int IS NULL OR company_id = $${params.length}::int)
+        RETURNING *`,
       params
     );
     return result.rows[0];
   }
 
-  async softDelete(id) {
+  async softDelete(id, companyId = null) {
     const result = await pool.query(
       `UPDATE bank_accounts SET deleted_at = NOW(), is_active = false, updated_at = NOW()
-       WHERE id = $1 RETURNING *`,
-      [id]
+       WHERE id = $1 AND deleted_at IS NULL AND ($2::int IS NULL OR company_id = $2::int) RETURNING *`,
+      [id, companyId ?? null]
     );
     return result.rows[0];
   }
@@ -147,6 +165,9 @@ class BankAccountRepository {
            FROM journal_lines jl
            JOIN journal_entries je ON je.id = jl.entry_id
            WHERE jl.account_id = ba.chart_account_id
+             -- B-03 (D4): this company's postings only — a shared-chart account
+             -- (company_id NULL, e.g. 1002) carries every company's lines.
+             AND je.company_id IS NOT DISTINCT FROM ba.company_id
              AND je.status = 'posted'
              AND je.entry_date <= CURRENT_DATE
          ) glm ON true`
@@ -180,12 +201,12 @@ class BankAccountRepository {
     return linked ? result.rows.map(withDerivedBalance) : result.rows;
   }
 
-  async findById(id) {
+  async findById(id, companyId = null) {
     const linked = await hasChartAccountLink();
     if (!linked) {
       const r = await pool.query(
-        'SELECT * FROM bank_accounts WHERE id = $1 AND deleted_at IS NULL',
-        [id]
+        'SELECT * FROM bank_accounts WHERE id = $1 AND deleted_at IS NULL AND ($2::int IS NULL OR company_id = $2::int)',
+        [id, companyId ?? null]
       );
       return r.rows[0];
     }
@@ -199,11 +220,14 @@ class BankAccountRepository {
          FROM journal_lines jl
          JOIN journal_entries je ON je.id = jl.entry_id
          WHERE jl.account_id = ba.chart_account_id
+           -- B-03 (D4): this company's postings only — a shared-chart account
+           -- (company_id NULL, e.g. 1002) carries every company's lines.
+           AND je.company_id IS NOT DISTINCT FROM ba.company_id
            AND je.status = 'posted'
            AND je.entry_date <= CURRENT_DATE
        ) glm ON true
-       WHERE ba.id = $1 AND ba.deleted_at IS NULL`,
-      [id]
+       WHERE ba.id = $1 AND ba.deleted_at IS NULL AND ($2::int IS NULL OR ba.company_id = $2::int)`,
+      [id, companyId ?? null]
     );
     return result.rows[0] ? withDerivedBalance(result.rows[0]) : result.rows[0];
   }
@@ -225,7 +249,11 @@ class BankAccountRepository {
       amount, reference_number, description, journal_entry_id,
     } = data;
 
-    const account = await this.findById(bank_account_id);
+    // The balance is read in the caller's transaction, row-locked (B-02): read
+    // through the pool it missed the earlier lines of the same batch, so every
+    // line's balance_after was computed from the pre-batch balance.
+    const { rows: [account] } = await client.query(
+      `SELECT current_balance FROM bank_accounts WHERE id = $1 FOR UPDATE`, [bank_account_id]);
     const balance_after = transaction_type === 'Credit'
       ? parseFloat(account.current_balance) + parseFloat(amount)
       : parseFloat(account.current_balance) - parseFloat(amount);
@@ -268,11 +296,18 @@ class BankAccountRepository {
 
   // ── Reconciliation ───────────────────────────────────────────────────────────
 
-  async importStatementLines(bankAccountId, lines) {
+  async importStatementLines(bankAccountId, lines, companyId = null) {
     if (!lines?.length) return [];
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
+      // Ownership inside the import transaction (B-01): the account must be the
+      // caller's and stay so (KEY SHARE blocks a concurrent delete) while its
+      // lines are written. Another company's account is reported as missing.
+      const { rows: own } = await client.query(
+        `SELECT id FROM bank_accounts WHERE id = $1 AND deleted_at IS NULL
+            AND ($2::int IS NULL OR company_id = $2::int) FOR KEY SHARE`, [bankAccountId, companyId ?? null]);
+      if (!own.length) { await client.query('ROLLBACK'); return null; }
       const inserted = [];
       for (const line of lines) {
         const r = await client.query(
@@ -346,26 +381,53 @@ class BankAccountRepository {
     return { matched };
   }
 
-  async completeReconciliation(bankAccountId) {
+  async completeReconciliation(bankAccountId, companyId = null) {
     const result = await pool.query(
       `UPDATE bank_accounts
        SET last_reconciled_at = NOW(), updated_at = NOW()
-       WHERE id = $1 RETURNING *`,
-      [bankAccountId]
+       WHERE id = $1 AND deleted_at IS NULL AND ($2::int IS NULL OR company_id = $2::int) RETURNING *`,
+      [bankAccountId, companyId ?? null]
     );
     return result.rows[0];
   }
 
-  async manualMatch(statementLineId, transactionId) {
-    await pool.query(
-      `UPDATE bank_statement_lines SET reconciled=true, matched_txn_id=$1 WHERE id=$2`,
-      [transactionId, statementLineId]
-    );
-    await pool.query(
-      `UPDATE bank_transactions SET reconciled=true, matched_stmt_id=$1 WHERE id=$2`,
-      [statementLineId, transactionId]
-    );
-    return { matched: true };
+  /**
+   * Match one statement line to one book transaction OF THE SAME ACCOUNT (B-01).
+   * Both ids used to be taken as given: a line or transaction of any account —
+   * any company's — could be marked reconciled through any account's URL, and
+   * the two updates ran outside a transaction. Now both rows are locked and
+   * matched in one transaction, only when each belongs to `bankAccountId` and
+   * that account to the caller's company; otherwise nothing changes and null is
+   * returned (the route answers 404).
+   */
+  async manualMatch(bankAccountId, statementLineId, transactionId, companyId = null) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const { rows: own } = await client.query(
+        `SELECT id FROM bank_accounts WHERE id = $1 AND deleted_at IS NULL
+            AND ($2::int IS NULL OR company_id = $2::int) FOR KEY SHARE`, [bankAccountId, companyId ?? null]);
+      const { rows: line } = own.length ? await client.query(
+        `SELECT id FROM bank_statement_lines WHERE id = $1 AND bank_account_id = $2 FOR UPDATE`, [statementLineId, bankAccountId]) : { rows: [] };
+      const { rows: txn } = line.length ? await client.query(
+        `SELECT id FROM bank_transactions WHERE id = $1 AND bank_account_id = $2 FOR UPDATE`, [transactionId, bankAccountId]) : { rows: [] };
+      if (!own.length || !line.length || !txn.length) { await client.query('ROLLBACK'); return null; }
+      await client.query(
+        `UPDATE bank_statement_lines SET reconciled=true, matched_txn_id=$1 WHERE id=$2`,
+        [transactionId, statementLineId]
+      );
+      await client.query(
+        `UPDATE bank_transactions SET reconciled=true, matched_stmt_id=$1 WHERE id=$2`,
+        [statementLineId, transactionId]
+      );
+      await client.query('COMMIT');
+      return { matched: true };
+    } catch (e) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw e;
+    } finally {
+      client.release();
+    }
   }
 }
 

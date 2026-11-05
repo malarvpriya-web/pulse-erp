@@ -2,8 +2,13 @@ import pool from '../db.js';
 import journalRepo from '../repositories/journal.repository.js';
 
 class FinancialRatiosService {
-  async calculateRatios(asOfDate) {
-    const trialBalance = await journalRepo.getTrialBalance('1900-01-01', asOfDate);
+  /**
+   * @param {string} asOfDate
+   * @param {number|null} companyId  from companyOf(req). Null means a genuine
+   *   global scope; omitting it mixes every tenant's ledger into one ratio set.
+   */
+  async calculateRatios(asOfDate, companyId = null) {
+    const trialBalance = await journalRepo.getTrialBalance('1900-01-01', asOfDate, companyId);
     
     // Calculate account type totals
     const currentAssets = this.sumAccountsByCode(trialBalance, ['1100', '1110', '1120', '1130'], 'Asset');
@@ -16,7 +21,7 @@ class FinancialRatiosService {
     // Get P&L data for the year
     const yearStart = new Date(asOfDate);
     yearStart.setMonth(0, 1);
-    const plData = await this.getPLData(yearStart.toISOString().split('T')[0], asOfDate);
+    const plData = await this.getPLData(yearStart.toISOString().split('T')[0], asOfDate, companyId);
     
     // Get receivables and payables
     const receivables = await this.getReceivables();
@@ -96,8 +101,8 @@ class FinancialRatiosService {
       }, 0);
   }
 
-  async getPLData(startDate, endDate) {
-    const trialBalance = await journalRepo.getTrialBalance(startDate, endDate);
+  async getPLData(startDate, endDate, companyId = null) {
+    const trialBalance = await journalRepo.getTrialBalance(startDate, endDate, companyId);
     
     const revenue = trialBalance
       .filter(acc => acc.account_type === 'Revenue')
@@ -132,9 +137,9 @@ class FinancialRatiosService {
     return parseFloat(result.rows[0].total);
   }
 
-  async getComparativeRatios(currentDate, previousDate) {
-    const current = await this.calculateRatios(currentDate);
-    const previous = await this.calculateRatios(previousDate);
+  async getComparativeRatios(currentDate, previousDate, companyId = null) {
+    const current = await this.calculateRatios(currentDate, companyId);
+    const previous = await this.calculateRatios(previousDate, companyId);
     
     const comparison = {};
     for (const key in current) {

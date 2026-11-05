@@ -35,9 +35,11 @@ import express from 'express';
 import pool from '../../shared/db.js';
 import { requirePermission } from '../../../middlewares/auth.middleware.js';
 import { resolveGstRate } from '../../../shared/gstRate.js';
-import { rankOptions } from '../../procurement/engines/tcoEngine.js';
+import { rankOptions, resolveParams } from '../../procurement/engines/tcoEngine.js';
+import { loadFreightInputs } from '../../procurement/services/freight.service.js';
 import {
   loadTcoParams, loadVendorPerformance, loadAnnualDemand, masterRate, tcoBasis,
+  loadFxForCurrencies, fxFieldsFor, TcoParamsUnavailableError,
 } from '../../procurement/services/tco.service.js';
 
 const router = express.Router();
@@ -92,9 +94,9 @@ router.get('/items/:itemId/sourcing', requirePermission('inventory', 'view'), as
                 ivp.tooling_cost, ivp.scrap_rate_pct, ivp.warranty_months
            FROM item_vendor_prices ivp
            LEFT JOIN warehouses w ON w.id = ivp.warehouse_id
-          WHERE ivp.item_id = $1 AND ivp.deleted_at IS NULL
+          WHERE ivp.item_id = $1 AND ivp.deleted_at IS NULL${scoped('ivp.company_id')}
           ORDER BY net_price ASC NULLS LAST`,
-        [itemId]
+        args
       ),
 
       // 2 ── what we actually paid, aggregated per vendor
@@ -320,11 +322,22 @@ router.get('/items/:itemId/sourcing', requirePermission('inventory', 'view'), as
     // Every vendor is costed at the SAME quantity, or the comparison is
     // meaningless: per-order costs and MOQ over-buy only differentiate vendors
     // when the requirement is held constant across them.
+    // Unreadable settings must not become the defaults (§215): the page still
+    // shows prices, and says TCO is unavailable rather than switched off.
+    let tcoUnavailable = null;
     const [tcoParams, perf, demand] = await Promise.all([
-      loadTcoParams(companyId),
+      loadTcoParams(companyId).catch((e) => {
+        if (!(e instanceof TcoParamsUnavailableError)) throw e;
+        tcoUnavailable = e.message;
+        return { ...resolveParams({}), tco_enabled: false };
+      }),
       loadVendorPerformance(itemId, companyId),
       loadAnnualDemand(itemId, companyId),
     ]);
+    const fx = tcoParams.tco_enabled
+      ? await loadFxForCurrencies(companyId,
+          priced.map(v => (v.price_source === 'Price Book' ? v.currency : null)), tcoParams)
+      : new Map();
 
     // Comparison quantity: the caller's ?qty wins, otherwise a REALISTIC ORDER
     // LOT for this component, in descending order of authority.
@@ -368,12 +381,24 @@ router.get('/items/:itemId/sourcing', requirePermission('inventory', 'view'), as
     // A company that has switched TCO off gets an empty ranking rather than a
     // computed one it did not ask for. rankOptions([]) returns the same shape
     // with null winners, so nothing downstream has to branch.
+    // Freight inputs (§216): this component at the compared quantity, to the
+    // main receiving point, per vendor lane and approved rate card.
+    const freight = tcoParams.tco_enabled
+      ? await loadFreightInputs(companyId, tcoParams, {
+          vendorIds: priced.map(v => v.vendor_id),
+          lines: [{ item_id: itemId, quantity: compareQty, quantity_uom: item.unit_of_measure || null }],
+        })
+      : new Map();
+
     const ranked = !tcoParams.tco_enabled ? rankOptions([], tcoParams) : rankOptions(priced.map((v) => {
       const perfRow = perf.get(v.vendor_id) || {};
       return {
         vendor_id: v.vendor_id,
         vendor_name: v.vendor_name,
         unit_price: v.best_price,
+        // Only the price book records a currency; a foreign price is converted
+        // with an approved Finance rate or not ranked at all.
+        ...fxFieldsFor(v.price_source === 'Price Book' ? v.currency : null, fx, tcoParams.base_currency),
         quantity: compareQty,
         // Price-book adders are quoted; a Last-PO or price-log row has none, so
         // the engine estimates them and labels the line 'assumed'.
@@ -398,10 +423,12 @@ router.get('/items/:itemId/sourcing', requirePermission('inventory', 'view'), as
         reject_basis:    perfRow.reject_rate_pct != null ? 'observed' : 'estimated',
         on_time_pct:     perfRow.on_time_pct ?? masterRate(v.on_time_pct),
         on_time_basis:   perfRow.on_time_pct != null ? 'observed' : 'estimated',
-        freight_pct_observed: perfRow.freight_pct_observed ?? null,
+        freight_pct_observed:  perfRow.freight_pct_observed ?? null,
+        freight_sample_orders: perfRow.freight_sample_orders ?? null,
         is_single_source: !!v.is_single_source,
         annual_demand_qty: demand.annual_demand_qty,
         holding_cost_pct:  num(item.holding_cost_pct),
+        freight_model:     freight.get(Number(v.vendor_id)) ?? null,
       };
     }), tcoParams);
 
@@ -419,6 +446,7 @@ router.get('/items/:itemId/sourcing', requirePermission('inventory', 'view'), as
       v.is_lowest_tco   = o.is_lowest_tco;
       v.is_lowest_price = o.is_lowest_price;
       v.tco_confidence  = o.tco.confidence;
+      v.tco_completeness = o.tco.completeness ?? null;
     }
 
     res.json({
@@ -460,12 +488,15 @@ router.get('/items/:itemId/sourcing', requirePermission('inventory', 'view'), as
         tco_spread_pct: ranked.tco_spread_pct,
         tco_recommendation: ranked.recommendation,
         tco_confidence: ranked.confidence,
+        tco_comparison_status: ranked.comparison_status ?? null,
       },
       // Shipping the rates and the window alongside the numbers is what makes
       // an award defensible — a comparison whose basis is invisible produces a
       // plausible wrong answer nobody can audit
       // (see project_ceo_intelligence_growth_window_and_tabstrip).
       tco_basis: tcoBasis(tcoParams, {
+        tco_available: tcoUnavailable == null,
+        tco_unavailable_reason: tcoUnavailable,
         quantity: compareQty,
         quantity_basis: qtyBasis,
         annual_demand_qty: demand.annual_demand_qty,

@@ -29,6 +29,11 @@ export const PROC_DEFAULTS = {
   l1_approval_limit:           25000,
   l2_approval_limit:           100000,
   cfo_approval_above:          500000,
+  // Segregation of duties, ON by default: the person who raised a requisition
+  // or a purchase order may not also approve it. See migration
+  // 20260915000007 for why this one defaults to the enforcing direction while
+  // enforce_3way_match and block_payment_on_mismatch below default to off.
+  allow_self_approval:         false,
   enforce_3way_match:          false,
   block_payment_on_mismatch:   false,
   allowable_price_variance_pct:3,
@@ -73,6 +78,9 @@ export const TCO_RANGES = {
   inspection_cost_per_receipt:  [0, 1e9],
   expedite_cost_per_late_order: [0, 1e9],
   tco_horizon_months:           [1, 120],
+  // Not a range: exactly 360 or 365 (DAY_COUNT_BASES). The PUT enforces the set.
+  tco_day_count_basis:          [360, 365],
+  tco_fx_max_age_days:          [1, 366],
 };
 
 /**

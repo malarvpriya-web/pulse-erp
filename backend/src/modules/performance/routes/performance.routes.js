@@ -4,6 +4,9 @@ import pool from '../../shared/db.js';
 import { logAudit } from '../../../services/AuditService.js';
 import { dimension, idDimension } from '../../../shared/dashboardFilters.js';
 import { captureBefore } from '../../../middlewares/captureBefore.js';
+import { employeeOf } from '../../../shared/scope.js';
+import { ratingProblem } from '../../../shared/ratings.js';
+import { hasRole } from '../../../middlewares/auth.middleware.js';
 
 const router = express.Router();
 
@@ -12,20 +15,61 @@ const cid = req => req.scope?.company_id ?? null;
 const uid = req => req.user?.userId ?? req.user?.id ?? null;
 const role = req => req.user?.role ?? 'employee';
 
-const isManagerPlus = req => ['manager', 'hr', 'super_admin', 'admin'].includes(role(req));
-const isHRPlus      = req => ['hr', 'super_admin', 'admin'].includes(role(req));
+// Over EVERY role the user holds (user_roles), not the primary one only: a
+// secondary hr role was ignored, and hr_manager was in neither list.
+const HR_REVIEW_ROLES      = ['hr', 'hr_manager', 'admin', 'super_admin'];
+const MANAGER_REVIEW_ROLES = ['manager', ...HR_REVIEW_ROLES];
+const isManagerPlus = req => hasRole(req, MANAGER_REVIEW_ROLES);
+const isHRPlus      = req => hasRole(req, HR_REVIEW_ROLES);
 
 function forbidden(res, msg = 'Forbidden') { return res.status(403).json({ error: msg }); }
+
+/**
+ * Copy a review rating into the employee's talent assessment (§209). The
+ * version it replaces goes to talent_assessment_history first, and only this
+ * company's assessment is updated: talent_assessments is UNIQUE (employee_id)
+ * across every company. Returns false when the existing assessment belongs to
+ * another company and was left alone. Run it on the review's transaction.
+ */
+async function syncReviewToAssessment(db, { employeeId, score, companyId, req }) {
+  await db.query(
+    `INSERT INTO talent_assessment_history
+       (employee_id, assessed_by, assessment_date, assessment_period, performance_score,
+        potential_score, flight_risk, readiness, leadership_score, mobility,
+        talent_classification, notes, company_id,
+        assessment_id, change_action, changed_by_user_id)
+     SELECT employee_id, assessed_by, assessment_date, assessment_period, performance_score,
+            potential_score, flight_risk, readiness, leadership_score, mobility,
+            talent_classification, notes, company_id,
+            id, 'performance_review', $3
+       FROM talent_assessments
+      WHERE employee_id = $1 AND company_id IS NOT DISTINCT FROM $2::int`,
+    [employeeId, companyId, uid(req)]
+  );
+  const { rows } = await db.query(
+    `INSERT INTO talent_assessments (employee_id, performance_score, company_id, assessment_date)
+     VALUES ($1,$2,$3,CURRENT_DATE)
+     ON CONFLICT (employee_id) DO UPDATE
+       SET performance_score=$2, assessment_date=CURRENT_DATE
+     WHERE talent_assessments.company_id IS NOT DISTINCT FROM $3::int
+     RETURNING id`,
+    [employeeId, score, companyId]
+  );
+  return rows.length > 0;
+}
 
 /* ── Current review for logged-in employee ── */
 router.get('/review/current', async (req, res) => {
   try {
     const companyId  = cid(req);
-    const employeeId = uid(req);
-    const params = [];
-    let where = 'WHERE pr.deleted_at IS NULL';
+    // pr.employee_id is an employees.id: the caller's linked employee, not
+    // users.id (which named someone else, or nobody). No linked employee means
+    // no review of one's own — never "no filter".
+    const employeeId = await employeeOf(req, pool);
+    if (employeeId == null) return res.json(null);
+    const params = [employeeId];
+    let where = 'WHERE pr.deleted_at IS NULL AND pr.employee_id = $1';
     if (companyId)  { params.push(companyId);  where += ` AND pr.company_id = $${params.length}`; }
-    if (employeeId) { params.push(employeeId); where += ` AND pr.employee_id = $${params.length}`; }
     const { rows } = await pool.query(
       `SELECT pr.*,
          e.name  AS employee_name,
@@ -68,9 +112,12 @@ router.get('/history', async (req, res) => {
              WHERE pr.deleted_at IS NULL AND pr.status = 'completed'`;
     if (companyId)  { params.push(companyId);  q += ` AND pr.company_id = $${params.length}`; }
 
-    // Employees can only see their own history
+    // Employees can only see their own history: their linked employee id (not
+    // users.id). No linked employee → nothing.
     if (!isManagerPlus(req)) {
-      params.push(uid(req)); q += ` AND pr.employee_id = $${params.length}`;
+      const me = await employeeOf(req, pool);
+      if (me == null) return res.json([]);
+      params.push(me); q += ` AND pr.employee_id = $${params.length}`;
     } else if (employee_id) {
       params.push(employee_id); q += ` AND pr.employee_id = $${params.length}`;
     }
@@ -246,9 +293,15 @@ router.get('/team/members', async (req, res) => {
 
 /* ── Self-review submit ── */
 router.post('/reviews/:id/self-review', async (req, res) => {
+  const { self_rating, self_comments, achievements, challenges, learnings, next_goals } = req.body;
+  // numeric(3,1): one decimal is kept, more would be rounded by PostgreSQL,
+  // so it is refused instead — before the review is read or written.
+  if (self_rating != null) {
+    const problem = ratingProblem(self_rating, { label: 'Self rating', decimals: 1 });
+    if (problem) return res.status(400).json({ error: problem, code: 'INVALID_RATING', field: 'self_rating' });
+  }
   try {
     const companyId = cid(req);
-    const { self_rating, self_comments, achievements, challenges, learnings, next_goals } = req.body;
 
     // RBAC: only the employee who owns the review can submit self-review
     const { rows: check } = await pool.query(
@@ -256,9 +309,19 @@ router.post('/reviews/:id/self-review', async (req, res) => {
       companyId ? [req.params.id, companyId] : [req.params.id]
     );
     if (!check.length) return res.status(404).json({ error: 'Review not found' });
-    const callerRole = role(req);
-    if (callerRole === 'employee' && String(check[0].employee_id) !== String(uid(req))) {
-      return forbidden(res, 'You can only submit your own self-review');
+    // Owner only, whatever roles the caller holds: a self-review is the
+    // employee's own assessment. HR corrects a review through PUT /reviews/:id.
+    // review.employee_id is an employees.id, so it is compared with the
+    // caller's linked employee, never users.id. `message` too: the api client
+    // shows it for a 403.
+    const me = await employeeOf(req, pool);
+    if (me == null) {
+      const msg = 'Your login is not linked to an employee record, so it cannot submit a self-review.';
+      return res.status(403).json({ error: msg, message: msg, code: 'NO_LINKED_EMPLOYEE' });
+    }
+    if (String(check[0].employee_id) !== String(me)) {
+      const msg = 'You can only submit your own self-review';
+      return res.status(403).json({ error: msg, message: msg, code: 'NOT_REVIEW_OWNER' });
     }
 
     const result = await pool.query(
@@ -266,8 +329,10 @@ router.post('/reviews/:id/self-review', async (req, res) => {
        SET self_rating=$1, self_comments=$2, achievements=$3,
            challenges=$4, learnings=$5, next_goals=$6,
            self_submitted_at=NOW(), status='self_submitted', updated_at=NOW()
-       WHERE id=$7 RETURNING *`,
-      [self_rating, self_comments, achievements, challenges, learnings, next_goals, req.params.id]
+       WHERE id=$7${companyId ? ' AND company_id=$8' : ''} RETURNING *`,
+      companyId
+        ? [self_rating, self_comments, achievements, challenges, learnings, next_goals, req.params.id, companyId]
+        : [self_rating, self_comments, achievements, challenges, learnings, next_goals, req.params.id]
     );
     res.json(result.rows[0]);
   } catch (err) {
@@ -278,12 +343,32 @@ router.post('/reviews/:id/self-review', async (req, res) => {
 /* ── Manager review submit ── */
 router.post('/reviews/:id/manager-review', async (req, res) => {
   if (!isManagerPlus(req)) return forbidden(res);
-  try {
-    const { manager_rating, manager_comments, kra_score, behavioral_score,
-            final_rating, promotion_recommendation, salary_revision_percentage } = req.body;
-    const companyId = cid(req);
+  const { manager_rating, manager_comments, kra_score, behavioral_score,
+          final_rating, promotion_recommendation, salary_revision_percentage } = req.body;
+  // Both columns are numeric(3,1): one decimal is kept, more would be rounded
+  // by PostgreSQL, so it is refused instead.
+  for (const [field, label] of [['manager_rating', 'Manager rating'], ['final_rating', 'Final rating']]) {
+    if (req.body[field] == null || req.body[field] === '') continue;
+    const problem = ratingProblem(req.body[field], { label, decimals: 1 });
+    if (problem) return res.status(400).json({ error: problem, code: 'INVALID_RATING', field });
+  }
+  const companyId = cid(req);
+  // manager_id references employees(id), not users(id). A login with no
+  // linked employee cannot be the manager of record, so nothing is written.
+  const managerId = await employeeOf(req, pool);
+  if (managerId == null) {
+    return res.status(400).json({
+      error: 'Your login is not linked to an employee record, so it cannot submit a manager review.',
+      code: 'NO_LINKED_EMPLOYEE',
+    });
+  }
 
-    const result = await pool.query(
+  // The review and its talent-assessment sync commit together: a failed sync
+  // used to answer 500 after the review had already been saved.
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const result = await client.query(
       `UPDATE performance_reviews
        SET manager_id=$1, manager_rating=$2, manager_comments=$3,
            kra_score=$4, behavioral_score=$5,
@@ -294,66 +379,98 @@ router.post('/reviews/:id/manager-review', async (req, res) => {
            status='manager_submitted', updated_at=NOW()
        WHERE id=$9${companyId ? ' AND company_id=$10' : ''} RETURNING *`,
       companyId
-        ? [uid(req), manager_rating, manager_comments, kra_score || null,
+        ? [managerId, manager_rating, manager_comments, kra_score || null,
            behavioral_score || null, final_rating, promotion_recommendation || false,
            salary_revision_percentage || 0, req.params.id, companyId]
-        : [uid(req), manager_rating, manager_comments, kra_score || null,
+        : [managerId, manager_rating, manager_comments, kra_score || null,
            behavioral_score || null, final_rating, promotion_recommendation || false,
            salary_revision_percentage || 0, req.params.id]
     );
-    if (!result.rows.length) return res.status(404).json({ error: 'Review not found' });
+    if (!result.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Review not found' });
+    }
 
     // Auto-sync to talent_assessments
     const rev = result.rows[0];
-    if (rev.final_rating) {
-      await pool.query(
-        `INSERT INTO talent_assessments (employee_id, performance_score, company_id, assessment_date)
-         VALUES ($1,$2,$3,CURRENT_DATE)
-         ON CONFLICT (employee_id) DO UPDATE
-           SET performance_score = $2, assessment_date = CURRENT_DATE`,
-        [rev.employee_id, rev.final_rating, companyId]
-      );
+    if (rev.final_rating != null) {
+      const synced = await syncReviewToAssessment(client, { employeeId: rev.employee_id, score: rev.final_rating, companyId, req });
+      if (!synced) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({
+          error: 'This employee\'s talent assessment is held under another company, so the review was not saved.',
+          code: 'ASSESSMENT_OTHER_COMPANY',
+        });
+      }
     }
+    await client.query('COMMIT');
     res.json(rev);
   } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
     res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
   }
 });
 
 /* ── HR/L2 finalize review ── */
 router.post('/reviews/:id/finalize', async (req, res) => {
   if (!isHRPlus(req)) return forbidden(res);
+  const { hr_comments } = req.body;
+  const calibrated_rating = req.body.calibrated_rating === '' ? null : (req.body.calibrated_rating ?? null);
+  // numeric(3,2): two decimals are kept, a third would be rounded by
+  // PostgreSQL, so it is refused instead.
+  if (calibrated_rating != null) {
+    const problem = ratingProblem(calibrated_rating, { label: 'Calibrated rating', decimals: 2 });
+    if (problem) return res.status(400).json({ error: problem, code: 'INVALID_RATING', field: 'calibrated_rating' });
+  }
+  const companyId = cid(req);
+  // hr_reviewer_id references employees(id), not users(id): store the
+  // caller's linked employee, or NULL for a login with no employee record
+  // (admin@). Who finalized is still in the audit log by users.id.
+  const hrReviewerId = await employeeOf(req, pool);
+
+  // The review and its talent-assessment sync commit together, as in
+  // manager-review: a failed sync must not leave a finalized review behind.
+  const client = await pool.connect();
   try {
-    const { calibrated_rating, hr_comments } = req.body;
-    const companyId = cid(req);
-    const result = await pool.query(
+    await client.query('BEGIN');
+    const result = await client.query(
       `UPDATE performance_reviews
        SET calibrated_rating=$1, hr_comments=$2,
            hr_reviewer_id=$3, hr_submitted_at=NOW(),
            status='completed', updated_at=NOW()
        WHERE id=$4${companyId ? ' AND company_id=$5' : ''} RETURNING *`,
       companyId
-        ? [calibrated_rating, hr_comments, uid(req), req.params.id, companyId]
-        : [calibrated_rating, hr_comments, uid(req), req.params.id]
+        ? [calibrated_rating, hr_comments, hrReviewerId, req.params.id, companyId]
+        : [calibrated_rating, hr_comments, hrReviewerId, req.params.id]
     );
-    if (!result.rows.length) return res.status(404).json({ error: 'Review not found' });
+    if (!result.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Review not found' });
+    }
 
     // Sync calibrated rating to succession
     const rev = result.rows[0];
-    const finalForSuccession = calibrated_rating || rev.final_rating;
-    if (finalForSuccession) {
-      await pool.query(
-        `INSERT INTO talent_assessments (employee_id, performance_score, company_id, assessment_date)
-         VALUES ($1,$2,$3,CURRENT_DATE)
-         ON CONFLICT (employee_id) DO UPDATE
-           SET performance_score=$2, assessment_date=CURRENT_DATE`,
-        [rev.employee_id, finalForSuccession, companyId]
-      );
+    const finalForSuccession = rev.calibrated_rating ?? rev.final_rating;
+    if (finalForSuccession != null) {
+      const synced = await syncReviewToAssessment(client, { employeeId: rev.employee_id, score: finalForSuccession, companyId, req });
+      if (!synced) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({
+          error: 'This employee\'s talent assessment is held under another company, so the review was not finalized.',
+          code: 'ASSESSMENT_OTHER_COMPANY',
+        });
+      }
     }
+    await client.query('COMMIT');
     logAudit({ userId: uid(req), module: 'Performance', recordId: req.params.id, recordType: 'review', action: 'finalize', newData: rev, req });
     res.json(rev);
   } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
     res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
   }
 });
 
@@ -392,7 +509,14 @@ router.put('/goals/:id', async (req, res) => {
 router.get('/reviews', async (req, res) => {
   try {
     const filters = { ...req.query, company_id: cid(req) };
-    if (!isManagerPlus(req)) filters.employee_id = uid(req);
+    // An employee sees only their own reviews (linked employee id, not
+    // users.id). findReviews drops a falsy employee_id filter, so an unlinked
+    // login must get [] here rather than every review in the company.
+    if (!isManagerPlus(req)) {
+      const me = await employeeOf(req, pool);
+      if (me == null) return res.json([]);
+      filters.employee_id = me;
+    }
     const reviews = await performanceRepository.findReviews(filters);
     res.json(reviews);
   } catch (error) {
@@ -404,9 +528,10 @@ router.get('/reviews/:id', async (req, res) => {
   try {
     const review = await performanceRepository.findReviewById(req.params.id, cid(req));
     if (!review) return res.status(404).json({ error: 'Review not found' });
-    // Employees can only view their own review
-    if (!isManagerPlus(req) && String(review.employee_id) !== String(uid(req))) {
-      return forbidden(res);
+    // Employees can only view their own review (linked employee id, not users.id)
+    if (!isManagerPlus(req)) {
+      const me = await employeeOf(req, pool);
+      if (me == null || String(review.employee_id) !== String(me)) return forbidden(res);
     }
     res.json(review);
   } catch (error) {
@@ -424,13 +549,81 @@ router.post('/reviews', async (req, res) => {
   }
 });
 
-router.put('/reviews/:id', async (req, res) => {
+/*
+ * HR correction of a review's fields. No screen calls it today (2026-10-29).
+ * Every numeric field is checked against its column (scale and range) before
+ * anything is read or written, so PostgreSQL never rounds. `status` moves only
+ * through self-review / manager-review / finalize, and a completed review is
+ * locked: finalize already copied its rating into the talent assessment.
+ */
+const REVIEW_NUMBERS = {
+  self_rating:                { label: 'Self rating',       decimals: 1 },                     // numeric(3,1)
+  manager_rating:             { label: 'Manager rating',    decimals: 1 },                     // numeric(3,1)
+  final_rating:               { label: 'Final rating',      decimals: 1 },                     // numeric(3,1)
+  calibrated_rating:          { label: 'Calibrated rating', decimals: 2 },                     // numeric(3,2)
+  kra_score:                  { label: 'KRA score',          decimals: 2, min: 0, max: 100 }, // numeric(5,2)
+  behavioral_score:           { label: 'Behavioral score',   decimals: 2, min: 0, max: 100 }, // numeric(5,2)
+  salary_revision_percentage: { label: 'Salary revision %',  decimals: 2, min: 0, max: 100 }, // numeric(5,2)
+};
+const REVIEW_TEXTS   = ['self_comments', 'achievements', 'challenges', 'learnings', 'next_goals', 'manager_comments'];
+const REVIEW_SHORT   = { review_period: 50, review_type: 50 }; // varchar(50)
+
+function reviewEditProblem(body) {
+  const bad = (field, error, code = 'INVALID_FIELD') => ({ field, error, code });
+  if (body.status !== undefined) {
+    return bad('status', 'Status changes go through self-review, manager review and finalize, not this edit.', 'WORKFLOW_FIELD');
+  }
+  for (const [field, rule] of Object.entries(REVIEW_NUMBERS)) {
+    if (body[field] == null) continue;
+    const problem = ratingProblem(body[field], rule);
+    if (problem) return bad(field, problem, 'INVALID_RATING');
+  }
+  for (const field of REVIEW_TEXTS) {
+    if (body[field] != null && typeof body[field] !== 'string') return bad(field, `${field} must be text`);
+  }
+  for (const [field, max] of Object.entries(REVIEW_SHORT)) {
+    const v = body[field];
+    if (v != null && (typeof v !== 'string' || v.length > max)) return bad(field, `${field} must be text of at most ${max} characters`);
+  }
+  if (body.promotion_recommendation != null && typeof body.promotion_recommendation !== 'boolean') {
+    return bad('promotion_recommendation', 'promotion_recommendation must be true or false');
+  }
+  return null;
+}
+
+router.put('/reviews/:id', captureBefore('performance_reviews'), async (req, res) => {
   if (!isHRPlus(req)) return forbidden(res);
+  const companyId = cid(req);
+  if (companyId == null) return forbidden(res, 'Editing a review needs a company — this login has none');
+  const problem = reviewEditProblem(req.body || {});
+  if (problem) return res.status(400).json(problem);
+
+  const client = await pool.connect();
   try {
-    const review = await performanceRepository.updateReview(req.params.id, req.body);
+    await client.query('BEGIN');
+    const { rows: [current] } = await client.query(
+      `SELECT status FROM performance_reviews
+        WHERE id = $1 AND company_id = $2 AND deleted_at IS NULL FOR UPDATE`, [req.params.id, companyId]);
+    if (!current) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Review not found' });
+    }
+    if (current.status === 'completed') {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'This review is completed and can no longer be edited.', code: 'REVIEW_COMPLETED' });
+    }
+    const review = await performanceRepository.updateReview(req.params.id, req.body, { companyId, db: client });
+    if (!review) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'No editable fields were sent', code: 'NO_FIELDS' });
+    }
+    await client.query('COMMIT');
     res.json(review);
   } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
     res.status(500).json({ error: error.message });
+  } finally {
+    client.release();
   }
 });
 

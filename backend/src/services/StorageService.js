@@ -4,7 +4,13 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const LOCAL_UPLOAD_DIR = path.resolve(__dirname, '../../uploads');
+// Exported so every reader resolves the SAME directory this writer uses.
+// secureFiles.routes.js used to re-derive it with its own path.resolve() and
+// landed one level too high (Pulse/uploads instead of backend/uploads), which
+// meant every locally stored file 404'd at its existence check — no résumé,
+// employee document or offer letter could ever be downloaded. One constant,
+// one source of truth, so the two halves cannot drift apart again.
+export const LOCAL_UPLOAD_DIR = path.resolve(__dirname, '../../uploads');
 
 // STORAGE_PROVIDER: 'local' (default) | 's3' | 'r2'
 const PROVIDER = (process.env.STORAGE_PROVIDER || 'local').toLowerCase();

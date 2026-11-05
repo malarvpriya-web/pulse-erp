@@ -7,8 +7,49 @@ import {
 } from 'recharts';
 import api from '@/services/api/client';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import { useAuth } from '@/context/AuthContext';
+import QuoteEntryDialog from '../components/QuoteEntryDialog';
+import VocabSelect from '@/components/core/VocabSelect';
 
 /* ── helpers ──────────────────────────────────────────────────────────────── */
+// A quoted amount in the currency it was quoted in. formatINR() on a USD 10
+// quote printed "₹10" — a price fifty times too cheap, on the screen an award
+// is decided from.
+function quoted(n, currency) {
+  const c = currency ? String(currency).toUpperCase() : 'INR';
+  if (c === 'INR') return formatINR(n);
+  return `${c} ${Number(n).toLocaleString('en-IN', { maximumFractionDigits: 4 })}`;
+}
+/**
+ * Freight provenance under a TCO figure (§216): quoted / modelled / observed /
+ * assumed never look alike, and a missing input is named rather than shown as 0.
+ */
+function FreightTag({ t }) {
+  const f = t.freight || {};
+  const m = f.model;
+  const style = { fontSize: 10, fontWeight: 600, maxWidth: 240, whiteSpace: 'normal', marginTop: 2 };
+  if (t.completeness === 'incomplete') {
+    return (
+      <div style={{ ...style, color: '#991b1b' }} title={(f.missing || []).map(x => x.message).join(' ')}>
+        Needs freight input: {[...new Set((f.missing || []).map(x => x.input.replace('_', ' ')))].join(', ') || 'freight'}
+      </div>
+    );
+  }
+  const label = {
+    quoted: 'Freight quoted',
+    modelled: m ? `Freight modelled: ${m.total_weight_kg} kg × ${m.distance_km} km (${m.distance_source}) · ${m.transport_mode}` : 'Freight modelled',
+    observed: 'Freight from this vendor\'s past POs',
+    assumed: `Assumed freight – ${f.assumed_pct}% (not a verified landed cost)`,
+  }[f.source] || null;
+  if (!label) return null;
+  return (
+    <div style={{ ...style, color: f.source === 'assumed' ? '#b45309' : '#6b7280' }}
+         title={(f.missing || []).length ? `Model incomplete: ${(f.missing || []).map(x => x.message).join(' ')}` : (m?.formula || undefined)}>
+      {label}
+    </div>
+  );
+}
+
 function formatINR(n) {
   if (n == null) return '₹0';
   const abs = Math.abs(Number(n));
@@ -263,20 +304,10 @@ const INDIAN_STATES = [
   'Ladakh','Lakshadweep','Puducherry',
 ];
 
-const VENDOR_CATEGORIES = [
-  'Raw Materials',
-  'Electronic Components (Active)',
-  'Electronic Components (Passive)',
-  'IGBT / Power Modules',
-  'PCB Manufacturers',
-  'Magnetics (Transformers / Inductors)',
-  'Contract Manufacturers (EMS)',
-  'Consumables',
-  'IT',
-  'Services',
-  'Logistics',
-  'Import Agents / CHA',
-];
+// The twelve vendor categories that stood here were also copied into
+// ProcurementSettings (DEFAULT_VENDOR_CATEGORIES). Both now read the
+// vendor-category master, so procurement can add one from the vendor form and
+// every other category picker sees it — backend/src/modules/master/vocabularies.js.
 
 // The internal add/edit form collected fourteen fields while `vendors` carries
 // the full trading identity a supplier needs before it can be paid. Vendor type,
@@ -348,6 +379,13 @@ export default function VendorManagement() {
   const [rfqForm,        setRfqForm]        = useState(EMPTY_RFQ);
   const [openPRs,        setOpenPRs]        = useState([]);
   const [viewQuotesRfq,  setViewQuotesRfq]  = useState(null);
+  // §215 — a documented per-quote exchange rate. Finance decides (finance:approve).
+  const { hasPermission } = useAuth();
+  const canFxOverride = hasPermission('finance', 'approve');
+  // §219 — record/edit an invited vendor's quote (procurement:edit, RFQ open).
+  const canEditQuotes = hasPermission('procurement', 'edit');
+  const [quoteEdit, setQuoteEdit] = useState(null);   // the quote row being entered
+  const [fxEdit, setFxEdit] = useState(null);   // { quoteId, rate, reason, error, saving }
   const [sendVendorsRfq, setSendVendorsRfq] = useState(null);
   const [sendVendorIds,  setSendVendorIds]  = useState([]);
   const [matchModal,     setMatchModal]     = useState(false);
@@ -540,7 +578,23 @@ export default function VendorManagement() {
     }
   }
 
+  async function saveFxOverride(rfq, quote, clear = false) {
+    setFxEdit(f => ({ ...f, saving: true, error: null }));
+    try {
+      const url = `/procurement/rfqs/${rfq.id}/quotes/${quote.id}/fx-override`;
+      if (clear) await api.delete(url);
+      else await api.put(url, { rate: fxEdit.rate, reason: fxEdit.reason });
+      if (!isMounted.current) return;
+      setFxEdit(null);
+      await openViewQuotes(rfq);       // re-score with the new rate
+    } catch (e) {
+      if (!isMounted.current) return;
+      setFxEdit(f => ({ ...f, saving: false, error: e.response?.data?.error || e.message }));
+    }
+  }
+
   async function awardVendor(rfq, quote) {
+    setSaveError('');
     try {
       await api.patch(`/procurement/rfqs/${rfq.id}/award/${quote.vendor_id}`);
       if (!isMounted.current) return;
@@ -660,10 +714,12 @@ export default function VendorManagement() {
         <div style={card}>
           <div style={{ display: 'flex', gap: 10, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
             <input placeholder="Search vendor or city…" value={search} onChange={e => setSearch(e.target.value)} style={{ ...inp, width: 220 }} />
-            <select value={filterCat} onChange={e => setFilterCat(e.target.value)} style={{ ...inp, width: 160 }}>
-              <option value="">All Categories</option>
-              {VENDOR_CATEGORIES.map(c => <option key={c}>{c}</option>)}
-            </select>
+            {/* Filter: reads the master, does not offer to extend it. */}
+            <div style={{ width: 160 }}>
+              <VocabSelect vocab="vendor-categories" allowAdd={false} value={filterCat}
+                onChange={v => setFilterCat(v)} placeholder="All Categories"
+                selectStyle={{ ...inp, width: 160 }} />
+            </div>
             <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)} style={{ ...inp, width: 130 }}>
               <option value="">All Status</option>
               <option value="active">Active</option>
@@ -1005,7 +1061,7 @@ export default function VendorManagement() {
             {saveError && <div style={{ marginBottom: 12, padding: '10px 14px', background: '#fee2e2', border: '1px solid #fecaca', borderRadius: 8, fontSize: 13, color: '#991b1b' }}>{saveError}</div>}
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
               {fieldRow('Vendor Name *', <input style={inp} value={vendorForm.vendor_name} onChange={e => setVendorForm(f => ({ ...f, vendor_name: e.target.value }))} />)}
-              {fieldRow('Category', <select style={inp} value={vendorForm.category} onChange={e => setVendorForm(f => ({ ...f, category: e.target.value }))}>{VENDOR_CATEGORIES.map(c => <option key={c}>{c}</option>)}</select>)}
+              {fieldRow('Category', <VocabSelect vocab="vendor-categories" selectStyle={inp} value={vendorForm.category} onChange={v => setVendorForm(f => ({ ...f, category: v }))} />)}
               {fieldRow('GSTIN', <input style={inp} value={vendorForm.gstin} onChange={e => setVendorForm(f => ({ ...f, gstin: e.target.value }))} placeholder="27AABCT3518Q1ZV" />)}
               {fieldRow('PAN', <input style={inp} value={vendorForm.pan} onChange={e => setVendorForm(f => ({ ...f, pan: e.target.value }))} placeholder="AABCT3518Q" />)}
               {fieldRow('Bank Name', <input style={inp} value={vendorForm.bank_name} onChange={e => setVendorForm(f => ({ ...f, bank_name: e.target.value }))} />)}
@@ -1146,6 +1202,9 @@ export default function VendorManagement() {
               <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: '#1f2937' }}>Quotes — {viewQuotesRfq.rfq_number}</h2>
               <button style={{ background: 'none', border: 'none', fontSize: 20, cursor: 'pointer', color: '#6b7280' }} onClick={() => setViewQuotesRfq(null)}>×</button>
             </div>
+            {/* An award refused here (e.g. no exchange rate) used to fail silently:
+                saveError was rendered only in the other modals. */}
+            {saveError && <div role="alert" style={{ marginBottom: 12, padding: '10px 14px', background: '#fee2e2', border: '1px solid #fecaca', borderRadius: 8, fontSize: 13, color: '#991b1b' }}>{saveError}</div>}
             {(viewQuotesRfq.items || []).length > 1 ? (
               <div style={{ border: '1px solid #f0f0f4', borderRadius: 8, padding: '8px 12px', marginBottom: 16 }}>
                 {viewQuotesRfq.items.map(it => (
@@ -1176,16 +1235,44 @@ export default function VendorManagement() {
               });
 
               // Both bars, side by side: the gap between them IS the argument.
+              // The chart's axis is the base currency. A foreign quote is plotted
+              // at its converted value, or not at all when it has no usable rate —
+              // never its raw USD figure on an INR axis.
+              const baseCur = viewQuotesRfq.tco_basis?.currency || 'INR';
+              const toBase = (q, amt) => {
+                if (amt == null) return null;
+                if (!q.currency || q.currency === baseCur) return amt;
+                return q.tco?.fx?.rate ? amt * Number(q.tco.fx.rate) : null;
+              };
               const chartData = ranked.filter(q => q.unit_price || q.tco_total).map(q => ({
                 vendor: q.vendor_name || String(q.vendor_id),
-                quoted: q.total_amount != null ? +q.total_amount
-                  : (q.unit_price != null && cmp?.quantity ? +q.unit_price * cmp.quantity : null),
+                quoted: toBase(q, q.total_amount != null ? +q.total_amount
+                  : (q.unit_price != null && cmp?.quantity ? +q.unit_price * cmp.quantity : null)),
                 tco: q.tco_total ?? null,
+                // Green only for the engine's winner; a vendor missing freight
+                // is greyed — its bar is short by an unknown freight bill.
+                isLowestTco: q.is_lowest_tco === true,
+                incomplete: q.tco?.completeness === 'incomplete',
               }));
 
               return (
                 <>
-                  {rec && (
+                  {/* §216: a comparison missing freight for any vendor makes NO
+                      recommendation — say why, and who needs what. */}
+                  {rec?.status === 'withheld_incomplete' && (
+                    <div role="status" style={{ marginBottom: 16, padding: '12px 15px', borderRadius: 10, fontSize: 13, lineHeight: 1.5,
+                      background: '#fef2f2', border: '1px solid #fecaca', color: '#991b1b' }}>
+                      <strong>No recommendation — comparison incomplete.</strong> {rec.message}
+                      <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>
+                        {(rec.incomplete || []).map(i => (
+                          <li key={i.vendor_id}>
+                            <strong>{i.label}</strong> — {i.reason === 'fx' ? 'Exchange rate' : 'Freight'}: {(i.missing || []).map(m => m.message).filter(Boolean).join(' ') || 'freight inputs missing'}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {rec && rec.status !== 'withheld_incomplete' && (
                     <div style={{
                       display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 16, padding: '12px 15px',
                       borderRadius: 10, fontSize: 13, lineHeight: 1.5,
@@ -1195,6 +1282,11 @@ export default function VendorManagement() {
                     }}>
                       <span style={{ fontSize: 15, lineHeight: 1 }}>{rec.differs ? '⚠' : '✓'}</span>
                       <div>
+                        {rec.status === 'provisional' && (
+                          <div style={{ fontWeight: 700, marginBottom: 2 }}>
+                            Provisional — at least one vendor is costed on assumed freight; this is not a verified landed-cost comparison.
+                          </div>
+                        )}
                         {rec.differs ? (
                           <>
                             <strong>Awarding on price would cost more.</strong>{' '}
@@ -1225,7 +1317,7 @@ export default function VendorManagement() {
                           <Bar dataKey="quoted" fill="#c4b5fd" radius={[4, 4, 0, 0]} />
                           <Bar dataKey="tco" radius={[4, 4, 0, 0]}>
                             {chartData.map((d, i) => (
-                              <Cell key={i} fill={d.tco != null && d.tco === Math.min(...chartData.map(x => x.tco ?? Infinity)) ? '#10b981' : '#6B3FDB'} />
+                              <Cell key={i} fill={d.isLowestTco ? '#10b981' : d.incomplete ? '#d1d5db' : '#6B3FDB'} />
                             ))}
                           </Bar>
                         </BarChart>
@@ -1255,12 +1347,56 @@ export default function VendorManagement() {
                         <tr key={q.id} style={{ background: q.is_lowest_tco ? '#f0fdf4' : '#fff' }}>
                           <td style={{ ...TD, fontWeight: 600 }}>{q.vendor_name || q.vendor_id}</td>
                           <td style={TD}>
-                            {q.unit_price ? formatINR(q.unit_price) : '—'}
+                            {q.unit_price ? quoted(q.unit_price, q.currency) : '—'}
                             {q.is_lowest_price && <div style={{ fontSize: 10, color: '#6b7280' }}>lowest quote</div>}
                           </td>
-                          <td style={TD}>{q.total_amount ? formatINR(q.total_amount) : '—'}</td>
+                          <td style={TD}>{q.total_amount ? quoted(q.total_amount, q.currency) : '—'}</td>
                           <td style={{ ...TD, fontWeight: 700, color: q.is_lowest_tco ? '#16a34a' : '#6B3FDB' }}>
                             {q.tco_total != null ? formatINR(q.tco_total) : '—'}
+                            {q.tco?.reason === 'no_fx_rate' && (
+                              <div style={{ fontSize: 10, color: '#b45309', fontWeight: 600, maxWidth: 220, whiteSpace: 'normal' }}
+                                   title={q.tco.fx_detail?.message || `Quoted in ${q.tco.currency}; not ranked without an approved exchange rate`}>
+                                {q.tco.currency} quote — needs exchange rate
+                                {q.tco.fx_detail?.reason === 'stale' && ` (latest approved ${q.tco.fx_detail.latest_rate_date} is too old)`}
+                              </div>
+                            )}
+                            {q.tco?.freight && <FreightTag t={q.tco} />}
+                            {q.tco?.fx && (
+                              <div style={{ fontSize: 10, color: '#6b7280', fontWeight: 500 }}
+                                   title={q.tco.fx.method === 'quote_override' ? `Override: ${q.tco.fx.reason}` : `Approved ${q.tco.fx.source} rate dated ${q.tco.fx.rate_date}`}>
+                                {q.tco.fx.from} @ ₹{Number(q.tco.fx.rate).toFixed(4)}
+                                {q.tco.fx.method === 'quote_override' ? ' · override' : ` · ${q.tco.fx.rate_date}`}
+                              </div>
+                            )}
+                            {canFxOverride && viewQuotesRfq.status !== 'closed' && viewQuotesRfq.status !== 'cancelled'
+                              && q.currency && q.currency !== (viewQuotesRfq.tco_basis?.currency || 'INR') && (
+                              fxEdit?.quoteId === q.id ? (
+                                <div style={{ marginTop: 6, display: 'grid', gap: 4, fontWeight: 400 }}>
+                                  <input type="number" min="0" step="any" aria-label="Override rate"
+                                    placeholder={`₹ per 1 ${q.currency}`} value={fxEdit.rate}
+                                    onChange={e => setFxEdit(f => ({ ...f, rate: e.target.value }))}
+                                    style={{ padding: '4px 6px', fontSize: 11, border: '1px solid #d1d5db', borderRadius: 4, width: 140 }} />
+                                  <input type="text" aria-label="Override reason" placeholder="Reason (e.g. forward contract no.)"
+                                    value={fxEdit.reason} onChange={e => setFxEdit(f => ({ ...f, reason: e.target.value }))}
+                                    style={{ padding: '4px 6px', fontSize: 11, border: '1px solid #d1d5db', borderRadius: 4, width: 200 }} />
+                                  {fxEdit.error && <div style={{ fontSize: 10, color: '#dc2626', maxWidth: 220, whiteSpace: 'normal' }}>{fxEdit.error}</div>}
+                                  <div style={{ display: 'flex', gap: 4 }}>
+                                    <button style={{ ...btn('primary'), fontSize: 10, padding: '3px 8px' }} disabled={fxEdit.saving}
+                                      onClick={() => saveFxOverride(viewQuotesRfq, q)}>Save rate</button>
+                                    {q.fx_rate_override != null && (
+                                      <button style={{ ...btn('ghost'), fontSize: 10, padding: '3px 8px' }} disabled={fxEdit.saving}
+                                        onClick={() => saveFxOverride(viewQuotesRfq, q, true)}>Remove override</button>
+                                    )}
+                                    <button style={{ ...btn('ghost'), fontSize: 10, padding: '3px 8px' }} onClick={() => setFxEdit(null)}>Cancel</button>
+                                  </div>
+                                </div>
+                              ) : (
+                                <button onClick={() => setFxEdit({ quoteId: q.id, rate: q.fx_rate_override ?? '', reason: q.fx_override_reason ?? '', error: null })}
+                                  style={{ marginTop: 4, background: 'none', border: 'none', padding: 0, fontSize: 10, color: '#6B3FDB', cursor: 'pointer', textDecoration: 'underline' }}>
+                                  {q.fx_rate_override != null ? 'Edit rate override' : 'Set rate override'}
+                                </button>
+                              )
+                            )}
                             {q.tco_premium_pct != null && (
                               <div style={{ fontSize: 10, color: q.tco_premium_pct > 25 ? '#dc2626' : '#9ca3af', fontWeight: 600 }}>
                                 +{Number(q.tco_premium_pct).toFixed(1)}% over quote
@@ -1274,6 +1410,12 @@ export default function VendorManagement() {
                           <td style={TD}>{q.payment_terms || '—'}</td>
                           <td style={TD}>
                             <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                              {canEditQuotes && !['closed', 'cancelled', 'draft'].includes(viewQuotesRfq.status) && (
+                                <button style={{ ...btn('ghost'), fontSize: 11, padding: '4px 10px' }}
+                                  onClick={() => setQuoteEdit(q)}>
+                                  {q.unit_price == null && q.total_amount == null ? 'Enter quote' : 'Edit quote'}
+                                </button>
+                              )}
                               {viewQuotesRfq.status !== 'closed' && q.unit_price && (
                                 <button style={{ ...btn('primary'), fontSize: 11, padding: '4px 10px' }} onClick={() => awardVendor(viewQuotesRfq, q)}>Award</button>
                               )}
@@ -1292,6 +1434,12 @@ export default function VendorManagement() {
                       and {viewQuotesRfq.tco_basis.inventory_carrying_pct}% carrying cost. {viewQuotesRfq.tco_basis.item_context}.
                       {cmp?.confidence != null && <> Confidence {cmp.confidence}% — the share based on quoted or measured data.</>}
                       {' '}Rates are set in Procurement Settings → Total Cost of Ownership.
+                      {viewQuotesRfq.tco_basis.currency && <> Totals in {viewQuotesRfq.tco_basis.currency}; foreign quotes use approved Finance exchange rates no older than {viewQuotesRfq.tco_basis.fx_max_age_days} days.</>}
+                    </p>
+                  )}
+                  {viewQuotesRfq.tco_basis?.tco_available === false && (
+                    <p role="alert" style={{ margin: '10px 0 0', fontSize: 12, color: '#991b1b' }}>
+                      Total cost of ownership is unavailable: {viewQuotesRfq.tco_basis.tco_unavailable_reason}
                     </p>
                   )}
                 </>
@@ -1302,6 +1450,17 @@ export default function VendorManagement() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* §219 — rendered AFTER the quotes modal and above it (z-index 1100), so
+          it can never open underneath (project_probation_notify_hidden_dialog). */}
+      {quoteEdit && viewQuotesRfq && (
+        <QuoteEntryDialog
+          rfq={viewQuotesRfq}
+          quote={quoteEdit}
+          onClose={() => setQuoteEdit(null)}
+          onSaved={async () => { const r = viewQuotesRfq; setQuoteEdit(null); await openViewQuotes(r); }}
+        />
       )}
 
       {/* Add 3-Way Match */}

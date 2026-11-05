@@ -14,6 +14,7 @@ import usePunchMode from '@/hooks/usePunchMode';
 import { VizCard, Donut, DonutLegend, ProgressRing, RoundBars } from '@/components/charts/PulseViz';
 import CelebrationsBoard from '@/components/dashboard/CelebrationsBoard';
 import { ChartExpandButton } from '@/components/dashboard/DashCard';
+import { announcementText, announcementDate } from '@/features/hr/announcementFeed';
 import './EmployeeDashboard.css';
 
 const REFRESH_INTERVAL = 5 * 60 * 1000; // 5 minutes
@@ -936,9 +937,9 @@ export default function EmployeeDashboard({ setPage }) {
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
                       <span className="ed-ann-title">{ann.title}</span>
-                      <span className="ed-ann-date">{ann.date}</span>
+                      <span className="ed-ann-date">{announcementDate(ann)}</span>
                     </div>
-                    <p className="ed-ann-desc">{ann.description}</p>
+                    <p className="ed-ann-desc">{announcementText(ann.message)}</p>
                   </div>
                 </div>
               ))

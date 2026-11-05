@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   Search, Plus, RefreshCw, X, FolderKanban,
   Users, Calendar, ChevronRight, Lock, AlertCircle, MapPin
@@ -11,6 +12,7 @@ import { getProjects, createProject } from '../services/projectsService';
 import WorkflowBadge from '@/features/_shared/WorkflowBadge';
 import './Projects.css';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import VocabSelect from '@/components/core/VocabSelect';
 
 const STATUS_META = {
   active:    { bg: '#dcfce7', color: '#15803d', label: 'Active'    },
@@ -39,7 +41,10 @@ const fmt = n => {
 };
 
 const STATUSES  = ['active', 'planning', 'on_hold', 'completed', 'cancelled'];
-const PROJECT_TYPES = ['EPC', 'HVDC', 'STATCOM', 'SST', 'AMC', 'Installation', 'Commissioning', 'O&M', 'Supply', 'Turnkey'];
+// PROJECT_TYPES was the same ten-item array in three pages. `projects.project_type`
+// is free text and already held a value none of the three offered, which renders as
+// a blank Type and is wiped by the next save. It now comes from the project-type
+// master — backend/src/modules/master/vocabularies.js.
 const today     = new Date().toISOString().slice(0, 10);
 const emptyForm = () => ({
   project_code: '', project_name: '', customer_name: '',
@@ -83,6 +88,14 @@ function ValidationErrors({ errors }) {
 }
 
 export default function Projects({ setPage }) {
+  // ?product_line_id=<id> narrows the list to one business line, so the CEO
+  // Intelligence Business Lines table can drill into the projects behind a row.
+  // Filtered SERVER-side (project.repository binds p.product_line_id) rather than
+  // client-side, so the count the user sees is the real count, not "whatever the
+  // unfiltered page happened to return".
+  const [urlParams, setUrlParams] = useSearchParams();
+  const productLineId = (urlParams.get('product_line_id') || '').trim();
+  const productLineName = (urlParams.get('product_line') || '').trim();
   const { hasPermission } = useAuth();
   const { readOnly } = usePageAccess();
 
@@ -135,7 +148,10 @@ export default function Projects({ setPage }) {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const raw = await getProjects(fStatus ? { status: fStatus } : {});
+      const raw = await getProjects({
+        ...(fStatus ? { status: fStatus } : {}),
+        ...(productLineId ? { product_line_id: productLineId } : {}),
+      });
       if (!isMounted.current) return;
       const list = Array.isArray(raw) ? raw : [];
       setProjects(list);
@@ -146,7 +162,7 @@ export default function Projects({ setPage }) {
     } finally {
       if (isMounted.current) setLoading(false);
     }
-  }, [fStatus, fetchWorkflowStatuses]);
+  }, [fStatus, productLineId, fetchWorkflowStatuses]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -280,6 +296,32 @@ export default function Projects({ setPage }) {
 
       {readOnly && <ReadOnlyBanner />}
 
+
+      {/* A filter that arrived by link, not from these controls, must say so and be
+          clearable — otherwise a short list reads as missing data. */}
+      {productLineId && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+          padding: '8px 12px', marginBottom: 10, borderRadius: 10,
+          background: '#ede9fe', border: '1px solid #ddd6fe', fontSize: 12, color: '#374151',
+        }}>
+          <span>
+            Showing the <strong>{productLineName || `business line #${productLineId}`}</strong> business line only.
+          </span>
+          <button
+            onClick={() => {
+              const n = new URLSearchParams(urlParams);
+              n.delete('product_line_id');
+              n.delete('product_line');
+              setUrlParams(n, { replace: true });
+            }}
+            style={{
+              border: '1px solid #c4b5fd', background: '#fff', color: '#5b21b6',
+              borderRadius: 7, padding: '3px 10px', fontSize: 11, fontWeight: 700, cursor: 'pointer',
+            }}
+          >Show all projects</button>
+        </div>
+      )}
 
       <div className="pj-filters">
         <div className="pj-search">
@@ -432,9 +474,8 @@ export default function Projects({ setPage }) {
               </div>
               <div className="pj-field">
                 <label>Project Type</label>
-                <select value={form.project_type} onChange={e => setF('project_type', e.target.value)}>
-                  {PROJECT_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-                </select>
+                <VocabSelect vocab="project-types" value={form.project_type}
+                  onChange={v => setF('project_type', v)} />
               </div>
               <div className="pj-field">
                 <label>Description</label>

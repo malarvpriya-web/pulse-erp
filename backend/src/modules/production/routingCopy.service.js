@@ -21,9 +21,10 @@ export async function copyRoutingToProductionOperations(client, bomId, productio
     // lost its flag: the "previous inspection must complete" start-gate and
     // the auto-NCR-on-scrap-at-inspection trigger never fired for them.
     await client.query(
+      // company_id from the parent order (see execution.routes.js for the note).
       `INSERT INTO production_operations
-        (production_order_id, routing_step_id, step_no, operation, work_centre_id, work_centre_name, std_time_hrs, is_inspection, status)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending')`,
+        (production_order_id, routing_step_id, step_no, operation, work_centre_id, work_centre_name, std_time_hrs, is_inspection, status, company_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending',(SELECT company_id FROM production_orders WHERE id = $1))`,
       [productionOrderId, s.id, s.step_no, s.operation, s.work_centre_id || null, s.work_centre_name || null, s.std_time_hrs || 0, s.is_inspection || false]
     );
   }

@@ -56,7 +56,7 @@ export default function ResourceManagement({ setPage } = {}) {
   const [showAssign, setShowAssign] = useState(false);
   const [showAddMs, setShowAddMs] = useState(false);
   const [showAddRisk, setShowAddRisk] = useState(false);
-  const [assignForm, setAssignForm] = useState({ project_id: 1, employee_id: '', role: '', allocation_pct: 100, start_date: '', end_date: '', hourly_rate: 0 });
+  const [assignForm, setAssignForm] = useState({ project_id: 1, employee_id: '', role: '', allocation_pct: 100, start_date: '', end_date: '', billing_rate: 0 });
   const [msForm, setMsForm] = useState({ name: '', due_date: '', billing_milestone: false, amount: 0, owner_id: '' });
   const [riskForm, setRiskForm] = useState({ title: '', category: 'technical', probability: 'medium', impact: 'medium', mitigation_plan: '', owner_id: '' });
   const [pendingInvoiceNav, setPendingInvoiceNav] = useState(null);
@@ -182,7 +182,7 @@ export default function ResourceManagement({ setPage } = {}) {
                     ))}
                   </select>
                 </div>
-                {[{ label: 'Role', key: 'role', type: 'text' }, { label: 'Allocation %', key: 'allocation_pct', type: 'number' }, { label: 'Start Date', key: 'start_date', type: 'date' }, { label: 'End Date', key: 'end_date', type: 'date' }, { label: 'Hourly Rate', key: 'hourly_rate', type: 'number' }].map(f => (
+                {[{ label: 'Role', key: 'role', type: 'text' }, { label: 'Allocation %', key: 'allocation_pct', type: 'number' }, { label: 'Start Date', key: 'start_date', type: 'date' }, { label: 'End Date', key: 'end_date', type: 'date' }, { label: 'Billing Rate (/hr)', key: 'billing_rate', type: 'number' }].map(f => (
                   <div key={f.key}>
                     <label style={{ fontSize: 12, color: '#6b7280', display: 'block', marginBottom: 4 }}>{f.label}</label>
                     <input type={f.type} value={assignForm[f.key]} onChange={e => setAssignForm(p => ({ ...p, [f.key]: e.target.value }))}

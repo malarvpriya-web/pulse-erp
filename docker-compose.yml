@@ -33,7 +33,10 @@ services:
       context: ./backend
     depends_on:
       db:
-        condition: service_healthy    # migrations run at boot and need a live DB
+        condition: service_healthy    # the migrate step below needs a live DB
+    # The server refuses to start with pending migrations and never runs them
+    # itself. This demo stack has one database login, so it migrates first.
+    command: ["sh", "-c", "npm run migrate && exec node server.js"]
     environment:
       NODE_ENV:      production
       PORT:          5000

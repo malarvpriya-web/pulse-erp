@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import request from 'supertest';
+import { FIXTURE_CODE_SQL } from '../shared/employeeCode.js';
 
 if (!process.env.DATABASE_URL) {
   const here = dirname(fileURLToPath(import.meta.url));
@@ -61,7 +62,8 @@ const created = {
   production_orders: [],
   issue_logs: [],
   test_runs: [],
-  sales_orders: []
+  sales_orders: [],
+  serials: []
 };
 
 describe('Phase 2: Enterprise Inventory, Material Genealogy & Complete Traceability', () => {
@@ -81,7 +83,11 @@ describe('Phase 2: Enterprise Inventory, Material Genealogy & Complete Traceabil
     created.companies.push(COMPANY_B_ID);
 
     const empARes = await pool.query(
-      'INSERT INTO employees (company_id, first_name, last_name, company_email) VALUES ($1, \'John\', \'Doe\', $2) RETURNING id',
+      // Backtick, not a single-quoted string: ${FIXTURE_CODE_SQL} has to actually
+      // interpolate. Left in a plain '...' string it reached Postgres verbatim and
+      // failed with `syntax error at or near "$"`.
+      `INSERT INTO employees (office_id, company_id, first_name, last_name, company_email)
+       VALUES (${FIXTURE_CODE_SQL}, $1, 'John', 'Doe', $2) RETURNING id`,
       [COMPANY_A_ID, `admin_a_${TAG}@pulse.test`]
     );
     EMPLOYEE_A_ID = empARes.rows[0].id;
@@ -124,8 +130,31 @@ describe('Phase 2: Enterprise Inventory, Material Genealogy & Complete Traceabil
   });
 
   afterAll(async () => {
+    /**
+     * Each statement is isolated.
+     *
+     * This was ONE try/catch around all twenty deletes, so the first FK
+     * violation skipped every delete after it — including `users` and
+     * `companies` at the very bottom. The suite still passed (the error only
+     * reached console.error), and the database accumulated ACTIVE ADMIN LOGINS,
+     * one pair per run: 18 of the 19 active `admin` holders on this database
+     * were this suite's debris.
+     *
+     * That is not only untidy. integration.procurementVendorSurface binds its
+     * actors by picking a role holder out of `users`, so leaked admins are live
+     * fixtures that other suites can select — and the pair belonging to the
+     * currently-running genealogy suite is deleted from under them mid-run.
+     *
+     * Deleting in the same dependency order, but per statement, means a row that
+     * cannot go yet costs only its own line.
+     */
+    const drop = async (label, sql, params) => {
+      try { await pool.query(sql, params); }
+      catch (err) { console.error(`Teardown (${label}):`, err.message); }
+    };
     try {
       if (created.issue_logs.length) await pool.query('DELETE FROM material_issue_logs WHERE id = ANY($1)', [created.issue_logs]);
+      if (created.serials.length) await pool.query('DELETE FROM serial_numbers WHERE id = ANY($1)', [created.serials]);
       if (created.test_runs.length) {
         await pool.query('DELETE FROM test_run_measurements WHERE test_run_id = ANY($1)', [created.test_runs]);
         await pool.query('DELETE FROM test_runs WHERE id = ANY($1)', [created.test_runs]);
@@ -148,16 +177,19 @@ describe('Phase 2: Enterprise Inventory, Material Genealogy & Complete Traceabil
       }
       if (created.bins.length) await pool.query('DELETE FROM warehouse_bins WHERE id = ANY($1)', [created.bins]);
       if (created.warehouses.length) await pool.query('DELETE FROM warehouses WHERE id = ANY($1)', [created.warehouses]);
-      if (created.users.length) {
-        await pool.query('DELETE FROM user_roles WHERE user_id = ANY($1)', [created.users]);
-        await pool.query('DELETE FROM user_scope WHERE user_id = ANY($1)', [created.users]);
-        await pool.query('DELETE FROM users WHERE id = ANY($1)', [created.users]);
-      }
-      if (created.employees.length) await pool.query('DELETE FROM employees WHERE id = ANY($1)', [created.employees]);
-      if (created.companies.length) await pool.query('DELETE FROM companies WHERE id = ANY($1)', [created.companies]);
     } catch (err) {
       console.error('Teardown error:', err);
     }
+
+    // The identity rows come OUT of the try above: they are the ones that leak,
+    // and they must be attempted whatever happened to the rows before them.
+    if (created.users.length) {
+      await drop('user_roles', 'DELETE FROM user_roles WHERE user_id = ANY($1)', [created.users]);
+      await drop('user_scope', 'DELETE FROM user_scope WHERE user_id = ANY($1)', [created.users]);
+      await drop('users',      'DELETE FROM users WHERE id = ANY($1)', [created.users]);
+    }
+    if (created.employees.length) await drop('employees', 'DELETE FROM employees WHERE id = ANY($1)', [created.employees]);
+    if (created.companies.length) await drop('companies', 'DELETE FROM companies WHERE id = ANY($1)', [created.companies]);
   });
 
   const authA = () => `Bearer ${makeToken({ userId: USER_A_ID, employee_id: EMPLOYEE_A_ID, company_id: COMPANY_A_ID, roles: ['admin'] })}`;
@@ -430,6 +462,203 @@ describe('Phase 2: Enterprise Inventory, Material Genealogy & Complete Traceabil
       const reworkItem = res.body.asBuiltComponents.find(c => c.is_rework_replacement);
       expect(reworkItem).toBeDefined();
       expect(parseFloat(reworkItem.qty_issued)).toBe(1);
+    });
+
+    it('reports as-built component serials without fanning the line out per serial', async () => {
+      const res = await request(genealogyApp)
+        .get(`/api/genealogy/as-built/${prodOrderId1}`)
+        .set('Authorization', authA());
+
+      expect(res.status).toBe(200);
+      // One row per issue log, never one row per serial on the consumed lot.
+      expect(res.body.asBuiltComponents.length).toBe(2);
+      for (const c of res.body.asBuiltComponents) {
+        expect(c).toHaveProperty('component_serial_count');
+        expect(Number.isInteger(c.component_serial_count)).toBe(true);
+        // serial_number collapses to a value only when the lot holds exactly one.
+        if (c.component_serial_count === 1) expect(c.serial_number).toBeTruthy();
+        else expect(c.serial_number).toBeNull();
+      }
+    });
+
+    it('scopes location history to the anchor instead of returning the whole ledger', async () => {
+      const res = await request(genealogyApp)
+        .get('/api/genealogy/location-history')
+        .set('Authorization', authA())
+        .query({ batch_id: batchId1 });
+
+      expect(res.status).toBe(200);
+      expect(res.body.scope.batch_number).toContain('BATCH_LOT_01');
+      expect(Array.isArray(res.body.movements)).toBe(true);
+      // The lot was received once and issued twice, so the trail is bounded by
+      // its own history. The defect this covers bound NULL into the item filter
+      // and returned every ledger row in the company as this lot's movements.
+      expect(res.body.movements.length).toBeLessThanOrEqual(10);
+      const issues = res.body.movements.filter(m => m.movement_type === 'Issue to production');
+      expect(issues.length).toBeGreaterThan(0);
+      expect(issues.some(m => String(m.reference || '').includes('WO_PANEL_01'))).toBe(true);
+    });
+
+    it('accepts a production order as a location-history anchor', async () => {
+      const res = await request(genealogyApp)
+        .get('/api/genealogy/location-history')
+        .set('Authorization', authA())
+        .query({ production_order_id: prodOrderId1 });
+
+      expect(res.status).toBe(200);
+      expect(res.body.scope.production_order_no).toContain('WO_PANEL_01');
+      expect(Array.isArray(res.body.movements)).toBe(true);
+    });
+
+    // ── Traceability audit finding 02 ────────────────────────────────────────
+    // An order that builds several units used to report every component of the
+    // order as being in every one of them. These cover the split between what
+    // is attributed to a unit and what is merely shared across the order.
+    describe('per-unit as-built attribution', () => {
+      let multiOrderId;
+      let serialA;
+      let serialB;
+      let sharedLotId;
+      let attributedLotId;
+
+      beforeAll(async () => {
+        const { rows: [order] } = await pool.query(
+          `INSERT INTO production_orders (company_id, production_order_no, product_name, quantity_planned, status)
+           VALUES ($1, $2, 'Control Panel 2-up', 2, 'completed') RETURNING id`,
+          [COMPANY_A_ID, `WO_MULTI_${TAG.slice(-4)}`]);
+        multiOrderId = order.id;
+        created.production_orders.push(multiOrderId);
+
+        const { rows: [item] } = await pool.query(
+          `INSERT INTO inventory_items (company_id, item_code, item_name, current_stock, standard_cost)
+           VALUES ($1, $2, 'Relay Module 24VDC', 0, 12.00) RETURNING id`,
+          [COMPANY_A_ID, `RLY_${TAG.slice(-6)}`]);
+        created.items.push(item.id);
+
+        const mkBatch = async (suffix) => {
+          const { rows: [b] } = await pool.query(
+            `INSERT INTO inventory_batches (company_id, item_id, batch_number, warehouse_id, quantity_received, quantity_available)
+             VALUES ($1,$2,$3,$4,10,10) RETURNING id`,
+            [COMPANY_A_ID, item.id, `LOT_${suffix}_${TAG.slice(-4)}`, WAREHOUSE_A_ID]);
+          created.batches.push(b.id);
+          return b.id;
+        };
+        attributedLotId = await mkBatch('ATTR');
+        sharedLotId = await mkBatch('SHARED');
+
+        const mkSerial = async (suffix) => {
+          const { rows: [s] } = await pool.query(
+            `INSERT INTO serial_numbers (company_id, serial_number, item_id, production_order_id, status)
+             VALUES ($1,$2,$3,$4,'active') RETURNING id`,
+            [COMPANY_A_ID, `SN_MULTI_${suffix}_${TAG.slice(-4)}`, item.id, multiOrderId]);
+          created.serials.push(s.id);
+          return s.id;
+        };
+        serialA = await mkSerial('A');
+        serialB = await mkSerial('B');
+
+        // One line names unit A; one names no unit at all.
+        const { rows: [l1] } = await pool.query(
+          `INSERT INTO material_issue_logs (company_id, production_order_id, item_id, item_name, batch_id, qty_issued, serial_id, issued_by_name)
+           VALUES ($1,$2,$3,'Relay Module 24VDC',$4,4,$5,'Attributing Operator') RETURNING id`,
+          [COMPANY_A_ID, multiOrderId, item.id, attributedLotId, serialA]);
+        created.issue_logs.push(l1.id);
+
+        const { rows: [l2] } = await pool.query(
+          `INSERT INTO material_issue_logs (company_id, production_order_id, item_id, item_name, batch_id, qty_issued, issued_by_name)
+           VALUES ($1,$2,$3,'Relay Module 24VDC',$4,6,'Bulk Operator') RETURNING id`,
+          [COMPANY_A_ID, multiOrderId, item.id, sharedLotId]);
+        created.issue_logs.push(l2.id);
+      });
+
+      it('gives a unit only what was issued against it, and labels the rest shared', async () => {
+        const { rows: [sn] } = await pool.query('SELECT serial_number FROM serial_numbers WHERE id = $1', [serialA]);
+        const res = await request(genealogyApp)
+          .get(`/api/genealogy/as-built/serial/${encodeURIComponent(sn.serial_number)}`)
+          .set('Authorization', authA());
+
+        expect(res.status).toBe(200);
+        expect(res.body.attributedComponents.length).toBe(1);
+        expect(res.body.attributedComponents[0].batch_number).toContain('LOT_ATTR');
+        expect(res.body.sharedComponents.length).toBe(1);
+        expect(res.body.sharedComponents[0].batch_number).toContain('LOT_SHARED');
+        expect(res.body.attribution.units_on_order).toBe(2);
+        // Not complete while a line on the order names no unit.
+        expect(res.body.attribution.complete).toBe(false);
+      });
+
+      it('does not give unit B the lot that was attributed to unit A', async () => {
+        const { rows: [sn] } = await pool.query('SELECT serial_number FROM serial_numbers WHERE id = $1', [serialB]);
+        const res = await request(genealogyApp)
+          .get(`/api/genealogy/as-built/serial/${encodeURIComponent(sn.serial_number)}`)
+          .set('Authorization', authA());
+
+        expect(res.status).toBe(200);
+        expect(res.body.attributedComponents.length).toBe(0);
+        const allBatches = JSON.stringify(res.body);
+        expect(allBatches).not.toContain('LOT_ATTR');
+        expect(allBatches).toContain('LOT_SHARED');
+      });
+
+      it('marks a multi-unit order-level as-built as an upper bound', async () => {
+        const res = await request(genealogyApp)
+          .get(`/api/genealogy/as-built/${multiOrderId}`)
+          .set('Authorization', authA());
+
+        expect(res.status).toBe(200);
+        expect(res.body.attribution.units_on_order).toBe(2);
+        expect(res.body.attribution.attributed_lines).toBe(1);
+        expect(res.body.attribution.shared_lines).toBe(1);
+        expect(res.body.attribution.complete).toBe(false);
+        expect(res.body.attribution.note).toContain('upper bound');
+      });
+
+      it('narrows recall scope to the attributed unit, and reports the rest as an upper bound', async () => {
+        const exact = await request(genealogyApp)
+          .get(`/api/genealogy/where-used/${attributedLotId}`)
+          .set('Authorization', authA());
+        expect(exact.status).toBe(200);
+        expect(exact.body.recallScope.definite_units).toBe(1);
+        expect(exact.body.recallScope.possible_units).toBe(0);
+        expect(exact.body.recallScope.exact).toBe(true);
+
+        const bounded = await request(genealogyApp)
+          .get(`/api/genealogy/where-used/${sharedLotId}`)
+          .set('Authorization', authA());
+        expect(bounded.status).toBe(200);
+        expect(bounded.body.recallScope.definite_units).toBe(0);
+        expect(bounded.body.recallScope.possible_units).toBe(2);
+        expect(bounded.body.recallScope.exact).toBe(false);
+        expect(bounded.body.recallScope.upper_bound_units).toBe(2);
+      });
+
+      it('404s an unknown serial rather than falling back to the order', async () => {
+        const res = await request(genealogyApp)
+          .get(`/api/genealogy/as-built/serial/NOPE_${TAG}`)
+          .set('Authorization', authA());
+        expect(res.status).toBe(404);
+        expect(res.body.attributedComponents).toBeUndefined();
+      });
+    });
+
+    it('refuses an unresolvable or absent location-history anchor rather than falling back to everything', async () => {
+      const noAnchor = await request(genealogyApp)
+        .get('/api/genealogy/location-history')
+        .set('Authorization', authA());
+      expect(noAnchor.status).toBe(400);
+
+      const badBatch = await request(genealogyApp)
+        .get('/api/genealogy/location-history')
+        .set('Authorization', authA())
+        .query({ batch_id: 999999999 });
+      expect(badBatch.status).toBe(404);
+      expect(badBatch.body.movements).toBeUndefined();
+
+      const badSerial = await request(genealogyApp)
+        .get('/api/genealogy/location-history')
+        .set('Authorization', authA())
+        .query({ serial_number: `NOPE_${TAG}` });
+      expect(badSerial.status).toBe(404);
     });
 
     it('calculates Where-Used Recall Impact & 100% Quantity Reconciliation for Batch 1', async () => {

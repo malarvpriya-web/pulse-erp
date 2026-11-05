@@ -5,34 +5,33 @@ import api from '@/services/api/client';
 
 const fmtINR = n => '₹' + Number(n || 0).toLocaleString('en-IN');
 
+/**
+ * The printed payslip is the OFFICIAL one: the earnings, deductions and
+ * employer-contribution lists come from the server (shapePayslip — the same
+ * lists as the Payslip Viewer and the PDF). This widget used to rebuild them
+ * from nine fixed columns, so loan EMI, advance recovery, LWF, arrears and any
+ * other structure component were missing and the deduction lines did not add
+ * up to Total Deductions. Nothing is calculated here. Returns null when the
+ * slip does not carry the server's lists.
+ */
+function payslipRows(slip) {
+  if (!slip || !Array.isArray(slip.earnings) || !Array.isArray(slip.deductions)) return null;
+  return {
+    earnings: slip.earnings.map(e => [e.label, Number(e.amount) || 0]),
+    deductions: slip.deductions.map(d => [d.label, Number(d.amount) || 0]),
+    employer: (slip.employer_contributions_list || []).map(c => [c.label, Number(c.amount) || 0]),
+    gross: Number(slip.gross) || 0,
+    totalDed: Number(slip.total_deductions) || 0,
+    net: Number(slip.net_pay) || 0,
+  };
+}
+
 function printPayslip(entry) {
-  const s = entry.slip || {};
   const name = entry.employee_name || 'Employee';
   const period = entry.period_label;
   const dept = entry.department || '';
   const desig = entry.designation || '';
-
-  const earnings = [
-    ['Basic Salary',          s.basic              || 0],
-    ['HRA',                   s.hra                || 0],
-    ['Conveyance Allowance',  s.conveyance_allowance || 0],
-    ['Medical Allowance',     s.medical_allowance  || 0],
-    ['Special Allowance',     s.special_allowance  || 0],
-  ].filter(([, v]) => v > 0);
-
-  if (s.overtime_pay > 0) earnings.push(['Overtime Pay', s.overtime_pay]);
-  if (s.bonus > 0)        earnings.push(['Bonus',        s.bonus]);
-
-  const deductions = [
-    ['Provident Fund',    s.employee_pf       || 0],
-    ['ESI',               s.employee_esi      || 0],
-    ['Professional Tax',  s.professional_tax  || 0],
-    ['Income Tax (TDS)',  s.tds               || 0],
-  ].filter(([, v]) => v > 0);
-
-  const gross = s.gross || entry.gross_pay || 0;
-  const net   = s.net_pay || entry.net_pay || 0;
-  const totalDed = s.total_deductions || deductions.reduce((a, [, v]) => a + v, 0);
+  const { earnings, deductions, employer, gross, totalDed, net } = payslipRows(entry.slip);
 
   const rows = (arr) => arr.map(([l, v]) => `
     <tr>
@@ -117,6 +116,7 @@ function printPayslip(entry) {
     <div class="val">${fmtINR(net)}</div>
   </div>
 
+  ${employer.length ? `<div class="footer">Employer contributions (not deducted from your pay): ${employer.map(([l, v]) => `${l} ${fmtINR(v)}`).join(' · ')}</div>` : ''}
   <div class="footer">This is a system-generated payslip. No signature required. — Pulse ERP</div>
 
   <script>window.onload = () => { window.print(); };</script>
@@ -161,17 +161,18 @@ export default function MyPayslipsWidget() {
     const key = `${entry.month}-${entry.year}`;
     setDownloading(key);
     try {
-      if (!entry.slip) {
+      if (!payslipRows(entry.slip)) {
         const res = await api.get('/payroll/payslips', {
           params: { employee_id: entry.employee_id, month: entry.month, year: entry.year },
         });
         entry = { ...entry, slip: res.data?.data || res.data };
       }
     } catch {
-      // use whatever slip data we have
+      // handled below: no official lists → no printout
     } finally {
       setDownloading(null);
     }
+    if (!payslipRows(entry.slip)) { setError('The official payslip could not be loaded — try again from Payslips.'); return; }
     printPayslip(entry);
   }
 

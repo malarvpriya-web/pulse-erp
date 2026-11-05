@@ -69,10 +69,13 @@ test('@P1 HR submenu opens on hover and shows expected items', async ({ page }) 
 
   const panel = await openSubmenu(page, 'HR');
 
-  const expectedItems = ['Announcements', 'Payroll Center', 'Employee Directory', 'Offboarding'];
+  const expectedItems = ['Announcements', 'Payroll Center', 'Employee Records', 'Offboarding'];
   for (const item of expectedItems) {
     await expect(panel.getByRole('button', { name: item })).toBeVisible();
   }
+  // 2026-10-20: the phonebook left the HR menu (it is a top-level row beside
+  // Org Chart, and only for roles that cannot open All Employees).
+  await expect(panel.getByRole('button', { name: 'Employee Directory' })).toHaveCount(0);
 });
 
 test('@P1 Employees submenu opens and clicking "All Employees" navigates correctly', async ({ page }) => {

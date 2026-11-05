@@ -5,6 +5,10 @@ const AUTH_FILE = 'tests/.auth/user.json';
 export default defineConfig({
   testDir: './tests',
   testIgnore: [
+    // §220 — writes numbered documents; runs only via playwright.testdb.config.ts.
+    '**/03-crud/procurement-hardening.spec.ts',
+    // §221 — creates employees, leaves and projects; testdb config only.
+    '**/06-db-consistency.spec.ts',
     '**/menu-audit.spec.js',
     '**/menu-crawler.spec.ts',
     '**/full-menu-audit.spec.ts',
@@ -93,12 +97,9 @@ export default defineConfig({
     // The 2026-09-03 hardening pass, checked in a browser: the goods-receipt
     // status vocabulary (which decided whether the Confirm button rendered at
     // all), the failed-load state, and the removed shadow endpoints.
-    {
-      name: 'procurement-hardening',
-      testMatch: '**/03-crud/procurement-hardening.spec.ts',
-      dependencies: ['setup'],
-      use: { storageState: AUTH_FILE },
-    },
+    // 'procurement-hardening' MOVED to playwright.testdb.config.ts (§220): it
+    // creates a requisition, PO and GRN, and may only run against the isolated
+    // test database. Its file fails closed if run any other way.
     {
       name: 'dashboard',
       testMatch: '**/04-dashboard.spec.ts',
@@ -113,6 +114,22 @@ export default defineConfig({
       testMatch: '**/suites/tco-comparison.spec.ts',
       dependencies: ['setup'],
       use: { storageState: AUTH_FILE },
+    },
+    // §215 exchange rates — runs on its own throwaway company and mints its own
+    // approver token, so it neither needs nor touches the superadmin session.
+    {
+      name: 'fx',
+      testMatch: '**/suites/fx-rates.spec.ts',
+    },
+    // §216 freight & item weight — own throwaway company, own approver token.
+    {
+      name: 'freight',
+      testMatch: '**/suites/freight.spec.ts',
+    },
+    // §219 RFQ quote entry — own throwaway company, own token.
+    {
+      name: 'quote-entry',
+      testMatch: '**/suites/quote-entry.spec.ts',
     },
     // Sales Intelligence's Conversion Analytics tab. Every defect section 132
     // fixed compiled clean and answered 200 — a 450% "conversion", a win rate
@@ -299,6 +316,77 @@ export default defineConfig({
       // call fail.
       name: 'iot',
       testMatch: '**/20-iot.spec.ts',
+      dependencies: ['setup'],
+      use: { storageState: 'tests/.auth/user.json' },
+      timeout: 90_000,
+    },
+    {
+      // Employees ▸ Dashboard. Most of what was wrong with this page was only
+      // wrong on screen: a trend chart drawn from the months that happened to
+      // contain a hire rather than from the selected period, KPI tiles that
+      // looked clickable and were not, "View all" landing on the unfiltered
+      // register, a tenure axis rendering mojibake, and the HR alert band
+      // sitting below the fold. None of it is reachable from a unit test.
+      name: 'employees-dashboard',
+      testMatch: '**/21-employees-dashboard.spec.ts',
+      dependencies: ['setup'],
+      use: { storageState: 'tests/.auth/user.json' },
+      timeout: 90_000,
+    },
+    {
+      // Employees ▸ All Employees, from a COLD session: localStorage cleared, so the
+      // DEFAULTS (20 rows per page, the default column set) are the product's and not
+      // whatever suite 22 left behind — storageState carries localStorage between runs,
+      // and suite 22 deliberately switches every column on.
+      name: 'all-employees-acceptance',
+      testMatch: '**/23-all-employees-acceptance.spec.ts',
+      dependencies: ['setup'],
+      use: { storageState: 'tests/.auth/user.json' },
+      timeout: 90_000,
+    },
+    {
+      // Administration ▸ Master Data. Proves the claim neither a unit test nor
+      // an API test can: a value created from the Add Employee form's
+      // "+ Add new…" is findable and manageable on the Master Data screen
+      // afterwards. Spans two screens and the API between them.
+      name: 'master-data',
+      testMatch: '**/25-master-data.spec.ts',
+      dependencies: ['setup'],
+      use: { storageState: 'tests/.auth/user.json' },
+      timeout: 90_000,
+    },
+    {
+      // Employees ▸ Add Employee. The reported defect is a LAYOUT defect —
+      // Department / Designation / Asset Type opened as a narrow horizontally
+      // scrolling strip with the option text clipped to two or three
+      // characters. Every one of those pickers rendered the right options and
+      // posted the right value, so nothing below a real browser could see it.
+      // Runs at 1280, 1440 and 1920 because the clipping was width-dependent:
+      // at 1280 the 4-up grid gives each field only ~230px.
+      name: 'add-employee',
+      testMatch: '**/24-add-employee.spec.ts',
+      dependencies: ['setup'],
+      use: { storageState: 'tests/.auth/user.json' },
+      timeout: 90_000,
+    },
+    {
+      // Edit Employee = the Add Employee form in edit mode: the round trip
+      // (edit → save → database → reopen) on the running stack.
+      name: 'edit-employee',
+      testMatch: '**/26-edit-employee.spec.ts',
+      dependencies: ['setup'],
+      use: { storageState: 'tests/.auth/user.json' },
+      timeout: 120_000,
+    },
+    {
+      // Employees ▸ All Employees. The register's defects were screen-only too:
+      // the Manager column printed the literal text `null` (the column holds the
+      // STRING 'null', which is truthy, so every falsy-check passed it through),
+      // "Showing 20 of 32" with no rows-per-page control and no page numbers,
+      // mandatory fields rendering as a neutral em-dash on 24 rows, and a bulk
+      // status change that applied on one click.
+      name: 'all-employees',
+      testMatch: '**/22-all-employees.spec.ts',
       dependencies: ['setup'],
       use: { storageState: 'tests/.auth/user.json' },
       timeout: 90_000,

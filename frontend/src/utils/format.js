@@ -26,6 +26,15 @@ export const fmtNum = (n, decimals = 0) => {
   return v.toLocaleString('en-IN', { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
 };
 
+// A rating/score as stored, without the padding a numeric column returns:
+// "3.00" → "3", "3.50" → "3.5", "3.75" → "3.75". Drops trailing zeros only —
+// never rounds. fmtScore(v, 5) → "3.5/5". Missing → '—'.
+export const fmtScore = (v, max) => {
+  if (v == null || v === '' || !isFinite(Number(v))) return '—';
+  const s = String(Number(v));
+  return max != null ? `${s}/${max}` : s;
+};
+
 // India financial year (April–March) — returns { start, end, label }
 export const currentFY = () => {
   const now   = new Date();

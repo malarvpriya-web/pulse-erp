@@ -1,6 +1,6 @@
 // frontend/src/features/crm/pages/Customer360.jsx
 // Customer 360° Command Center — 17 sections, CEO traceability test
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { LayoutDashboard } from 'lucide-react';
 import {
@@ -200,50 +200,127 @@ function TD({ children, bold, primary }) {
   );
 }
 
-// ── Customer Search Combobox ───────────────────────────────────────────────────
+// ── Customer Dropdown ─────────────────────────────────────────────────────────
+// A click-to-open dropdown, not a blind search box. It used to render nothing
+// until you typed, so the customer list was invisible: you had to already know a
+// name to get anywhere, and there was no way to browse. Every other picker in the
+// app (Vendor 360, Project 360, the HR selects) shows its list up front, so this
+// one now does too — the list loads once, clicking the field drops it open, and
+// typing narrows it (still hitting the server, which also matches GSTIN and
+// reaches past the 200 rows the list holds).
 function CustomerCombobox({ selected, onSelect, onClear }) {
-  const [query, setQuery]   = useState('');
-  const [results, setRes]   = useState([]);
-  const [busy, setBusy]     = useState(false);
-  const [open, setOpen]     = useState(false);
+  const [query, setQuery]     = useState('');
+  const [all, setAll]         = useState([]);
+  const [results, setRes]     = useState(null);   // server hits for `query`; null = local filter only
+  const [busy, setBusy]       = useState(false);
+  const [loadErr, setLoadErr] = useState('');
+  const [open, setOpen]       = useState(false);
+  const [active, setActive]   = useState(0);
   const inputRef = useRef(null);
+  const boxRef   = useRef(null);
+  const listRef  = useRef(null);
   const timer    = useRef(null);
 
+  // The whole list, once, so opening the dropdown is instant.
   useEffect(() => {
-    if (!query.trim()) { setRes([]); setOpen(false); return; }
+    let cancelled = false;
+    setBusy(true);
+    api.get('/crm/parties')
+      .then(r => { if (!cancelled) setAll(Array.isArray(r.data) ? r.data : []); })
+      .catch(() => { if (!cancelled) setLoadErr('Could not load the customer list'); })
+      .finally(() => { if (!cancelled) setBusy(false); });
+    return () => { cancelled = true; };
+  }, []);
+
+  // Typing still searches server-side: the list above is capped at 200 rows and
+  // a local filter cannot see a customer that never came down.
+  useEffect(() => {
+    const term = query.trim();
+    if (!term) { setRes(null); return; }
     clearTimeout(timer.current);
     timer.current = setTimeout(async () => {
       setBusy(true);
       try {
-        const r = await api.get(`/crm/parties?search=${encodeURIComponent(query)}`);
-        setRes(r.data || []);
-        setOpen(true);
-      } catch {}
+        const r = await api.get(`/crm/parties?search=${encodeURIComponent(term)}`);
+        setRes(Array.isArray(r.data) ? r.data : []);
+      } catch { setRes(null); }
       setBusy(false);
     }, 300);
     return () => clearTimeout(timer.current);
   }, [query]);
 
-  function pick(p) { onSelect(p); setQuery(''); setRes([]); setOpen(false); }
-  function clear() { onClear(); setQuery(''); setRes([]); setOpen(false); setTimeout(() => inputRef.current?.focus(), 50); }
+  const q = query.trim().toLowerCase();
+  const options = useMemo(() => {
+    if (!q) return all;
+    const local = all.filter(p =>
+      `${p.name || ''} ${p.gstin || ''} ${p.city || ''} ${p.state || ''}`.toLowerCase().includes(q));
+    if (!results) return local;
+    const seen = new Set(local.map(p => String(p.id)));
+    return [...local, ...results.filter(p => !seen.has(String(p.id)))]
+      .sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
+  }, [q, all, results]);
+
+  // Close on an outside click. A blur timeout could not tell the caret and the
+  // clear button apart from the world outside the control.
+  useEffect(() => {
+    if (!open) return;
+    function onDocDown(e) { if (boxRef.current && !boxRef.current.contains(e.target)) setOpen(false); }
+    document.addEventListener('mousedown', onDocDown);
+    return () => document.removeEventListener('mousedown', onDocDown);
+  }, [open]);
+
+  useEffect(() => { if (open) inputRef.current?.focus(); }, [open]);
+  useEffect(() => { setActive(0); }, [q, open]);
+  useEffect(() => {
+    if (open) listRef.current?.children[active]?.scrollIntoView({ block: 'nearest' });
+  }, [active, open]);
+
+  function pick(p) { onSelect(p); setQuery(''); setRes(null); setOpen(false); }
+  function clear() {
+    onClear(); setQuery(''); setRes(null); setOpen(false);
+    setTimeout(() => inputRef.current?.focus(), 50);
+  }
+
+  function onKeyDown(e) {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (!open) { setOpen(true); return; }
+      const n = options.length;
+      if (!n) return;
+      setActive(i => e.key === 'ArrowDown' ? (i + 1) % n : (i - 1 + n) % n);
+    } else if (e.key === 'Enter') {
+      if (open && options[active]) { e.preventDefault(); pick(options[active]); }
+      else if (!open) { e.preventDefault(); setOpen(true); }
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      setOpen(false);
+    }
+  }
 
   return (
-    <div style={{ position: 'relative', flex: 1, maxWidth: 500 }}>
-      <div style={{
-        display: 'flex', alignItems: 'center',
-        border: `1.5px solid ${open ? C.primary : C.border}`,
-        borderRadius: 10, background: '#fff', overflow: 'hidden', transition: 'border-color .15s',
-      }}>
-        {selected ? (
+    <div ref={boxRef} style={{ position: 'relative', flex: 1, maxWidth: 500 }}>
+      <div
+        onClick={() => setOpen(o => !o)}
+        style={{
+          display: 'flex', alignItems: 'center', cursor: 'pointer',
+          border: `1.5px solid ${open ? C.primary : C.border}`,
+          borderRadius: 10, background: '#fff', overflow: 'hidden', transition: 'border-color .15s',
+        }}
+      >
+        {selected && !open ? (
           <>
             <div style={{ flex: 1, padding: '9px 14px' }}>
               <span style={{ fontSize: 14, fontWeight: 700, color: '#111827' }}>{selected.name}</span>
               {selected.city && <span style={{ fontSize: 11, color: '#9ca3af', marginLeft: 8 }}>{selected.city}</span>}
             </div>
-            <button onClick={clear} style={{
-              padding: '9px 14px', border: 'none', background: 'transparent',
-              color: '#9ca3af', cursor: 'pointer', fontSize: 18, fontWeight: 700,
-            }} title="Clear">×</button>
+            <button
+              onClick={e => { e.stopPropagation(); clear(); }}
+              style={{
+                padding: '9px 10px', border: 'none', background: 'transparent',
+                color: '#9ca3af', cursor: 'pointer', fontSize: 18, fontWeight: 700,
+              }}
+              title="Clear"
+            >×</button>
           </>
         ) : (
           <>
@@ -251,37 +328,73 @@ function CustomerCombobox({ selected, onSelect, onClear }) {
             <input
               ref={inputRef}
               value={query}
-              onChange={e => setQuery(e.target.value)}
-              onFocus={() => results.length && setOpen(true)}
-              onBlur={() => setTimeout(() => setOpen(false), 160)}
-              placeholder="Search customer by name or GSTIN…"
-              style={{ flex: 1, padding: '10px 4px', border: 'none', outline: 'none', fontSize: 13, background: 'transparent' }}
+              onChange={e => { setQuery(e.target.value); setOpen(true); }}
+              onKeyDown={onKeyDown}
+              onClick={e => e.stopPropagation()}
+              onFocus={() => setOpen(true)}
+              placeholder={selected ? selected.name : 'Select a customer — or type to search'}
+              role="combobox"
+              aria-expanded={open}
+              aria-controls="customer360-options"
+              style={{
+                flex: 1, padding: '10px 4px', border: 'none', outline: 'none',
+                fontSize: 13, background: 'transparent', cursor: 'text',
+              }}
             />
-            {busy && <span style={{ padding: '0 12px', color: '#9ca3af', fontSize: 12 }}>…</span>}
+            {busy && <span style={{ padding: '0 6px', color: '#9ca3af', fontSize: 12 }}>…</span>}
           </>
         )}
+        <span style={{
+          padding: '0 12px', color: '#9ca3af', fontSize: 11, userSelect: 'none',
+          transform: open ? 'rotate(180deg)' : 'none', transition: 'transform .15s',
+        }}>▼</span>
       </div>
 
-      {open && results.length > 0 && (
+      {open && (
         <div style={{
           position: 'absolute', top: 'calc(100% + 6px)', left: 0, right: 0,
           background: '#fff', border: `1px solid ${C.border}`, borderRadius: 10,
-          boxShadow: '0 8px 24px rgba(0,0,0,.1)', zIndex: 300, maxHeight: 280, overflowY: 'auto',
+          boxShadow: '0 8px 24px rgba(0,0,0,.1)', zIndex: 300, overflow: 'hidden',
         }}>
-          {results.map(p => (
-            <div
-              key={p.id}
-              onMouseDown={() => pick(p)}
-              style={{ padding: '10px 14px', cursor: 'pointer', borderBottom: `1px solid #f8f8fc` }}
-              onMouseEnter={e => e.currentTarget.style.background = C.light}
-              onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
-            >
-              <div style={{ fontSize: 13, fontWeight: 600, color: '#111827' }}>{p.name}</div>
-              <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2 }}>
-                {[p.city, p.state, p.gstin].filter(Boolean).join(' · ')}
+          <div id="customer360-options" ref={listRef} role="listbox" style={{ maxHeight: 320, overflowY: 'auto' }}>
+            {options.map((p, i) => {
+              const isSel = selected && String(selected.id) === String(p.id);
+              // Most rows carry no city/GSTIN; an em-dash placeholder just made
+              // every row twice as tall for nothing.
+              const sub = [p.city, p.state, p.gstin].filter(Boolean).join(' · ');
+              return (
+                <div
+                  key={p.id}
+                  role="option"
+                  aria-selected={!!isSel}
+                  onMouseDown={e => { e.preventDefault(); pick(p); }}
+                  onMouseEnter={() => setActive(i)}
+                  style={{
+                    padding: '10px 14px', cursor: 'pointer', borderBottom: '1px solid #f8f8fc',
+                    background: i === active ? C.light : '#fff',
+                    borderLeft: isSel ? `3px solid ${C.primary}` : '3px solid transparent',
+                  }}
+                >
+                  <div style={{ fontSize: 13, fontWeight: 600, color: '#111827' }}>{p.name}</div>
+                  {sub && <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2 }}>{sub}</div>}
+                </div>
+              );
+            })}
+            {!options.length && (
+              <div style={{ padding: '18px 14px', fontSize: 13, color: '#9ca3af', textAlign: 'center' }}>
+                {loadErr || (busy ? 'Loading customers…'
+                  : q ? `No customer matches "${query.trim()}"` : 'No customers yet')}
               </div>
+            )}
+          </div>
+          {!q && all.length >= 200 && (
+            <div style={{
+              padding: '7px 14px', fontSize: 11, color: '#9ca3af',
+              borderTop: `1px solid ${C.border}`, background: '#fcfcfe',
+            }}>
+              Showing the first 200 — type to search the rest by name or GSTIN.
             </div>
-          ))}
+          )}
         </div>
       )}
     </div>
@@ -2085,7 +2198,7 @@ export default function Customer360() {
             Select a Customer
           </div>
           <div style={{ fontSize: 14, color: '#9ca3af', maxWidth: 400, margin: '0 auto' }}>
-            Search for a customer to load their complete 360° profile — from first lead to active AMC contracts.
+            Pick a customer from the dropdown above to load their complete 360° profile — from first lead to active AMC contracts.
           </div>
           <div style={{ marginTop: 24, display: 'flex', gap: 10, justifyContent: 'center', flexWrap: 'wrap' }}>
             {['Sales Pipeline', 'Projects', 'FAT / SAT', 'AMC', 'Finance', 'CEO Test'].map(tag => (
@@ -2173,7 +2286,7 @@ export default function Customer360() {
                   onClick={() => window.dispatchEvent(new CustomEvent('pulse:navigate', { detail: { page: 'Projects' } }))} />
                 <ActionBtn icon="🎫" label="Raise Ticket"
                   color="#dc2626"
-                  onClick={() => window.dispatchEvent(new CustomEvent('pulse:navigate', { detail: { page: 'ServiceDesk' } }))} />
+                  onClick={() => window.dispatchEvent(new CustomEvent('pulse:navigate', { detail: { page: 'AllTickets' } }))} />
                 <ActionBtn icon="🔄" label="Create AMC"
                   color="#16a34a"
                   onClick={() => window.dispatchEvent(new CustomEvent('pulse:navigate', { detail: { page: 'AMCManagement' } }))} />

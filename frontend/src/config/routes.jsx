@@ -38,7 +38,7 @@ export const ROUTES = {
   SecurityCenter:        { component: lazy(() => import('@/features/admin/pages/SecurityCenter')) },
   SettingsCenter:        { component: lazy(() => import('@/features/admin/pages/SettingsCenter')), props: ctx => ({ setPage: ctx.setPage }) },
   SetupNotifications:    { component: lazy(() => import('@/features/admin/pages/SetupNotifications')) },
-  MasterSetup:           { component: lazy(() => import('@/features/admin/pages/MasterSetup')) },
+  MasterSetup:           { component: lazy(() => import('@/features/admin/views/SettingsMasterSetup')), props: ctx => ({ setPage: ctx.setPage, urlParams: ctx.urlParams }) },
   SetupWizard:           { component: lazy(() => import('@/features/settings/pages/SetupWizard')),     props: ctx => ({ setPage: ctx.setPage }) },
   SetupDashboard:        { component: lazy(() => import('@/features/settings/pages/SetupDashboard')),  props: ctx => ({ setPage: ctx.setPage }) },
   MasterConfig:          { component: lazy(() => import('@/features/admin/pages/MasterConfig')) },
@@ -47,6 +47,54 @@ export const ROUTES = {
   ZohoSignIntegration:   { component: lazy(() => import('@/features/admin/pages/ZohoSignIntegration')), props: ctx => ({ setPage: ctx.setPage }) },
   UserSetup:             { component: lazy(() => import('@/features/admin/pages/UserSetup')) },
   WorkflowBuilder:       { component: lazy(() => import('@/features/admin/pages/WorkflowBuilder')), props: ctx => ({ setPage: ctx.setPage }) },
+
+  // NOTE: nine of these carry NO `module` on purpose. A hub must be no
+  // stricter than the pages it absorbs, and those nine each hold at least one
+  // child that was routed without a module gate — EmployeeRecords with
+  // module:'hr' locked an employee out of Documents/Assets/Policies/Downloads,
+  // all four of which they could open individually (caught in the browser
+  // pass, not by any unit test). TabHub applies each TAB's own module gate,
+  // so the per-page protection is unchanged.
+  // ── IA consolidation hubs (2026-09-16) ─────────────────────────
+  // Tabbed hub pages that collapsed ~136 sidebar rows into 34 destinations.
+  // Registered manually (rather than left to autoRouter) so each carries its
+  // module key: an auto-discovered route has `route.module` undefined, and
+  // Layout.jsx's module gate would then never fire for the hub, leaving it
+  // open by direct URL to any role outside ROLE_SECTION_ALLOWLIST.
+  StockControl:             { module: 'inventory', component: lazy(() => import('@/features/inventory/pages/StockControl')), props: ctx => ({ setPage: ctx.setPage }) },
+  InventoryPlanning:        { module: 'inventory', component: lazy(() => import('@/features/inventory/pages/InventoryPlanning')), props: ctx => ({ setPage: ctx.setPage }) },
+  WarehouseCenter:          { module: 'inventory', component: lazy(() => import('@/features/inventory/pages/WarehouseCenter')), props: ctx => ({ setPage: ctx.setPage }) },
+  LogisticsCenter:          { module: 'inventory', component: lazy(() => import('@/features/inventory/pages/LogisticsCenter')), props: ctx => ({ setPage: ctx.setPage }) },
+  InventoryInsights:        { module: 'inventory', component: lazy(() => import('@/features/inventory/pages/InventoryInsights')), props: ctx => ({ setPage: ctx.setPage }) },
+  ServiceFieldCenter:       { component: lazy(() => import('@/features/servicedesk/pages/ServiceFieldCenter')), props: ctx => ({ setPage: ctx.setPage }) },
+  ServiceCustomerCenter:    { component: lazy(() => import('@/features/servicedesk/pages/ServiceCustomerCenter')), props: ctx => ({ setPage: ctx.setPage }) },
+  ServiceCatalogCenter:     { component: lazy(() => import('@/features/servicedesk/pages/ServiceCatalogCenter')), props: ctx => ({ setPage: ctx.setPage }) },
+  CompanySetup:             { component: lazy(() => import('@/features/admin/pages/CompanySetup')), props: ctx => ({ setPage: ctx.setPage }) },
+  MasterDataCenter:         { component: lazy(() => import('@/features/admin/pages/MasterDataCenter')), props: ctx => ({ setPage: ctx.setPage }) },
+  PlatformCenter:           { component: lazy(() => import('@/features/admin/pages/PlatformCenter')), props: ctx => ({ setPage: ctx.setPage }) },
+  MyTravel:                 { component: lazy(() => import('@/features/travel/pages/MyTravel')), props: ctx => ({ setPage: ctx.setPage }) },
+  TravelExpenseCenter:      { component: lazy(() => import('@/features/travel/pages/TravelExpenseCenter')), props: ctx => ({ setPage: ctx.setPage }) },
+  TravelVisits:             { component: lazy(() => import('@/features/travel/pages/TravelVisits')), props: ctx => ({ setPage: ctx.setPage }) },
+  TravelInsights:           { component: lazy(() => import('@/features/travel/pages/TravelInsights')), props: ctx => ({ setPage: ctx.setPage }) },
+  CRMCustomers:             { component: lazy(() => import('@/features/crm/pages/CRMCustomers')), props: ctx => ({ setPage: ctx.setPage }) },
+  CRMInsights:              { component: lazy(() => import('@/features/crm/pages/CRMInsights')), props: ctx => ({ setPage: ctx.setPage }) },
+  SalesEnablement:          { component: lazy(() => import('@/features/sales/pages/SalesEnablement')), props: ctx => ({ setPage: ctx.setPage }) },
+  SalesPerformance:         { component: lazy(() => import('@/features/sales/pages/SalesPerformance')), props: ctx => ({ setPage: ctx.setPage }) },
+  FinanceAccounting:        { module: 'finance', component: lazy(() => import('@/features/finance/pages/FinanceAccounting')), props: ctx => ({ setPage: ctx.setPage }) },
+  EmployeeRecords:          { component: lazy(() => import('@/features/hr/pages/EmployeeRecords')), props: ctx => ({ setPage: ctx.setPage }) },
+  ExitCenter:               { component: lazy(() => import('@/features/hr/pages/ExitCenter')), props: ctx => ({ setPage: ctx.setPage }) },
+  InterviewCenter:          { module: 'recruitment', component: lazy(() => import('@/features/recruitment/pages/InterviewCenter')), props: ctx => ({ setPage: ctx.setPage }) },
+  HiringAdmin:              { module: 'recruitment', component: lazy(() => import('@/features/recruitment/pages/HiringAdmin')), props: ctx => ({ setPage: ctx.setPage }) },
+  OnboardingCenter:         { module: 'recruitment', component: lazy(() => import('@/features/recruitment/pages/OnboardingCenter')), props: ctx => ({ setPage: ctx.setPage }) },
+  ProductionPlanningHub:    { module: 'production', component: lazy(() => import('@/features/production/pages/ProductionPlanningHub')), props: ctx => ({ setPage: ctx.setPage }) },
+  BOMCenter:                { component: lazy(() => import('@/features/production/pages/BOMCenter')), props: ctx => ({ setPage: ctx.setPage }) },
+  ProjectBoards:            { module: 'projects', component: lazy(() => import('@/features/projects/pages/ProjectBoards')), props: ctx => ({ setPage: ctx.setPage }) },
+  AttendanceConfig:         { component: lazy(() => import('@/features/attendance/pages/AttendanceConfig')), props: ctx => ({ setPage: ctx.setPage }) },
+  AttendanceApprovals:      { module: 'attendance', component: lazy(() => import('@/features/attendance/pages/AttendanceApprovals')), props: ctx => ({ setPage: ctx.setPage }) },
+  SourcingCenter:           { component: lazy(() => import('@/features/procurement/pages/SourcingCenter')), props: ctx => ({ setPage: ctx.setPage }) },
+  PerformanceManage:        { module: 'performance', component: lazy(() => import('@/features/performance/pages/PerformanceManage')), props: ctx => ({ setPage: ctx.setPage }) },
+  TalentDecisions:          { module: 'performance', component: lazy(() => import('@/features/performance/pages/TalentDecisions')), props: ctx => ({ setPage: ctx.setPage }) },
+  PerformanceInsights:      { component: lazy(() => import('@/features/performance/pages/PerformanceInsights')), props: ctx => ({ setPage: ctx.setPage }) },
 
   // ── AI ────────────────────────────────────────────────────────────────────
   ERPIntelligence:       { component: lazy(() => import('@/features/ai/pages/ERPIntelligence')), props: ctx => ({ setPage: ctx.setPage }) },
@@ -69,35 +117,91 @@ export const ROUTES = {
   QRCodeStudio:          { component: lazy(() => import('@/features/tools/pages/QRCodeStudio')) },
 
   // ── Approvals / Notifications ────────────────────────────────────────────
+  // One page, three tabs (My Pending Approvals / My Requests / Approval
+  // History). Every role may open it (PERSONAL_PAGES): the approver tabs only
+  // appear for people who approve something, and every decision runs the
+  // originating module's own endpoint. `MyRequests` is kept as a page key —
+  // the account menu, notifications and old links use it — and opens the same
+  // page on the My Requests tab.
   ApprovalCenter:        { component: lazy(() => import('@/features/approvals/pages/ApprovalCenter')) },
-  // Read-only "status of what I submitted" view — no approve/reject/delegate
-  // controls. Reachable by every role via PERSONAL_PAGES (menuCatalog.js),
-  // regardless of section allowlist, since it carries no approval authority.
-  MyRequests:            { component: lazy(() => import('@/features/approvals/pages/MyRequests')) },
+  MyRequests:            { component: lazy(() => import('@/features/approvals/pages/ApprovalCenter')), props: () => ({ initialTab: 'my-requests' }) },
   NotificationCenter:    { component: lazy(() => import('@/features/notifications/pages/NotificationCenter')) },
 
   // ── Employees ────────────────────────────────────────────────────────────
-  EmployeesDashboard:    { component: lazy(() => import('@/features/employees/pages/EmployeesDashboard')), props: ctx => ({ setPage: ctx.setPage, setSelectedEmployee: ctx.setSelectedEmployee }) },
+  // module: 'employees' to match EmployeesData below. Without it Layout.jsx's
+  // `if (route.module)` gate never fires for this page, so a role inside the
+  // People section allowlist but holding no employees:view grant could open
+  // the dashboard — including its headcount, department and salary-adjacent
+  // breakdowns — while being correctly blocked from the list it links to.
+  EmployeesDashboard:    { module: 'employees', component: lazy(() => import('@/features/employees/pages/EmployeesDashboard')), props: ctx => ({ setPage: ctx.setPage, setSelectedEmployee: ctx.setSelectedEmployee }) },
   EmployeesData:         { module: 'employees', component: lazy(() => import('@/features/employees/pages/EmployeesData')),      props: ctx => ({ setPage: ctx.setPage, setSelectedEmployee: ctx.setSelectedEmployee }) },
   ExEmployees:           { module: 'employees', component: lazy(() => import('@/features/employees/pages/ExEmployees')),        props: ctx => ({ setPage: ctx.setPage, setSelectedEmployee: ctx.setSelectedEmployee }) },
   EmployeeProfile:       { module: 'employees', component: lazy(() => import('@/features/employees/pages/EmployeeProfile')),    props: ctx => ({ employee: ctx.selectedEmployee, setPage: ctx.setPage, setSelectedEmployee: ctx.setSelectedEmployee, urlParams: ctx.urlParams }) },
-  AddEmployee:           { module: 'employees', component: lazy(() => import('@/features/employees/pages/AddEmployee')),        props: ctx => ({ setPage: ctx.setPage, employee: ctx.selectedEmployee, setSelectedEmployee: ctx.setSelectedEmployee }) },
+  // ── Background Verification ───────────────────────────────────────────────
+  // `module: 'bgv'` deliberately, NOT 'employees'. Layout.jsx's route gate is
+  // `hasPermission(route.module, 'view')`, so gating these on 'employees' would
+  // open them to every role that can see the employee register — an `employee`
+  // and a `manager` both hold employees:can_view. BGV holds criminal-record and
+  // reference-check findings; its own permission row is the whole point.
+  //
+  // ⚠ Registered by hand even though autoRouter would discover both files.
+  // AUTO_ROUTES infers `module` from FOLDER_CONFIG, which maps this folder to
+  // 'employees' — i.e. auto-discovery would silently apply the WRONG (looser)
+  // gate. A manual entry wins because MERGED_ROUTES spreads it last.
+  BackgroundVerification: { module: 'bgv', component: lazy(() => import('@/features/employees/pages/BackgroundVerification')), props: ctx => ({ setPage: ctx.setPage, urlParams: ctx.urlParams }) },
+  EmployeeBGV:            { module: 'bgv', component: lazy(() => import('@/features/employees/pages/EmployeeBGV')),            props: ctx => ({ setPage: ctx.setPage, urlParams: ctx.urlParams, employee: ctx.selectedEmployee }) },
+  EmployeeMasters:       { module: 'employees', component: lazy(() => import('@/features/employees/pages/EmployeeMasters')), props: ctx => ({ setPage: ctx.setPage, urlParams: ctx.urlParams }) },
+  AddEmployee:           { module: 'employees', component: lazy(() => import('@/features/employees/pages/AddEmployee')),        props: ctx => ({ setPage: ctx.setPage, employee: null, setSelectedEmployee: ctx.setSelectedEmployee, urlParams: ctx.urlParams }) },  // always a NEW hire — editing goes through EditEmployee, which loads the full record; ?fromIntern=<id> = Convert to Employee
   EditEmployee:          { module: 'employees', component: lazy(() => import('@/features/employees/pages/EditEmployee')),       props: ctx => ({ employee: ctx.selectedEmployee, setPage: ctx.setPage, setSelectedEmployee: ctx.setSelectedEmployee }) },
+
+  // ── Internships ─────────────────────────────────────────────────────────
+  // A separate workforce population (own table, INTxxx codes). `module:
+  // 'internships'` — NOT 'employees', which `employee` and `manager` both hold:
+  // gating on it would open every intern's personal data to them. Registered by
+  // hand so the gate is explicit rather than inferred from the folder. The
+  // selected intern travels as `?id=` in the URL, so View/Edit survive refresh.
+  Internships:           { module: 'internships', component: lazy(() => import('@/features/internships/pages/Internships')), props: ctx => ({ setPage: ctx.setPage, urlParams: ctx.urlParams }) },
+  AddIntern:             { module: 'internships', component: lazy(() => import('@/features/internships/pages/AddIntern')),   props: ctx => ({ setPage: ctx.setPage }) },
+  EditIntern:            { module: 'internships', component: lazy(() => import('@/features/internships/pages/EditIntern')),  props: ctx => ({ setPage: ctx.setPage, urlParams: ctx.urlParams }) },
+  ViewIntern:            { module: 'internships', component: lazy(() => import('@/features/internships/pages/ViewIntern')),  props: ctx => ({ setPage: ctx.setPage, urlParams: ctx.urlParams }) },
+  // The MENTOR's page. Deliberately NO `module`: a mentor holds no internships
+  // permission and must not be given one. The API decides access by identity
+  // (the intern's current mentor), and the page shows a non-mentor a notice, no
+  // data. Listed in PERSONAL_PAGES so a mentor in ANY role can open it; the menu
+  // entry is `mentorOnly` (see NAV_ITEMS).
+  MyInternEvaluations:   { component: lazy(() => import('@/features/internships/pages/MyInternEvaluations')) },
+  // Department heads' probation reviews. Registered manually WITHOUT a module so
+  // the auto-router's folder default (features/hr → module 'hr') cannot apply:
+  // department heads hold no hr permission and must still reach it. The entry
+  // is `probationReviewerOnly` (see NAV_ITEMS); the API decides what is shown.
+  MyProbationReviews:    { component: lazy(() => import('@/features/hr/pages/MyProbationReviews')) },
+  // Open to every role (PERSONAL_PAGES, no module): the bell's destination for
+  // an announcement. The API returns only what is addressed to the caller.
+  MyAnnouncements:       { component: lazy(() => import('@/features/hr/pages/MyAnnouncements')) },
 
   // ── HR ────────────────────────────────────────────────────────────────────
   // Hub pages — merged submenus
-  PayrollCenter:            { component: lazy(() => import('@/features/hr/pages/PayrollCenter')),              props: ctx => ({ setPage: ctx.setPage }) },
-  SuccessionCenter:         { component: lazy(() => import('@/features/hr/pages/SuccessionCenter')) },
+  // PC-01 closure: the payroll pages are payroll:view, as their APIs are (Form 24Q:
+  // payroll_tds_extract:export). Layout refuses the URL and Sidebar drops the row.
+  PayrollCenter:            { module: 'payroll', component: lazy(() => import('@/features/hr/pages/PayrollCenter')),              props: ctx => ({ setPage: ctx.setPage }) },
+  SuccessionCenter:         { module: 'succession', component: lazy(() => import('@/features/hr/pages/SuccessionCenter')) },
 
-  PayrollSettings:       { component: lazy(() => import('@/features/hr/pages/PayrollSettings')),           props: ctx => ({ setPage: ctx.setPage }) },
-  PayrollForm16:         { component: lazy(() => import('@/features/hr/pages/PayrollForm16')),              props: ctx => ({ setPage: ctx.setPage }) },
-  PayrollForm24Q:        { component: lazy(() => import('@/features/hr/pages/PayrollForm24Q')),             props: ctx => ({ setPage: ctx.setPage }) },
+  PayrollSettings:       { module: 'payroll', component: lazy(() => import('@/features/hr/pages/PayrollSettings')),           props: ctx => ({ setPage: ctx.setPage }) },
+  PayrollForm16:         { module: 'payroll', component: lazy(() => import('@/features/hr/pages/PayrollForm16')),              props: ctx => ({ setPage: ctx.setPage }) },
+  PayrollForm24Q:        { module: 'payroll_tds_extract', moduleActions: ['export'], component: lazy(() => import('@/features/hr/pages/PayrollForm24Q')),             props: ctx => ({ setPage: ctx.setPage }) },
   Announcements:         { component: lazy(() => import('@/features/hr/pages/Announcements')) },
   BiometricAccess:       { component: lazy(() => import('@/features/hr/pages/BiometricAccess')) },
   Downloads:             { component: lazy(() => import('@/features/hr/pages/Downloads')) },
   EmployeeDirectory:     { component: lazy(() => import('@/features/hr/pages/EmployeeDirectory')) },
-  EmployeeDocuments:     { component: lazy(() => import('@/features/hr/pages/EmployeeDocuments')) },
+  // The HR register across employees (§207). Everyone's OWN documents live in
+  // Self Service → Document Vault, so the register is for employee_documents
+  // holders only — the gate also hides the Employee Records tab (TabHub).
+  EmployeeDocuments:     { component: lazy(() => import('@/features/hr/pages/EmployeeDocuments')), module: 'employee_documents' },
   EmployeeSelfService:   { component: lazy(() => import('@/features/hr/pages/EmployeeSelfService')), props: ctx => ({ setPage: ctx.setPage }) },
+  // Reviewer side of Self-Service IT declarations (§203); the matrix grant decides.
+  ITDeclarationReview:   { component: lazy(() => import('@/features/hr/pages/ITDeclarationReview')), module: 'it_declarations' },
+  // Checker side of the bank-detail maker-checker (§204); the matrix grant decides.
+  BankChangeApprovals:   { component: lazy(() => import('@/features/hr/pages/BankChangeApprovals')), module: 'employee_bank', moduleActions: ['view', 'add'] },
   ExitManagement:        { component: lazy(() => import('@/features/hr/pages/ExitManagement')), props: ctx => ({ setPage: ctx.setPage }) },
   HolidayCalendar:       { component: lazy(() => import('@/features/hr/pages/HolidayCalendar')) },
   LearningDevelopment:   { component: lazy(() => import('@/features/hr/pages/LearningDevelopment')) },
@@ -110,20 +214,22 @@ export const ROUTES = {
   CompetencyFramework:   { component: lazy(() => import('@/features/hr/pages/CompetencyFramework')) },
   LNDSettings:           { component: lazy(() => import('@/features/hr/pages/LNDSettings')), props: ctx => ({ setPage: ctx.setPage }) },
   Offboarding:           { component: lazy(() => import('@/features/hr/pages/Offboarding')), props: ctx => ({ setPage: ctx.setPage }) },
-  Payroll:               { module: 'hr', component: lazy(() => import('@/features/hr/pages/Payroll')), props: ctx => ({ setPage: ctx.setPage }) },
-  PayslipGenerator:      { component: lazy(() => import('@/features/hr/pages/PayslipGenerator')) },
+  Payroll:               { module: 'payroll', component: lazy(() => import('@/features/hr/pages/Payroll')), props: ctx => ({ setPage: ctx.setPage }) },
+  PayslipGenerator:      { module: 'payroll', component: lazy(() => import('@/features/hr/pages/PayslipGenerator')) },
   PayslipViewer:         { component: lazy(() => import('@/features/hr/pages/PayslipViewer')) },
   Policies:              { component: lazy(() => import('@/features/hr/pages/Policies')) },
   Probation:             { component: lazy(() => import('@/features/hr/pages/Probation')) },
-  SalaryStructure:       { component: lazy(() => import('@/features/hr/pages/SalaryStructure')) },
-  SuccessionPlanning:        { component: lazy(() => import('@/features/hr/pages/SuccessionPlanning')) },
-  LeadershipPipeline:        { component: lazy(() => import('@/features/hr/pages/LeadershipPipeline')) },
-  DevelopmentPlans:          { component: lazy(() => import('@/features/hr/pages/DevelopmentPlans')) },
-  EmployeeSuccessionPools:   { component: lazy(() => import('@/features/hr/pages/EmployeeSuccessionPools')) },
-  SuccessionReports:         { component: lazy(() => import('@/features/hr/pages/SuccessionReports')) },
-  SuccessionSettings:        { component: lazy(() => import('@/features/hr/pages/SuccessionSettings')), props: ctx => ({ setPage: ctx.setPage }) },
+  SalaryStructure:       { module: 'payroll', component: lazy(() => import('@/features/hr/pages/SalaryStructure')) },
+  SuccessionPlanning:        { module: 'succession', component: lazy(() => import('@/features/hr/pages/SuccessionPlanning')) },
+  LeadershipPipeline:        { module: 'succession', component: lazy(() => import('@/features/hr/pages/LeadershipPipeline')) },
+  DevelopmentPlans:          { module: 'succession', component: lazy(() => import('@/features/hr/pages/DevelopmentPlans')) },
+  EmployeeSuccessionPools:   { module: 'succession', component: lazy(() => import('@/features/hr/pages/EmployeeSuccessionPools')) },
+  SuccessionReports:         { module: 'succession', component: lazy(() => import('@/features/hr/pages/SuccessionReports')) },
+  SuccessionSettings:        { module: 'succession', component: lazy(() => import('@/features/hr/pages/SuccessionSettings')), props: ctx => ({ setPage: ctx.setPage }) },
   SkillMatrix:               { component: lazy(() => import('@/features/hr/pages/SkillMatrix')), props: ctx => ({ setPage: ctx.setPage }) },
-  EmployeeReports:       { component: lazy(() => import('@/features/hr/pages/EmployeeReports')) },
+  // hr:view — every number on the page comes from GET /analytics/workforce, which
+  // requires it. Drill-through additionally checks employees:view in the page.
+  EmployeeReports:       { module: 'hr', component: lazy(() => import('@/features/hr/pages/EmployeeReports')), props: ctx => ({ setPage: ctx.setPage }) },
   HRBenchmarkingDashboard: { component: lazy(() => import('@/features/hr/pages/HRBenchmarkingDashboard')) },
   EmployeeAssets:        { component: lazy(() => import('@/features/hr/pages/EmployeeAssets')) },
 
@@ -195,7 +301,10 @@ export const ROUTES = {
   ChartOfAccounts:       { module: 'finance', component: lazy(() => import('@/features/finance/pages/ChartOfAccounts')) },
   CustomerOutstanding:   { module: 'finance', component: lazy(() => import('@/features/finance/pages/CustomerOutstanding')) },
   FinancialRatios:       { module: 'finance', component: lazy(() => import('@/features/finance/pages/FinancialRatios')) },
-  FinancialStatements:   { module: 'finance', component: lazy(() => import('@/features/finance/pages/FinancialStatements')) },
+  // Needs setPage: its header has a "Financial Reports" button. Without the
+  // prop the optional call silently no-ops and the click does nothing at all,
+  // with a clean console — the page looks fine and the link is simply dead.
+  FinancialStatements:   { module: 'finance', component: lazy(() => import('@/features/finance/pages/FinancialStatements')),  props: ctx => ({ setPage: ctx.setPage }) },
   ForexManagement:       { module: 'finance', component: lazy(() => import('@/features/finance/pages/ForexManagement')) },
   GSTModule:             { module: 'finance', component: lazy(() => import('@/features/finance/pages/GSTModule')) },
   InvoicesNew:           { module: 'finance', component: lazy(() => import('@/features/finance/pages/Invoices')) },
@@ -251,6 +360,7 @@ export const ROUTES = {
   SupplierPerformanceIndex: { module: 'procurement', component: lazy(() => import('@/features/procurement/pages/SupplierPerformanceIndex')) },
   SourcingStrategy:         { module: 'procurement', component: lazy(() => import('@/features/procurement/pages/SourcingStrategy')) },
   RfxEvaluation:            { module: 'procurement', component: lazy(() => import('@/features/procurement/pages/RfxEvaluation')) },
+  SupplierCapacity:         { module: 'procurement', component: lazy(() => import('@/features/procurement/pages/SupplierCapacity')) },
   VendorRegistration:       { public: true,          component: lazy(() => import('@/features/procurement/pages/VendorRegistration')) },
 
   // ── Inventory ────────────────────────────────────────────────────────────
@@ -277,6 +387,18 @@ export const ROUTES = {
   WarehouseManagement:       { module: 'inventory', component: lazy(() => import('@/features/inventory/pages/WarehouseManagement')) },
   SerialTracking:            { module: 'inventory', component: lazy(() => import('@/features/inventory/pages/SerialTracking')) },
   InventorySettings:         { module: 'inventory', component: lazy(() => import('@/features/inventory/pages/InventorySettings')),  props: ctx => ({ setPage: ctx.setPage }) },
+  // Supply-chain planning workspace. Every one of these drove a backend
+  // capability that was built, mounted and unreachable — the forecast could not
+  // be approved, the planning parameters could not be inspected, and the service
+  // level nobody could see was computed on every request.
+  DemandPlanning:            { module: 'inventory', component: lazy(() => import('@/features/inventory/pages/DemandPlanning')) },
+  InventoryPlanningParameters:{ module: 'inventory', component: lazy(() => import('@/features/inventory/pages/InventoryPlanningParameters')) },
+  InventoryHealth:           { module: 'inventory', component: lazy(() => import('@/features/inventory/pages/InventoryHealth')) },
+  KanbanLoops:               { module: 'inventory', component: lazy(() => import('@/features/inventory/pages/KanbanLoops')) },
+  WarehouseOperations:       { module: 'inventory', component: lazy(() => import('@/features/inventory/pages/WarehouseOperations')) },
+  ServiceLevelDashboard:     { module: 'inventory', component: lazy(() => import('@/features/inventory/pages/ServiceLevelDashboard')) },
+  ReturnsRMA:                { module: 'inventory', component: lazy(() => import('@/features/inventory/pages/ReturnsRMA')) },
+  RoutePlanning:             { module: 'inventory', component: lazy(() => import('@/features/inventory/pages/RoutePlanning')) },
 
   // ── Production ───────────────────────────────────────────────────────────
   ProductionSettings:    { module: 'production', component: lazy(() => import('@/features/production/pages/ProductionSettings')),  props: ctx => ({ setPage: ctx.setPage }) },
@@ -290,8 +412,10 @@ export const ROUTES = {
   CRPWorkbench:          { module: 'production', component: lazy(() => import('@/features/production/pages/CRPWorkbench')) },
   SubcontractOrders:     { module: 'production', component: lazy(() => import('@/features/production/pages/SubcontractOrders')) },
   GenealogyTrace:        { module: 'production', component: lazy(() => import('@/features/production/pages/GenealogyTrace')) },
+  ComponentTrace:        { module: 'production', component: lazy(() => import('@/features/production/pages/ComponentTrace')) },
   BOMModeling:           { module: 'production', component: lazy(() => import('@/features/production/pages/BOMModeling')) },
   SOPPlanning:           { module: 'production', component: lazy(() => import('@/features/production/pages/SOPPlanning')) },
+  ScenarioPlanning:      { module: 'production', component: lazy(() => import('@/features/production/pages/ScenarioPlanning')) },
   ShopFloor:             { module: 'production', component: lazy(() => import('@/features/production/pages/ShopFloor')),            props: ctx => ({ setPage: ctx.setPage }) },
 
   // ── Projects ─────────────────────────────────────────────────────────────
@@ -418,30 +542,58 @@ export const ROUTES = {
   UserPerformance:       { component: lazy(() => import('@/features/marketing/pages/UserPerformance')) },
 
   // ── Recruitment (merged with former Talent module 2026-07-28) ─────────────
-  RecruitmentSettings:   { component: lazy(() => import('@/features/recruitment/pages/RecruitmentSettings')), props: ctx => ({ setPage: ctx.setPage }) },
-  RecruitmentDashboard:  { component: lazy(() => import('@/features/recruitment/pages/RecruitmentDashboard')), props: ctx => ({ setPage: ctx.setPage }) },
+  // Every entry below carries `module: 'recruitment'`. None of them used to.
+  // Layout.jsx applies two route-level gates: the NAV-section allowlist, which
+  // returns TRUE for any page that appears in no NAV_ITEMS row, and
+  // `if (route.module)`, which is skipped entirely when the route declares no
+  // module. Nine of these pages (ResumeDatabase, AllCandidates, CandidateDetail,
+  // CandidatePipeline, TalentPools, TalentPoolDetail, RecruitmentAgencies,
+  // JobOpenings, JobRequisitionPipeline) are reachable only as hub tabs and so
+  // have no NAV row — which meant BOTH gates passed and any authenticated role
+  // could open the candidate database by direct navigation. The module key is
+  // the gate that does not depend on a page having a sidebar entry.
+  RecruitmentSettings:   { module: 'recruitment', component: lazy(() => import('@/features/recruitment/pages/RecruitmentSettings')), props: ctx => ({ setPage: ctx.setPage }) },
+  CareersPageAdmin:      { module: 'recruitment', component: lazy(() => import('@/features/recruitment/pages/CareersPageAdmin')), props: ctx => ({ setPage: ctx.setPage }) },
+  RecruitmentDashboard:  { module: 'recruitment', component: lazy(() => import('@/features/recruitment/pages/RecruitmentDashboard')), props: ctx => ({ setPage: ctx.setPage }) },
   // Jobs/Sourcing are tab containers (see Candidates below for the same
   // pattern). The pages they wrap keep their own route entries so existing
   // setPage('JobOpenings')-style calls and deep links stay valid.
-  Jobs:                  { component: lazy(() => import('@/features/recruitment/pages/Jobs')),                  props: ctx => ({ setPage: ctx.setPage }) },
-  Sourcing:              { component: lazy(() => import('@/features/recruitment/pages/Sourcing')),              props: ctx => ({ setPage: ctx.setPage }) },
-  JobRequisitionPipeline:{ component: lazy(() => import('@/features/recruitment/pages/JobRequisitionPipeline')) },
-  JobOpenings:           { component: lazy(() => import('@/features/recruitment/pages/JobOpenings')),           props: ctx => ({ setPage: ctx.setPage }) },
-  Candidates:            { component: lazy(() => import('@/features/recruitment/pages/Candidates')),         props: ctx => ({ setPage: ctx.setPage }) },
-  CandidatePipeline:     { component: lazy(() => import('@/features/recruitment/pages/CandidatePipeline')),     props: ctx => ({ setPage: ctx.setPage }) },
-  AllCandidates:         { component: lazy(() => import('@/features/recruitment/pages/AllCandidates')),      props: ctx => ({ setPage: ctx.setPage }) },
-  CandidateDetail:       { component: lazy(() => import('@/features/recruitment/pages/CandidateDetail')),    props: ctx => ({ setPage: ctx.setPage }) },
-  EmailTemplates:        { component: lazy(() => import('@/features/recruitment/pages/EmailTemplates')),     props: ctx => ({ setPage: ctx.setPage }) },
-  HiringForecasts:       { component: lazy(() => import('@/features/recruitment/pages/HiringForecasts')) },
-  InterviewScheduler:    { component: lazy(() => import('@/features/recruitment/pages/InterviewScheduler')), props: ctx => ({ setPage: ctx.setPage }) },
-  InterviewQuestionBank: { component: lazy(() => import('@/features/recruitment/pages/InterviewQuestionBank')) },
-  OfferManagement:       { component: lazy(() => import('@/features/recruitment/pages/OfferManagement')) },
-  RecruitmentReports:    { component: lazy(() => import('@/features/recruitment/pages/RecruitmentReports')) },
-  ResumeDatabase:        { component: lazy(() => import('@/features/recruitment/pages/ResumeDatabase')) },
-  TalentPools:           { component: lazy(() => import('@/features/recruitment/pages/TalentPools')),      props: ctx => ({ setPage: ctx.setPage }) },
-  TalentPoolDetail:      { component: lazy(() => import('@/features/recruitment/pages/TalentPoolDetail')), props: ctx => ({ setPage: ctx.setPage, urlParams: ctx.urlParams }) },
-  RecruitmentAgencies:   { component: lazy(() => import('@/features/recruitment/pages/RecruitmentAgencies')) },
-  RecruiterDashboard:    { component: lazy(() => import('@/features/recruitment/pages/RecruiterDashboard')), props: ctx => ({ setPage: ctx.setPage }) },
+  Jobs:                  { module: 'recruitment', component: lazy(() => import('@/features/recruitment/pages/Jobs')),                  props: ctx => ({ setPage: ctx.setPage }) },
+  Sourcing:              { module: 'recruitment', component: lazy(() => import('@/features/recruitment/pages/Sourcing')),              props: ctx => ({ setPage: ctx.setPage }) },
+  JobRequisitionPipeline:{ module: 'recruitment', component: lazy(() => import('@/features/recruitment/pages/JobRequisitionPipeline')) },
+  JobOpenings:           { module: 'recruitment', component: lazy(() => import('@/features/recruitment/pages/JobOpenings')),           props: ctx => ({ setPage: ctx.setPage }) },
+  Candidates:            { module: 'recruitment', component: lazy(() => import('@/features/recruitment/pages/Candidates')),         props: ctx => ({ setPage: ctx.setPage }) },
+  CandidatePipeline:     { module: 'recruitment', component: lazy(() => import('@/features/recruitment/pages/CandidatePipeline')),     props: ctx => ({ setPage: ctx.setPage }) },
+  AllCandidates:         { module: 'recruitment', component: lazy(() => import('@/features/recruitment/pages/AllCandidates')),      props: ctx => ({ setPage: ctx.setPage }) },
+  // ── 2026-09-27 Recruitment redesign ──────────────────────────────────────
+  // CandidateWorkbench replaces AllCandidates as the Candidates hub's list tab.
+  // AllCandidates stays registered rather than being deleted: it is still a
+  // working page, several audit/Playwright fixtures address it by name, and
+  // keeping it means the rollout is reversible by changing one line in
+  // Candidates.jsx instead of restoring a file.
+  CandidateWorkbench:    { module: 'recruitment', component: lazy(() => import('@/features/recruitment/pages/CandidateWorkbench')),  props: ctx => ({ setPage: ctx.setPage }) },
+  CandidateScreening:    { module: 'recruitment', component: lazy(() => import('@/features/recruitment/pages/CandidateScreening')),  props: ctx => ({ setPage: ctx.setPage }) },
+  TalentBank:            { module: 'recruitment', component: lazy(() => import('@/features/recruitment/pages/TalentBank')),          props: ctx => ({ setPage: ctx.setPage }) },
+  RecruitmentWorkQueue:  { module: 'recruitment', component: lazy(() => import('@/features/recruitment/pages/RecruitmentWorkQueue')), props: ctx => ({ setPage: ctx.setPage }) },
+  CandidateDetail:       { module: 'recruitment', component: lazy(() => import('@/features/recruitment/pages/CandidateDetail')),    props: ctx => ({ setPage: ctx.setPage }) },
+  EmailTemplates:        { module: 'recruitment', component: lazy(() => import('@/features/recruitment/pages/EmailTemplates')),     props: ctx => ({ setPage: ctx.setPage }) },
+  HiringForecasts:       { module: 'recruitment', component: lazy(() => import('@/features/recruitment/pages/HiringForecasts')) },
+  InterviewScheduler:    { module: 'recruitment', component: lazy(() => import('@/features/recruitment/pages/InterviewScheduler')), props: ctx => ({ setPage: ctx.setPage }) },
+  InterviewQuestionBank: { module: 'recruitment', component: lazy(() => import('@/features/recruitment/pages/InterviewQuestionBank')) },
+  OfferManagement:       { module: 'recruitment', component: lazy(() => import('@/features/recruitment/pages/OfferManagement')) },
+  RecruitmentReports:    { module: 'recruitment', component: lazy(() => import('@/features/recruitment/pages/RecruitmentReports')) },
+  ResumeDatabase:        { module: 'recruitment', component: lazy(() => import('@/features/recruitment/pages/ResumeDatabase')) },
+  TalentPools:           { module: 'recruitment', component: lazy(() => import('@/features/recruitment/pages/TalentPools')),      props: ctx => ({ setPage: ctx.setPage }) },
+  TalentPoolDetail:      { module: 'recruitment', component: lazy(() => import('@/features/recruitment/pages/TalentPoolDetail')), props: ctx => ({ setPage: ctx.setPage, urlParams: ctx.urlParams }) },
+  RecruitmentAgencies:   { module: 'recruitment', component: lazy(() => import('@/features/recruitment/pages/RecruitmentAgencies')) },
+  RecruiterDashboard:    { module: 'recruitment', component: lazy(() => import('@/features/recruitment/pages/RecruiterDashboard')), props: ctx => ({ setPage: ctx.setPage }) },
+  // Registered manually rather than left to autoRouter. AUTO_ROUTES now derives
+  // `module` from its folder config, so these would be gated either way — but
+  // explicit beats inherited for the two pages that hold candidate feedback and
+  // onboarding data, and it keeps them visible in this list beside their 25
+  // siblings instead of only existing as a glob match.
+  InterviewFeedback:     { module: 'recruitment', component: lazy(() => import('@/features/recruitment/pages/InterviewFeedback')),  props: ctx => ({ setPage: ctx.setPage }) },
+  OnboardingChecklist:   { module: 'recruitment', component: lazy(() => import('@/features/recruitment/pages/OnboardingChecklist')), props: ctx => ({ setPage: ctx.setPage }) },
 
   // ── Service Desk ─────────────────────────────────────────────────────────
   // Hub pages — merged reviews + intelligence submenus
@@ -505,7 +657,9 @@ export const ROUTES = {
   BottleneckAnalytics:    { component: lazy(() => import('@/features/operations/pages/BottleneckAnalytics')) },
 
   // ── Lifecycle Engine ─────────────────────────────────────────────────────
-  LifecycleTracker:       { component: lazy(() => import('@/features/operations/pages/LifecycleTracker')) },
+  // servicedesk:view — the same grant the /lifecycle API requires, so a role
+  // without it gets Access Denied here instead of an empty list.
+  LifecycleTracker:       { module: 'servicedesk', component: lazy(() => import('@/features/operations/pages/LifecycleTracker')), props: ctx => ({ setPage: ctx.setPage, pageParams: ctx.pageParams }) },
   CommissioningReports:   { component: lazy(() => import('@/features/operations/pages/CommissioningReports')) },
   AMCManagement:          { component: lazy(() => import('@/features/operations/pages/AMCManagement')) },
   OperationsWarranty:     { component: lazy(() => import('@/features/operations/pages/WarrantyManagement')) },
@@ -519,7 +673,7 @@ export const ROUTES = {
   ServiceAnalytics:         { component: lazy(() => import('@/features/servicedesk/pages/ServiceAnalytics')) },
   FailureAnalytics:         { component: lazy(() => import('@/features/servicedesk/pages/FailureAnalytics')) },
   VoiceOfCustomer:          { component: lazy(() => import('@/features/servicedesk/pages/VoiceOfCustomer')) },
-  EmployeeAutoCreation:     { component: lazy(() => import('@/features/recruitment/pages/EmployeeAutoCreation')) },
+  EmployeeAutoCreation:     { module: 'recruitment', component: lazy(() => import('@/features/recruitment/pages/EmployeeAutoCreation')) },
 
   // ── Company & Branch Admin ────────────────────────────────────────────────
   CompanyProfile:         { component: lazy(() => import('@/features/settings/pages/CompanyProfile')) },
@@ -561,14 +715,15 @@ export const ROUTES = {
 // its domain rather than a neighbouring one (FaFlask reads laboratory, not
 // factory; FaChartLine on Finance reads analytics, which is a different band).
 import {
-  FaHome, FaClipboardCheck, FaBell,
+  FaHome, FaClipboardCheck,
   FaRobot, FaFileAlt,
   FaHandshake, FaFileInvoiceDollar, FaBullhorn,
   FaProjectDiagram, FaStream, FaExclamationCircle, FaHeadset,
   FaShoppingCart, FaBox, FaIndustry, FaShieldAlt, FaWrench,
+  FaBroadcastTower, FaFlask, FaBalanceScale, FaTags,
   FaRupeeSign,
   FaUsers, FaUserTie, FaBriefcase, FaGraduationCap, FaCalendarCheck,
-  FaUmbrellaBeach, FaClock, FaTrophy, FaPlane, FaSitemap,
+  FaUmbrellaBeach, FaClock, FaTrophy, FaPlane, FaSitemap, FaAddressBook,
   FaFileSignature, FaQrcode,
   FaCog, FaHistory,
 } from 'react-icons/fa';
@@ -584,11 +739,15 @@ import {
 //     menu_permissions / user_menu_permissions tables that back the admin's
 //     Page Access screen. Reorder freely; renaming one silently orphans every
 //     saved override for it.
-//  2. 'Complaints' must stay immediately BEFORE 'Service Desk'.
-//     CustomerComplaintsIPCS is registered under both, and getSectionForPage()
-//     resolves a shared page to whichever group comes first in this array —
-//     so this order is what makes that page gate on 'Complaints'.
-//     ROLE_SECTION_ALLOWLIST is written against that resolution.
+//  2. 'Complaints' should stay immediately BEFORE 'Service Desk' — they are
+//     two halves of one loop and read as a pair in the rail.
+//     CustomerComplaintsIPCS used to be registered under BOTH groups (the only
+//     duplicate row in this file), which made its permission section depend on
+//     that array order. The Service Desk copy was removed 2026-09-16: the page
+//     now lives only under 'Complaints', so getSectionForPage() is unambiguous
+//     and ROLE_SECTION_ALLOWLIST no longer rides on the ordering. Every role
+//     holding 'Service Desk' (department_head, service_manager,
+//     service_engineer) also holds 'Complaints', so nobody lost the register.
 //
 // Within a submenu the house order is: overview → daily transactions →
 // approvals/queues → analysis & reports → masters/settings, with `separator`
@@ -597,8 +756,19 @@ import {
 export const NAV_ITEMS = [
   // ── Workspace ─────────────────────────────────────────────────────────────
   { name: 'Home',               icon: <FaHome />,              page: 'Home' },
-  { name: 'Approvals',          icon: <FaClipboardCheck />,    page: 'ApprovalCenter', module: 'approvals' },
-  { name: 'Notifications',      icon: <FaBell />,              page: 'NotificationCenter', module: 'notifications' },
+  // ONE entry for everyone (ALWAYS_VISIBLE, menuCatalog.js): every user has
+  // "My Requests", and the page shows the approver tabs only to people who
+  // approve something. My Requests / Approval History are tabs, not rows.
+  { name: 'Approvals', icon: <FaClipboardCheck />, page: 'ApprovalCenter', module: 'approvals' },
+  // No 'Notifications' row: the Topbar bell is the entry point ("View all
+  // notifications →" opens NotificationCenter, which is ALWAYS_VISIBLE in
+  // menuCatalog.js, so access is unchanged).
+  // No 'My Intern Evaluations' / 'My Probation Reviews' rows: they sit under
+  // Home's My Pending Approvals card ("My reviews"), drawn for a current
+  // mentor / department head (and admins) from the /mine/summary endpoints.
+  // Both stay in PERSONAL_PAGES (menuCatalog.js), so the bell and direct URLs
+  // still open them. Sidebar.jsx still honours `mentorOnly` /
+  // `probationReviewerOnly` should a row ever come back.
 
   { divider: true, section: 'Insights' },
 
@@ -625,44 +795,66 @@ export const NAV_ITEMS = [
   { divider: true, section: 'Revenue' },
 
   { name: 'CRM', icon: <FaHandshake />, submenu: [
-    { name: 'Dashboard',           page: 'SalesDashboard' },
-    { name: 'IEM — Enquiries',     page: 'Leads' },
-    { name: 'Opportunities',       page: 'OpportunitiesKanban' },
-    { name: 'Customers',           separator: true },
-    { name: 'Accounts',            page: 'Accounts' },
-    { name: 'Contacts',            page: 'Contacts' },
-    { name: 'Customer 360',        page: 'Customer360' },
-    { name: 'Health Engine',       page: 'CustomerHealthDashboard' },
-    { name: 'Engagement',          separator: true },
-    { name: 'Activities',          page: 'CRMActivities' },
-    { name: 'CRM Email',           page: 'CRMEmail' },
-    { name: 'Analysis & Setup',    separator: true },
-    { name: 'Won / Lost Leads',    page: 'WonLostLeads' },
-    { name: 'Web-to-Lead Forms',   page: 'WebLeadForms' },
-    { name: 'Reports',             page: 'CRMReports' },
-    { name: 'Pipeline Automation', page: 'PipelineAutomation' },
-    { name: 'Settings',            page: 'CRMSettings' },
+    { name: 'Dashboard',                 page: 'SalesDashboard' },
+    { name: 'IEM — Enquiries',           page: 'Leads' },
+    { name: 'Opportunities',             page: 'OpportunitiesKanban' },
+    { name: 'Pursuits',                  page: 'Pursuits' },
+    { name: 'Tenders',                   page: 'TenderWorkspace' },
+    { name: 'Customers',                 separator: true },
+    { name: 'Customers',                 page: 'CRMCustomers' },   // Accounts·Contacts·Customer 360·Health Engine
+    { name: 'Engagement',                separator: true },
+    { name: 'Activities',                page: 'CRMActivities' },
+    { name: 'CRM Email',                 page: 'CRMEmail' },
+    { name: 'Analysis & Setup',          separator: true },
+    { name: 'Analysis & Automation',     page: 'CRMInsights' },   // Won/Lost·Web forms·Reports·Pipeline automation
+    { name: 'Settings',                  page: 'CRMSettings' },
+
+    // ── Consolidated into the hubs above (2026-09-16 IA pass) ──────────
+    // These rows are NOT drawn in the sidebar — Sidebar.jsx skips any entry
+    // carrying `inHub`. They stay here because getSectionForPage() walks
+    // NAV_ITEMS: drop them and each page silently becomes section-less,
+    // which makes canRoleAccessPageBySection wave it through for every
+    // role. Keeping them preserves the section gate exactly, and TabHub
+    // re-checks each tab with canRoleOpenPage() before drawing it.
+    { name: 'Accounts',                  page: 'Accounts', inHub: 'CRMCustomers' },
+    { name: 'Contacts',                  page: 'Contacts', inHub: 'CRMCustomers' },
+    { name: 'Customer360',               page: 'Customer360', inHub: 'CRMCustomers' },
+    { name: 'CustomerHealthDashboard',   page: 'CustomerHealthDashboard', inHub: 'CRMCustomers' },
+    { name: 'WonLostLeads',              page: 'WonLostLeads', inHub: 'CRMInsights' },
+    { name: 'WebLeadForms',              page: 'WebLeadForms', inHub: 'CRMInsights' },
+    { name: 'CRMReports',                page: 'CRMReports', inHub: 'CRMInsights' },
+    { name: 'PipelineAutomation',        page: 'PipelineAutomation', inHub: 'CRMInsights' },
   ]},
 
   { name: 'Sales', icon: <FaFileInvoiceDollar />, submenu: [
-    { name: 'Command Center',   page: 'SalesCommandCenter' },
-    { name: 'Sell',             separator: true },
-    { name: 'Quotations',       page: 'Quotations' },
-    { name: 'Sales Orders',     page: 'SalesOrders' },
-    { name: 'Pricing Engine',   page: 'PricingEngine' },
-    { name: 'Fulfilment',       page: 'FulfilmentTracking' },
-    { name: 'Subscriptions',    page: 'Subscriptions' },
-    { name: 'Plan & Perform',   separator: true },
-    { name: 'Sales Targets',    page: 'SalesTargets' },
-    { name: 'Intelligence',     page: 'SalesIntelligence' },   // Conversion·Funnel·Forecasts
-    { name: 'Commission',       page: 'CommissionManagement' },
-    { name: 'Market Presence',  page: 'SalesMarket' },         // Partners·Territories·Competitors
-    { name: 'Deal Registration', page: 'DealRegistrations' },  // partner channel-conflict protection
-    { name: 'Enablement & Setup', separator: true },
-    { name: 'Playbooks',        page: 'SalesPlaybooks' },
-    { name: 'Calendar',         page: 'SalesCalendar' },
-    { name: 'Documents',        page: 'SalesDocuments' },
-    { name: 'Settings',         page: 'SalesSettings' },
+    { name: 'Command Center',            page: 'SalesCommandCenter' },
+    { name: 'Sell',                      separator: true },
+    { name: 'Quotations',                page: 'Quotations' },
+    { name: 'Sales Orders',              page: 'SalesOrders' },
+    { name: 'Pricing Engine',            page: 'PricingEngine' },
+    { name: 'Fulfilment',                page: 'FulfilmentTracking' },
+    { name: 'Subscriptions',             page: 'Subscriptions' },
+    { name: 'Plan & Perform',            separator: true },
+    { name: 'Targets & Commission',      page: 'SalesPerformance' },   // Targets·Commission
+    { name: 'Intelligence',              page: 'SalesIntelligence' },
+    { name: 'Market Presence',           page: 'SalesMarket' },
+    { name: 'Deal Registration',         page: 'DealRegistrations' },
+    { name: 'Enablement & Setup',        separator: true },
+    { name: 'Enablement',                page: 'SalesEnablement' },   // Playbooks·Calendar·Documents
+    { name: 'Settings',                  page: 'SalesSettings' },
+
+    // ── Consolidated into the hubs above (2026-09-16 IA pass) ──────────
+    // These rows are NOT drawn in the sidebar — Sidebar.jsx skips any entry
+    // carrying `inHub`. They stay here because getSectionForPage() walks
+    // NAV_ITEMS: drop them and each page silently becomes section-less,
+    // which makes canRoleAccessPageBySection wave it through for every
+    // role. Keeping them preserves the section gate exactly, and TabHub
+    // re-checks each tab with canRoleOpenPage() before drawing it.
+    { name: 'SalesTargets',              page: 'SalesTargets', inHub: 'SalesPerformance' },
+    { name: 'CommissionManagement',      page: 'CommissionManagement', inHub: 'SalesPerformance' },
+    { name: 'SalesPlaybooks',            page: 'SalesPlaybooks', inHub: 'SalesEnablement' },
+    { name: 'SalesCalendar',             page: 'SalesCalendar', inHub: 'SalesEnablement' },
+    { name: 'SalesDocuments',            page: 'SalesDocuments', inHub: 'SalesEnablement' },
   ]},
 
   { name: 'Marketing', icon: <FaBullhorn />, submenu: [
@@ -682,144 +874,206 @@ export const NAV_ITEMS = [
   { divider: true, section: 'Delivery' },
 
   { name: 'Projects', icon: <FaProjectDiagram />, module: 'projects', submenu: [
-    { name: 'Dashboard',           page: 'ProjectsDashboard' },
-    { name: 'Projects',            page: 'Projects' },
-    { name: 'Project 360°',        page: 'Project360' },
-    { name: 'Delivery',            separator: true },
-    { name: 'Project Master',      page: 'ProductionDeliveryTracker' }, // IPM→IPP production/delivery record grid (single source of truth)
-    { name: 'Project Pipeline',    page: 'ProjectPipelineBoard' }, // kanban of IPP projects by production stage (same source as Project Master)
-    { name: 'Task Board',          page: 'KanbanBoard' },
-    { name: 'Gantt Chart',         page: 'GanttChart' },
-    { name: 'Installation',        page: 'InstallationDashboard' },
-    { name: 'Control',             separator: true },
-    { name: 'Resource Management', page: 'ResourceManagement' },
-    { name: 'Issue Management',    page: 'IssueManagement' },
-    { name: 'Lifecycle',           page: 'ProjectLifecycleHub' },  // FAT·SAT·AMC·Warranty
-    { name: 'Financials',          page: 'ProjectFinancialsHub' }, // Costing·EVM·Profitability·Transactions·Cost Centres·Revenue
-    { name: 'Insights & Setup',    separator: true },
-    { name: 'CEO Command Center',  page: 'CEOCommandCenter' },
-    { name: 'Project Reports',     page: 'ProjectReports' },
-    { name: 'Settings',            page: 'ProjectSettings' },
+    { name: 'Dashboard',                 page: 'ProjectsDashboard' },
+    { name: 'Projects',                  page: 'Projects' },
+    { name: 'Project 360°',              page: 'Project360' },
+    { name: 'Delivery',                  separator: true },
+    { name: 'Delivery Boards',           page: 'ProjectBoards' },   // Project Master·Pipeline·Task board·Gantt·Installation
+    { name: 'Control',                   separator: true },
+    { name: 'Resource Management',       page: 'ResourceManagement' },
+    { name: 'Issue Management',          page: 'IssueManagement' },
+    { name: 'Lifecycle',                 page: 'ProjectLifecycleHub' },
+    { name: 'Financials',                page: 'ProjectFinancialsHub' },
+    { name: 'Insights & Setup',          separator: true },
+    { name: 'CEO Command Center',        page: 'CEOCommandCenter' },
+    { name: 'Project Reports',           page: 'ProjectReports' },
+    { name: 'Settings',                  page: 'ProjectSettings' },
+
+    // ── Consolidated into the hubs above (2026-09-16 IA pass) ──────────
+    // These rows are NOT drawn in the sidebar — Sidebar.jsx skips any entry
+    // carrying `inHub`. They stay here because getSectionForPage() walks
+    // NAV_ITEMS: drop them and each page silently becomes section-less,
+    // which makes canRoleAccessPageBySection wave it through for every
+    // role. Keeping them preserves the section gate exactly, and TabHub
+    // re-checks each tab with canRoleOpenPage() before drawing it.
+    { name: 'ProductionDeliveryTracker', page: 'ProductionDeliveryTracker', inHub: 'ProjectBoards' },
+    { name: 'ProjectPipelineBoard',      page: 'ProjectPipelineBoard', inHub: 'ProjectBoards' },
+    { name: 'KanbanBoard',               page: 'KanbanBoard', inHub: 'ProjectBoards' },
+    { name: 'GanttChart',                page: 'GanttChart', inHub: 'ProjectBoards' },
+    { name: 'InstallationDashboard',     page: 'InstallationDashboard', inHub: 'ProjectBoards' },
   ]},
 
   { name: 'Operations', icon: <FaStream />, submenu: [
     { name: 'Workflow Center',   page: 'WorkflowCenter' },          // Board·Configuration
     { name: 'Project Tracker',   page: 'ProjectWorkflowTracker' },
-    { name: 'Lifecycle Tracker', page: 'LifecycleTracker' },
+    { name: 'Lifecycle Tracker', page: 'LifecycleTracker', module: 'servicedesk' },
     { name: 'Post-Delivery',     page: 'OperationsLifecycleHub' },  // Commissioning·AMC·Warranty
     { name: 'Analytics',         separator: true },
     { name: 'Dept Workload',     page: 'DepartmentWorkload' },
     { name: 'Bottlenecks',       page: 'BottleneckAnalytics' },
   ]},
 
-  // Complaints folded into Service Desk 2026-07-17 (IPCS is one half of the
-  // complaint -> service-ticket loop). Only the dashboard keeps a top-level home;
-  // the register itself lives at Service Desk > Customer Complaints.
-  // Must stay directly above 'Service Desk' — see the ordering note above.
+  // The complaint half of the complaint -> service-ticket loop. Sits directly
+  // above 'Service Desk' so the pair reads as one workflow — see the ordering
+  // note above for why the register no longer also appears inside Service Desk.
   { name: 'Complaints', icon: <FaExclamationCircle />, submenu: [
     { name: 'Dashboard',           page: 'ComplaintsDashboard' },
     { name: 'Complaint Register',  page: 'CustomerComplaintsIPCS' },
   ]},
 
   { name: 'Service Desk', icon: <FaHeadset />, module: 'servicedesk', submenu: [
-    { name: 'Dashboard',         page: 'SupportDashboard' },
-    { name: 'Tickets',           separator: true },
-    { name: 'My Tickets',        page: 'MyTickets' },
-    { name: 'All Tickets',       page: 'AllTickets' },
-    { name: 'Customer Complaints', page: 'CustomerComplaintsIPCS' }, // IPCS register
-    { name: 'SLA Management',    page: 'SLAManagement' },
-    { name: 'Agent Workload',    page: 'AgentWorkload' },
-    { name: 'Field & Site',      separator: true },
-    { name: 'Field Service',     page: 'FieldVisitScheduler' },
-    { name: 'Service Engineers', page: 'ServiceEngineers' },
-    { name: 'Installation',      page: 'InstallationRequests' },
-    { name: 'Commissioning',     page: 'CommissioningWorkflow' },
-    { name: 'Delivery Note',     page: 'DeliveryNote' },
-    { name: 'Spare Parts Stock', page: 'ServiceStockManagement' },
-    { name: 'Customers',         separator: true },
-    { name: 'Customer Portal',   page: 'CustomerPortalManagement' },
-    { name: 'Reviews',           page: 'ServiceReviews' },        // Customers·Feedback·Sites
-    { name: 'Contracts',         page: 'ServiceContracts' },
-    { name: 'Warranty',          page: 'OperationsWarranty' },
-    { name: 'Catalog & Knowledge', separator: true },
-    { name: 'Service Master',    page: 'ServiceMasterIPS' },   // IPS field-service grid
-    { name: 'Service Catalog',   page: 'ServiceMaster' },      // rate card (was 'Service Master')
-    { name: 'Knowledge Base',    page: 'KnowledgeBase' },
-    { name: 'Email to Case',     page: 'SupportMailbox' },     // inbound mail → tickets
-    { name: 'Insights & Setup',  separator: true },
-    { name: 'Intelligence',      page: 'ServiceIntelligence' },   // Analytics·Failure·VoC
-    { name: 'Settings',          page: 'ServiceDeskSettings' },
+    { name: 'Dashboard',                 page: 'SupportDashboard' },
+    { name: 'Tickets',                   separator: true },
+    { name: 'My Tickets',                page: 'MyTickets' },
+    { name: 'All Tickets',               page: 'AllTickets' },
+    { name: 'SLA Management',            page: 'SLAManagement' },
+    { name: 'Agent Workload',            page: 'AgentWorkload' },
+    { name: 'Field & Site',              separator: true },
+    { name: 'My Field Jobs',             page: 'EngineerHome' },
+    { name: 'Field Operations',          page: 'ServiceFieldCenter' },   // Visits·Engineers·Installation·Commissioning·Delivery·Spares
+    { name: 'Customers',                 separator: true },
+    { name: 'Customers & Contracts',     page: 'ServiceCustomerCenter' },   // Portal·Contracts·Warranty
+    { name: 'Reviews',                   page: 'ServiceReviews' },
+    { name: 'Insights & Setup',          separator: true },
+    { name: 'Catalog & Knowledge',       page: 'ServiceCatalogCenter' },   // IPS·Rate card·KB·Email to case
+    { name: 'Intelligence',              page: 'ServiceIntelligence' },
+    { name: 'Settings',                  page: 'ServiceDeskSettings' },
+
+    // ── Consolidated into the hubs above (2026-09-16 IA pass) ──────────
+    // These rows are NOT drawn in the sidebar — Sidebar.jsx skips any entry
+    // carrying `inHub`. They stay here because getSectionForPage() walks
+    // NAV_ITEMS: drop them and each page silently becomes section-less,
+    // which makes canRoleAccessPageBySection wave it through for every
+    // role. Keeping them preserves the section gate exactly, and TabHub
+    // re-checks each tab with canRoleOpenPage() before drawing it.
+    { name: 'FieldVisitScheduler',       page: 'FieldVisitScheduler', inHub: 'ServiceFieldCenter' },
+    { name: 'ServiceEngineers',          page: 'ServiceEngineers', inHub: 'ServiceFieldCenter' },
+    { name: 'InstallationRequests',      page: 'InstallationRequests', inHub: 'ServiceFieldCenter' },
+    { name: 'CommissioningWorkflow',     page: 'CommissioningWorkflow', inHub: 'ServiceFieldCenter' },
+    { name: 'DeliveryNote',              page: 'DeliveryNote', inHub: 'ServiceFieldCenter' },
+    { name: 'ServiceStockManagement',    page: 'ServiceStockManagement', inHub: 'ServiceFieldCenter' },
+    { name: 'CustomerPortalManagement',  page: 'CustomerPortalManagement', inHub: 'ServiceCustomerCenter' },
+    { name: 'ServiceContracts',          page: 'ServiceContracts', inHub: 'ServiceCustomerCenter' },
+    { name: 'OperationsWarranty',        page: 'OperationsWarranty', inHub: 'ServiceCustomerCenter' },
+    { name: 'ServiceMasterIPS',          page: 'ServiceMasterIPS', inHub: 'ServiceCatalogCenter' },
+    { name: 'ServiceMaster',             page: 'ServiceMaster', inHub: 'ServiceCatalogCenter' },
+    { name: 'KnowledgeBase',             page: 'KnowledgeBase', inHub: 'ServiceCatalogCenter' },
+    { name: 'SupportMailbox',            page: 'SupportMailbox', inHub: 'ServiceCatalogCenter' },
   ]},
 
   { divider: true, section: 'Supply Chain' },
 
   { name: 'Procurement', icon: <FaShoppingCart />, module: 'procurement', submenu: [
-    { name: 'Purchase Requests',  page: 'PurchaseRequestDashboard' },
-    { name: 'PO Management',      page: 'PurchaseOrderManagement' },
-    { name: 'Purchase Orders',    page: 'PurchaseOrders' },
-    { name: 'Goods Receipt',      page: 'GoodsReceipt' },
-    { name: 'Quality Inspection', page: 'QualityInspection' },
-    { name: 'Vendors & Planning', separator: true },
-    { name: 'Vendor Center',      page: 'VendorCenter' },     // Overview·Master·Approvals·Risk·360°·Portal·Scorecard·Pricing·Compare
-    { name: 'Supplier Performance', page: 'SupplierPerformanceIndex' },  // cross-vendor 0-100 index, heatmap, early warnings
-    { name: 'Sourcing Strategy',  page: 'SourcingStrategy' },   // §136 five forces + purchasing chessboard, per category
-    { name: 'RFx Evaluation',     page: 'RfxEvaluation' },     // §136 RFI/RFP/RFQ scoring → preferred vendor
-    { name: 'MRP Planning',       page: 'MRPPlanning' },
-    { name: 'Reports & Setup',    separator: true },
-    { name: 'Reports',            page: 'ProcurementReports' },
-    { name: 'Settings',           page: 'ProcurementSettings' },
+    { name: 'Purchase Requests',         page: 'PurchaseRequestDashboard' },
+    { name: 'PO Management',             page: 'PurchaseOrderManagement' },
+    { name: 'Purchase Orders',           page: 'PurchaseOrders' },
+    { name: 'Goods Receipt',             page: 'GoodsReceipt' },
+    { name: 'Quality Inspection',        page: 'QualityInspection' },
+    { name: 'Vendors & Planning',        separator: true },
+    { name: 'Vendor Center',             page: 'VendorCenter' },
+    { name: 'Sourcing & Strategy',       page: 'SourcingCenter' },   // Strategy·RFx·Capacity·Performance·Development
+    { name: 'MRP Planning',              page: 'MRPPlanning' },
+    { name: 'Reports & Setup',           separator: true },
+    { name: 'Reports',                   page: 'ProcurementReports' },
+    { name: 'Settings',                  page: 'ProcurementSettings' },
+
+    // ── Consolidated into the hubs above (2026-09-16 IA pass) ──────────
+    // These rows are NOT drawn in the sidebar — Sidebar.jsx skips any entry
+    // carrying `inHub`. They stay here because getSectionForPage() walks
+    // NAV_ITEMS: drop them and each page silently becomes section-less,
+    // which makes canRoleAccessPageBySection wave it through for every
+    // role. Keeping them preserves the section gate exactly, and TabHub
+    // re-checks each tab with canRoleOpenPage() before drawing it.
+    { name: 'SupplierPerformanceIndex',  page: 'SupplierPerformanceIndex', inHub: 'SourcingCenter' },
+    { name: 'SupplierDevelopment',       page: 'SupplierDevelopment', inHub: 'SourcingCenter' },
+    { name: 'SourcingStrategy',          page: 'SourcingStrategy', inHub: 'SourcingCenter' },
+    { name: 'RfxEvaluation',             page: 'RfxEvaluation', inHub: 'SourcingCenter' },
+    { name: 'SupplierCapacity',          page: 'SupplierCapacity', inHub: 'SourcingCenter' },
   ]},
 
   { name: 'Inventory', icon: <FaBox />, module: 'inventory', submenu: [
-    { name: 'Dashboard',           page: 'InventoryDashboard' },
-    { name: 'Advanced Dashboard',  page: 'AdvancedInventoryDashboard' },
-    { name: 'Stock',               separator: true },
-    { name: 'Stock Summary',       page: 'StockSummary' },
-    { name: 'Stock Movements',     page: 'StockMovements' },
-    { name: 'Reservations',        page: 'StockReservations' },
-    { name: 'Material Consumption',page: 'MaterialConsumption' },
-    { name: 'Batch Tracking',      page: 'BatchTracking' },
-    { name: 'Stock Alerts',        page: 'StockAlertsAndSuggestions' },
-    { name: 'Masters',             separator: true },
-    { name: 'Item Master',         page: 'ItemMaster' },
-    { name: 'Component Pricing',   page: 'VendorPriceComparison' },
-    { name: 'Warehouse & Stores',  separator: true },
-    { name: 'Warehouse',           page: 'WarehouseManagement' },
-    { name: 'Stores Dashboard',    page: 'StoresDashboard' },
-    { name: 'Stores Cost Analysis',page: 'StoresCostAnalysis' },
-    { name: 'Logistics',           page: 'LogisticsShipping' },
-    { name: 'Quality',             page: 'QualityManagement' },
-    { name: 'Reports & Setup',     separator: true },
-    { name: 'Inventory Intel',     page: 'InventoryIntelligence' },
-    { name: 'Inventory Report',    page: 'InventoryReport' },
-    { name: 'Settings',            page: 'InventorySettings' },
+    { name: 'Dashboard',                 page: 'InventoryDashboard' },
+    { name: 'Advanced Dashboard',        page: 'AdvancedInventoryDashboard' },
+    { name: 'Operations',                separator: true },
+    { name: 'Stock Control',             page: 'StockControl' },   // Summary·Movements·Reservations·Consumption·Batch·Serial·Alerts
+    { name: 'Warehouse & Stores',        page: 'WarehouseCenter' },   // Warehouse·Operations·Stores·Cost·Inbound Quality
+    { name: 'Logistics & Returns',       page: 'LogisticsCenter' },   // Shipping·Routes·RMA
+    { name: 'Plan & Analyse',            separator: true },
+    { name: 'Planning',                  page: 'InventoryPlanning' },   // Demand·Parameters·Health·Kanban
+    { name: 'Insights & Reports',        page: 'InventoryInsights' },   // Service Level·Intel·Report
+    { name: 'Masters & Setup',           separator: true },
+    { name: 'Item Master',               page: 'ItemMaster' },
+    { name: 'Component Pricing',         page: 'VendorPriceComparison' },
+    { name: 'Settings',                  page: 'InventorySettings' },
+
+    // ── Consolidated into the hubs above (2026-09-16 IA pass) ──────────
+    // These rows are NOT drawn in the sidebar — Sidebar.jsx skips any entry
+    // carrying `inHub`. They stay here because getSectionForPage() walks
+    // NAV_ITEMS: drop them and each page silently becomes section-less,
+    // which makes canRoleAccessPageBySection wave it through for every
+    // role. Keeping them preserves the section gate exactly, and TabHub
+    // re-checks each tab with canRoleOpenPage() before drawing it.
+    { name: 'StockSummary',              page: 'StockSummary', inHub: 'StockControl' },
+    { name: 'StockMovements',            page: 'StockMovements', inHub: 'StockControl' },
+    { name: 'StockReservations',         page: 'StockReservations', inHub: 'StockControl' },
+    { name: 'MaterialConsumption',       page: 'MaterialConsumption', inHub: 'StockControl' },
+    { name: 'BatchTracking',             page: 'BatchTracking', inHub: 'StockControl' },
+    { name: 'SerialTracking',            page: 'SerialTracking', inHub: 'StockControl' },
+    { name: 'StockAlertsAndSuggestions', page: 'StockAlertsAndSuggestions', inHub: 'StockControl' },
+    { name: 'DemandPlanning',            page: 'DemandPlanning', inHub: 'InventoryPlanning' },
+    { name: 'InventoryPlanningParameters', page: 'InventoryPlanningParameters', inHub: 'InventoryPlanning' },
+    { name: 'InventoryHealth',           page: 'InventoryHealth', inHub: 'InventoryPlanning' },
+    { name: 'KanbanLoops',               page: 'KanbanLoops', inHub: 'InventoryPlanning' },
+    { name: 'WarehouseManagement',       page: 'WarehouseManagement', inHub: 'WarehouseCenter' },
+    { name: 'WarehouseOperations',       page: 'WarehouseOperations', inHub: 'WarehouseCenter' },
+    { name: 'StoresDashboard',           page: 'StoresDashboard', inHub: 'WarehouseCenter' },
+    { name: 'StoresCostAnalysis',        page: 'StoresCostAnalysis', inHub: 'WarehouseCenter' },
+    { name: 'LogisticsShipping',         page: 'LogisticsShipping', inHub: 'LogisticsCenter' },
+    { name: 'RoutePlanning',             page: 'RoutePlanning', inHub: 'LogisticsCenter' },
+    { name: 'ReturnsRMA',                page: 'ReturnsRMA', inHub: 'LogisticsCenter' },
+    { name: 'QualityManagement',         page: 'QualityManagement', inHub: 'WarehouseCenter' },
+    { name: 'ServiceLevelDashboard',     page: 'ServiceLevelDashboard', inHub: 'InventoryInsights' },
+    { name: 'InventoryIntelligence',     page: 'InventoryIntelligence', inHub: 'InventoryInsights' },
+    { name: 'InventoryReport',           page: 'InventoryReport', inHub: 'InventoryInsights' },
   ]},
 
   { name: 'Production', icon: <FaIndustry />, module: 'production', submenu: [
-    { name: 'Production Dashboard',page: 'ProductionDashboard' },
-    { name: 'Execution',           separator: true },
-    { name: 'Module Batch Requests', page: 'ProductionModuleRequests' },
+    { name: 'Production Dashboard',      page: 'ProductionDashboard' },
+    { name: 'Execution',                 separator: true },
+    { name: 'Module Batch Requests',     page: 'ProductionModuleRequests' },
     { name: 'Module Production Batches', page: 'ProductionOrders' },
-    { name: 'Shop Floor',          page: 'ShopFloor' },
-    { name: 'Subcontracting',      page: 'SubcontractOrders' },
-    { name: 'Batch Genealogy',     page: 'GenealogyTrace' },
-    { name: 'Planning',            separator: true },
-    { name: 'MRP Workbench',       page: 'MRPWorkbench' },
-    { name: 'Capacity Planning (CRP)', page: 'CRPWorkbench' },
-    { name: 'S&OP / RCCP',         page: 'SOPPlanning' },
-    { name: 'Work Centre Planning',page: 'WorkCentrePlanning' },
-    { name: 'Engineering Data',    separator: true },
-    { name: 'BOM Builder',         page: 'BOMBuilder' },
-    { name: 'BOM Modeling',        page: 'BOMModeling' },
-    { name: 'Upload BOM',          page: 'UploadBOM' },
-    { name: 'Setup',               separator: true },
-    { name: 'Settings',            page: 'ProductionSettings' },
+    { name: 'Shop Floor',                page: 'ShopFloor' },
+    { name: 'Subcontracting',            page: 'SubcontractOrders' },
+    { name: 'Batch Genealogy',           page: 'GenealogyTrace' },
+    { name: 'Component Traceability',    page: 'ComponentTrace' },
+    { name: 'Plan & Engineer',           separator: true },
+    { name: 'Planning',                  page: 'ProductionPlanningHub' },   // MRP·CRP·S&OP·Scenario·Work Centre
+    { name: 'BOM Management',            page: 'BOMCenter' },   // Builder·Modeling·Upload
+    { name: 'Setup',                     separator: true },
+    { name: 'Settings',                  page: 'ProductionSettings' },
+
+    // ── Consolidated into the hubs above (2026-09-16 IA pass) ──────────
+    // These rows are NOT drawn in the sidebar — Sidebar.jsx skips any entry
+    // carrying `inHub`. They stay here because getSectionForPage() walks
+    // NAV_ITEMS: drop them and each page silently becomes section-less,
+    // which makes canRoleAccessPageBySection wave it through for every
+    // role. Keeping them preserves the section gate exactly, and TabHub
+    // re-checks each tab with canRoleOpenPage() before drawing it.
+    { name: 'MRPWorkbench',              page: 'MRPWorkbench', inHub: 'ProductionPlanningHub' },
+    { name: 'CRPWorkbench',              page: 'CRPWorkbench', inHub: 'ProductionPlanningHub' },
+    { name: 'SOPPlanning',               page: 'SOPPlanning', inHub: 'ProductionPlanningHub' },
+    { name: 'ScenarioPlanning',          page: 'ScenarioPlanning', inHub: 'ProductionPlanningHub' },
+    { name: 'WorkCentrePlanning',        page: 'WorkCentrePlanning', inHub: 'ProductionPlanningHub' },
+    { name: 'BOMBuilder',                page: 'BOMBuilder', inHub: 'BOMCenter' },
+    { name: 'BOMModeling',               page: 'BOMModeling', inHub: 'BOMCenter' },
+    { name: 'UploadBOM',                 page: 'UploadBOM', inHub: 'BOMCenter' },
   ]},
 
   { name: 'Quality', icon: <FaShieldAlt />, module: 'quality', submenu: [
     { name: 'Dashboard',             page: 'QualityDashboard' },
     { name: 'Control',               separator: true },
     { name: 'Inspection Center',     page: 'InspectionCenter' },
+    { name: 'Material Tests',        page: 'MaterialQualityTests' },
     { name: 'NCR Management',        page: 'NCRManagement' },
     { name: 'CAPA Management',       page: 'CAPAManagement' },
     { name: 'Assurance',             separator: true },
@@ -831,34 +1085,86 @@ export const NAV_ITEMS = [
     { name: 'Settings',              page: 'QualitySettings' },
   ]},
 
+  // Split out of 'Supply Chain' 2026-09-16. That band ran to nine menus once
+  // the four promoted modules landed in it; Procurement -> Inventory ->
+  // Production -> Quality is the material flow, and Engineering / R&D /
+  // IoT / Compliance / Asset Register are the plant and asset side of the
+  // same factory. Bands are display-only — they carry no pages and are
+  // filtered out of getMenuSections(), so splitting one changes no gate.
+  { divider: true, section: 'Engineering & Assets' },
+
   { name: 'Engineering', icon: <FaWrench />, module: 'engineering', submenu: [
     { name: 'Dashboard',           page: 'EngineeringDashboard' },
+    { name: 'Development Register',page: 'EngineeringDev' },   // IPD design/development records
     { name: 'R&D Projects',        page: 'RDProjects' },
     { name: 'Prototype Tracker',   page: 'PrototypeTracker' },
+    { name: 'Design Phases',       page: 'DesignPhases' },     // stage gates behind RDProjects/PrototypeTracker
     { name: 'Test Plans',          page: 'TestPlans' },
     { name: 'Change Notices (ECN)',page: 'ECNManagement' },
     { name: 'Power Quality',       page: 'PowerQualityAnalytics' },
   ]},
 
+  // Promoted from an auto-discovered orphan group ('R&D · More') 2026-09-16.
+  // Kept as its own section rather than folded into Engineering: of the five
+  // roles that hold it, project_manager holds no 'Engineering' — folding would
+  // have silently revoked the page for them. Name matches ROLE_SECTION_ALLOWLIST.
+  { name: 'R&D', icon: <FaFlask />, module: 'rd', page: 'RDHub' },
+
+  // Promoted from 'IoT Fleet · More' 2026-09-16 — seven real pages that never
+  // got a curated entry, so they rendered as a generic "More" folder below
+  // Administration and were invisible to the Page Access admin screen
+  // (getMenuSections reads NAV_ITEMS only).
+  { name: 'IoT Fleet', icon: <FaBroadcastTower />, module: 'iot', submenu: [
+    { name: 'Fleet Monitor',       page: 'FleetMonitor' },
+    { name: 'Equipment 360',       page: 'Equipment360' },
+    { name: 'Alerts',              separator: true },
+    { name: 'Alert Centre',        page: 'AlertCenter' },
+    { name: 'Alert Rules',         page: 'AlertRules' },
+    { name: 'Platform',            separator: true },
+    { name: 'Metric & Device Registry', page: 'MetricRegistry' },
+    { name: 'Hardware Pilots',     page: 'HardwarePilots' },
+    { name: 'Platform Health',     page: 'IoTHealth' },
+  ]},
+
+  // Promoted from 'Compliance · More' / 'Asset Register · More' 2026-09-16.
+  // Both stay standalone sections for the same reason as R&D above: their role
+  // sets (hr holds both; qc_engineer holds Compliance; store_keeper/
+  // procurement_* hold Asset Register) cut across Quality/Inventory, so there
+  // is no parent menu that folds them in without revoking someone's access.
+  { name: 'Compliance',     icon: <FaBalanceScale />, module: 'compliance', page: 'ComplianceRegister' },
+  { name: 'Asset Register', icon: <FaTags />,         module: 'assets',     page: 'AssetRegister' },
+
   { divider: true, section: 'Finance' },
 
   { name: 'Finance', icon: <FaRupeeSign />, module: 'finance', submenu: [
-    { name: 'Finance Dashboard',     page: 'FinanceDashboardNew' },
-    { name: 'Transactions',          separator: true },
-    { name: 'Receivables',           page: 'ReceivablesPage' },
-    { name: 'Payables',              page: 'PayablesPage' },
-    { name: 'Payments',              page: 'PaymentBatch' },
-    { name: 'Customers & Suppliers', page: 'Parties' },
-    { name: 'Accounting',            separator: true },
-    { name: 'Accounting Engine',     page: 'AccountingEngine' },
-    { name: 'Tax & Compliance',      page: 'TaxManagement' },
-    { name: 'Fixed Assets',          page: 'FixedAssets' },
-    { name: 'Budget Management',     page: 'BudgetManagement' },
-    { name: 'Reports & Setup',       separator: true },
-    { name: 'Financial Reports',     page: 'FinanceReports' },
-    { name: 'Settings',              page: 'FinanceSettings' },
-    { name: 'Self Service',          separator: true },
-    { name: 'My Payslip',            page: 'PayslipViewer' },
+    { name: 'Finance Dashboard',         page: 'FinanceDashboardNew' },
+    { name: 'Transactions',              separator: true },
+    { name: 'Receivables',               page: 'ReceivablesPage' },
+    { name: 'Payables',                  page: 'PayablesPage' },
+    { name: 'Payments',                  page: 'PaymentBatch' },
+    { name: 'Customers & Suppliers',     page: 'Parties' },
+    { name: 'Accounting',                separator: true },
+    { name: 'Accounting',                page: 'FinanceAccounting' },   // Engine·Chart of Accounts·Period Close·Cost Centres
+    { name: 'Tax & Compliance',          page: 'TaxManagement' },
+    { name: 'Fixed Assets',              page: 'FixedAssets' },
+    { name: 'Budget Management',         page: 'BudgetManagement' },
+    { name: 'Reports & Setup',           separator: true },
+    { name: 'Financial Reports',         page: 'FinanceReports' },
+    { name: 'Settings',                  page: 'FinanceSettings' },
+    { name: 'Self Service',              separator: true },
+    { name: 'My Payslip',                page: 'PayslipViewer' },
+
+    // ── Consolidated into the hubs above (2026-09-16 IA pass) ──────────
+    // These rows are NOT drawn in the sidebar — Sidebar.jsx skips any entry
+    // carrying `inHub`. They stay here because getSectionForPage() walks
+    // NAV_ITEMS: drop them and each page silently becomes section-less,
+    // which makes canRoleAccessPageBySection wave it through for every
+    // role. Keeping them preserves the section gate exactly, and TabHub
+    // re-checks each tab with canRoleOpenPage() before drawing it.
+    { name: 'AccountingEngine',          page: 'AccountingEngine', inHub: 'FinanceAccounting' },
+    { name: 'ChartOfAccounts',           page: 'ChartOfAccounts', inHub: 'FinanceAccounting' },
+    { name: 'PeriodClosing',             page: 'PeriodClosing', inHub: 'FinanceAccounting' },
+    { name: 'CostCenters',               page: 'CostCenters', inHub: 'FinanceAccounting' },
   ]},
 
   { divider: true, section: 'People' },
@@ -867,24 +1173,89 @@ export const NAV_ITEMS = [
     { name: 'Dashboard',           page: 'EmployeesDashboard' },
     { name: 'All Employees',       page: 'EmployeesData' },
     { name: 'Ex-Employees',        page: 'ExEmployees' },
-    { name: 'Employee Reports',    page: 'EmployeeReports' },
+    // Its own `module: 'bgv'` so the row is hidden from a role that holds
+    // employees:view but no BGV grant — the group gate alone would have shown it
+    // to every manager and then dead-ended them on Access Denied, which is the
+    // sidebar/route mismatch the 2026-09-16 browser sweep found on the HR menu.
+    { name: 'Background Verification', page: 'BackgroundVerification', module: 'bgv' },
+    // Employee Reports (Workforce Analytics & Reports) lives under HR, not here —
+    // see the HR group below for why.
+    // EmployeeMasters is deliberately NOT a row here: it is reached from
+    // All Employees → "Manage Employee Masters" and from Settings → Master Data.
   ]},
 
   { name: 'HR', icon: <FaUserTie />, module: 'hr', submenu: [
-    { name: 'Employee Directory',  page: 'EmployeeDirectory' },
-    { name: 'Payroll Center',      page: 'PayrollCenter' },      // Settings·Run·Structure·Generate·View
-    { name: 'Announcements',       page: 'Announcements' },
-    { name: 'Employee Records',    separator: true },
-    { name: 'Employee Documents',  page: 'EmployeeDocuments' },
-    { name: 'Asset Management',    page: 'EmployeeAssets' },
-    { name: 'Policies',            page: 'Policies' },
-    { name: 'HR Documents',        page: 'Downloads' },
-    { name: 'Self Service',        page: 'EmployeeSelfService' },
-    { name: 'Lifecycle',           separator: true },
-    { name: 'Probation',           page: 'Probation' },
-    { name: 'Offboarding',         page: 'Offboarding' },
-    { name: 'Exit Management',     page: 'ExitManagement' },
-    { name: 'Succession Center',   page: 'SuccessionCenter' },   // Planning·Pipeline·Plans·Pools·Reports·Settings
+    // Employee Directory is NOT a row here any more: it is the company phonebook,
+    // not an HR process, and it sits beside Org Chart below (its own section).
+    // Interns are not employees, so this is an HR row, not an Employees row.
+    // Its own `module` because the HR section is also held by payroll_admin,
+    // manager and employee, none of whom hold internships:view — Sidebar.jsx
+    // drops an HR row whose module the caller cannot view, and Layout.jsx's
+    // route gate refuses the page itself.
+    { name: 'Internships',               page: 'Internships', module: 'internships' },
+    // payroll:view (PC-01 closure) — hr_exec, manager and employee hold the HR
+    // section but not payroll; their API calls here were all 403.
+    { name: 'Payroll Center',            page: 'PayrollCenter', module: 'payroll' },
+    // Own `module`: the HR section is also held by hr, hr_exec, manager and
+    // employee, who hold no it_declarations grant — Sidebar drops the row for
+    // them and Layout refuses the URL (§203).
+    { name: 'IT Declaration Review',     page: 'ITDeclarationReview', module: 'it_declarations' },
+    // employee_bank:view holders (hr, hr_manager, admin by default) — §204 —
+    // and propose-only :add holders, who see only their own requests (§206;
+    // no role holds :add as seeded).
+    { name: 'Bank Detail Approvals',     page: 'BankChangeApprovals', module: 'employee_bank', moduleActions: ['view', 'add'] },
+    { name: 'Announcements',             page: 'Announcements' },
+    // Workforce Analytics & Reports needs hr:view (its data endpoint does), so it
+    // belongs to the section the hr:view roles hold. It used to sit under
+    // Employees, which hr_exec / hr_manager / payroll_admin do not have in
+    // ROLE_SECTION_ALLOWLIST — so the menu hid it from them AND
+    // canRoleAccessPageBySection refused the direct URL, although each holds
+    // hr:view. getSectionForPage() resolves a page to the FIRST group that
+    // lists it, so it must appear in this group only.
+    { name: 'Workforce Analytics & Reports', page: 'EmployeeReports', module: 'hr' },
+    { name: 'Self Service',              separator: true },
+    { name: 'My Dashboard',              page: 'EmployeeDashboard' },
+    // employeeLinkOnly: the portal is the signed-in person's OWN records, so
+    // Sidebar.jsx drops the row for a login with no linked employee (a system
+    // administrator) instead of offering an empty page. The URL still opens and
+    // says why it is empty.
+    { name: 'Self Service',              page: 'EmployeeSelfService', employeeLinkOnly: true },
+    { name: 'Employee Records',          page: 'EmployeeRecords' },   // Documents·Assets·Policies·HR Documents
+    { name: 'Lifecycle',                 separator: true },
+    // Probation and exit are separate workflows (an employee being confirmed vs
+    // one leaving), so each has its own row. Probation used to be a tab of the
+    // 'Exit & Probation' hub; the hub key ExitCenter is kept — it is the Exit
+    // Management page now — so bookmarks and Page Access grants still resolve.
+    { name: 'Probation Management',      page: 'Probation' },
+    { name: 'Exit Management',           page: 'ExitCenter' },   // Exits & settlement·Offboarding checklist
+    // Own `module` (§209): talent ratings are confidential, so the row shows
+    // only to succession:view holders (hr, hr_manager, admin, super_admin by
+    // default; any other role by explicit grant in Roles Setup). Everyone else
+    // in this section — employee, manager, hr_exec — no longer sees it, and
+    // Layout refuses the URL.
+    { name: 'Succession Center',         page: 'SuccessionCenter', module: 'succession' },
+    { name: 'Security & Access',         separator: true },
+    // Gate passes and visitor management had no link anywhere: /BiometricAccess
+    // redirected to AttendanceSettings?tab=devices, which renders DeviceManagement
+    // and covers none of it. Filed under HR because the page, its backend module
+    // (hr/biometric.routes.js) and this section all agree — putting the row under
+    // Attendance instead would leave getSectionForPage() resolving 'Attendance'
+    // while the file's folder module stays 'hr'.
+    { name: 'Gate Pass & Visitors',      page: 'BiometricAccess' },   // Attendance import·Gate passes·Visitors
+
+    // ── Consolidated into the hubs above (2026-09-16 IA pass) ──────────
+    // These rows are NOT drawn in the sidebar — Sidebar.jsx skips any entry
+    // carrying `inHub`. They stay here because getSectionForPage() walks
+    // NAV_ITEMS: drop them and each page silently becomes section-less,
+    // which makes canRoleAccessPageBySection wave it through for every
+    // role. Keeping them preserves the section gate exactly, and TabHub
+    // re-checks each tab with canRoleOpenPage() before drawing it.
+    { name: 'EmployeeDocuments',         page: 'EmployeeDocuments', inHub: 'EmployeeRecords' },
+    { name: 'EmployeeAssets',            page: 'EmployeeAssets', inHub: 'EmployeeRecords' },
+    { name: 'Policies',                  page: 'Policies', inHub: 'EmployeeRecords' },
+    { name: 'Downloads',                 page: 'Downloads', inHub: 'EmployeeRecords' },
+    { name: 'Offboarding',              page: 'Offboarding', inHub: 'ExitCenter' },
+    { name: 'ExitManagement',            page: 'ExitManagement', inHub: 'ExitCenter' },
   ]},
 
   // 'Talent' used to be a separate top-level menu (Resume Database/Pools/
@@ -897,23 +1268,72 @@ export const NAV_ITEMS = [
   // (Talent Pools/Question Bank/Agencies) live in this menu directly, all
   // inheriting the 'recruitment' module permission.
   { name: 'Recruitment', icon: <FaBriefcase />, module: 'recruitment', submenu: [
-    { name: 'Dashboard',           page: 'RecruitmentDashboard' },
-    { name: 'My Workbench',        page: 'RecruiterDashboard' },
-    // Jobs = Requisitions + Openings (two halves of one workflow); Sourcing =
-    // Talent Pools + Agencies (both "where candidates come from"). Grouped
-    // 2026-08-12, taking the submenu 11 → 9 items. Sourcing sits next to
-    // Candidates (it is where candidates come from) rather than under its own
-    // one-item divider, and the two single-item 'Sourcing & Talent'/'Admin'
-    // dividers collapse into one closing group.
-    { name: 'Pipeline',            separator: true },
-    { name: 'Jobs',                page: 'Jobs' },
-    { name: 'Sourcing',            page: 'Sourcing' },
-    { name: 'Candidates',          page: 'Candidates' },
-    { name: 'Interviews',          page: 'InterviewScheduler' },
-    { name: 'Offer Management',    page: 'OfferManagement' },
-    { name: 'Reports & Setup',     separator: true },
-    { name: 'Reports',             page: 'RecruitmentReports' },
-    { name: 'Settings',            page: 'RecruitmentSettings' },
+    // 'My Work' leads, not the Dashboard. §25 of the 2026-09-27 brief: "Recruiters
+    // need action more than charts... Do not make the first screen a wall of 20
+    // charts", with Work Queue first in its own priority list. The analytics
+    // Dashboard is still here, one row down.
+    { name: 'My Work',                   page: 'RecruitmentWorkQueue' },
+    { name: 'Pipeline Snapshot',         page: 'RecruiterDashboard' },
+    { name: 'Dashboard',                 page: 'RecruitmentDashboard' },
+    { name: 'Pipeline',                  separator: true },
+    { name: 'Jobs',                      page: 'Jobs' },
+    { name: 'Candidates',                page: 'Candidates' },
+    { name: 'Talent Bank',               page: 'TalentBank' },
+    { name: 'Sourcing',                  page: 'Sourcing' },
+    { name: 'Interviews',                page: 'InterviewCenter' },   // Schedule·Feedback·Question Bank
+    { name: 'Offer & Onboarding',        page: 'OnboardingCenter' },   // Offers·Checklist·Employee creation
+    { name: 'Reports & Setup',           separator: true },
+    { name: 'Reports & Setup',           page: 'HiringAdmin' },   // Forecasts·Reports·Email templates·Settings
+
+    // ── Consolidated into the hubs above (2026-09-16 IA pass) ──────────
+    // These rows are NOT drawn in the sidebar — Sidebar.jsx skips any entry
+    // carrying `inHub`. They stay here because getSectionForPage() walks
+    // NAV_ITEMS: drop them and each page silently becomes section-less,
+    // which makes canRoleAccessPageBySection wave it through for every
+    // role. Keeping them preserves the section gate exactly, and TabHub
+    // re-checks each tab with canRoleOpenPage() before drawing it.
+    // ── Pages reached through a hub tab, so getSectionForPage() resolves them ──
+    // These seven had NO entry here at all before 2026-09-27 — not even an `inHub`
+    // row — so getSectionForPage() returned null for each and
+    // canRoleAccessPageBySection() waved them past the section allowlist. The
+    // `recruitment` module gate still applied, so it was an allowlist bypass and
+    // not an authz hole. Sidebar.jsx skips any row carrying `inHub`, so these draw
+    // no menu entries.
+    //
+    // `inHub` is a CLAIM, not a label: nav.hubs.test.jsx reads the named hub's
+    // exported TABS and fails if the page is not one of them, because a row marked
+    // inHub that is not a tab is reachable by no click at all. Every row below is
+    // a real tab of the hub it names.
+    //
+    // NOT listed here, deliberately:
+    //  · CandidateDetail, CandidateScreening, TalentPoolDetail — drill-downs
+    //    reached by clicking a record, not tabs. Tab membership is the only
+    //    mechanism this codebase has for resolving a page's section, so these
+    //    three keep the pre-existing `section === null` behaviour; the
+    //    `recruitment` module gate still covers them.
+    //  · AllCandidates — superseded by CandidateWorkbench and no longer a tab of
+    //    anything. Its ROUTES entry is kept so a direct URL and the existing audit
+    //    fixtures still resolve, and so the rollout reverts by changing one import
+    //    in Candidates.jsx.
+    { name: 'CandidateWorkbench',        page: 'CandidateWorkbench', inHub: 'Candidates' },
+    { name: 'CandidatePipeline',         page: 'CandidatePipeline', inHub: 'Candidates' },
+    { name: 'ResumeDatabase',            page: 'ResumeDatabase', inHub: 'Candidates' },
+    { name: 'TalentPools',               page: 'TalentPools', inHub: 'Sourcing' },
+    { name: 'RecruitmentAgencies',       page: 'RecruitmentAgencies', inHub: 'Sourcing' },
+    { name: 'JobOpenings',               page: 'JobOpenings', inHub: 'Jobs' },
+    { name: 'JobRequisitionPipeline',    page: 'JobRequisitionPipeline', inHub: 'Jobs' },
+
+    { name: 'InterviewScheduler',        page: 'InterviewScheduler', inHub: 'InterviewCenter' },
+    { name: 'InterviewFeedback',         page: 'InterviewFeedback', inHub: 'InterviewCenter' },
+    { name: 'InterviewQuestionBank',     page: 'InterviewQuestionBank', inHub: 'InterviewCenter' },
+    { name: 'OfferManagement',           page: 'OfferManagement', inHub: 'OnboardingCenter' },
+    { name: 'OnboardingChecklist',       page: 'OnboardingChecklist', inHub: 'OnboardingCenter' },
+    { name: 'EmployeeAutoCreation',      page: 'EmployeeAutoCreation', inHub: 'OnboardingCenter' },
+    { name: 'HiringForecasts',           page: 'HiringForecasts', inHub: 'HiringAdmin' },
+    { name: 'RecruitmentReports',        page: 'RecruitmentReports', inHub: 'HiringAdmin' },
+    { name: 'EmailTemplates',            page: 'EmailTemplates', inHub: 'HiringAdmin' },
+    { name: 'RecruitmentSettings',       page: 'RecruitmentSettings', inHub: 'HiringAdmin' },
+    { name: 'CareersPageAdmin',          page: 'CareersPageAdmin', inHub: 'HiringAdmin' },
   ]},
 
   { name: 'Learning Center', icon: <FaGraduationCap />, submenu: [
@@ -932,24 +1352,35 @@ export const NAV_ITEMS = [
   ]},
 
   { name: 'Attendance', icon: <FaCalendarCheck />, module: 'attendance', submenu: [
-    { name: 'My Attendance',       page: 'AttendanceDashboard' },
-    { name: 'QR Attendance',       page: 'QRAttendance' },
-    { name: 'Team & Monitoring',   separator: true },
-    { name: 'Live Workforce',      page: 'LiveWorkforceDashboard' },
-    { name: 'Team Attendance',     page: 'TeamAttendance' },
-    { name: 'Shift Calendar',      page: 'ShiftCalendar' },
-    { name: 'Approvals',           separator: true },
-    { name: 'Regularization',      page: 'RegularizationApprovals' },
-    { name: 'Overtime',            page: 'OvertimeApprovals' },
-    { name: 'Approval Delegation', page: 'ApprovalDelegation' },
-    { name: 'Reporting',           separator: true },
-    { name: 'Reports',             page: 'AttendanceReportsHub' }, // Analytics·Monthly·Late·Geo·All
-    { name: 'Audit Logs',          page: 'AttendanceAuditLogs' },
-    { name: 'Configuration',       separator: true },
-    { name: 'Work Centres',        page: 'WorkCentres' },
-    { name: 'Contract Labour',     page: 'ContractLabour' },
-    { name: 'Payroll Sync',        page: 'PayrollSync' },
-    { name: 'Settings',            page: 'AttendanceSettings' },
+    { name: 'My Attendance',             page: 'AttendanceDashboard' },
+    { name: 'QR Attendance',             page: 'QRAttendance' },
+    { name: 'Team & Monitoring',         separator: true },
+    { name: 'Live Workforce',            page: 'LiveWorkforceDashboard' },
+    { name: 'Team Attendance',           page: 'TeamAttendance' },
+    { name: 'Shift Calendar',            page: 'ShiftCalendar' },
+    { name: 'Approvals',                 separator: true },
+    { name: 'Approvals',                 page: 'AttendanceApprovals' },   // Regularization·Overtime·Delegation
+    { name: 'Reporting',                 separator: true },
+    { name: 'Reports',                   page: 'AttendanceReportsHub' },
+    { name: 'Audit Logs',                page: 'AttendanceAuditLogs' },
+    { name: 'Configuration',             separator: true },
+    { name: 'Configuration',             page: 'AttendanceConfig' },   // Rotations·Work Centres·Contract Labour·Payroll Sync·Settings
+
+    // ── Consolidated into the hubs above (2026-09-16 IA pass) ──────────
+    // These rows are NOT drawn in the sidebar — Sidebar.jsx skips any entry
+    // carrying `inHub`. They stay here because getSectionForPage() walks
+    // NAV_ITEMS: drop them and each page silently becomes section-less,
+    // which makes canRoleAccessPageBySection wave it through for every
+    // role. Keeping them preserves the section gate exactly, and TabHub
+    // re-checks each tab with canRoleOpenPage() before drawing it.
+    { name: 'RegularizationApprovals',   page: 'RegularizationApprovals', inHub: 'AttendanceApprovals' },
+    { name: 'OvertimeApprovals',         page: 'OvertimeApprovals', inHub: 'AttendanceApprovals' },
+    { name: 'ApprovalDelegation',        page: 'ApprovalDelegation', inHub: 'AttendanceApprovals' },
+    { name: 'Shifts',                    page: 'Shifts', inHub: 'AttendanceConfig' },
+    { name: 'WorkCentres',               page: 'WorkCentres', inHub: 'AttendanceConfig' },
+    { name: 'ContractLabour',            page: 'ContractLabour', inHub: 'AttendanceConfig' },
+    { name: 'PayrollSync',               page: 'PayrollSync', inHub: 'AttendanceConfig' },
+    { name: 'AttendanceSettings',        page: 'AttendanceSettings', inHub: 'AttendanceConfig' },
   ]},
 
   { name: 'Leaves', icon: <FaUmbrellaBeach />, module: 'leaves', submenu: [
@@ -980,38 +1411,86 @@ export const NAV_ITEMS = [
     { name: 'Settings',            page: 'TimesheetSettings' },
   ]},
 
+  // Eight of these twelve pages (Review Cycles, KRA, OKR, Calibration,
+  // Increment, Promotion, Dashboard, Reports) were built, routed and gated —
+  // EMPLOYEE_SELF_SERVICE_PAGES already names them as "manager/HR-only" — but
+  // carried no link anywhere in the app: no NAV row, no hub tab, no setPage
+  // call. Added 2026-09-16. The self-service three stay at the top, per the
+  // house order for shared HR-family menus.
   { name: 'Performance', icon: <FaTrophy />, module: 'performance', submenu: [
-    { name: 'My Reviews',          page: 'PerformanceReviews' },
-    { name: 'Goals & KPIs',        page: 'Goals' },
-    { name: '360° Feedback',       page: 'Feedback360' },
-    { name: 'Team Performance',    page: 'TeamPerformance' },
-    { name: 'Settings',            page: 'PerformanceSettings' },
+    { name: 'My Reviews',                page: 'PerformanceReviews' },
+    { name: 'Goals & KPIs',              page: 'Goals' },
+    { name: '360° Feedback',             page: 'Feedback360' },
+    { name: 'Manage',                    separator: true },
+    { name: 'Cycles & Goals',            page: 'PerformanceManage' },   // Team·Cycles·KRA·OKR
+    { name: 'Talent Decisions',          page: 'TalentDecisions' },   // Calibration·Increment·Promotion
+    { name: 'Insights & Setup',          separator: true },
+    { name: 'Insights & Setup',          page: 'PerformanceInsights' },   // Dashboard·Reports·Settings
+
+    // ── Consolidated into the hubs above (2026-09-16 IA pass) ──────────
+    // These rows are NOT drawn in the sidebar — Sidebar.jsx skips any entry
+    // carrying `inHub`. They stay here because getSectionForPage() walks
+    // NAV_ITEMS: drop them and each page silently becomes section-less,
+    // which makes canRoleAccessPageBySection wave it through for every
+    // role. Keeping them preserves the section gate exactly, and TabHub
+    // re-checks each tab with canRoleOpenPage() before drawing it.
+    { name: 'TeamPerformance',           page: 'TeamPerformance', inHub: 'PerformanceManage' },
+    { name: 'ReviewCycleManager',        page: 'ReviewCycleManager', inHub: 'PerformanceManage' },
+    { name: 'KRAManagement',             page: 'KRAManagement', inHub: 'PerformanceManage' },
+    { name: 'OKRManagement',             page: 'OKRManagement', inHub: 'PerformanceManage' },
+    { name: 'CalibrationCenter',         page: 'CalibrationCenter', inHub: 'TalentDecisions' },
+    { name: 'IncrementPlanning',         page: 'IncrementPlanning', inHub: 'TalentDecisions' },
+    { name: 'PromotionPlanning',         page: 'PromotionPlanning', inHub: 'TalentDecisions' },
+    { name: 'PerformanceDashboard',      page: 'PerformanceDashboard', inHub: 'PerformanceInsights' },
+    { name: 'PerformanceReports',        page: 'PerformanceReports', inHub: 'PerformanceInsights' },
+    { name: 'PerformanceSettings',       page: 'PerformanceSettings', inHub: 'PerformanceInsights' },
   ]},
 
   { name: 'Travel Desk', icon: <FaPlane />, submenu: [
-    { name: 'Dashboard',           page: 'TravelDashboard' },
-    { name: 'My Travel',           separator: true },
-    { name: 'Travel Entry',        page: 'TravelEntry' },
-    { name: 'Travel Requests',     page: 'TravelRequests' },
-    { name: 'Expense Claims',      page: 'ExpenseClaims' },
-    { name: 'Advances',            page: 'TravelAdvances' },
-    { name: 'Bookings',            page: 'TravelBookings' },
-    { name: 'Visit Reports',       page: 'VisitReports' },
-    { name: 'Customer Visits',     page: 'CustomerVisits' },
-    { name: 'Travel Calendar',     page: 'TravelCalendar' },
-    { name: 'Approvals & Finance', separator: true },
-    { name: 'Travel Approvals',    page: 'TravelApprovals' },
-    { name: 'Expense Review',      page: 'ExpenseReview' },
-    { name: 'Payment',             page: 'TravelPayment' },
-    { name: 'Travel Audit',        page: 'TravelAudit' },
-    { name: 'Insights & Setup',    separator: true },
-    { name: 'Command Center',      page: 'TravelCommandCenter' },
-    { name: 'Analytics',           page: 'TravelAnalytics' },
-    { name: 'Travel Reports',      page: 'TravelReports' },
-    { name: 'Policy Engine',       page: 'TravelPolicyEngine' },
+    { name: 'Dashboard',                 page: 'TravelDashboard' },
+    { name: 'My Travel',                 separator: true },
+    { name: 'My Travel',                 page: 'MyTravel' },   // Entry·Requests·Bookings·Advances·Calendar
+    { name: 'Expenses',                  page: 'TravelExpenseCenter' },   // Claims·Trip expenses·Review·Payment
+    { name: 'Visit Reports',             page: 'TravelVisits' },   // Reports·Customer visits
+    { name: 'Approvals & Insight',       separator: true },
+    { name: 'Travel Approvals',          page: 'TravelApprovals' },
+    { name: 'Insights & Policy',         page: 'TravelInsights' },   // Command·Analytics·Reports·Audit·Policy
+
+    // ── Consolidated into the hubs above (2026-09-16 IA pass) ──────────
+    // These rows are NOT drawn in the sidebar — Sidebar.jsx skips any entry
+    // carrying `inHub`. They stay here because getSectionForPage() walks
+    // NAV_ITEMS: drop them and each page silently becomes section-less,
+    // which makes canRoleAccessPageBySection wave it through for every
+    // role. Keeping them preserves the section gate exactly, and TabHub
+    // re-checks each tab with canRoleOpenPage() before drawing it.
+    { name: 'TravelEntry',               page: 'TravelEntry', inHub: 'MyTravel' },
+    { name: 'TravelRequests',            page: 'TravelRequests', inHub: 'MyTravel' },
+    { name: 'ExpenseClaims',             page: 'ExpenseClaims', inHub: 'TravelExpenseCenter' },
+    { name: 'TravelExpenses',            page: 'TravelExpenses', inHub: 'TravelExpenseCenter' },
+    { name: 'TravelAdvances',            page: 'TravelAdvances', inHub: 'MyTravel' },
+    { name: 'TravelBookings',            page: 'TravelBookings', inHub: 'MyTravel' },
+    { name: 'VisitReports',              page: 'VisitReports', inHub: 'TravelVisits' },
+    { name: 'CustomerVisits',            page: 'CustomerVisits', inHub: 'TravelVisits' },
+    { name: 'TravelCalendar',            page: 'TravelCalendar', inHub: 'MyTravel' },
+    { name: 'ExpenseReview',             page: 'ExpenseReview', inHub: 'TravelExpenseCenter' },
+    { name: 'TravelPayment',             page: 'TravelPayment', inHub: 'TravelExpenseCenter' },
+    { name: 'TravelAudit',               page: 'TravelAudit', inHub: 'TravelInsights' },
+    { name: 'TravelCommandCenter',       page: 'TravelCommandCenter', inHub: 'TravelInsights' },
+    { name: 'TravelAnalytics',           page: 'TravelAnalytics', inHub: 'TravelInsights' },
+    { name: 'TravelReports',             page: 'TravelReports', inHub: 'TravelInsights' },
+    { name: 'TravelPolicyEngine',        page: 'TravelPolicyEngine', inHub: 'TravelInsights' },
   ]},
 
   { name: 'Org Chart', icon: <FaSitemap />, page: 'OrgChart' },
+
+  // The read-only company phonebook (GET /employees/directory). Moved out of the
+  // HR submenu: it was a second employee list there, and HR is for HR processes.
+  // Its OWN section, not a row inside 'Org Chart', because nearly every role
+  // holds 'Org Chart' and the phonebook's audience is exactly the six roles that
+  // held 'HR' (ROLE_SECTION_ALLOWLIST lists it for each). Anyone who can open
+  // All Employees is sent there instead and never sees this row — see
+  // canOpenEmployeeMaster() in menuCatalog.js, used by Sidebar.jsx and Layout.jsx.
+  { name: 'Employee Directory', icon: <FaAddressBook />, page: 'EmployeeDirectory' },
 
   { divider: true, section: 'Tools' },
 
@@ -1036,30 +1515,41 @@ export const NAV_ITEMS = [
   // advertised as a second home.
 
   { name: 'Settings', icon: <FaCog />, page: 'SettingsCenter', submenu: [
-    { name: '⚙ Settings Center',   page: 'SettingsCenter' },
-    { name: 'User Preferences',    page: 'UserPreferences' },
-    { name: 'Company',             separator: true },
-    { name: 'Company Profile',     page: 'CompanyProfile' },
-    { name: 'Branch Management',   page: 'BranchManagement' },
-    { name: 'Org Setup',           page: 'OrganizationSetup' },
-    { name: 'Brand Vault',         page: 'BrandVault' },
-    { name: 'Access & Workflow',   separator: true },
-    { name: 'Access Control',      page: 'AccessControl' },        // Users·Roles·Approvers·Security
-    { name: 'Workflow Builder',    page: 'WorkflowBuilder' },
-    { name: 'Setup Notifications', page: 'SetupNotifications' },
-    { name: 'Master Data',         separator: true },
-    { name: 'Master Setup',        page: 'MasterSetup' },
-    { name: 'Product Setup',       page: 'ProductSetup' },
-    { name: 'Document Setup',      page: 'DocumentSetup' },
-    { name: 'Order Policy',        page: 'OrderPolicy' },
-    { name: 'Asset Maintenance',   page: 'AssetMaintenance' },
-    { name: 'Platform',            separator: true },
-    { name: 'System Settings',     page: 'SystemSettings' },
-    { name: 'Integrations',        page: 'IntegrationsHub' },
-    { name: 'Zoho Sign',           page: 'ZohoSignIntegration' },
-    { name: 'API Documentation',   page: 'APIDocumentation' },
-    { name: 'Guided Setup',        separator: true },
-    { name: 'Setup Center',        page: 'SetupCenter' },          // Overview·First-Time·Attendance·Inventory·Engineering·Payroll
+    { name: '⚙ Settings Center',         page: 'SettingsCenter' },
+    { name: 'User Preferences',          page: 'UserPreferences' },
+    { name: 'Company & Access',          separator: true },
+    { name: 'Company Setup',             page: 'CompanySetup' },   // Profile·Branches·Org·Brand Vault
+    { name: 'Access Control',            page: 'AccessControl' },
+    { name: 'Workflow Builder',          page: 'WorkflowBuilder' },
+    { name: 'Setup Notifications',       page: 'SetupNotifications' },
+    { name: 'Data & Platform',           separator: true },
+    { name: 'Master Data',               page: 'MasterDataCenter' },   // Masters·Products·Documents·Order Policy·Asset Maintenance
+    { name: 'Platform & Integrations',   page: 'PlatformCenter' },   // System·Integrations·Tally·Zoho·API·DB
+    { name: 'Guided Setup',              separator: true },
+    { name: 'Setup Center',              page: 'SetupCenter' },
+
+    // ── Consolidated into the hubs above (2026-09-16 IA pass) ──────────
+    // These rows are NOT drawn in the sidebar — Sidebar.jsx skips any entry
+    // carrying `inHub`. They stay here because getSectionForPage() walks
+    // NAV_ITEMS: drop them and each page silently becomes section-less,
+    // which makes canRoleAccessPageBySection wave it through for every
+    // role. Keeping them preserves the section gate exactly, and TabHub
+    // re-checks each tab with canRoleOpenPage() before drawing it.
+    { name: 'CompanyProfile',            page: 'CompanyProfile', inHub: 'CompanySetup' },
+    { name: 'BranchManagement',          page: 'BranchManagement', inHub: 'CompanySetup' },
+    { name: 'OrganizationSetup',         page: 'OrganizationSetup', inHub: 'CompanySetup' },
+    { name: 'BrandVault',                page: 'BrandVault', inHub: 'CompanySetup' },
+    { name: 'MasterSetup',               page: 'MasterSetup', inHub: 'MasterDataCenter' },
+    { name: 'ProductSetup',              page: 'ProductSetup', inHub: 'MasterDataCenter' },
+    { name: 'DocumentSetup',             page: 'DocumentSetup', inHub: 'MasterDataCenter' },
+    { name: 'OrderPolicy',               page: 'OrderPolicy', inHub: 'MasterDataCenter' },
+    { name: 'AssetMaintenance',          page: 'AssetMaintenance', inHub: 'MasterDataCenter' },
+    { name: 'SystemSettings',            page: 'SystemSettings', inHub: 'PlatformCenter' },
+    { name: 'IntegrationsHub',           page: 'IntegrationsHub', inHub: 'PlatformCenter' },
+    { name: 'TallyIntegration',          page: 'TallyIntegration', inHub: 'PlatformCenter' },
+    { name: 'ZohoSignIntegration',       page: 'ZohoSignIntegration', inHub: 'PlatformCenter' },
+    { name: 'APIDocumentation',          page: 'APIDocumentation', inHub: 'PlatformCenter' },
+    { name: 'DatabaseTest',              page: 'DatabaseTest', inHub: 'PlatformCenter' },
   ]},
 
   { name: 'Audit Logs',    icon: <FaHistory />, page: 'AuditLogs' },

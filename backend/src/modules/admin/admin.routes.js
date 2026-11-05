@@ -1,4 +1,5 @@
 import express from 'express';
+import { normalizeLoginEmail } from '../../shared/loginEmail.js';
 import bcrypt from 'bcryptjs';
 import pool from '../../config/db.js';
 import { allowRoles, hasRole } from '../../middlewares/auth.middleware.js';
@@ -6,7 +7,9 @@ import auditRepository from '../audit/repositories/audit.repository.js';
 import { seedCompanyDefaults } from '../../seeds/defaultSeed.js';
 import { getMenuOverrides, setMenuOverrides, getUserMenuOverrides, setUserMenuOverrides } from '../../services/PermissionService.js';
 import { syncPrimaryRole } from '../../services/userRoles.js';
+import { unrevealedInitialPasswordHash } from '../../shared/initialPassword.js';
 import { companyOf } from '../../shared/scope.js';
+import { validateDocumentUrl } from '../../home/documentDownload.js';
 import { respondError } from '../../shared/pgErrors.js';
 import { captureBefore } from '../../middlewares/captureBefore.js';
 
@@ -83,10 +86,12 @@ router.post('/users', allowRoles('admin', 'super_admin'), async (req, res) => {
   try {
     const cid  = req.scope?.company_id;
     const hash = await bcrypt.hash(password, 10);
+    // Normalised; a case variant of an existing login is a 409 from the
+    // LOWER(BTRIM(email)) unique index below.
     const { rows } = await pool.query(
       `INSERT INTO users (name, email, password_hash, role, department, is_active, company_id)
        VALUES ($1,$2,$3,$4,$5,true,$6) RETURNING id,name,email,role,department`,
-      [name, email, hash, role, department, cid]
+      [name, normalizeLoginEmail(email), hash, role, department, cid]
     );
     const created = rows[0];
     // users.role is only the primary-role mirror — the junction is what grants
@@ -121,20 +126,31 @@ router.post('/users/bulk', allowRoles('admin', 'super_admin'), async (req, res) 
 
   for (const row of users) {
     const { name, email, role = 'employee', department = null } = row || {};
-    // The wizard collects name + email only; a temporary password is issued so
-    // the account exists and can be handed over. ForcePasswordChange picks it up.
-    const password = row?.password || 'Welcome@123';
+    // The wizard collects name + email only. Each new account gets its own
+    // random initial password that nobody ever sees (shared/initialPassword.js)
+    // and must_change_password = true; the person sets their own password with
+    // "Forgot password?" on the sign-in page.
+    //
+    // ⚠ This used to fall back to the SHARED default 'Welcome@123' — and did
+    // not set must_change_password (the column defaults to false), so every
+    // imported account opened with a well-known password nobody was ever made
+    // to change. A caller-supplied `password` is refused rather than silently
+    // ignored: a script that sends one would otherwise believe it works.
+    if (row?.password != null && String(row.password) !== '') {
+      failed.push({ email: email ?? null, error: 'password is not accepted: new accounts get an unrevealed initial password and set their own via "Forgot password?"' });
+      continue;
+    }
     if (!name || !email) { failed.push({ email: email ?? null, error: 'name and email are required' }); continue; }
     if (role === 'super_admin' && !hasRole(req, 'super_admin')) {
       failed.push({ email, error: 'Only a super_admin can assign the super_admin role' });
       continue;
     }
     try {
-      const hash = await bcrypt.hash(password, 10);
+      const hash = await unrevealedInitialPasswordHash();
       const { rows } = await pool.query(
-        `INSERT INTO users (name, email, password_hash, role, department, is_active, company_id)
-         VALUES ($1,$2,$3,$4,$5,true,$6) RETURNING id,name,email,role,department`,
-        [name, email, hash, role, department, cid]
+        `INSERT INTO users (name, email, password_hash, role, department, is_active, company_id, must_change_password)
+         VALUES ($1,$2,$3,$4,$5,true,$6,true) RETURNING id,name,email,role,department`,
+        [name, normalizeLoginEmail(email), hash, role, department, cid]
       );
       await syncPrimaryRole(rows[0].id, role, cid, actorId);
       created.push(rows[0]);
@@ -798,16 +814,27 @@ router.delete('/document-setup/:id', allowRoles('admin', 'super_admin'), capture
 
 // ── BRAND VAULT CRUD (company_documents, category='brand_assets') ────────────
 // Source for the Home dashboard's "Brand Vault" panel (home.service.js's
-// getCompanyDocuments). Until this page existed there was no way to set these
-// links at all — see MODULE_FEATURE_CONNECTION_MANUAL.md §101/§101.3. Read
-// includes inactive rows (admin needs to be able to reactivate); the Home
-// panel itself only ever reads is_active=true.
+// getBrandAssets). Read includes inactive rows (admin needs to be able to
+// reactivate); the Home panel itself only ever reads is_active=true.
+//
+// Every write is scoped to the caller's company (a NULL company_id row is a
+// global default and stays editable). PUT/DELETE used to match on id alone,
+// so one company's admin could relink or remove another company's templates.
+// One active row per title (company_documents_active_title_uq) is what keeps
+// a second "Presentation Template" from appearing; a clash is a 409.
+
+const BRAND_SCOPE = `($2::integer IS NULL OR company_id = $2 OR company_id IS NULL)`;
+const brandDuplicate = (res, e) => (e.code === '23505'
+  ? res.status(409).json({ error: 'An active Brand Vault item with this title already exists.' })
+  : null);
+const brandDate = (v) => (v === '' || v == null ? null : String(v).slice(0, 10));
 
 router.get('/company-documents', allowRoles('admin', 'super_admin'), async (req, res) => {
   const cid = companyOf(req);
   try {
     const { rows } = await pool.query(
-      `SELECT id, title, description, file_url, icon, is_active, visible_roles, updated_at
+      `SELECT id, title, description, file_url, version, effective_date, icon, is_active,
+              visible_roles, updated_at
          FROM company_documents
         WHERE category = 'brand_assets'
           AND ($1::integer IS NULL OR company_id = $1 OR company_id IS NULL)
@@ -819,49 +846,57 @@ router.get('/company-documents', allowRoles('admin', 'super_admin'), async (req,
 });
 
 router.post('/company-documents', allowRoles('admin', 'super_admin'), async (req, res) => {
-  const { title, description, file_url } = req.body;
-  if (!title?.trim() || !file_url?.trim())
-    return res.status(400).json({ error: 'title and file_url are required' });
+  const { title, description, file_url, version, effective_date } = req.body;
+  if (!title?.trim()) return res.status(400).json({ error: 'title is required' });
+  const urlError = validateDocumentUrl(file_url);
+  if (urlError) return res.status(400).json({ error: urlError });
   const cid = companyOf(req);
   try {
     const { rows } = await pool.query(
-      `INSERT INTO company_documents (company_id, title, category, description, file_url, icon)
-       VALUES ($1, $2, 'brand_assets', $3, $4, 'file-text') RETURNING *`,
-      [cid, title.trim(), description?.trim() || '', file_url.trim()]
+      `INSERT INTO company_documents (company_id, title, category, description, file_url, icon, version, effective_date)
+       VALUES ($1, $2, 'brand_assets', $3, $4, 'file-text', $5, $6) RETURNING *`,
+      [cid, title.trim(), description?.trim() || '', file_url.trim(), version?.trim() || null, brandDate(effective_date)]
     );
     logAudit(req, 'create', rows[0].id, 'company_document', null, rows[0]);
     res.status(201).json(rows[0]);
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { if (!brandDuplicate(res, e)) res.status(500).json({ error: e.message }); }
 });
 
 router.put('/company-documents/:id', allowRoles('admin', 'super_admin'), captureBefore('company_documents'), async (req, res) => {
-  const { title, description, file_url, is_active } = req.body;
-  if (!title?.trim() || !file_url?.trim())
-    return res.status(400).json({ error: 'title and file_url are required' });
+  const { title, description, file_url, version, effective_date, is_active } = req.body;
+  if (!title?.trim()) return res.status(400).json({ error: 'title is required' });
+  const urlError = validateDocumentUrl(file_url);
+  if (urlError) return res.status(400).json({ error: urlError });
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'Invalid id' });
   try {
     const { rows } = await pool.query(
       `UPDATE company_documents
-          SET title = $1, description = $2, file_url = $3,
-              is_active = COALESCE($4, is_active), updated_at = NOW()
-        WHERE id = $5 AND category = 'brand_assets'
+          SET title = $3, description = $4, file_url = $5,
+              version = $6, effective_date = $7,
+              is_active = COALESCE($8, is_active), updated_at = NOW()
+        WHERE id = $1 AND category = 'brand_assets' AND ${BRAND_SCOPE}
         RETURNING *`,
-      [title.trim(), description?.trim() || '', file_url.trim(), is_active ?? null, req.params.id]
+      [id, companyOf(req), title.trim(), description?.trim() || '', file_url.trim(),
+       version?.trim() || null, brandDate(effective_date), is_active ?? null]
     );
     if (!rows.length) return res.status(404).json({ error: 'Not found' });
-    logAudit(req, 'update', req.params.id, 'company_document', null, rows[0]);
+    logAudit(req, 'update', id, 'company_document', null, rows[0]);
     res.json(rows[0]);
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { if (!brandDuplicate(res, e)) res.status(500).json({ error: e.message }); }
 });
 
 router.delete('/company-documents/:id', allowRoles('admin', 'super_admin'), captureBefore('company_documents'), async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'Invalid id' });
   try {
     const { rowCount } = await pool.query(
       `UPDATE company_documents SET is_active = FALSE, updated_at = NOW()
-        WHERE id = $1 AND category = 'brand_assets'`,
-      [req.params.id]
+        WHERE id = $1 AND category = 'brand_assets' AND ${BRAND_SCOPE}`,
+      [id, companyOf(req)]
     );
     if (!rowCount) return res.status(404).json({ error: 'Not found' });
-    logAudit(req, 'delete', req.params.id, 'company_document', null, { action: 'deactivated' });
+    logAudit(req, 'delete', id, 'company_document', null, { action: 'deactivated' });
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });

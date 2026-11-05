@@ -311,7 +311,10 @@ export default function FinancialStatements({ setPage } = {}) {
         eyebrow="Finance"
         title="Financial Statements"
         subtitle="STATUTORY VIEW"
-        actions={<button className="plh-cta" onClick={() => setPage?.('FinancialReports')}>Financial Reports ↗</button>}
+        // 'FinanceReports' is the key registered in routes.jsx. This used
+        // 'FinancialReports' — the component's function name, which matches no
+        // route — so the click resolved to nothing even once setPage arrived.
+        actions={<button className="plh-cta" onClick={() => setPage?.('FinanceReports')}>Financial Reports ↗</button>}
       />
     }>
 

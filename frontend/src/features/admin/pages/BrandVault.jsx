@@ -7,7 +7,18 @@ import api from '@/services/api/client';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
 import { PageHero, PageShell } from '@/components/pulse-ui';
 
-const EMPTY = { title: '', description: '', file_url: '' };
+const EMPTY = { title: '', description: '', file_url: '', version: '', effective_date: '' };
+
+// The fields a save sends. Placeholder rows arrive with file_url / version /
+// effective_date NULL, so everything is normalised to a string first.
+const payloadOf = (r, extra = {}) => ({
+  title: r.title || '',
+  description: r.description || '',
+  file_url: r.file_url || '',
+  version: r.version || '',
+  effective_date: r.effective_date ? String(r.effective_date).slice(0, 10) : '',
+  ...extra,
+});
 
 export default function BrandVault() {
   const [rows,       setRows]       = useState([]);
@@ -54,12 +65,10 @@ export default function BrandVault() {
   };
 
   const saveEdit = async () => {
-    if (!editRow.title.trim() || !editRow.file_url.trim()) return toast('Title and link are required', 'err');
+    if (!editRow.title?.trim() || !editRow.file_url?.trim()) return toast('Title and link are required', 'err');
     setSaving(true);
     try {
-      await api.put(`/admin/company-documents/${editRow.id}`, {
-        title: editRow.title, description: editRow.description, file_url: editRow.file_url,
-      });
+      await api.put(`/admin/company-documents/${editRow.id}`, payloadOf(editRow));
       toast('Brand Vault item updated');
       setEditRow(null);
       load();
@@ -80,9 +89,7 @@ export default function BrandVault() {
 
   const reactivate = async (row) => {
     try {
-      await api.put(`/admin/company-documents/${row.id}`, {
-        title: row.title, description: row.description, file_url: row.file_url, is_active: true,
-      });
+      await api.put(`/admin/company-documents/${row.id}`, payloadOf(row, { is_active: true }));
       toast('Restored to Brand Vault');
       load();
     } catch (e) { toast(e.response?.data?.error || e.message, 'err'); }
@@ -97,7 +104,7 @@ export default function BrandVault() {
         icon={FileText}
         eyebrow="Administration"
         title="Brand Vault"
-        subtitle="Manage the download links shown on the Home dashboard's Brand Vault panel — paste a Google Drive share link (or any direct file URL) for each item."
+        subtitle="Link each Home Brand Vault item to its latest approved file in Google Drive — paste the file's share link. Employees download the file itself from Home."
         actions={<>
           <button className="plh-cta plh-cta--ghost" onClick={load}>
             <RefreshCw size={14} /> Refresh
@@ -144,6 +151,15 @@ export default function BrandVault() {
               <input value={form.file_url} onChange={e => setForm(f => ({ ...f, file_url: e.target.value }))}
                 placeholder="https://drive.google.com/file/d/… or a direct file URL" style={inp} />
             </label>
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <span style={{ fontSize: 12, fontWeight: 600, color: '#374151' }}>Version</span>
+              <input value={form.version} onChange={e => setForm(f => ({ ...f, version: e.target.value }))}
+                placeholder="e.g. v2.1" style={inp} />
+            </label>
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <span style={{ fontSize: 12, fontWeight: 600, color: '#374151' }}>Effective Date</span>
+              <input type="date" value={form.effective_date} onChange={e => setForm(f => ({ ...f, effective_date: e.target.value }))} style={inp} />
+            </label>
             <label style={{ display: 'flex', flexDirection: 'column', gap: 4, gridColumn: '1 / -1' }}>
               <span style={{ fontSize: 12, fontWeight: 600, color: '#374151' }}>Description</span>
               <input value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
@@ -170,7 +186,7 @@ export default function BrandVault() {
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
               <thead>
                 <tr style={{ background: '#f9fafb' }}>
-                  {['Title', 'Description', 'Download Link', 'Status', 'Actions'].map(h => (
+                  {['Title', 'Description', 'Download Link', 'Version', 'Effective', 'Status', 'Actions'].map(h => (
                     <th key={h} style={{ padding: '10px 14px', textAlign: 'left', fontWeight: 600, color: '#374151', borderBottom: '1px solid #e5e7eb', whiteSpace: 'nowrap', fontSize: 12 }}>{h}</th>
                   ))}
                 </tr>
@@ -197,12 +213,22 @@ export default function BrandVault() {
                       </td>
                       <td style={{ padding: '10px 14px', minWidth: 220 }}>
                         {isEditing
-                          ? <input value={editRow.file_url} onChange={e => setEditRow(r => ({ ...r, file_url: e.target.value }))} style={{ ...editInp, minWidth: 220 }} />
+                          ? <input value={editRow.file_url || ''} placeholder="https://drive.google.com/file/d/…" onChange={e => setEditRow(r => ({ ...r, file_url: e.target.value }))} style={{ ...editInp, minWidth: 220 }} />
                           : row.file_url
                             ? <a href={row.file_url} target="_blank" rel="noreferrer" style={{ color: '#a855f7', display: 'inline-flex', alignItems: 'center', gap: 4, textDecoration: 'none' }}>
                                 {row.file_url.length > 42 ? row.file_url.slice(0, 42) + '…' : row.file_url} <ExternalLink size={11} />
                               </a>
-                            : <span style={{ color: '#d1d5db' }}>No link</span>}
+                            : <span style={{ color: '#b45309', fontWeight: 600 }}>Not linked — Home shows "Not linked yet"</span>}
+                      </td>
+                      <td style={{ padding: '10px 14px', color: '#6b7280', whiteSpace: 'nowrap' }}>
+                        {isEditing
+                          ? <input value={editRow.version || ''} onChange={e => setEditRow(r => ({ ...r, version: e.target.value }))} placeholder="v1.0" style={{ ...editInp, minWidth: 70, width: 80 }} />
+                          : (row.version || '—')}
+                      </td>
+                      <td style={{ padding: '10px 14px', color: '#6b7280', whiteSpace: 'nowrap' }}>
+                        {isEditing
+                          ? <input type="date" value={editRow.effective_date ? String(editRow.effective_date).slice(0, 10) : ''} onChange={e => setEditRow(r => ({ ...r, effective_date: e.target.value }))} style={editInp} />
+                          : (row.effective_date ? new Date(String(row.effective_date).slice(0, 10) + 'T00:00:00').toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—')}
                       </td>
                       <td style={{ padding: '10px 14px' }}>
                         <span style={{

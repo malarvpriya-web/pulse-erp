@@ -165,9 +165,15 @@ export default function InventoryIntelligence() {
         lead_time_days: item.lead_time_days,
         preferred_vendor_id: item.preferred_vendor_id || null,
       });
+      // Reached only once the server has confirmed the write.
       toast.success(`Rules saved for ${item.item_name}`);
     } catch (err) {
-      toast.error(err?.response?.data?.error || 'Failed to save rule');
+      // A 422 names the offending fields; show them rather than "Validation failed".
+      const data = err?.response?.data;
+      const fieldErrors = Array.isArray(data?.errors) ? data.errors.map(e => e.message).filter(Boolean) : [];
+      toast.error(fieldErrors.length
+        ? `Rule not saved for ${item.item_name}: ${fieldErrors.join(' ')}`
+        : (data?.error || 'Failed to save rule'));
     } finally {
       setSavingRules(false);
     }
@@ -409,7 +415,7 @@ export default function InventoryIntelligence() {
                           <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: 12 }}>{item.item_code}</td>
                           <td style={tdStyle}>{item.item_name}</td>
                           <td style={{ ...tdStyle, fontWeight: 600 }}>{fmtK(item.annual_consumption_value)}</td>
-                          <td style={tdStyle}>{parseFloat(item.cumulative_pct).toFixed(1)}%</td>
+                          <td style={tdStyle}>{item.cumulative_pct == null ? '—' : `${parseFloat(item.cumulative_pct).toFixed(1)}%`}</td>
                           <td style={tdStyle}>
                             <span style={{ padding: '3px 10px', borderRadius: 6, fontSize: 12, fontWeight: 700, background: `${CAT_COLORS[item.category]}20`, color: CAT_COLORS[item.category] }}>{item.category}</span>
                           </td>

@@ -69,6 +69,11 @@ export const analyticsPolicy = permissionByPath([
   // Compensation — same bar as opening Payroll.
   ['/salary-bands',     'payroll',  'view'],
   ['/hr-benchmarks',    'payroll',  'view'],   // carries median/P25/P75 salary
+  // ⚠ Rules match a prefix at the START of the path, so '/salary-bands' above
+  // does NOT cover this nested copy. It fell through to the `hr:view` default,
+  // and every HR role without payroll access could read avg/min/max basic
+  // salary per band and grade. A salary-bearing path needs its own rule.
+  ['/employee-reports/salary-bands', 'payroll', 'view'],
   // Named individuals with their performance ratings.
   //
   // NOT `performance:view` — every employee holds that, because it is what lets

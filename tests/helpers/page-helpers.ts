@@ -1,6 +1,6 @@
 import { Page, expect } from '@playwright/test';
 
-const BASE_URL = 'http://localhost:5173';
+const BASE_URL = process.env.PULSE_FRONT_BASE ?? 'http://localhost:5173';
 
 /**
  * Navigate to a page by its URL path and wait for the React app to finish

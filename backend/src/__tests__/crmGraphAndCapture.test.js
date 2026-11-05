@@ -85,7 +85,6 @@ afterAll(async () => {
   await pool.query(`UPDATE accounts SET parent_account_id = NULL WHERE id = ANY($1::int[])`, [ids.accounts]).catch(() => {});
   await pool.query(`DELETE FROM accounts WHERE id = ANY($1::int[])`, [ids.accounts]).catch(() => {});
   await pool.query(`DELETE FROM parties WHERE id = ANY($1::uuid[])`, [ids.parties]).catch(() => {});
-  await pool.end().catch(() => {});
 });
 
 /* ══════════════════════════════════════════════════════════════════════════

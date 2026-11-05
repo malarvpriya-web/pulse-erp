@@ -6,6 +6,11 @@ export default defineConfig({
     globals: true,
     setupFiles: ['./src/__tests__/setup.js'],
 
+    // §221: refuse to run unless connected to the marked isolated test DB
+    // (pulse_e2e). `npm test` without that environment stops here, before any
+    // test file loads — use `npm run test:db`. See scripts/test-db/README.md.
+    globalSetup: ['./scripts/test-db/vitest.globalSetup.mjs'],
+
     /**
      * Worker count is pinned, not left to the core count, because it is one half
      * of a connection budget.

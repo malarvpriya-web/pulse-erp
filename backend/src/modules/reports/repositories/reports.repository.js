@@ -404,7 +404,7 @@ const reportsRepository = {
         COALESCE(SUM(pr.total_deductions), 0)               AS total_deductions
       FROM payroll_runs pr
       JOIN employees e ON e.id = pr.employee_id
-      WHERE e.deleted_at IS NULL
+      WHERE pr.is_test = false AND e.deleted_at IS NULL
         AND ($1::int  IS NULL OR e.company_id = $1)
         AND ($2::date IS NULL OR MAKE_DATE(pr.year, pr.month, 1) >= DATE_TRUNC('month', $2::date))
         AND ($3::date IS NULL OR MAKE_DATE(pr.year, pr.month, 1) <= $3::date)

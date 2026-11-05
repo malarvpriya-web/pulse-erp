@@ -77,7 +77,28 @@ async function sweepDebris() {
   await pool.query(`DELETE FROM invoices      WHERE invoice_number    LIKE 'ZZCRMTEST\\_%'`).catch(() => {});
   await pool.query(`DELETE FROM accounts      WHERE name              LIKE 'ZZCRMTEST\\_%'`).catch(() => {});
   await pool.query(`DELETE FROM parties       WHERE name              LIKE 'ZZCRMTEST\\_%'`).catch(() => {});
-  await pool.query(`DELETE FROM companies     WHERE name              LIKE 'ZZCRMTEST\\_%'`).catch(() => {});
+  // interview_questions is seeded PER COMPANY by a later migration, so these ten
+  // rows appear without this suite creating them — and they hold a foreign key to
+  // companies. Added 2026-09-15 after the sweep had silently stopped working:
+  // the company DELETE below was failing on that FK, `.catch(() => {})` swallowed
+  // it, and the next run then collided on the hardcoded code 'ZZCRMX' with
+  //   duplicate key value violates unique constraint "companies_code_key"
+  // leaving this suite permanently red from one crashed run onward. If another
+  // per-company seed is added later the symptom will be identical, so the assert
+  // below is what makes it visible rather than silent.
+  await pool.query(`DELETE FROM interview_questions WHERE company_id IN
+                      (SELECT id FROM companies WHERE name LIKE 'ZZCRMTEST\\_%')`).catch(() => {});
+  // Deliberately NOT swallowed. A sweep that cannot clean up must say so here,
+  // where it is one line, rather than in a confusing collision on the next run.
+  try {
+    await pool.query(`DELETE FROM companies WHERE name LIKE 'ZZCRMTEST\\_%'`);
+  } catch (e) {
+    throw new Error(
+      `Could not sweep ZZCRMTEST_ companies: ${e.message}\n` +
+      `A table now references companies and is not in the child-first list above. ` +
+      `Add it, or this suite will fail on a duplicate company code from the next run onward.`,
+    );
+  }
 }
 
 // Creates a party (+ optional account) inside a given company.

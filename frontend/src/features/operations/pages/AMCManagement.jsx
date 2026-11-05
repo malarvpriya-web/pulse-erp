@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
 import {
@@ -39,6 +40,12 @@ const inputStyle = { width: '100%', padding: '9px 12px', border: '1px solid #e5e
 const labelStyle = { display: 'block', fontSize: 12, fontWeight: 600, color: '#374151', marginBottom: 4 };
 
 export default function AMCManagement() {
+  // ?contract=<id> narrows the table to one contract, so a CEO Intelligence AMC
+  // alert can open the contract it is about. Those alerts often resolve to no
+  // customer (amc_contracts carries no customer_id — the party is reached through
+  // sales_order_id), so the contract itself is the only navigable record.
+  const [urlParams, setUrlParams] = useSearchParams();
+  const contractParam = (urlParams.get('contract') || '').trim();
   const [contracts,    setContracts]    = useState([]);
   const [loading,      setLoading]      = useState(false);
   const [showForm,     setShowForm]     = useState(false);
@@ -180,6 +187,14 @@ export default function AMCManagement() {
     } catch { toast.error('Export failed'); }
   };
 
+  // Narrowed view. Compared as strings: the id arrives from a query param, and
+  // `==` across number/string would be a lint error while `===` on mixed types
+  // silently matches nothing.
+  const shownContracts = contractParam
+    ? contracts.filter(c => String(c.id) === contractParam)
+    : contracts;
+  const contractNotFound = Boolean(contractParam) && shownContracts.length === 0 && !loading;
+
   const active   = contracts.filter(c => c.status === 'active').length;
   const expiring = contracts.filter(c => { const d = daysLeft(c.end_date); return c.status === 'active' && d !== null && d >= 0 && d <= 30; }).length;
   const expired  = contracts.filter(c => { const d = daysLeft(c.end_date); return d !== null && d < 0 && c.status === 'active'; }).length;
@@ -247,6 +262,31 @@ export default function AMCManagement() {
         </button>
       </div>
 
+      {/* A filter set by a link, not by this page's own controls, has to announce
+          itself and be clearable — otherwise the table just looks nearly empty. */}
+      {contractParam && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+          padding: '8px 12px', marginBottom: 10, borderRadius: 10,
+          background: contractNotFound ? '#fef3c7' : '#ede9fe',
+          border: `1px solid ${contractNotFound ? '#fcd34d' : '#ddd6fe'}`,
+          fontSize: 12, color: '#374151',
+        }}>
+          <span>
+            {contractNotFound
+              ? <>No contract with id <strong>{contractParam}</strong> is visible here — it may be closed or outside the current status filter.</>
+              : <>Showing one contract only.</>}
+          </span>
+          <button
+            onClick={() => { const n = new URLSearchParams(urlParams); n.delete('contract'); setUrlParams(n, { replace: true }); }}
+            style={{
+              border: '1px solid #c4b5fd', background: '#fff', color: '#5b21b6',
+              borderRadius: 7, padding: '3px 10px', fontSize: 11, fontWeight: 700, cursor: 'pointer',
+            }}
+          >Show all contracts</button>
+        </div>
+      )}
+
       {/* Table */}
       <div style={{ background: '#fff', borderRadius: 12, border: '1px solid #f0f0f4', overflow: 'auto' }}>
         {loading ? (
@@ -270,7 +310,7 @@ export default function AMCManagement() {
               </tr>
             </thead>
             <tbody>
-              {contracts.map((c, i) => {
+              {shownContracts.map((c, i) => {
                 const sc  = STATUS_COLOR[c.status] || STATUS_COLOR.draft;
                 const dl  = daysLeft(c.end_date);
                 const dlColor = dl === null ? '#9ca3af' : dl < 0 ? '#ef4444' : dl <= 30 ? '#7c5cf0' : '#10b981';

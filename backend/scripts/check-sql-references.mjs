@@ -342,7 +342,17 @@ for (const rel of FILES) {
   // name, so the optional group is required — without it a recursive CTE's
   // own name is reported as a missing table, which is what happened to the
   // account-hierarchy query (`WITH RECURSIVE up AS ...` -> MISSING TABLE up).
-  const ctes = new Set([...src.matchAll(/(?:WITH|,)\s+(?:RECURSIVE\s+)?([a-z_][a-z0-9_]*)\s+AS\s*\(/gi)].map(m => m[1].toLowerCase()));
+  //
+  // The optional `(col, col, ...)` covers a CTE that declares its output columns
+  // explicitly — `WITH RECURSIVE walk(root, node, depth, path, looped) AS (`.
+  // That form is valid SQL and the previous pattern required `AS (` to follow the
+  // name directly, so the column list pushed them apart and the CTE's own name
+  // was reported as a missing table (shared/employeeHierarchy.js -> MISSING TABLE
+  // walk). The list cannot contain nested parentheses, so a non-greedy match up
+  // to the first `)` is exact rather than approximate.
+  const ctes = new Set([...src.matchAll(
+    /(?:WITH|,)\s+(?:RECURSIVE\s+)?([a-z_][a-z0-9_]*)\s*(?:\([^()]*\)\s*)?AS\s*\(/gi,
+  )].map(m => m[1].toLowerCase()));
 
   // ── tables ──────────────────────────────────────────────────────────────
   //

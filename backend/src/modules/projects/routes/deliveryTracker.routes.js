@@ -11,10 +11,38 @@
 import express from 'express';
 import pool from '../../shared/db.js';
 import { PROJECT_TYPES } from '../../../shared/projectTypes.js';
+import { vocabularyValues } from '../../../shared/masterVocabulary.js';
+
+// Both list endpoints below hand the client its project-type filter options.
+// Served from the master with PROJECT_TYPES as the fallback, so a type added
+// from the Projects form is filterable here without a code change.
+const projectTypeOptions = (req) => vocabularyValues('PROJECT_TYPE', cid(req), PROJECT_TYPES);
 import { companyOf } from '../../../shared/scope.js';
+import { requirePermission } from '../../../middlewares/auth.middleware.js';
+import {
+  productionStageCaseSql, projectLifecycleJoinSql, projectStageColumnsSql, STAGE_SOURCES,
+} from '../../../shared/projectStages.js';
+
+// The stage shown, filtered, sorted and bucketed here is DERIVED from the
+// project's lifecycle (shared/projectStages.js, Phase 5) — never the old
+// stored projects.production_stage, which is returned as stored_production_stage.
+const DERIVED_STAGE_SQL = productionStageCaseSql('plc.current_stage');
 
 const router = express.Router();
 const cid = (req) => req.scope?.company_id ?? companyOf(req);
+
+// server.js mounts this router behind verifyToken only, so every logged-in
+// user could read the project / IPM grid. Both screens that call it are
+// `projects` pages, so the gate is projects:view. A login with no company
+// that is not a global super admin would read every company (cid null = no
+// filter below) and is refused. This router has a single mount, so router.use
+// is safe here.
+router.use(requirePermission('projects', 'view'), (req, res, next) => {
+  if (cid(req) == null && req.scope?.isGlobal !== true) {
+    return res.status(403).json({ error: 'No company is assigned to this login.' });
+  }
+  next();
+});
 
 // Canonical Manifest SST/HVDC production pipeline, in full lifecycle order.
 // Shared shape with the frontend PRODUCTION_STAGES constant — keep the two in
@@ -46,7 +74,7 @@ const SORTABLE = {
   project_type:        'p.project_type',
   product_type:        PRODUCT_TYPE_SQL,
   zone:                'p.zone',
-  production_stage:    'p.production_stage',
+  production_stage:    DERIVED_STAGE_SQL,
   target_date:         'p.target_date',
   forecast_date:       'p.forecast_date',
   actual_delivery_date:'p.actual_delivery_date',
@@ -66,11 +94,14 @@ function buildWhere(req) {
   let where = `WHERE p.deleted_at IS NULL AND ($1::int IS NULL OR p.company_id = $1)`;
 
   // Multi-select status arrives as CSV ("procurement,clearing") or a repeated param.
-  const stages = (Array.isArray(status) ? status.join(',') : (status || ''))
-    .split(',').map(s => s.trim()).filter(Boolean)
-    .filter(s => PRODUCTION_STAGES.includes(s));
-  if (stages.length) {
-    where += ` AND p.production_stage = ANY($${idx++}::text[])`;
+  // 'unavailable' selects the projects whose stage cannot be derived (no
+  // lifecycle in their company), so they stay findable from the filter.
+  const requested = (Array.isArray(status) ? status.join(',') : (status || ''))
+    .split(',').map(s => s.trim()).filter(Boolean);
+  const stages = requested.filter(s => PRODUCTION_STAGES.includes(s));
+  const wantUnavailable = requested.includes(STAGE_SOURCES.UNAVAILABLE);
+  if (stages.length || wantUnavailable) {
+    where += ` AND (${DERIVED_STAGE_SQL} = ANY($${idx++}::text[])${wantUnavailable ? ` OR ${DERIVED_STAGE_SQL} IS NULL` : ''})`;
     params.push(stages);
   }
   // Single project_type filter (EPC/Installation/Commissioning/HVDC/STATCOM/SST/O&M).
@@ -95,6 +126,7 @@ const baseFromSql = (where) => `
     FROM project_warranties
     GROUP BY project_id
   ) w ON w.project_id = p.id
+  ${projectLifecycleJoinSql('p', 'plc')}
   ${where}
 `;
 
@@ -113,7 +145,7 @@ const SELECT_COLS = `
   p.product_line_id,
   pl.voltage_class,
   p.zone,
-  p.production_stage,
+  ${projectStageColumnsSql('p', 'plc')},
   p.target_date,
   p.forecast_date,
   p.actual_delivery_date,
@@ -121,8 +153,8 @@ const SELECT_COLS = `
   o.order_won_date,
   p.updated_at,
   CASE
-    WHEN p.production_stage = 'dispatched' OR p.status = 'completed' THEN 'Delivered'
-    WHEN o.order_won_date IS NOT NULL AND p.production_stage IS NULL THEN 'Won'
+    WHEN ${DERIVED_STAGE_SQL} = 'dispatched' OR p.status = 'completed' THEN 'Delivered'
+    WHEN o.order_won_date IS NOT NULL AND ${DERIVED_STAGE_SQL} IS NULL THEN 'Won'
     ELSE 'In Progress'
   END                                    AS status
 `;
@@ -154,7 +186,7 @@ router.get('/', async (req, res) => {
       LIMIT $${idx++} OFFSET $${idx++}
     `, dataParams);
 
-    res.json({ data: rows, total, page: pg, page_size: size, stages: PRODUCTION_STAGES, project_types: PROJECT_TYPES });
+    res.json({ data: rows, total, page: pg, page_size: size, stages: PRODUCTION_STAGES, project_types: await projectTypeOptions(req) });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -175,17 +207,23 @@ router.get('/board', async (req, res) => {
       LIMIT $${params.length + 1}
     `, dataParams);
 
-    // Pre-bucket by stage so the client renders columns directly; a NULL stage
-    // (project created but not yet staged) falls into the first column, 'created'.
+    // Pre-bucket by the derived stage. A project whose stage is unavailable (no
+    // lifecycle in its company) is NOT put in a stage column — it used to fall
+    // into 'created' — but listed under `unavailable`, so no stage is invented.
     const columns = {};
     for (const s of PRODUCTION_STAGES) columns[s] = [];
+    const unavailable = [];
     for (const r of rows) {
-      const key = PRODUCTION_STAGES.includes(r.production_stage) ? r.production_stage : 'created';
-      columns[key].push(r);
+      if (r.stage_source === STAGE_SOURCES.UNAVAILABLE || !PRODUCTION_STAGES.includes(r.production_stage)) unavailable.push(r);
+      else columns[r.production_stage].push(r);
     }
     const counts = Object.fromEntries(PRODUCTION_STAGES.map(s => [s, columns[s].length]));
 
-    res.json({ columns, counts, total: rows.length, stages: PRODUCTION_STAGES, project_types: PROJECT_TYPES });
+    res.json({
+      columns, counts, total: rows.length, stages: PRODUCTION_STAGES,
+      unavailable, unavailable_count: unavailable.length,
+      project_types: await projectTypeOptions(req),
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

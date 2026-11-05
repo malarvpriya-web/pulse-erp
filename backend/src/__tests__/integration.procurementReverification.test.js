@@ -193,6 +193,19 @@ beforeAll(async () => {
       ORDER BY v.id LIMIT 1`, [CO_A]
   );
   if (!vendor) throw new Error('No rated company-1 vendor — the PO approval gate would mask these results.');
+  // Rating HISTORY is not what the gate reads: it averages the vendor's stored
+  // quality/delivery/price ratings against min_vendor_rating. A fixture with a
+  // history row but 0/0/0 stored ratings passed the check above and then had
+  // every approval in this file refused with a 400 nobody asserted (§222).
+  // Checked here, against the gate's own inputs, so that state fails loudly.
+  const { rows: [gate] } = await pool.query(
+    `SELECT (COALESCE(v.quality_rating,0) + COALESCE(v.delivery_rating,0) + COALESCE(v.price_rating,0)) / 3.0 AS avg,
+            COALESCE(s.min_vendor_rating, 0) AS min
+       FROM vendors v LEFT JOIN procurement_settings s ON s.company_id = $2
+      WHERE v.id = $1`, [vendor.id, CO_A]);
+  if (Number(gate.min) > 0 && Number(gate.avg) < Number(gate.min)) {
+    throw new Error(`Fixture vendor ${vendor.id} averages ${Number(gate.avg).toFixed(1)} against a minimum rating of ${gate.min} — PO approval would refuse it. Its stored ratings disagree with its rating history (re-run scripts/seed-test-fixtures.mjs).`);
+  }
   seed.vendor = vendor;
 
   const { rows: vendors } = await pool.query(
@@ -246,6 +259,19 @@ afterAll(async () => {
 });
 
 // ── helpers ──────────────────────────────────────────────────────────────────
+/**
+ * Assert a setup step succeeded, naming the step and showing the response.
+ *
+ * The approve / convert calls below were fire-and-forget: a refused approval
+ * left the order in draft and the failure surfaced two steps later as an
+ * unexplained GRN 422, with the reason that mattered thrown away.
+ */
+function expectOk(res, step) {
+  expect(res.status, `${step} -> ${res.status} ${JSON.stringify(res.body).slice(0, 400)}`).toBeGreaterThanOrEqual(200);
+  expect(res.status, `${step} -> ${res.status} ${JSON.stringify(res.body).slice(0, 400)}`).toBeLessThan(300);
+  return res;
+}
+
 async function raisePr({ quantity = 2, price = 500 } = {}) {
   const res = await buyer().post('/api/procurement/purchase-requests').send({
     request_date: new Date().toISOString().slice(0, 10),
@@ -420,7 +446,7 @@ describe('D4 — choosing a preferred vendor and awarding are two decisions', ()
 describe('D5 — a converted purchase order is taxed like a keyed one', () => {
   it('carries the component\'s GST, so the vendor\'s invoice still matches', async () => {
     const pr = await raisePr({ quantity: 2, price: 500 });
-    await buyer().put(`/api/procurement/purchase-requests/${pr.id}/approve`).send({});
+    expectOk(await buyer().put(`/api/procurement/purchase-requests/${pr.id}/approve`).send({}), 'approve PR');
     const conv = await buyer()
       .patch(`/api/procurement/purchase-requests/${pr.id}/convert-to-po`)
       .send({ supplier_id: seed.vendor.id });
@@ -444,7 +470,7 @@ describe('D5 — a converted purchase order is taxed like a keyed one', () => {
 
     // And the figure the invoice leg compares against is now the gross the
     // vendor will actually bill.
-    await buyer().patch(`/api/procurement/purchase-orders/${conv.body.po_id}/approve`).send({});
+    expectOk(await buyer().patch(`/api/procurement/purchase-orders/${conv.body.po_id}/approve`).send({}), 'approve PO');
     const { rows: [wh] } = await pool.query('SELECT id FROM warehouses WHERE deleted_at IS NULL ORDER BY id LIMIT 1');
     const { rows: poLines } = await pool.query('SELECT * FROM purchase_order_items WHERE po_id = $1', [conv.body.po_id]);
     const grn = await buyer().post('/api/procurement/grn').send({
@@ -520,10 +546,10 @@ describe('D6 / D7 — the two buttons that reported success and did nothing', ()
 /** An approved order with one line, ready to receive against. */
 async function approvedPo({ quantity = 4, price = 25 } = {}) {
   const pr = await raisePr({ quantity, price });
-  await buyer().put(`/api/procurement/purchase-requests/${pr.id}/approve`).send({});
-  const conv = await buyer().patch(`/api/procurement/purchase-requests/${pr.id}/convert-to-po`)
-    .send({ supplier_id: seed.vendor.id });
-  await buyer().patch(`/api/procurement/purchase-orders/${conv.body.po_id}/approve`).send({});
+  expectOk(await buyer().put(`/api/procurement/purchase-requests/${pr.id}/approve`).send({}), 'approve PR');
+  const conv = expectOk(await buyer().patch(`/api/procurement/purchase-requests/${pr.id}/convert-to-po`)
+    .send({ supplier_id: seed.vendor.id }), 'convert PR to PO');
+  expectOk(await buyer().patch(`/api/procurement/purchase-orders/${conv.body.po_id}/approve`).send({}), 'approve PO');
   const { rows: lines } = await pool.query('SELECT * FROM purchase_order_items WHERE po_id = $1', [conv.body.po_id]);
   return { poId: conv.body.po_id, lines };
 }
@@ -913,7 +939,7 @@ describe('D15 — an approved purchase order actually notifies someone', () => {
 
     const before = await countForThisPo();
     const approved = await app.patch(`/api/procurement/purchase-orders/${po.body.id}/approve`).send({});
-    expect(approved.status).toBe(200);
+    expect(approved.status, `approve PO -> ${JSON.stringify(approved.body).slice(0, 400)}`).toBe(200);
 
     // notifyWorkflowEvent is fire-and-forget by design — the approval must not
     // wait on delivery. Poll rather than sleep a fixed 1500ms: a fixed wait is

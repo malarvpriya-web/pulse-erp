@@ -5,7 +5,8 @@
  * Pass a transaction client when the number must be part of a BEGIN/COMMIT block.
  *
  * All sequences are created by migration 20260520000002_document_sequences.js,
- * except seq_ips (20260716000002_service_master_ips.js).
+ * except seq_ips (20260716000002_service_master_ips.js) and seq_cw / seq_cert /
+ * seq_wr / seq_wc (20261014000001_commissioning_numbering_sequences.js).
  */
 
 import pool from '../config/db.js';
@@ -48,6 +49,54 @@ export async function nextLifecycleNumber(client) {
   return `LC-${String(n).padStart(6, '0')}`;
 }
 
+// ── Commissioning / warranty ─────────────────────────────────────────────────
+// seq_cw / seq_cert / seq_wr / seq_wc — migration
+// 20261014000001_commissioning_numbering_sequences.js. These replaced
+// per-company COUNT(*)+1, which reused another company's number against the
+// globally unique columns. Numbers are global (a company's own numbers may skip
+// values); the formats did not change.
+
+/**
+ * nextval() for `sequenceName`, formatted, skipping a value that is somehow
+ * already in `table.column` (a row written by old code during a deploy, or by
+ * hand). Bounded so a misconfigured sequence fails loudly instead of looping.
+ */
+async function nextUnused(sequenceName, format, table, column, client) {
+  const db = client || pool;
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const candidate = format(await nextval(sequenceName, db));
+    const { rows } = await db.query(`SELECT 1 FROM ${table} WHERE ${column} = $1 LIMIT 1`, [candidate]);
+    if (!rows.length) return candidate;
+  }
+  throw new Error(`${sequenceName}: no unused number after 20 attempts — reseed the sequence above ${table}.${column}`);
+}
+
+/** CW-YY-0001  (commissioning_workflows.workflow_number) */
+export function nextCommissioningWorkflowNumber(client) {
+  const yy = String(new Date().getFullYear()).slice(-2);
+  return nextUnused('seq_cw', n => `CW-${yy}-${String(n).padStart(4, '0')}`,
+    'commissioning_workflows', 'workflow_number', client);
+}
+
+/** CERT-YYYY-0001  (commissioning_workflows.certificate_number) */
+export function nextCommissioningCertificateNumber(client) {
+  const yyyy = new Date().getFullYear();
+  return nextUnused('seq_cert', n => `CERT-${yyyy}-${String(n).padStart(4, '0')}`,
+    'commissioning_workflows', 'certificate_number', client);
+}
+
+/** WR-00001  (warranty_registrations.warranty_number) */
+export function nextWarrantyNumber(client) {
+  return nextUnused('seq_wr', n => `WR-${String(n).padStart(5, '0')}`,
+    'warranty_registrations', 'warranty_number', client);
+}
+
+/** WC-00001  (warranty_claims.claim_number) */
+export function nextWarrantyClaimNumber(client) {
+  return nextUnused('seq_wc', n => `WC-${String(n).padStart(5, '0')}`,
+    'warranty_claims', 'claim_number', client);
+}
+
 /** PO-00001  (production orders) */
 export async function nextProdOrderNumber(client) {
   const n = await nextval('seq_po_prod', client);
@@ -87,9 +136,29 @@ export async function nextQuotationNumber(client) {
 }
 
 /** PRJ-0001 */
+const projectCodeOf = (n) => `PRJ-${String(n).padStart(4, '0')}`;
+
+/** True for a code in the seq_prj format — one this sequence issues. */
+export const isSequenceProjectCode = (code) => /^PRJ-\d{4,}$/.test(String(code ?? ''));
+
 export async function nextProjectCode(client) {
-  const n = await nextval('seq_prj', client);
-  return `PRJ-${String(n).padStart(4, '0')}`;
+  return projectCodeOf(await nextval('seq_prj', client));
+}
+
+/**
+ * The code nextProjectCode() would issue next, WITHOUT consuming it — for a
+ * form preview. Only a hint: a concurrent create can take it first, so the
+ * real code is always assigned on save.
+ */
+export async function peekProjectCode(client) {
+  // pg_sequences.last_value is NULL until the first nextval(); seq_prj has
+  // cache 1, so otherwise it is the last value actually handed out.
+  const { rows } = await (client || pool).query(
+    `SELECT last_value, start_value, increment_by FROM pg_sequences
+      WHERE schemaname = current_schema() AND sequencename = 'seq_prj'`
+  );
+  const { last_value, start_value, increment_by } = rows[0];
+  return projectCodeOf(last_value == null ? Number(start_value) : Number(last_value) + Number(increment_by));
 }
 
 // ── Finance ──────────────────────────────────────────────────────────────────
@@ -321,11 +390,23 @@ export async function nextComplaintNumber(client) {
 
 // ── HR / Recruitment ──────────────────────────────────────────────────────────
 
-/** EMP-0001  (employees) */
-export async function nextEmployeeCode(client) {
-  const n = await nextval('seq_emp', client);
-  return `EMP-${String(n).padStart(4, '0')}`;
-}
+/*
+ * Employee codes are deliberately NOT minted here.
+ *
+ * `nextEmployeeCode()` used to live in this file and returned `EMP-0001` off
+ * `seq_emp` — a fourth generator, in the wrong format, with zero callers. It
+ * survived only because nothing imported it, and it was one of the three dashed
+ * examples that misled an earlier pass into treating `EMP-0001` as the canonical
+ * shape when the live data said `EMP001`.
+ *
+ * The real generator is `nextEmployeeCode` in shared/employeeCode.js, and it
+ * cannot be a plain sequence draw like the numbers in this file: an Employee ID
+ * is scoped PER COMPANY (two tenants may both hold EMP001) and has to continue
+ * that company's own series, which a single global sequence cannot express.
+ *
+ * `seq_emp` itself is still used, by `FIXTURE_CODE_SQL`, purely to make test rows
+ * unique.
+ */
 
 /** REQ-0001  (job_requisitions) */
 export async function nextRequisitionNumber(client) {

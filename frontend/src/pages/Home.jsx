@@ -3,14 +3,16 @@ import {
   CheckSquare, Clock, Bell,
   RefreshCw, Megaphone, PartyPopper, CheckCheck,
   FileText, Download, LogIn, LogOut, MapPin,
-  Inbox, Send, ShieldCheck, Sparkles, AlertCircle,
+  ShieldCheck, Sparkles, AlertCircle, ExternalLink,
 } from 'lucide-react';
 import api from '@/services/api/client';
+import { downloadHomeDocument } from './homeDocuments';
 import { useAuth } from '@/context/AuthContext';
 import CameraClockModal from '@/components/attendance/CameraClockModal';
 import PunchModeNotice from '@/components/attendance/PunchModeNotice';
 import { getLocationString } from '@/components/attendance/geo';
 import usePunchMode from '@/hooks/usePunchMode';
+import { announcementText } from '@/features/hr/announcementFeed';
 import './Home.css';
 
 const CelebrationsBoard = lazy(() => import('@/components/dashboard/CelebrationsBoard'));
@@ -106,10 +108,17 @@ const TaskRow = ({ t }) => {
   );
 };
 
-const ApprovalRow = ({ a }) => {
+// One pending approval. Clicking opens it: a review (intern evaluation,
+// probation review) on its own form, anything else in the Approval Center.
+const ApprovalRow = ({ a, onOpen }) => {
   const initials = (a.requested_by || 'U').split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
   return (
-    <div className="hm-appr-row">
+    <div className={`hm-appr-row${onOpen ? ' hm-appr-row--link' : ''}`}
+      {...(onOpen ? {
+        role: 'button', tabIndex: 0, title: 'Open',
+        onClick: onOpen,
+        onKeyDown: e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(); } },
+      } : {})}>
       <div className="hm-appr-avatar">{initials}</div>
       <div className="hm-appr-info">
         <span className="hm-appr-from">{a.requested_by || 'Unknown'}</span>
@@ -121,34 +130,44 @@ const ApprovalRow = ({ a }) => {
   );
 };
 
-// A Google Drive "share" link (…/file/d/ID/view or ?id=ID) opens Drive's own
-// viewer page, not the file — the HTML5 `download` attribute is a no-op for
-// cross-origin URLs like this, so clicking it just navigates there instead of
-// downloading anything. Drive's `uc?export=download` endpoint for the same
-// file id responds with a real Content-Disposition: attachment, which forces
-// an actual download regardless of the anchor's `download` attribute.
-const driveFileId = url => {
-  const m = String(url || '').match(/\/file\/d\/([a-zA-Z0-9_-]+)/) || String(url || '').match(/[?&]id=([a-zA-Z0-9_-]+)/);
-  return m ? m[1] : null;
-};
-const downloadHref = d => {
-  const id = String(d.file_url || '').includes('drive.google.com') ? driveFileId(d.file_url) : null;
-  return id ? `https://drive.google.com/uc?export=download&id=${id}` : d.file_url;
-};
-
 // Single-column tile — full-width row so the document title is never
 // truncated; the card scrolls internally if the list runs long.
-const DocTile = ({ d }) => (
-  <div className="hm-doctile" title={d.description || d.title}>
-    <span className="hm-doctile-icon"><FileText size={14} /></span>
-    <span className="hm-doctile-title">{d.title}</span>
-    {d.file_url
-      ? <a className="hm-doctile-dl" href={downloadHref(d)} download title="Download">
-          <Download size={11} /> Download
-        </a>
-      : <span className="hm-doctile-dl hm-doctile-dl--muted">Soon</span>}
-  </div>
-);
+// Download goes through Pulse (homeDocuments.js), which returns the file
+// itself: a Drive share link followed by the browser opens Drive's viewer, or
+// Google's sign-in page for an org-restricted file.
+const DocTile = ({ d, kind, onError }) => {
+  const [busy, setBusy] = useState(false);
+  const meta = [d.version, d.effective_date && `Effective ${fmtShortDate(d.effective_date)}`]
+    .filter(Boolean).join(' · ');
+  const onDownload = async () => {
+    setBusy(true);
+    const err = await downloadHomeDocument(kind, d);
+    setBusy(false);
+    if (err) onError(err);
+  };
+  return (
+    <div className="hm-doctile" title={d.description || d.title}>
+      <span className="hm-doctile-icon"><FileText size={14} /></span>
+      <span className="hm-doctile-title">
+        {d.title}
+        {meta && <span className="hm-doctile-meta">{meta}</span>}
+      </span>
+      {d.download === 'file' ? (
+        <button type="button" className="hm-doctile-dl" onClick={onDownload} disabled={busy}
+                aria-label={`Download ${d.title}`}>
+          <Download size={11} /> {busy ? 'Preparing…' : 'Download'}
+        </button>
+      ) : d.download === 'link' ? (
+        <button type="button" className="hm-doctile-dl" onClick={onDownload}
+                aria-label={`Open ${d.title}`}>
+          <ExternalLink size={11} /> Open
+        </button>
+      ) : (
+        <span className="hm-doctile-dl hm-doctile-dl--muted">Not linked yet</span>
+      )}
+    </div>
+  );
+};
 
 const CardShell = ({ icon, iconBg, title, action, children }) => (
   <div className="hm-card">
@@ -322,7 +341,8 @@ export default function Home({ setPage }) {
   // nothing to show. Treated as a load failure, not as an empty list.
   const degraded    = summary?.degraded || [];
 
-  const apprCount   = myApprovals.awaitingMyAction.length;
+  // Full count of what waits on me; the card lists only the first few.
+  const apprCount   = myApprovals.awaitingMyActionTotal ?? myApprovals.awaitingMyAction.length;
   const openTaskCt  = myTasks.length;
 
   return (
@@ -352,11 +372,11 @@ export default function Home({ setPage }) {
           </div>
 
           <div className="hm-hero-r">
-            {/* Personal counters — same for every role. The two
-                approval-related ones (To Action / My Requests) open the
+            {/* Personal counters — same for every role. To Action opens the
+                Approval Center (what waits on me); My Requests opens the
                 read-only My Requests page; My Tasks has no dedicated list
                 view yet, so it stays inert. */}
-            <button className="hm-kpi-card" onClick={() => go('MyRequests')}>
+            <button className="hm-kpi-card" onClick={() => go('ApprovalCenter')}>
               <span className="hm-kpi-val" style={{ color: apprCount > 0 ? '#fbbf24' : '#fff' }}>
                 {loading ? '—' : apprCount}
               </span>
@@ -448,47 +468,79 @@ export default function Home({ setPage }) {
           <CardShell
             icon={<Bell size={13} color="#f59e0b" />} iconBg="hm-icon-bg--approvals"
             title="My Pending Approvals"
+            action={setPage && (
+              <button type="button" className="hm-card-link" aria-label="View all approvals"
+                onClick={() => setPage('ApprovalCenter')}>
+                View all
+              </button>
+            )}
           >
+            {/* A short preview of the Approval Center's My Pending Approvals —
+                every module, intern evaluations and probation reviews included.
+                "View all" opens the full list. */}
             {loading ? <Skeleton />
               : loadError ? <Failed what="your approvals" onRetry={load} />
-              : (
-                <>
-                  <div className="hm-sub-hd"><Inbox size={11} /> Awaiting my action</div>
-                  {myApprovals.awaitingMyAction.length === 0
-                    ? <div className="hm-sub-empty">Nothing needs your sign-off.</div>
-                    : myApprovals.awaitingMyAction.map((a, i) => <ApprovalRow key={a.id || i} a={a} />)}
-                  <div className="hm-sub-hd"><Send size={11} /> Awaiting others</div>
-                  {myApprovals.awaitingOthers.length === 0
-                    ? <div className="hm-sub-empty">You have no requests pending sign-off.</div>
-                    : myApprovals.awaitingOthers.map((a, i) => <ApprovalRow key={a.id || i} a={a} />)}
-                </>
-              )}
+              : myApprovals.awaitingMyAction.length === 0
+                ? <Empty icon={<CheckCheck size={28} color="#d1d5db" />} text="Nothing needs your sign-off." />
+                : (
+                  <>
+                    {myApprovals.awaitingMyAction.map((a, i) => (
+                      <ApprovalRow key={a.id || i} a={a} onOpen={setPage && (() => (a.open
+                        ? setPage(a.open.page, a.open.params || {})
+                        : setPage('ApprovalCenter')))} />
+                    ))}
+                    {apprCount > myApprovals.awaitingMyAction.length && (
+                      <div className="hm-sub-empty">
+                        +{apprCount - myApprovals.awaitingMyAction.length} more in View all
+                      </div>
+                    )}
+                  </>
+                )}
           </CardShell>
 
           {/* Slot 3 — Announcements (all roles) */}
           <CardShell
             icon={<Megaphone size={13} color="#3b82f6" />} iconBg="hm-icon-bg--announcements"
             title="Announcements"
+            // Shown for every role, even when the card is empty: My Announcements
+            // is a personal page (PERSONAL_PAGES), so no role is gated out of it.
+            action={setPage && (
+              <button type="button" className="hm-card-link"
+                onClick={() => setPage('MyAnnouncements')}>
+                View all
+              </button>
+            )}
           >
             {loading ? <Skeleton />
               : loadError ? <Failed what="announcements" onRetry={load} />
               : announcements.length === 0
                 ? <Empty icon={<Megaphone size={28} color="#d1d5db" />} text="No active announcements." />
                 : announcements.map((ann, i) => (
-                    <div key={ann.id || i} className="hm-ann-row">
+                    // Opens the announcement in full on My Announcements — the
+                    // same place the bell opens it, which also records the read.
+                    <div key={ann.id || i} className="hm-ann-row hm-ann-row--link"
+                      role="button" tabIndex={0} title="Open announcement"
+                      onClick={() => setPage && setPage('MyAnnouncements', { ref: ann.id })}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          setPage && setPage('MyAnnouncements', { ref: ann.id });
+                        }
+                      }}>
                       <div className="hm-ann-dot" />
                       <div className="hm-ann-body">
                         <div className="hm-ann-title">{ann.title}</div>
-                        <div className="hm-ann-msg">{ann.message || ann.body || ann.content}</div>
+                        <div className="hm-ann-msg">{announcementText(ann.message)}</div>
                         {ann.created_at && <div className="hm-ann-date">{fmtLongDate(ann.created_at)}</div>}
                       </div>
                     </div>
                   ))}
           </CardShell>
 
-          {/* Slot 4 — Policies (all roles; replaces the old Live Activity Feed).
-              Sourced from hr_policies — whatever's linked/uploaded via the Policy
-              Documents page (features/hr/pages/Policies.jsx) shows up here, live. */}
+          {/* Slot 4 — Policies (all roles). Sourced from hr_policies, maintained on
+              the Policy Documents page (features/hr/pages/Policies.jsx): only
+              active, company-wide policies, one tile per policy at its latest
+              version. Internal HR/admin SOPs never reach this panel. */}
           <CardShell
             icon={<ShieldCheck size={13} color="#0ea5e9" />} iconBg="hm-icon-bg--announcements"
             title="Policies"
@@ -497,7 +549,7 @@ export default function Home({ setPage }) {
               : (loadError || degraded.includes('policies')) ? <Failed what="policies" onRetry={load} />
               : policies.length === 0
                 ? <Empty icon={<FileText size={28} color="#d1d5db" />} text="No policy documents yet." />
-                : <div className="hm-doc-grid">{policies.map((d, i) => <DocTile key={d.id || i} d={d} />)}</div>}
+                : <div className="hm-doc-grid">{policies.map((d, i) => <DocTile key={d.id || i} d={d} kind="policy" onError={m => showToast(m, 'err')} />)}</div>}
           </CardShell>
 
           {/* Slot 5 — Brand Vault: templates & brand assets (ppt template, logo,
@@ -510,7 +562,7 @@ export default function Home({ setPage }) {
               : (loadError || degraded.includes('brandAssets')) ? <Failed what={BRAND_VAULT_LABEL.toLowerCase()} onRetry={load} />
               : brandAssets.length === 0
                 ? <Empty icon={<FileText size={28} color="#d1d5db" />} text="No templates yet." />
-                : <div className="hm-doc-grid">{brandAssets.map((d, i) => <DocTile key={d.id || i} d={d} />)}</div>}
+                : <div className="hm-doc-grid">{brandAssets.map((d, i) => <DocTile key={d.id || i} d={d} kind="brand" onError={m => showToast(m, 'err')} />)}</div>}
           </CardShell>
 
           {/* Slot 6 — Today's Celebrations (all roles) */}

@@ -358,7 +358,11 @@ class GRNService {
     receivedDate, companyId, createdBy, releasedAfterIqc = false,
   }) {
     const itemIdStr = String(item.item_id);
-    await advancedInventoryRepo.createBatch({
+    // The supplier's own lot identity, captured at the only moment anyone knows
+    // it. Previously these arrived on the request, were used for nothing beyond
+    // the internal batch number, and were gone — which is why a recall could not
+    // begin from a supplier batch or a manufacturer part number (finding 7.1).
+    const batch = await advancedInventoryRepo.createBatch({
       item_id: item.item_id,
       warehouse_id: warehouseId,
       batch_number: item.batch_number || `GRN-${grnNumber}-${itemIdStr.substring(0, 4)}`,
@@ -368,6 +372,12 @@ class GRNService {
       grn_id: grn.id,
       quantity_received: acceptedQty,
       rate: item.rate,
+      company_id: companyId,
+      supplier_batch_no: item.supplier_batch_no || null,
+      manufacturer: item.manufacturer || null,
+      manufacturer_part_no: item.manufacturer_part_no || null,
+      manufacturing_date: item.manufacturing_date || null,
+      bin_id: item.bin_id || null,
     }, client);   // <-- the transaction client, not the pool
 
     // Uses the shared postStock() helper (also updates
@@ -388,6 +398,14 @@ class GRNService {
       createdBy,
       companyId,
       transactionDate: receivedDate,
+      // The batch and this ledger row were already created together in one
+      // transaction — and the link between them was thrown away one line after
+      // it was generated. Passing it is the whole of finding 6's receipt leg:
+      // it puts the lot on the ledger row AND on the FIFO cost layer, which is
+      // why both columns read 100% NULL before.
+      batchId: batch?.id ?? null,
+      toWarehouseId: warehouseId,
+      reasonCode: 'goods_receipt',
     });
   }
 

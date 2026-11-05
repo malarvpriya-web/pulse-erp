@@ -1,0 +1,399 @@
+/* CandidateWorkbench — §6's candidate list. Prefix: `.cwb`.
+ *
+ * Every selector starts with the root class. That is the convention the project
+ * manual records after a page stylesheet's bare `.table` rule started winning
+ * against another module's table: a page CSS file is loaded globally once its page
+ * is visited, so an unprefixed rule is a global rule.
+ */
+
+.cwb { display: flex; flex-direction: column; gap: 9px; }
+
+/* ── Search + filter bar ───────────────────────────────────────────────── */
+
+.cwb .cwb-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 11px;
+  background: #fff;
+  border: 1px solid #ecedf3;
+  border-radius: 10px;
+}
+
+.cwb .cwb-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  /* Grows first, so the search box is the widest control on the row at every
+     width — it is the one a recruiter uses most. */
+  flex: 2 1 260px;
+  min-width: 200px;
+}
+
+.cwb .cwb-search-icon {
+  position: absolute;
+  left: 9px;
+  color: #94a3b8;
+  pointer-events: none;
+}
+
+.cwb .cwb-search-input {
+  width: 100%;
+  padding: 8px 28px 8px 30px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  font-size: 12.5px;
+  font-family: inherit;
+  color: #1f2937;
+}
+.cwb .cwb-search-input:focus { outline: 2px solid #ddd3fb; outline-offset: -1px; border-color: #c4b5fd; }
+
+.cwb .cwb-search-clear {
+  position: absolute;
+  right: 7px;
+  display: inline-flex;
+  padding: 2px;
+  background: none;
+  border: 0;
+  color: #94a3b8;
+  cursor: pointer;
+}
+.cwb .cwb-search-clear:hover { color: #475569; }
+
+.cwb .cwb-sel,
+.cwb .cwb-input {
+  padding: 8px 9px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  font-size: 12px;
+  font-family: inherit;
+  color: #1f2937;
+  background: #fff;
+  max-width: 100%;
+}
+.cwb .cwb-sel { cursor: pointer; flex: 0 1 auto; }
+.cwb .cwb-sel--full { width: 100%; }
+.cwb .cwb-sel--sort { flex: none; }
+.cwb .cwb-input { width: 100%; }
+
+.cwb .cwb-more {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 11px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #475569;
+  cursor: pointer;
+  flex: none;
+}
+.cwb .cwb-more:hover,
+.cwb .cwb-more.is-on { background: #F5F3FF; border-color: #ddd3fb; color: #4B2DCE; }
+
+.cwb .cwb-badge {
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  background: #4B2DCE;
+  color: #fff;
+  border-radius: 20px;
+  font-size: 9.5px;
+  font-weight: 800;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.cwb .cwb-reset {
+  padding: 8px 10px;
+  background: none;
+  border: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: #6C47FF;
+  cursor: pointer;
+  flex: none;
+}
+.cwb .cwb-reset:hover { text-decoration: underline; }
+
+.cwb .cwb-bar-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  flex: none;
+}
+
+.cwb .cwb-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  color: #475569;
+  cursor: pointer;
+  flex: none;
+}
+.cwb .cwb-icon-btn:hover:not(:disabled) { background: #F5F3FF; border-color: #ddd3fb; color: #4B2DCE; }
+.cwb .cwb-icon-btn:disabled { opacity: .4; cursor: not-allowed; }
+
+/* ── Advanced filters ──────────────────────────────────────────────────── */
+
+.cwb .cwb-filters {
+  display: grid;
+  /* auto-fill with a 190px floor gives 4 columns at 1366, 5 at 1600 and 7 at
+     1920 without a media query per breakpoint. */
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 9px 11px;
+  padding: 12px;
+  background: #fbfbfe;
+  border: 1px solid #ecedf3;
+  border-radius: 10px;
+}
+
+.cwb .cwb-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+
+.cwb .cwb-field-label {
+  font-size: 9.5px;
+  font-weight: 800;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
+
+/* ── Bulk bar ──────────────────────────────────────────────────────────── */
+
+.cwb .cwb-bulk {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 11px;
+  background: #EFEAFD;
+  border: 1px solid #ddd3fb;
+  border-radius: 10px;
+  /* Sticky so it stays reachable while the recruiter scrolls a page of 50 rows
+     picking candidates — the whole point of a bulk bar is being there when the
+     selection is done. */
+  position: sticky;
+  top: 0;
+  z-index: 5;
+}
+
+.cwb .cwb-bulk-count { font-size: 12.5px; font-weight: 800; color: #4B2DCE; flex: none; }
+
+.cwb .cwb-sel--bulk { font-size: 11.5px; padding: 6px 8px; }
+
+.cwb .cwb-bulk-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 10px;
+  background: #fff;
+  border: 1px solid #ddd3fb;
+  border-radius: 7px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #4B2DCE;
+  cursor: pointer;
+}
+.cwb .cwb-bulk-btn:hover { background: #F5F3FF; }
+
+.cwb .cwb-bulk-clear {
+  margin-left: auto;
+  padding: 6px 9px;
+  background: none;
+  border: 0;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #6b7280;
+  cursor: pointer;
+}
+.cwb .cwb-bulk-clear:hover { color: #111827; text-decoration: underline; }
+
+/* ── Result meta ───────────────────────────────────────────────────────── */
+
+.cwb .cwb-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #475569;
+  padding: 0 2px;
+}
+.cwb .cwb-meta-dim { font-weight: 500; color: #94a3b8; }
+
+/* ── Table ─────────────────────────────────────────────────────────────── */
+
+.cwb .cwb-table-wrap {
+  background: #fff;
+  border: 1px solid #ecedf3;
+  border-radius: 10px;
+  /* Horizontal scroll rather than squeezing twelve columns into 1366px: §33 says
+     do not sacrifice usability, and a legible row that scrolls beats an
+     illegible one that fits. */
+  overflow-x: auto;
+}
+
+.cwb .cwb-table { width: 100%; border-collapse: collapse; min-width: 1180px; }
+
+.cwb .cwb-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #fbfbfe;
+  padding: 9px 10px;
+  text-align: left;
+  font-size: 9.5px;
+  font-weight: 800;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  border-bottom: 1px solid #ecedf3;
+  white-space: nowrap;
+}
+
+.cwb .cwb-th-check,
+.cwb .cwb-td-check { width: 34px; padding-left: 12px; }
+.cwb .cwb-th-actions,
+.cwb .cwb-td-actions { width: 132px; }
+
+.cwb .cwb-table tbody td {
+  padding: 9px 10px;
+  border-bottom: 1px solid #f4f5f9;
+  font-size: 12px;
+  color: #334155;
+  vertical-align: top;
+}
+
+.cwb .cwb-tr:hover { background: #fcfbff; }
+.cwb .cwb-tr.is-open { background: #F5F3FF; }
+.cwb .cwb-tr.is-selected { background: #FBFAFF; }
+
+.cwb .cwb-name {
+  background: none;
+  border: 0;
+  padding: 0;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: #4B2DCE;
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+}
+.cwb .cwb-name:hover { text-decoration: underline; }
+
+.cwb .cwb-cell-main { display: block; font-weight: 600; color: #1f2937; }
+
+.cwb .cwb-sub {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  margin-top: 2px;
+  font-size: 10.5px;
+  color: #94a3b8;
+}
+
+.cwb .cwb-dim { color: #b6bfcc; font-style: italic; }
+.cwb .cwb-nowrap { white-space: nowrap; }
+
+/* 7+ days with no movement is the threshold the work queue escalates at, so the
+   list marks it the same way — one number meaning one thing on both screens. */
+.cwb .cwb-stale { color: #b45309; font-weight: 700; }
+
+.cwb .cwb-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  border-radius: 20px;
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.cwb .cwb-chip--xs { font-size: 9.5px; padding: 1px 6px; }
+.cwb .cwb-chip--dim { background: #f1f5f9; color: #64748b; }
+
+/* The stage select is coloured by its own value, so the column scans like a set
+   of badges rather than a column of identical dropdowns. */
+.cwb .cwb-stage-sel {
+  padding: 4px 6px;
+  border: 1px solid transparent;
+  border-radius: 20px;
+  font-size: 10.5px;
+  font-weight: 700;
+  font-family: inherit;
+  cursor: pointer;
+  max-width: 150px;
+}
+.cwb .cwb-stage-sel:hover { border-color: rgba(75, 45, 206, .28); }
+.cwb .cwb-stage-sel:disabled { opacity: .55; cursor: wait; }
+
+.cwb .cwb-act {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  margin-right: 3px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  color: #64748b;
+  cursor: pointer;
+}
+.cwb .cwb-act:hover { background: #F5F3FF; border-color: #ddd3fb; color: #4B2DCE; }
+
+/* ── Empty ─────────────────────────────────────────────────────────────── */
+
+.cwb .cwb-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 46px 22px;
+  text-align: center;
+  color: #94a3b8;
+}
+.cwb .cwb-empty-title { margin: 0; font-size: 13.5px; font-weight: 700; color: #334155; }
+.cwb .cwb-empty-sub { margin: 0; font-size: 12px; color: #64748b; max-width: 440px; line-height: 1.55; }
+.cwb .cwb-empty-btn {
+  margin-top: 4px;
+  padding: 7px 14px;
+  background: #4B2DCE;
+  border: 1px solid #4B2DCE;
+  border-radius: 7px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #fff;
+  cursor: pointer;
+}
+.cwb .cwb-empty-btn:hover { background: #3f23b5; }
+
+/* ── Pager ─────────────────────────────────────────────────────────────── */
+
+.cwb .cwb-pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 4px 0 2px;
+}
+.cwb .cwb-pager-label { font-size: 12px; font-weight: 600; color: #475569; }
+
+/* Mounted as a tab panel the host page owns the gutters; see PageShell's
+   `embedded` note for the same reasoning. */
+.cwb--embedded { gap: 8px; }
+
+@media (max-width: 1400px) {
+  .cwb .cwb-bar { gap: 6px; }
+  .cwb .cwb-sel { font-size: 11.5px; padding: 7px 8px; }
+}

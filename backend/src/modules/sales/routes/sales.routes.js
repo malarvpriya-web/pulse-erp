@@ -7,7 +7,6 @@ import quotationsRepository from '../repositories/quotations.repository.js';
 import salesOrdersRepository from '../repositories/salesOrders.repository.js';
 import salesTargetsRepository from '../repositories/salesTargets.repository.js';
 import pool from '../../../config/db.js';
-import { nextLifecycleNumber } from '../../../shared/docNumber.js';
 import * as drive from '../../../services/googleDrive.service.js';
 import { calculateCommission } from '../../../services/commissionService.js';
 import { companyOf } from '../../../shared/scope.js';
@@ -16,12 +15,34 @@ import { sqlEmployeeActive } from '../../../shared/statusSets.js';
 import { employeeOf } from '../../../shared/scope.js';
 import invoiceService from '../../finance/services/invoice.service.js';
 import { createProductionOrderFromSalesOrder } from '../../operations/lifecycle.routes.js';
+import { ensureProject } from '../../projects/services/projectCreation.service.js';
 import { requiresRenewalApproval, isAuthorizedRenewalApprover, RENEWAL_APPROVAL_THRESHOLD } from '../../../shared/renewalApproval.js';
 import { createInstallationRequest } from '../../servicedesk/routes/installation.routes.js';
 import { captureBefore } from '../../../middlewares/captureBefore.js';
+import { WorkflowError, assertFinalInspectionGate, nextDispatchRef, qcRequirementStatus } from '../../warehouse/pickListWorkflow.service.js';
+import { toCsv } from '../../../shared/csv.js';
 
+// SO acceptance -> lifecycle + project + production order, as ONE transaction.
+//
+// All-or-nothing on purpose (LEGACY_MIS_TO_PULSE_AUDIT.md §4). The project and
+// production-order steps used to sit in SAVEPOINTs that swallowed their errors,
+// so a failure committed a lifecycle with no project or no production order —
+// and because a lifecycle now existed, every retry returned 'already_exists'
+// and the gap could never be filled. Now any failure rolls everything back and
+// is reported with the step it failed at; re-confirming the order retries.
+//
+// Never duplicates:
+//  - the sales order row is locked FOR UPDATE, so concurrent confirms of the
+//    same order serialise and the second sees the first one's lifecycle;
+//  - project and lifecycle come from ensureProject() (projects/services/
+//    projectCreation.service.js), the one project creator: it locks the order's
+//    opportunity (the same lock a Won conversion takes), so a won opportunity
+//    and its order cannot each create a project; it reuses the opportunity's or
+//    the order's project and that project's single open lifecycle;
+//  - an existing production order for the order is reused.
 async function autoBootstrapLifecycleOnOrderAccept(salesOrderId, user) {
   const client = await pool.connect();
+  let step = 'sales order';
   try {
     await client.query('BEGIN');
     const soRes = await client.query(
@@ -49,89 +70,37 @@ async function autoBootstrapLifecycleOnOrderAccept(salesOrderId, user) {
       return { skipped: true, reason: 'already_exists', lifecycle_id: existing.rows[0].id };
     }
 
-    const lifecycleNo = await nextLifecycleNumber(client);
     const actorId = user?.userId || user?.id || null;
     const actorName = user?.name || user?.email || 'System';
-    const ins = await client.query(
-      `INSERT INTO lifecycle_instances
-        (lifecycle_number, sales_order_id, customer_id, current_stage, status, stage_notes, created_by, created_by_name)
-       VALUES ($1,$2,$3,'order','active',$4,$5,$6)
-       RETURNING id`,
-      [lifecycleNo, salesOrderId, so.customer_id || null, 'Auto-bootstrapped on sales order acceptance', actorId, actorName]
-    );
-    await client.query(
-      `INSERT INTO lifecycle_stage_history
-        (lifecycle_instance_id, from_stage, to_stage, action, remarks, actor_id, actor_name, gate_snapshot)
-       VALUES ($1,NULL,'order','advance',$2,$3,$4,'{}')`,
-      [ins.rows[0].id, 'Auto lifecycle started from sales order status change', actorId, actorName]
-    );
-    const lifecycleId = ins.rows[0].id;
 
-    // Auto-create a Project linked to this sales order + lifecycle. Runs inside
-    // its own SAVEPOINT: projects.created_by FKs to employees(id), not
-    // users(id), and the confirming account is often a login with no linked
-    // employee (e.g. the canonical admin). Without a savepoint, that
-    // constraint violation aborted the whole client transaction — the
-    // production-order creation below would then fail too (Postgres refuses
-    // every query until rollback), and COMMIT on an aborted transaction is a
-    // silent no-op ROLLBACK, so the entire bootstrap vanished while this
-    // function still returned success.
-    let projectId = null;
-    try {
-      await client.query('SAVEPOINT sp_project');
-      const yr  = new Date().getFullYear();
-      const seqR = await client.query(
-        `SELECT COUNT(*)::int AS n FROM projects WHERE ($1::int IS NULL OR company_id=$1)`,
-        [so.company_id]
-      );
-      const seq  = String((seqR.rows[0]?.n || 0) + 1).padStart(4, '0');
-      const code = `PRJ-${yr}-${seq}`;
-      // Carry the pursuit (IPM) forward: opportunity -> quotation -> this SO.
-      // Lets the Delivery Tracker show the IPM<->IPP link with no manual step.
-      let oppId = null;
-      if (so.quotation_id) {
-        const oppR = await client.query(
-          `SELECT opportunity_id FROM quotations WHERE id=$1`, [so.quotation_id]
-        );
-        oppId = oppR.rows[0]?.opportunity_id || null;
-      }
-      const empR = await client.query(`SELECT employee_id FROM users WHERE id=$1`, [actorId]);
-      const createdByEmployeeId = empR.rows[0]?.employee_id || null;
-      const projRes = await client.query(
-        `INSERT INTO projects
-           (project_code, project_name, company_id, customer_name,
-            sales_order_ref, opportunity_id, status, start_date, project_type, created_by)
-         VALUES ($1,$2,$3,$4,$5,$6,'planning',CURRENT_DATE,'EPC',$7)
-         ON CONFLICT DO NOTHING
-         RETURNING id`,
-        [code,
-         `Project for ${so.customer_name || 'Customer'} — ${so.order_number}`,
-         so.company_id, so.customer_name || null,
-         so.order_number || so.id.toString(), oppId, createdByEmployeeId]
-      );
-      projectId = projRes.rows[0]?.id || null;
-      if (projectId) {
-        await client.query(
-          `UPDATE lifecycle_instances SET project_id=$1, updated_at=NOW() WHERE id=$2`,
-          [projectId, lifecycleId]
-        );
-      }
-      await client.query('RELEASE SAVEPOINT sp_project');
-    } catch (projErr) {
-      await client.query('ROLLBACK TO SAVEPOINT sp_project').catch(() => {});
-      console.error('[autoBootstrap] project creation failed (non-fatal):', projErr.message);
-    }
+    // Project + lifecycle through the one project creator: it re-reads the
+    // (already locked) order, locks the order's own opportunity, reuses that
+    // opportunity's or this order's project, and reuses the project's open
+    // lifecycle — attaching this order to it — instead of starting a second.
+    step = 'project';
+    const setup = await ensureProject(client, {
+      salesOrderId,
+      actor: { userId: actorId, name: actorName },
+      lifecycleNotes: 'Auto-bootstrapped on sales order acceptance',
+    });
+    const projectId = setup.project.id;
+    const lifecycleId = setup.lifecycle.id;
 
-    // Auto-create the Production Order this Sales Order is meant to trigger.
-    // Previously this only ever created the lifecycle instance + a project stub —
-    // nothing in the reachable confirm/accept path ever created a production_orders
-    // row, so Production had no record to work from unless someone in Production
-    // manually re-typed the order from scratch. createProductionOrderFromSalesOrder
-    // already existed (in the operations/lifecycle module) but was only reachable
-    // via an endpoint the frontend never calls.
-    let productionOrderId = null;
-    try {
-      await client.query('SAVEPOINT sp_prod_order');
+    // The Production Order this Sales Order is meant to trigger, reusing one
+    // that already exists for the order (e.g. raised by hand in Production).
+    step = 'production order';
+    let productionOrderId;
+    const existingPo = await client.query(
+      `SELECT id FROM production_orders WHERE sales_order_id=$1 ORDER BY id LIMIT 1`,
+      [salesOrderId]
+    );
+    if (existingPo.rows.length) {
+      productionOrderId = existingPo.rows[0].id;
+      await client.query(
+        `UPDATE production_orders SET project_id=COALESCE(project_id, $2) WHERE id=$1`,
+        [productionOrderId, projectId]
+      );
+    } else {
       // Best-effort BOM match by product name, same pattern the lifecycle "design"
       // gate already uses, so a matched BOM also seeds production_operations.
       const firstItem = await client.query(
@@ -141,41 +110,46 @@ async function autoBootstrapLifecycleOnOrderAccept(salesOrderId, user) {
       let bomId = null;
       if (firstItem.rows[0]?.item_description) {
         const bomMatch = await client.query(
-          `SELECT id FROM bom_headers WHERE product_name ILIKE '%' || $1 || '%' AND status='active' LIMIT 1`,
-          [firstItem.rows[0].item_description]
+          `SELECT id FROM bom_headers
+            WHERE product_name ILIKE '%' || $1 || '%' AND status='active'
+              AND company_id IS NOT DISTINCT FROM $2
+            LIMIT 1`,
+          [firstItem.rows[0].item_description, so.company_id ?? null]
         );
         bomId = bomMatch.rows[0]?.id || null;
       }
       const po = await createProductionOrderFromSalesOrder(client, so, { user }, { bom_id: bomId, project_id: projectId });
-      productionOrderId = po?.id || null;
-      if (productionOrderId) {
-        await client.query(
-          `UPDATE lifecycle_instances SET production_order_id=$1, updated_at=NOW() WHERE id=$2`,
-          [productionOrderId, lifecycleId]
-        );
-      }
-      await client.query('RELEASE SAVEPOINT sp_prod_order');
-    } catch (poErr) {
-      await client.query('ROLLBACK TO SAVEPOINT sp_prod_order').catch(() => {});
-      console.error('[autoBootstrap] production order creation failed (non-fatal):', poErr.message);
+      productionOrderId = po.id;
     }
+    await client.query(
+      `UPDATE lifecycle_instances SET production_order_id=COALESCE(production_order_id, $1), updated_at=NOW() WHERE id=$2`,
+      [productionOrderId, lifecycleId]
+    );
 
     await client.query('COMMIT');
     return { skipped: false, lifecycle_id: lifecycleId, project_id: projectId, production_order_id: productionOrderId };
   } catch (e) {
-    await client.query('ROLLBACK');
-    console.error('[autoBootstrap] full bootstrap failed (lifecycle/project/production order all rolled back):', e.message);
+    await client.query('ROLLBACK').catch(() => {});
+    // ensureProject() names its own step (sales order / opportunity / project / lifecycle).
+    const failedAt = e.step || step;
+    console.error(`[autoBootstrap] SO ${salesOrderId}: failed at ${failedAt}, everything rolled back:`, e.message);
     // reason:'error' shares the skipped:true shape with legitimate no-ops
-    // (sales_order_not_found/status_not_eligible/already_exists) on purpose —
-    // callers that only care about "did a production order get created"
-    // still work unchanged. But this IS a real failure, not a no-op, so it's
-    // tagged separately for callers that want to distinguish and surface it.
-    return { skipped: true, failed: true, reason: 'error', error: e.message };
+    // (sales_order_not_found/status_not_eligible/already_exists) on purpose,
+    // but carries failed:true + the step, which bootstrapWarning() turns into
+    // the response warning.
+    return { skipped: true, failed: true, reason: 'error', step: failedAt, error: e.message };
   } finally {
     client.release();
   }
 }
 
+// The response warning for a failed bootstrap: what failed, why, and that
+// nothing was left half-created, so confirming the order again is a safe retry.
+function bootstrapWarning(bootstrap, done) {
+  if (!bootstrap?.failed) return null;
+  return `${done}, but automatic project / production set-up failed while creating the ${bootstrap.step}: ${bootstrap.error}. `
+    + 'Nothing was created — fix the cause and confirm the order again to retry.';
+}
 
 router.use(verifyToken);
 
@@ -239,9 +213,10 @@ router.get('/quotations/export', requirePermission('sales', 'view'), async (req,
       r.validity_date  ? new Date(r.validity_date).toISOString().split('T')[0]  : '',
       r.subtotal, r.tax_amount, r.total_amount,
       (r.notes || '').replace(/[\r\n,]/g, ' '),
-    ].map(v => `"${(v ?? '').toString().replace(/"/g, '""')}"`).join(',');
+    ];
 
-    const csv = [headers.join(','), ...rows.map(toRow)].join('\n');
+    // Customer names and quotation notes are user-entered. See shared/csv.js.
+    const csv = toCsv(headers, rows.map(toRow));
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', `attachment; filename="quotations_${Date.now()}.csv"`);
     res.send(csv);
@@ -418,10 +393,12 @@ async function checkDiscountApprovalGate(quotation, companyId, req) {
 
 router.patch('/quotations/:id/convert-to-order', requirePermission('sales', 'add'), async (req, res) => {
   try {
-    const quotation = await quotationsRepository.findById(req.params.id);
+    const companyId = companyOf(req);
+    // Company-scoped: an unscoped read let another company's quotation become
+    // an order here, which then started project set-up on it.
+    const quotation = await quotationsRepository.findById(req.params.id, companyId);
     if (!quotation) return res.status(404).json({ error: 'Quotation not found' });
     const userId    = req.user?.userId ?? req.user?.id;
-    const companyId = companyOf(req);
 
     // This path had neither the credit-check gate that /accept-and-convert and
     // /orders/from-quotation already have, nor the discount-approval gate —
@@ -490,11 +467,8 @@ router.patch('/quotations/:id/convert-to-order', requirePermission('sales', 'add
     // /confirm also triggers — never ran for this conversion path at all, not
     // just silently failed. Same warning-surfacing pattern as /confirm.
     const bootstrap = await autoBootstrapLifecycleOnOrderAccept(order.id, req.user);
-    let productionOrderWarning = null;
-    if ((!bootstrap?.skipped || bootstrap?.failed) && !bootstrap?.production_order_id) {
-      productionOrderWarning = 'Order created, but automatic production-order creation failed — check server logs and create it manually if needed.';
-      console.warn(`[quotations/:id/convert-to-order] production order creation failed for SO ${order.id}`);
-    }
+    const productionOrderWarning = bootstrapWarning(bootstrap, 'Order created');
+    if (productionOrderWarning) console.warn(`[quotations/:id/convert-to-order] project/production set-up failed for SO ${order.id}`);
     notifyWorkflowEvent('order_confirmed', { module: 'Sales Order', recordId: order.id, submitterUserId: order.created_by ?? null });
     calculateCommission(order.id, companyId);
     res.status(201).json({
@@ -635,8 +609,9 @@ router.patch('/quotations/:id/accept-and-convert', requirePermission('sales', 'a
             await client.query(
               `UPDATE opportunities
                SET stage = 'won', closed_date = NOW(), probability_percentage = 100, updated_at = NOW()
-               WHERE id = $1 AND LOWER(stage) NOT IN ('won','lost')`,
-              [quotation.opportunity_id]
+               WHERE id = $1 AND LOWER(stage) NOT IN ('won','lost')
+                 AND company_id IS NOT DISTINCT FROM $2`,
+              [quotation.opportunity_id, quotation.company_id ?? null]
             ).catch(() => {});
           }
           await client.query('COMMIT');
@@ -661,11 +636,8 @@ router.patch('/quotations/:id/accept-and-convert', requirePermission('sales', 'a
     // inserts; the same reasoning applies to any call made before release.
     const { quotation, order, orderNumber } = created;
     const bootstrap = await autoBootstrapLifecycleOnOrderAccept(order.id, req.user);
-    let productionOrderWarning = null;
-    if ((!bootstrap?.skipped || bootstrap?.failed) && !bootstrap?.production_order_id) {
-      productionOrderWarning = 'Order created, but automatic production-order creation failed — check server logs and create it manually if needed.';
-      console.warn(`[quotations/:id/accept-and-convert] production order creation failed for SO ${order.id}`);
-    }
+    const productionOrderWarning = bootstrapWarning(bootstrap, 'Order created');
+    if (productionOrderWarning) console.warn(`[quotations/:id/accept-and-convert] project/production set-up failed for SO ${order.id}`);
     notifyWorkflowEvent('order_confirmed', { module: 'Sales Order', recordId: order.id, submitterUserId: order.created_by ?? null });
     calculateCommission(order.id, companyId);
     res.status(201).json({
@@ -786,6 +758,77 @@ router.get('/orders/customer-summary', requirePermission('sales', 'view'), async
   }
 });
 
+/* GET /orders/fulfilment-reconciliation — READ ONLY (Phase 3H).
+   Orders past dispatch whose stock lines (item_id) were NOT shipped through a
+   dispatched pick list — the only path that now ships stock (Phase 3G) — with
+   the evidence for each and a recommended action. Writes nothing; creates no
+   stock movement, invoice or return. Each order is classified by what the
+   records show, per stock line:
+     fulfilled_by_legacy_ledger  a stock issue referencing the order
+                                 (stock_ledger reference_type 'sales_order')
+                                 equal to the ordered quantity
+     partially_recorded          such an issue exists but differs from the
+                                 ordered quantity
+     shipped_without_stock_issue a shipment / package exists, no stock issue
+     no_fulfilment_record        neither
+   The current safeguards stay in force: none of these orders can be invoiced
+   as goods or returned until it is reconciled through an approved workflow. */
+router.get('/orders/fulfilment-reconciliation', requirePermission('sales', 'view'), async (req, res) => {
+  try {
+    const { rows } = await pool.query(`
+      SELECT so.id, so.company_id, so.order_number, so.order_status, so.order_date, so.dispatched_at, so.delivered_at,
+             so.created_at,
+             (SELECT json_agg(json_build_object(
+                       'sales_order_item_id', s.id, 'item_id', s.item_id, 'ordered', s.quantity::float,
+                       'issued_via_order', COALESCE((SELECT SUM(sl.quantity_out - sl.quantity_in) FROM stock_ledger sl
+                                                      WHERE sl.reference_type = 'sales_order' AND sl.reference_id = so.id
+                                                        AND sl.item_id = s.item_id AND sl.company_id = so.company_id), 0)::float,
+                       'packed', COALESCE((SELECT SUM(pl.quantity) FROM package_lines pl JOIN packages pk ON pk.id = pl.package_id
+                                            WHERE pk.sales_order_id = so.id AND pl.item_id = s.item_id AND NOT pl.unpacked), 0)::float,
+                       'legacy_link', (SELECT json_build_object('stock_ledger_id', k.stock_ledger_id, 'quantity', k.quantity::float,
+                                                                'approved_by', k.approved_by, 'linked_at', k.created_at)
+                                         FROM legacy_fulfilment_links k WHERE k.sales_order_item_id = s.id))
+                       ORDER BY s.id)
+                FROM sales_order_items s WHERE s.order_id = so.id AND s.item_id IS NOT NULL) AS stock_lines,
+             (SELECT json_agg(json_build_object('id', sh.id, 'dispatch_ref', sh.dispatch_ref, 'status', sh.status,
+                                                'pick_list_id', sh.pick_list_id, 'dispatch_date', sh.dispatch_date))
+                FROM shipments sh WHERE sh.sales_order_id = so.id) AS shipments,
+             (SELECT COUNT(*) FROM invoices i WHERE i.sales_order_id = so.id AND LOWER(COALESCE(i.status, '')) <> 'cancelled')::int AS invoices,
+             (SELECT COUNT(*) FROM sales_returns r WHERE r.sales_order_id = so.id)::int AS returns,
+             (SELECT MIN(sl.created_at) FROM stock_ledger sl WHERE sl.reference_type = 'sales_order' AND sl.reference_id = so.id) AS ledger_recorded_at,
+             (SELECT string_agg(DISTINCT sl.remarks, '; ') FROM stock_ledger sl WHERE sl.reference_type = 'sales_order' AND sl.reference_id = so.id) AS ledger_remarks
+        FROM sales_orders so
+       WHERE ($1::int IS NULL OR so.company_id = $1)
+         AND so.deleted_at IS NULL
+         AND LOWER(COALESCE(so.order_status, '')) IN ('dispatched', 'delivered', 'completed', 'invoiced')
+         AND EXISTS (SELECT 1 FROM sales_order_items s WHERE s.order_id = so.id AND s.item_id IS NOT NULL)
+         AND NOT EXISTS (SELECT 1 FROM pick_lists p WHERE p.sales_order_id = so.id AND LOWER(p.status) = 'dispatched')
+       ORDER BY so.company_id, so.id`, [companyOf(req)]);
+
+    const ACTIONS = {
+      reconciled_legacy_fulfilment: 'None — reconciled: every stock line is linked to the stock issue that fulfilled it (legacy_fulfilment_links). Invoicing and returns stay blocked.',
+      fulfilled_by_legacy_ledger: 'Stock left through the pre-pick-list sales-order dispatch, quantities matching. Approve as legacy fulfilment (record the link between these ledger issues and the order) before any invoicing or return; no stock movement is needed.',
+      partially_recorded: 'A stock issue exists but does not match the order. Reconcile the difference against physical records before invoicing, returning or adjusting stock.',
+      shipped_without_stock_issue: 'Shipment/package recorded but stock never left the ledger. Verify physically: if shipped, an approved stock-issue adjustment is needed; if not, reverse the shipment record. Do not invoice or return until then.',
+      no_fulfilment_record: 'No shipment and no stock issue: the order status says shipped but nothing records it. Verify with the customer and warehouse; correct the order status through an approved workflow.',
+    };
+    const orders = rows.map(o => {
+      const lines = o.stock_lines || [];
+      const issued = lines.some(l => l.issued_via_order > 0);
+      const exact = lines.length > 0 && lines.every(l => Math.abs(l.issued_via_order - l.ordered) < 1e-6);
+      const shipped = (o.shipments || []).length > 0 || lines.some(l => l.packed > 0);
+      const linked = lines.length > 0 && lines.every(l => l.legacy_link);
+      const classification = linked ? 'reconciled_legacy_fulfilment'
+        : issued ? (exact ? 'fulfilled_by_legacy_ledger' : 'partially_recorded')
+        : shipped ? 'shipped_without_stock_issue' : 'no_fulfilment_record';
+      return { ...o, classification, recommended_action: ACTIONS[classification] };
+    });
+    const summary = {};
+    for (const o of orders) summary[o.classification] = (summary[o.classification] || 0) + 1;
+    res.json({ orders, summary, total: orders.length });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 router.get('/orders/:id', requirePermission('sales', 'view'), async (req, res) => {
   try {
     const order = await salesOrdersRepository.findById(req.params.id);
@@ -833,27 +876,92 @@ router.post('/orders', requirePermission('sales', 'add'), async (req, res) => {
   }
 });
 
+// ── Order ownership and workflow-owned statuses ──────────────────────────────
+// These routes matched orders by id alone, so any user holding the sales
+// permission could edit, delete or read the lines of another company's order.
+// Every one now resolves the order inside the caller's company first.
+
+/** The caller's own (non-deleted) order, or null. Pass FOR UPDATE / FOR SHARE as `lock`. */
+async function ownOrder(db, id, companyId, lock = '') {
+  if (!/^\d+$/.test(String(id ?? ''))) return null;
+  const { rows: [so] } = await db.query(
+    `SELECT * FROM sales_orders WHERE id = $1 AND deleted_at IS NULL AND ($2::int IS NULL OR company_id = $2) ${lock}`,
+    [id, companyId]);
+  return so || null;
+}
+
+/**
+ * Statuses a workflow owns. Each is reached only through its own route, which
+ * does the work the status stands for — dispatch creates the shipment behind
+ * the quality gate, invoicing raises the invoice and journal, cancellation
+ * checks for open pick lists. Writing them by edit skipped all of that.
+ */
+const WORKFLOW_STATUSES = {
+  dispatched: 'PUT /sales/orders/:id/dispatch (or the warehouse dispatch)',
+  delivered:  'PUT /sales/orders/:id/deliver',
+  invoiced:   'PATCH /sales/orders/:id/invoice',
+  cancelled:  'PATCH /sales/orders/:id/cancel',
+};
+function workflowStatusRefusal(status) {
+  const s = String(status ?? '').trim().toLowerCase();
+  if (!WORKFLOW_STATUSES[s]) return null;
+  return { error: `An order cannot be set to '${s}' by editing it; use ${WORKFLOW_STATUSES[s]}.`,
+           code: 'WORKFLOW_STATUS' };
+}
+
 router.put('/orders/:id', requirePermission('sales', 'edit'), async (req, res) => {
   try {
-    const order = await salesOrdersRepository.update(req.params.id, req.body);
-    logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'sales', recordId: req.params.id, recordType: 'sales_order', action: 'update', newData: order, req });
+    const companyId = companyOf(req);
+    const own = await ownOrder(pool, req.params.id, companyId);
+    if (!own) return res.status(404).json({ error: 'Order not found' });
+    const refusal = req.body?.order_status !== undefined ? workflowStatusRefusal(req.body.order_status) : null;
+    if (refusal) return res.status(409).json(refusal);
+    const order = await salesOrdersRepository.update(req.params.id, req.body, companyId);
+    if (!order) return res.status(404).json({ error: 'Order not found' });
+    logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'sales', recordId: req.params.id, recordType: 'sales_order', action: 'update', oldData: own, newData: order, req });
     res.json(order);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
+// Deleting an order that stock, a shipment or an invoice already hangs off would
+// orphan them — the goods, the dispatch record and the receivable would point
+// at an order that no longer exists. Those orders are cancelled or credited,
+// not deleted.
 router.delete('/orders/:id', requirePermission('sales', 'delete'), async (req, res) => {
+  const client = await pool.connect();
   try {
-    await salesOrdersRepository.delete(req.params.id);
+    await client.query('BEGIN');
+    const own = await ownOrder(client, req.params.id, companyOf(req), 'FOR UPDATE');
+    if (!own) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Order not found' }); }
+    const { rows: [deps] } = await client.query(`
+      SELECT (SELECT COUNT(*) FROM pick_lists WHERE sales_order_id = $1 AND LOWER(COALESCE(status,'')) <> 'cancelled')::int AS pick_lists,
+             (SELECT COUNT(*) FROM shipments  WHERE sales_order_id = $1)::int AS shipments,
+             (SELECT COUNT(*) FROM invoices   WHERE sales_order_id = $1)::int AS invoices`, [own.id]);
+    if (own.invoice_id != null || deps.pick_lists || deps.shipments || deps.invoices) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        error: 'This order has pick lists, shipments or an invoice; it cannot be deleted. Cancel it (or credit the invoice) instead.',
+        code: 'ORDER_HAS_DEPENDENTS', ...deps });
+    }
+    await client.query(`UPDATE sales_orders SET deleted_at = CURRENT_TIMESTAMP WHERE id = $1`, [own.id]);
+    // Nothing stays on order for a deleted order (its allocations read as 0).
+    await orderPromising.closeOrderBackorders(client, own.id);
+    await client.query('COMMIT');
+    logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'sales', recordId: own.id, recordType: 'sales_order', action: 'delete', oldData: own, req });
     res.json({ message: 'Order deleted' });
   } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
     res.status(500).json({ error: error.message });
+  } finally {
+    client.release();
   }
 });
 
 router.get('/orders/:id/items', requirePermission('sales', 'view'), async (req, res) => {
   try {
+    if (!await ownOrder(pool, req.params.id, companyOf(req))) return res.status(404).json({ error: 'Order not found' });
     const items = await salesOrdersRepository.getItems(req.params.id);
     res.json(items);
   } catch (error) {
@@ -863,6 +971,7 @@ router.get('/orders/:id/items', requirePermission('sales', 'view'), async (req, 
 
 router.post('/orders/:id/items', requirePermission('sales', 'edit'), async (req, res) => {
   try {
+    if (!await ownOrder(pool, req.params.id, companyOf(req))) return res.status(404).json({ error: 'Order not found' });
     const item = await salesOrdersRepository.addItem({ ...req.body, order_id: req.params.id });
     res.status(201).json(item);
   } catch (error) {
@@ -889,109 +998,263 @@ router.patch('/orders/:id/confirm', requirePermission('sales', 'edit'), captureB
   try {
     const { rows } = await pool.query(
       `UPDATE sales_orders SET order_status='confirmed', updated_at=NOW()
-       WHERE id=$1 AND deleted_at IS NULL RETURNING *`,
-      [req.params.id]
+       WHERE id=$1 AND deleted_at IS NULL AND ($2::int IS NULL OR company_id = $2) RETURNING *`,
+      [req.params.id, companyOf(req)]
     );
     const order = rows[0];
     if (!order) return res.status(404).json({ error: 'Order not found' });
     logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'sales', recordId: req.params.id, recordType: 'sales_order', action: 'update', newData: { order_status: 'confirmed' }, req });
-    // autoBootstrapLifecycleOnOrderAccept swallows a failed production-order
-    // creation internally (non-fatal to the lifecycle bootstrap, by design —
-    // a confirmed order shouldn't be blocked by it) but the caller used to
-    // discard the result entirely, so nothing ever surfaced that failure to
-    // whoever confirmed the order. Surface it as a response warning instead.
+    // A failed set-up never blocks the confirmation itself (the order is
+    // already committed above); autoBootstrapLifecycleOnOrderAccept rolls its
+    // own work back and the failure is surfaced as a response warning.
     const bootstrap = await autoBootstrapLifecycleOnOrderAccept(req.params.id, req.user);
-    let productionOrderWarning = null;
-    if ((!bootstrap?.skipped || bootstrap?.failed) && !bootstrap?.production_order_id) {
-      productionOrderWarning = 'Order confirmed, but automatic production-order creation failed — check server logs and create it manually if needed.';
-      console.warn(`[orders/:id/confirm] production order creation failed for SO ${req.params.id}`);
-    }
+    const productionOrderWarning = bootstrapWarning(bootstrap, 'Order confirmed');
+    if (productionOrderWarning) console.warn(`[orders/:id/confirm] project/production set-up failed for SO ${req.params.id}`);
     notifyWorkflowEvent('order_confirmed', { module: 'Sales Order', recordId: req.params.id, submitterUserId: order.created_by ?? null });
     calculateCommission(req.params.id, companyOf(req));
     res.json({ data: order, ...(productionOrderWarning ? { warning: productionOrderWarning } : {}) });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+/* ── PATCH /orders/:id/invoice ── bill what has shipped, once ──────────────────
+   One transaction: the order row and the pick lines it bills are locked, the
+   invoice, its lines, its journal and its COGS are written through
+   invoiceService on THIS connection, and the order is updated — one commit or
+   none. (It used to commit the invoice on its own connection and then stamp the
+   order on another, so a failure between the two left an invoice with no order.)
+
+   What it bills:
+     - goods (an order line with item_id): only what left stock on the order's
+       DISPATCHED pick lists and is not yet invoiced (pick_line_invoiced_qty —
+       less any quantity a posted credit note released), as lines linked to the
+       pick line, priced from the order line it fulfils. COGS at the pick's
+       verified FIFO cost; no stock moves (the pick moved it).
+     - lines without item_id: once each (invoice_items.sales_order_item_id).
+   Goods with nothing shipped from stock are listed in not_invoiced — a
+   sales-order-level dispatch moves no stock, so there is nothing to bill them
+   against (an open decision, see SALES_WAREHOUSE_PHASE3D_DESIGN.md).
+
+   Refused, nothing written: 404 another company's order; 409 cancelled;
+   409 ALREADY_INVOICED (nothing left to bill, or an older whole-order invoice
+   whose lines name neither a pick line nor an order line — billing again would
+   bill the same goods twice); 409 NOTHING_TO_INVOICE; 422 SO_LINE_UNRESOLVED
+   (a pick line whose order line cannot be identified, so it cannot be priced);
+   and every invoice-service refusal (cost unverified, credit limit, …). */
 router.patch('/orders/:id/invoice', requirePermission('sales', 'edit'), async (req, res) => {
+  const userId    = req.user?.userId ?? req.user?.id;
+  const companyId = companyOf(req);
+  if (!/^\d+$/.test(String(req.params.id))) return res.status(400).json({ error: 'Order id must be a number' });
+
+  const client = await pool.connect();
+  const refuse = async (status, body) => { await client.query('ROLLBACK'); return res.status(status).json(body); };
   try {
-    const userId    = req.user?.userId ?? req.user?.id;
-    const companyId = companyOf(req);
+    await client.query('BEGIN');
 
-    // Fetch the order
-    const soRes = await pool.query(
-      `SELECT * FROM sales_orders WHERE id=$1 AND deleted_at IS NULL`, [req.params.id]
+    // The caller's own order (this read once had no company filter).
+    const soRes = await client.query(
+      `SELECT * FROM sales_orders WHERE id=$1 AND deleted_at IS NULL AND ($2::int IS NULL OR company_id = $2)
+         FOR UPDATE`,
+      [req.params.id, companyId]
     );
-    if (!soRes.rows.length) return res.status(404).json({ error: 'Order not found' });
+    if (!soRes.rows.length) return refuse(404, { error: 'Order not found' });
     const so = soRes.rows[0];
+    const soStatus = String(so.order_status || '').toLowerCase();
+    if (soStatus === 'cancelled') return refuse(409, { error: 'A cancelled order cannot be invoiced.' });
 
-    // Create finance invoice — routed through invoiceService.createInvoice so the
-    // invoice actually gets a journal entry (DR AR / CR Revenue+GST) posted to the
-    // GL, same as invoices created directly from Invoices.jsx. The previous version
-    // raw-INSERTed into `invoices`/`invoice_items` with several column names that
-    // don't exist on those tables (customer_name, item_description, rate,
-    // tax_percentage, total) — that insert always failed and was silently
-    // swallowed, so SO-generated invoices never actually got created or posted.
-    let invoiceId = null;
-    let invoiceNumber = null;
-    try {
-      const soItems = await salesOrdersRepository.getItems(req.params.id);
-      const items = soItems.map(it => ({
-        description: it.item_description,
-        quantity: it.quantity,
-        unit_price: it.rate,
-        tax_rate: it.tax_percentage,
-        amount: it.total,
-      }));
-      const dueDate = new Date();
-      dueDate.setDate(dueDate.getDate() + 30);
-      const invoice = await invoiceService.createInvoice({
-        customer_id: so.customer_id ?? null,
-        invoice_date: new Date().toISOString().split('T')[0],
-        due_date: dueDate.toISOString().split('T')[0],
-        subtotal: so.subtotal ?? 0,
-        tax_amount: so.tax_amount ?? 0,
-        total_amount: so.total_amount ?? 0,
-        sales_order_id: req.params.id,
-        company_id: companyId,
-        items,
-      }, req.user?.employee_id ?? null);
-      invoiceId = invoice.id;
-      invoiceNumber = invoice.invoice_number;
-      // sales_order_id isn't part of invoiceRepo.create's column list — set it directly.
-      await pool.query(`UPDATE invoices SET sales_order_id = $1 WHERE id = $2`, [req.params.id, invoiceId]);
-    } catch (invErr) {
-      console.error(`[PATCH /orders/${req.params.id}/invoice] finance invoice creation failed:`, invErr.message);
-      // This used to swallow the failure and mark the order 'invoiced' anyway
-      // with invoice_id=null — for a credit-limit block that's actively
-      // misleading (dispatch would proceed believing billing succeeded).
-      // Surface it instead of silently proceeding.
-      return res.status(invErr.status || 500).json({ error: invErr.message, code: invErr.code });
+    const { rows: [legacy] } = await client.query(`
+      SELECT COUNT(*)::int AS n FROM invoice_items ii JOIN invoices i ON i.id = ii.invoice_id
+       WHERE i.sales_order_id = $1 AND i.company_id = $2 AND LOWER(COALESCE(i.status, '')) <> 'cancelled'
+         AND ii.pick_list_line_id IS NULL AND ii.sales_order_item_id IS NULL`, [so.id, so.company_id]);
+    // Not the 'invoiced' status: a fully invoiced order may have quantity a
+    // posted credit note released, which is billable again.
+    if (legacy.n > 0) {
+      return refuse(409, { error: 'This order has already been invoiced.', code: 'ALREADY_INVOICED', invoice_id: so.invoice_id });
     }
 
-    const { rows } = await pool.query(
+    const { rows: soItems } = await client.query(
+      `SELECT * FROM sales_order_items WHERE order_id = $1 ORDER BY id`, [so.id]);
+    const byId = new Map(soItems.map(i => [i.id, i]));
+
+    // Shipped goods not yet invoiced, pick lines locked in id order (the order
+    // invoice.service locks them in too).
+    const { rows: picks } = await client.query(`
+      SELECT l.id, l.item_id, l.item_name, l.picked_qty, l.sales_order_item_id
+        FROM pick_list_lines l JOIN pick_lists p ON p.id = l.pick_list_id
+       WHERE p.sales_order_id = $1 AND p.company_id = $2 AND LOWER(p.status) = 'dispatched'
+         AND COALESCE(l.picked_qty, 0) > 0 AND l.item_id IS NOT NULL
+       ORDER BY l.id FOR UPDATE OF l`, [so.id, so.company_id]);
+
+    const round2 = (v) => Math.round(v * 100) / 100;
+    const priced = (soItem, qty) => {
+      const gross = qty * Number(soItem.unit_price || 0) * (1 - Number(soItem.discount_pct || 0) / 100);
+      const amount = round2(gross);
+      return { amount, tax: round2(amount * Number(soItem.tax_rate || 0) / 100) };
+    };
+    const lines = [];
+    const shippedBySoItem = new Map();
+    const itemRoom = new Map();
+    for (const p of picks) {
+      let soItem = p.sales_order_item_id != null ? byId.get(p.sales_order_item_id) : null;
+      if (!soItem) {
+        const matches = soItems.filter(i => i.item_id != null && Number(i.item_id) === Number(p.item_id));
+        if (matches.length === 1) soItem = matches[0];
+      }
+      if (!soItem || Number(soItem.item_id) !== Number(p.item_id)) {
+        return refuse(422, { error: `Pick line ${p.id} (${p.item_name || `item ${p.item_id}`}) cannot be matched to one line of this order, so it cannot be priced.`,
+                             code: 'SO_LINE_UNRESOLVED', pick_list_line_id: p.id });
+      }
+      const { rows: [inv] } = await client.query(`SELECT pick_line_invoiced_qty($1)::float AS q`, [p.id]);
+      // Billable per item, across the order's pick lines: shipped less
+      // returned less invoiced (net of releases). A returned unit is never
+      // offered again, even where a credit note released it (Phase 3G).
+      if (!itemRoom.has(p.item_id)) {
+        const { rows: [a] } = await client.query(`
+          SELECT COALESCE(SUM(l.picked_qty), 0)::float AS shipped,
+                 COALESCE(SUM(pick_line_invoiced_qty(l.id)), 0)::float AS invoiced,
+                 so_item_returned_qty($1, $2)::float AS returned
+            FROM pick_list_lines l JOIN pick_lists pk ON pk.id = l.pick_list_id
+           WHERE pk.sales_order_id = $1 AND l.item_id = $2 AND LOWER(pk.status) = 'dispatched'`, [so.id, p.item_id]);
+        itemRoom.set(p.item_id, Math.max(0, a.shipped - a.returned - a.invoiced));
+      }
+      const open = Math.min(Number(p.picked_qty) - inv.q, itemRoom.get(p.item_id));
+      itemRoom.set(p.item_id, itemRoom.get(p.item_id) - Math.max(0, open));
+      shippedBySoItem.set(soItem.id, (shippedBySoItem.get(soItem.id) || 0) + Number(p.picked_qty));
+      if (open <= 1e-9) continue;
+      const { amount, tax } = priced(soItem, open);
+      lines.push({ description: soItem.description || p.item_name, quantity: open, unit_price: Number(soItem.unit_price || 0),
+                   tax_rate: Number(soItem.tax_rate || 0), amount, tax, item_id: p.item_id, pick_list_line_id: p.id,
+                   sales_order_item_id: soItem.id });
+    }
+
+    // Lines that are not stock goods: billed once each.
+    for (const it of soItems.filter(i => i.item_id == null)) {
+      const { rows: [b] } = await client.query(`
+        SELECT COUNT(*)::int AS n FROM invoice_items ii JOIN invoices i ON i.id = ii.invoice_id
+         WHERE ii.sales_order_item_id = $1 AND LOWER(COALESCE(i.status, '')) <> 'cancelled'`, [it.id]);
+      if (b.n > 0) continue;
+      const qty = Number(it.quantity || 0);
+      const { amount, tax } = priced(it, qty);
+      lines.push({ description: it.description, quantity: qty, unit_price: Number(it.unit_price || 0),
+                   tax_rate: Number(it.tax_rate || 0), amount, tax, sales_order_item_id: it.id });
+    }
+    const notInvoiced = soItems
+      .filter(i => i.item_id != null && !(shippedBySoItem.get(i.id) > 0))
+      .map(i => ({ sales_order_item_id: i.id, item_id: i.item_id, reason: 'not_shipped_from_stock' }));
+
+    if (!lines.length) {
+      const { rows: [prior] } = await client.query(
+        `SELECT COUNT(*)::int AS n FROM invoices WHERE sales_order_id = $1 AND company_id = $2
+            AND LOWER(COALESCE(status, '')) <> 'cancelled'`, [so.id, so.company_id]);
+      return prior.n > 0
+        ? refuse(409, { error: 'Everything shipped on this order has already been invoiced.', code: 'ALREADY_INVOICED', invoice_id: so.invoice_id, not_invoiced: notInvoiced })
+        : refuse(409, { error: 'Nothing on this order has shipped from stock, so there is nothing to invoice yet.', code: 'NOTHING_TO_INVOICE', not_invoiced: notInvoiced });
+    }
+
+    const subtotal = round2(lines.reduce((s, l) => s + l.amount, 0));
+    const taxAmount = round2(lines.reduce((s, l) => s + l.tax, 0));
+    const today = new Date().toISOString().split('T')[0];
+    const due = new Date(); due.setDate(due.getDate() + 30);
+    let invoice;
+    try {
+      invoice = await invoiceService.createInvoice({
+        customer_id: so.customer_id ?? null,
+        invoice_date: today,
+        due_date: due.toISOString().split('T')[0],
+        subtotal, tax_amount: taxAmount, total_amount: round2(subtotal + taxAmount),
+        sales_order_id: so.id,
+        company_id: so.company_id,
+        items: lines.map(({ tax: _tax, ...l }) => l),
+      }, req.user?.employee_id ?? null, { client });
+    } catch (invErr) {
+      // A credit-limit block, an unverified cost, …: surfaced, never swallowed,
+      // and nothing of this request is kept.
+      console.error(`[PATCH /orders/${so.id}/invoice] invoice creation refused:`, invErr.message);
+      return refuse(invErr.status || 500, { error: invErr.message, code: invErr.code });
+    }
+    await client.query(`UPDATE invoices SET sales_order_id = $1 WHERE id = $2`, [so.id, invoice.id]);
+
+    // Fully invoiced once every order line is billed: lines without item_id
+    // once, goods for their whole ordered quantity.
+    const { rows: [left] } = await client.query(`
+      SELECT COUNT(*)::int AS n FROM sales_order_items s
+       WHERE s.order_id = $1 AND (
+         (s.item_id IS NULL AND NOT EXISTS (
+            SELECT 1 FROM invoice_items ii JOIN invoices i ON i.id = ii.invoice_id
+             WHERE ii.sales_order_item_id = s.id AND LOWER(COALESCE(i.status, '')) <> 'cancelled'))
+         OR (s.item_id IS NOT NULL AND COALESCE((
+            SELECT SUM(pick_line_invoiced_qty(l.id)) FROM pick_list_lines l JOIN pick_lists p ON p.id = l.pick_list_id
+             WHERE p.sales_order_id = s.order_id AND l.sales_order_item_id = s.id), 0) < COALESCE(s.quantity, 0)))`,
+      [so.id]);
+    const fully = left.n === 0;
+    const { rows } = await client.query(
       `UPDATE sales_orders
-       SET order_status='invoiced', invoiced_at=NOW(), invoice_id=$1, updated_at=NOW()
-       WHERE id=$2 AND deleted_at IS NULL RETURNING *`,
-      [invoiceId, req.params.id]
-    );
-    logAudit({ userId, module: 'sales', recordId: req.params.id, recordType: 'sales_order', action: 'update', newData: { order_status: 'invoiced' }, req });
-    res.json({ data: rows[0], invoice_id: invoiceId, invoice_number: invoiceNumber });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+          SET invoice_id = COALESCE(invoice_id, $1), updated_at = NOW(),
+              order_status = CASE WHEN $3 THEN 'invoiced' ELSE order_status END,
+              invoiced_at  = CASE WHEN $3 THEN NOW() ELSE invoiced_at END
+        WHERE id = $2 RETURNING *`,
+      [invoice.id, so.id, fully]);
+    await client.query('COMMIT');
+    logAudit({ userId, module: 'sales', recordId: so.id, recordType: 'sales_order', action: 'update',
+               newData: { invoice_id: invoice.id, fully_invoiced: fully }, req, company_id: so.company_id });
+    res.json({ data: rows[0], invoice_id: invoice.id, invoice_number: invoice.invoice_number,
+               fully_invoiced: fully, lines: lines.length, not_invoiced: notInvoiced });
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error(`[PATCH /orders/${req.params.id}/invoice]`, e);
+    res.status(500).json({ error: e.message });
+  } finally {
+    client.release();
+  }
 });
 
+// Cancelling an order that still has a live warehouse pick list used to leave
+// that list — and the stock it had picked — attached to a cancelled order.
+// It is now REFUSED while any pick list on the order is not cancelled: the
+// pick lists are cancelled first (which returns their stock, exactly once, in
+// the warehouse workflow), then the order. A combined "cancel everything"
+// could not be atomic for the cases that matter — a packed list has no unpack
+// step and a dispatched list's goods have left — so the safe rule is one owner
+// per step. The order row is locked; pick-list creation takes a share lock on
+// the same row and refuses a cancelled order, so a list cannot be raised
+// against an order in the middle of being cancelled.
 router.patch('/orders/:id/cancel', requirePermission('sales', 'edit'), captureBefore('sales_orders'), async (req, res) => {
+  const { reason } = req.body || {};
+  if (!reason) return res.status(400).json({ error: 'reason is required to cancel an order' });
+  const client = await pool.connect();
   try {
-    const { reason } = req.body;
-    if (!reason) return res.status(400).json({ error: 'reason is required to cancel an order' });
-    const { rows } = await pool.query(
-      `UPDATE sales_orders SET order_status='cancelled', cancel_reason=$1, updated_at=NOW()
-       WHERE id=$2 AND deleted_at IS NULL RETURNING *`,
-      [reason, req.params.id]
-    );
-    if (!rows.length) return res.status(404).json({ error: 'Order not found' });
-    logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'sales', recordId: req.params.id, recordType: 'sales_order', action: 'update', newData: { order_status: 'cancelled', cancel_reason: reason }, req });
+    await client.query('BEGIN');
+    // Scoped to the caller's company — this matched by id alone, so any user
+    // with sales:edit could cancel another company's order.
+    const so = await ownOrder(client, req.params.id, companyOf(req), 'FOR UPDATE');
+    if (!so) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Order not found' }); }
+    if (String(so.order_status || '').toLowerCase() === 'cancelled') {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'This order is already cancelled.', code: 'ALREADY_CANCELLED' });
+    }
+    const { rows: openPicks } = await client.query(
+      `SELECT id, status FROM pick_lists
+        WHERE sales_order_id = $1 AND LOWER(COALESCE(status,'')) <> 'cancelled' ORDER BY id`, [so.id]);
+    if (openPicks.length) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        error: `This order has ${openPicks.length} pick list(s) that are not cancelled (${openPicks.map(p => `${p.id}: ${p.status}`).join(', ')}). `
+             + 'Cancel them in the warehouse first, which returns their stock; a packed or dispatched list needs a return instead.',
+        code: 'OPEN_PICK_LISTS', pick_lists: openPicks });
+    }
+    const { rows } = await client.query(
+      `UPDATE sales_orders SET order_status='cancelled', cancel_reason=$1, updated_at=NOW() WHERE id=$2 RETURNING *`,
+      [reason, so.id]);
+    // Nothing stays on order for a cancelled order (its allocations read as 0).
+    await orderPromising.closeOrderBackorders(client, so.id);
+    await client.query('COMMIT');
+    logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'sales', recordId: req.params.id, recordType: 'sales_order', action: 'update', oldData: so, newData: { order_status: 'cancelled', cancel_reason: reason }, req });
     res.json({ data: rows[0] });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    res.status(500).json({ error: e.message });
+  } finally {
+    client.release();
+  }
 });
 
 // Convert quotation → sales order
@@ -999,7 +1262,7 @@ router.post('/orders/from-quotation/:quotationId', requirePermission('sales', 'a
   try {
     const userId    = req.user?.userId ?? req.user?.id;
     const companyId = companyOf(req);
-    const quotation = await quotationsRepository.findById(req.params.quotationId);
+    const quotation = await quotationsRepository.findById(req.params.quotationId, companyId);
     if (!quotation) return res.status(404).json({ error: 'Quotation not found' });
 
     // Same credit-check gate as /quotations/:id/accept-and-convert — this is
@@ -1066,9 +1329,10 @@ router.post('/orders/from-quotation/:quotationId', requirePermission('sales', 'a
     // This order lands 'confirmed' directly here too — same gap as
     // /quotations/:id/convert-to-order, see the comment there.
     const bootstrap = await autoBootstrapLifecycleOnOrderAccept(order.id, req.user);
-    if ((!bootstrap?.skipped || bootstrap?.failed) && !bootstrap?.production_order_id) {
-      order.warning = 'Order created, but automatic production-order creation failed — check server logs and create it manually if needed.';
-      console.warn(`[orders/from-quotation] production order creation failed for SO ${order.id}`);
+    const setupWarning = bootstrapWarning(bootstrap, 'Order created');
+    if (setupWarning) {
+      order.warning = setupWarning;
+      console.warn(`[orders/from-quotation] project/production set-up failed for SO ${order.id}`);
     }
     notifyWorkflowEvent('order_confirmed', { module: 'Sales Order', recordId: order.id, submitterUserId: order.created_by ?? null });
     calculateCommission(order.id, companyId);
@@ -1079,16 +1343,29 @@ router.post('/orders/from-quotation/:quotationId', requirePermission('sales', 'a
 // Order status transitions
 router.put('/orders/:id/status', requirePermission('sales', 'edit'), async (req, res) => {
   try {
-    const order = await salesOrdersRepository.update(req.params.id, { order_status: req.body.status });
+    // The status change below starts project / production set-up, so the order
+    // must be the caller's own.
+    const own = await pool.query(
+      `SELECT 1 FROM sales_orders WHERE id=$1 AND deleted_at IS NULL AND ($2::int IS NULL OR company_id = $2)`,
+      [req.params.id, companyOf(req)]
+    );
+    if (!own.rows.length) return res.status(404).json({ error: 'Order not found' });
+    // dispatched / delivered / invoiced / cancelled belong to their workflows;
+    // this generic setter could write 'dispatched' with no shipment and no
+    // quality gate.
+    const refusal = workflowStatusRefusal(req.body.status);
+    if (refusal) return res.status(409).json(refusal);
+    const order = await salesOrdersRepository.update(req.params.id, { order_status: req.body.status }, companyOf(req));
     logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'sales', recordId: req.params.id, recordType: 'sales_order', action: 'update', newData: { order_status: req.body.status }, req });
     const status = String(req.body.status || '').toLowerCase();
     if (['accepted', 'confirmed', 'won', 'approved', 'released'].includes(status)) {
       // See the matching comment in PATCH /orders/:id/confirm — surface a
-      // failed production-order auto-creation instead of discarding it.
+      // failed project/production set-up instead of discarding it.
       const bootstrap = await autoBootstrapLifecycleOnOrderAccept(req.params.id, req.user);
-      if ((!bootstrap?.skipped || bootstrap?.failed) && !bootstrap?.production_order_id) {
-        order.warning = 'Order status updated, but automatic production-order creation failed — check server logs and create it manually if needed.';
-        console.warn(`[orders/:id/status] production order creation failed for SO ${req.params.id}`);
+      const setupWarning = bootstrapWarning(bootstrap, 'Order status updated');
+      if (setupWarning) {
+        order.warning = setupWarning;
+        console.warn(`[orders/:id/status] project/production set-up failed for SO ${req.params.id}`);
       }
       notifyWorkflowEvent('order_confirmed', { module: 'Sales Order', recordId: req.params.id, submitterUserId: order?.created_by ?? null });
     }
@@ -1098,38 +1375,111 @@ router.put('/orders/:id/status', requirePermission('sales', 'edit'), async (req,
   }
 });
 
+// Sales-order-level dispatch — an order shipped without a warehouse pick list
+// (trading / direct orders). It used to be a bare status flip: no shipment row,
+// no final-inspection gate, any company's order. It now does what the warehouse
+// dispatch does, in one transaction:
+//   - the caller's own order, locked; not cancelled / already dispatched / delivered
+//   - refused while the order has an open warehouse pick list — those goods are
+//     shipped by the warehouse dispatch, which also moves their stock
+//   - the production gate (open production orders; `force` overrides THIS one
+//     only, as before)
+//   - the final-inspection gate — the same assertFinalInspectionGate the
+//     warehouse uses; `force` does not bypass it (the gate has its own switch
+//     in Quality Settings)
+//   - a shipment row, so 'dispatched' always has its dispatch record
+// It moves no stock: an order with stock to move is fulfilled through a pick list.
 router.put('/orders/:id/dispatch', requirePermission('sales', 'edit'), captureBefore('sales_orders'), async (req, res) => {
+  const { carrier, tracking_number, dispatch_date, force } = req.body || {};
+  const companyId = companyOf(req);
+  const client = await pool.connect();
   try {
-    const { carrier, tracking_number, dispatch_date, force } = req.body;
+    await client.query('BEGIN');
+    // The caller's own order, checked before anything about it is disclosed.
+    const so = await ownOrder(client, req.params.id, companyId, 'FOR UPDATE');
+    if (!so) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Order not found' }); }
+    const status = String(so.order_status || '').toLowerCase();
+    if (['cancelled', 'dispatched', 'delivered'].includes(status)) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: `A ${status} order cannot be dispatched.`, code: 'ORDER_NOT_DISPATCHABLE' });
+    }
+
+    const { rows: openPicks } = await client.query(
+      `SELECT id, status FROM pick_lists
+        WHERE sales_order_id = $1 AND LOWER(COALESCE(status,'')) NOT IN ('cancelled', 'dispatched')`, [so.id]);
+    if (openPicks.length) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        error: `This order is being fulfilled through the warehouse (pick list ${openPicks.map(p => p.id).join(', ')}); dispatch it there.`,
+        code: 'WAREHOUSE_FULFILMENT', pick_lists: openPicks });
+    }
+
+    // Stock goods leave through the warehouse (Phase 3G). This dispatch moves
+    // no stock, so an order line that bills stock goods (item_id) and is not
+    // already shipped through a dispatched pick list would leave the ledger
+    // untouched — goods "shipped" that never left stock, which then could be
+    // neither invoiced nor returned against anything. Refused; `force` does
+    // not override it. Orders of non-stock lines only still dispatch here.
+    const { rows: unshipped } = await client.query(`
+      SELECT s.id, s.item_id, s.description, COALESCE(s.quantity, 0)::float AS ordered,
+             COALESCE((SELECT SUM(l.picked_qty) FROM pick_list_lines l JOIN pick_lists p ON p.id = l.pick_list_id
+                        WHERE p.sales_order_id = s.order_id AND LOWER(p.status) = 'dispatched'
+                          AND (l.sales_order_item_id = s.id OR (l.sales_order_item_id IS NULL AND l.item_id = s.item_id))), 0)::float AS shipped
+        FROM sales_order_items s
+       WHERE s.order_id = $1 AND s.item_id IS NOT NULL
+       ORDER BY s.id`, [so.id]);
+    const goodsLeft = unshipped.filter(l => l.shipped < l.ordered);
+    if (goodsLeft.length) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        error: 'This order has stock goods; they must leave through a warehouse pick list so their stock movement is recorded. Create and dispatch a pick list instead.',
+        code: 'STOCK_REQUIRES_PICK_LIST',
+        lines: goodsLeft.map(l => ({ sales_order_item_id: l.id, item_id: l.item_id, ordered: l.ordered, shipped: l.shipped })) });
+    }
 
     // Production completion previously never reached this endpoint at all —
-    // it was a blind status flip. A signal now exists (production_completed_at
-    // on the order + notifications), but nothing enforced it. Block dispatch
-    // while any linked production order is still open; allow if none exist
-    // (e.g. a trading/service order with nothing to manufacture) or an
-    // explicit override is passed for a genuine edge case.
+    // it was a blind status flip. Block dispatch while any linked production
+    // order is still open; allow if none exist (e.g. a trading/service order
+    // with nothing to manufacture) or an explicit override is passed for a
+    // genuine edge case.
     if (!force) {
-      const openProd = await pool.query(
+      const openProd = await client.query(
         `SELECT COUNT(*)::int AS n FROM production_orders
          WHERE sales_order_id = $1 AND status NOT IN ('completed','cancelled')`,
-        [req.params.id]
+        [so.id]
       );
       if ((openProd.rows[0]?.n || 0) > 0) {
+        await client.query('ROLLBACK');
         return res.status(409).json({
           error: 'Cannot dispatch — this order still has production in progress. Complete or cancel the linked production order(s) first, or pass force:true to override.',
         });
       }
     }
 
+    await assertFinalInspectionGate(client, so.company_id, so.id);
+    const qcPlan = (await qcRequirementStatus(client, so.company_id, so.id)).length ? 'configured' : 'not_configured';
+
     const dispatchedAt = dispatch_date ? new Date(dispatch_date) : new Date();
-    const { rows } = await pool.query(
+    const dispatchRef = await nextDispatchRef(client, so.company_id);
+    const { rows: [shipment] } = await client.query(`
+      INSERT INTO shipments
+        (company_id, reference_type, reference_id, sales_order_id, pick_list_id, courier_partner,
+         tracking_number, dispatch_ref, package_count, status, direction, dispatch_date, promised_date,
+         dispatched_by, dispatched_by_name)
+      VALUES ($1,'sales_order',$2,$2,NULL,$3,$4,$5,0,'in_transit','outbound',$6::date,$7,$8,$9) RETURNING *`,
+      [so.company_id, so.id, carrier || null, tracking_number || null, dispatchRef,
+       dispatchedAt.toISOString().slice(0, 10), so.promised_date || so.delivery_date || null,
+       req.user?.id ?? null, req.user?.name || req.user?.username || null]);
+
+    const { rows } = await client.query(
       `UPDATE sales_orders
        SET order_status='dispatched', carrier=$1, tracking_number=$2, dispatched_at=$3, updated_at=NOW()
-       WHERE id=$4 AND deleted_at IS NULL RETURNING *`,
-      [carrier || null, tracking_number || null, dispatchedAt, req.params.id]
+       WHERE id=$4 RETURNING *`,
+      [carrier || null, tracking_number || null, dispatchedAt, so.id]
     );
+    await client.query('COMMIT');
     const order = rows[0];
-    logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'sales', recordId: req.params.id, recordType: 'sales_order', action: 'update', newData: { order_status: 'dispatched', carrier, tracking_number }, req });
+    logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'sales', recordId: req.params.id, recordType: 'sales_order', action: 'update', oldData: so, newData: { order_status: 'dispatched', carrier, tracking_number, shipment_id: shipment.id }, req });
     notifyWorkflowEvent('dispatched', { module: 'Sales Order', recordId: req.params.id, submitterUserId: order?.created_by ?? null });
 
     // Installation as a First-Class Module (Priority 6) — Dispatch is the
@@ -1153,9 +1503,16 @@ router.put('/orders/:id/dispatch', requirePermission('sales', 'edit'), captureBe
       console.error(`[orders/${req.params.id}/dispatch] installation request auto-creation failed (non-fatal):`, instErr.message);
     }
 
-    res.json(order);
+    res.json({ ...order, shipment_id: shipment.id, dispatch_ref: dispatchRef, qc_plan: qcPlan });
   } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    if (error instanceof WorkflowError) {
+      return res.status(error.status).json({ error: error.message, ...(error.code ? { code: error.code } : {}),
+                                             ...(error.blockers ? { blockers: error.blockers } : {}) });
+    }
     res.status(500).json({ error: error.message });
+  } finally {
+    client.release();
   }
 });
 
@@ -1164,10 +1521,12 @@ router.put('/orders/:id/deliver', requirePermission('sales', 'edit'), captureBef
     const { rows } = await pool.query(
       `UPDATE sales_orders
        SET order_status='delivered', delivered_at=NOW(), updated_at=NOW()
-       WHERE id=$1 AND deleted_at IS NULL RETURNING *`,
-      [req.params.id]
+       WHERE id=$1 AND deleted_at IS NULL AND ($2::int IS NULL OR company_id = $2) RETURNING *`,
+      [req.params.id, companyOf(req)]
     );
     const order = rows[0];
+    // Scoped to the caller's company (this matched by id alone).
+    if (!order) return res.status(404).json({ error: 'Order not found' });
     logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'sales', recordId: req.params.id, recordType: 'sales_order', action: 'update', newData: { order_status: 'delivered' }, req });
     res.json(order);
   } catch (error) {
@@ -2183,14 +2542,6 @@ router.delete('/playbooks/:id/steps/:stepId', requirePermission('sales', 'edit')
 // ── Sales Calendar Events ─────────────────────────────────────────────────────
 ;(async () => {
   try {
-    // Repair: if table exists with wrong UUID type for company_id, drop and recreate
-    const { rows: evCols } = await pool.query(`
-      SELECT data_type FROM information_schema.columns
-      WHERE table_name = 'sales_events' AND column_name = 'company_id'
-    `);
-    if (evCols.length > 0 && evCols[0].data_type === 'uuid') {
-      await pool.query(`DROP TABLE IF EXISTS sales_events`);
-    }
     await pool.query(`
       CREATE TABLE IF NOT EXISTS sales_events (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -2319,18 +2670,6 @@ router.delete('/documents/:id', requirePermission('sales', 'delete'), captureBef
         owner_id INTEGER,
         created_at TIMESTAMPTZ DEFAULT NOW()
       )
-    `);
-    // Fix existing tables that were created with wrong UUID type for company_id
-    await pool.query(`
-      DO $$ BEGIN
-        IF EXISTS (
-          SELECT 1 FROM information_schema.columns
-          WHERE table_name='subscriptions' AND column_name='company_id' AND udt_name='uuid'
-        ) THEN
-          ALTER TABLE subscriptions DROP COLUMN company_id;
-          ALTER TABLE subscriptions ADD COLUMN company_id INTEGER;
-        END IF;
-      END $$
     `);
   } catch (e) { console.error('[subscriptions] init error:', e.message); }
 })();
@@ -2531,14 +2870,6 @@ router.patch('/subscriptions/:id/renew', requirePermission('sales', 'edit'), asy
 // ── Competitors ───────────────────────────────────────────────────────────────
 ;(async () => {
   try {
-    // Repair: if table exists with wrong UUID type for company_id, drop and recreate
-    const { rows: compCols } = await pool.query(`
-      SELECT data_type FROM information_schema.columns
-      WHERE table_name = 'competitors' AND column_name = 'company_id'
-    `);
-    if (compCols.length > 0 && compCols[0].data_type === 'uuid') {
-      await pool.query(`DROP TABLE IF EXISTS competitors`);
-    }
     await pool.query(`
       CREATE TABLE IF NOT EXISTS competitors (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -2611,14 +2942,6 @@ router.delete('/competitors/:id', requirePermission('sales', 'delete'), captureB
 // ── Sales Settings ────────────────────────────────────────────────────────────
 ;(async () => {
   try {
-    // Repair: if table exists with wrong UUID type for company_id, drop and recreate
-    const { rows: cols } = await pool.query(`
-      SELECT data_type FROM information_schema.columns
-      WHERE table_name = 'sales_settings' AND column_name = 'company_id'
-    `);
-    if (cols.length > 0 && cols[0].data_type === 'uuid') {
-      await pool.query(`DROP TABLE IF EXISTS sales_settings`);
-    }
     await pool.query(`
       CREATE TABLE IF NOT EXISTS sales_settings (
         id SERIAL PRIMARY KEY,

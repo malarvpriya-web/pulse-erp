@@ -150,6 +150,7 @@ export default function AttendanceAnalytics() {
   const [perfectAtt, setPerfectAtt]       = useState([]);
   const [deptBreakdown, setDeptBreakdown] = useState([]);
   const [otCost, setOtCost]               = useState([]);
+  const otCostRestricted = otCost.some(r => r?.cost_restricted);
   const [shiftEff, setShiftEff]           = useState([]);
 
   const [loading, setLoading]             = useState(false);
@@ -255,7 +256,7 @@ export default function AttendanceAnalytics() {
       exportCSV(
         `overtime-${MONTH_NAMES[month - 1]}-${year}.csv`,
         ['Department', 'Employees w/ OT', 'Total OT Hrs', 'Approved', 'Pending', 'Rejected', 'Avg Mult.', 'Approved Cost (₹)', 'Total Cost (₹)'],
-        otCost.map(d => [d.department, d.employees_with_ot, parseFloat(d.total_ot_hours || 0).toFixed(1), d.approved_ot, d.pending_ot, d.rejected_ot, parseFloat(d.avg_multiplier || 1.5).toFixed(2), d.approved_ot_cost || 0, d.total_ot_cost || 0])
+        otCost.map(d => [d.department, d.employees_with_ot, parseFloat(d.total_ot_hours || 0).toFixed(1), d.approved_ot, d.pending_ot, d.rejected_ot, parseFloat(d.avg_multiplier || 1.5).toFixed(2), otCostRestricted ? 'restricted' : (d.approved_ot_cost || 0), otCostRestricted ? 'restricted' : (d.total_ot_cost || 0)])
       );
     }
   };
@@ -768,8 +769,12 @@ export default function AttendanceAnalytics() {
                           { label: 'Total OT Hours',     value: otCost.reduce((s, r) => s + parseFloat(r.total_ot_hours || 0), 0).toFixed(1) + 'h', color: P },
                           { label: 'Employees with OT',  value: otCost.reduce((s, r) => s + parseInt(r.employees_with_ot || 0), 0), color: '#10b981' },
                           { label: 'Pending Approvals',  value: otCost.reduce((s, r) => s + parseInt(r.pending_ot || 0), 0), color: '#7c5cf0' },
-                          { label: 'Approved OT Cost',   value: fmtINR(otCost.reduce((s, r) => s + parseFloat(r.approved_ot_cost || 0), 0)), color: '#ef4444' },
-                          { label: 'Total Cost (if all approved)', value: fmtINR(otCost.reduce((s, r) => s + parseFloat(r.total_ot_cost || 0), 0)), color: '#6b7280' },
+                          // The server withholds the cost columns without payroll:view
+                          // (they are derived from Basic) — say so, never show ₹0.
+                          ...(otCostRestricted ? [] : [
+                            { label: 'Approved OT Cost',   value: fmtINR(otCost.reduce((s, r) => s + parseFloat(r.approved_ot_cost || 0), 0)), color: '#ef4444' },
+                            { label: 'Total Cost (if all approved)', value: fmtINR(otCost.reduce((s, r) => s + parseFloat(r.total_ot_cost || 0), 0)), color: '#6b7280' },
+                          ]),
                         ].map(s => (
                           <div key={s.label} style={{ border: '1px solid #f0f0f4', borderRadius: 10, padding: 16 }}>
                             <div style={{ fontSize: 22, fontWeight: 700, color: s.color }}>{s.value}</div>
@@ -779,14 +784,15 @@ export default function AttendanceAnalytics() {
                       </div>
 
                       <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 12, padding: '8px 12px', background: '#f9fafb', borderRadius: 6 }}>
-                        Cost = OT hours × multiplier × (basic_salary ÷ 26 working days ÷ 9 hrs/day).
-                        Employees without a configured salary appear as ₹0.
+                        {otCostRestricted
+                          ? 'OT cost is calculated from salaries, so it is shown only to users with payroll access.'
+                          : 'Cost = OT hours × multiplier × (basic_salary ÷ 26 working days ÷ 9 hrs/day). Employees without a configured salary appear as ₹0.'}
                       </div>
 
                       <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
                         <thead>
                           <tr style={{ borderBottom: '1px solid #f0f0f4' }}>
-                            {['Department', 'Emp w/ OT', 'Total OT Hrs', 'Approved', 'Pending', 'Rejected', 'Avg Mult.', 'Approved Cost', 'Total Cost'].map(h => (
+                            {['Department', 'Emp w/ OT', 'Total OT Hrs', 'Approved', 'Pending', 'Rejected', 'Avg Mult.', ...(otCostRestricted ? [] : ['Approved Cost', 'Total Cost'])].map(h => (
                               <th key={h} style={{ padding: '8px 12px', textAlign: 'left', color: '#6b7280', fontWeight: 500, fontSize: 12 }}>{h}</th>
                             ))}
                           </tr>
@@ -801,8 +807,8 @@ export default function AttendanceAnalytics() {
                               <td style={{ padding: '10px 12px', color: '#7c5cf0' }}>{d.pending_ot}</td>
                               <td style={{ padding: '10px 12px', color: '#ef4444' }}>{d.rejected_ot}</td>
                               <td style={{ padding: '10px 12px' }}>{parseFloat(d.avg_multiplier || 1.5).toFixed(2)}×</td>
-                              <td style={{ padding: '10px 12px', fontWeight: 600, color: '#10b981' }}>{fmtINR(d.approved_ot_cost)}</td>
-                              <td style={{ padding: '10px 12px', color: '#6b7280' }}>{fmtINR(d.total_ot_cost)}</td>
+                              {!otCostRestricted && <td style={{ padding: '10px 12px', fontWeight: 600, color: '#10b981' }}>{fmtINR(d.approved_ot_cost)}</td>}
+                              {!otCostRestricted && <td style={{ padding: '10px 12px', color: '#6b7280' }}>{fmtINR(d.total_ot_cost)}</td>}
                             </tr>
                           ))}
                         </tbody>

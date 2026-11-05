@@ -62,7 +62,6 @@ afterAll(async () => {
   await pool.query(`DELETE FROM sales_forecast_submissions WHERE company_id = $1 AND period_year = 2199`, [COMPANY]).catch(() => {});
   await pool.query(`DELETE FROM opportunities WHERE opportunity_name LIKE $1`, [`${TAG}%`]).catch(() => {});
   await pool.query(`DELETE FROM sales_targets WHERE notes = $1`, [TAG]).catch(() => {});
-  await pool.end().catch(() => {});
 });
 
 /* ══════════════════════════════════════════════════════════════════════════

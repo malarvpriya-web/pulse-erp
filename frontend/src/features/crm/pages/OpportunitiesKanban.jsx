@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   Plus, RefreshCw, X, CheckCircle, XCircle, BarChart2, List, Rocket,
   Target, Filter,
@@ -68,6 +69,15 @@ const emptyForm = () => ({
 });
 
 export default function OpportunitiesKanban({ setPage } = {}) {
+  // ?stage=<name> narrows the board to one column, so a pipeline figure elsewhere
+  // (CEO Intelligence) can drill into the deals behind it.
+  //
+  // ⚠ Matched case-INSENSITIVELY. The stage vocabulary is split across the app:
+  // opportunities.stage holds 'qualification' while crm_pipeline_stages keys the
+  // columns 'Qualification'. An exact match silently shows an empty board, which
+  // is the same drift that made `closed_won` match zero rows.
+  const [urlParams, setUrlParams] = useSearchParams();
+  const stageParam = (urlParams.get('stage') || '').trim();
   const { readOnly } = usePageAccess();
   const [board,          setBoard]          = useState({});
   const [stages,         setStages]         = useState(FALLBACK_STAGES);
@@ -353,6 +363,24 @@ export default function OpportunitiesKanban({ setPage } = {}) {
 
   const allOpps = boardKeys.flatMap(key => (board[key] || []).map(o => ({ ...o, _stageKey: key })));
 
+  // Case-insensitive match against BOTH key and label, because the caller may hold
+  // either vocabulary. An unrecognised stage falls back to the full board rather
+  // than rendering nothing — a filter that empties the page looks broken, and the
+  // banner below says which stage was asked for.
+  const stageMatches = (st) => {
+    const want = stageParam.toLowerCase();
+    return String(st.key || '').toLowerCase() === want
+        || String(st.label || '').toLowerCase() === want;
+  };
+  const matched = stageParam ? stages.filter(stageMatches) : [];
+  const visibleStages = matched.length ? matched : stages;
+  const stageFilterUnknown = Boolean(stageParam) && matched.length === 0;
+  const clearStage = () => {
+    const next = new URLSearchParams(urlParams);
+    next.delete('stage');
+    setUrlParams(next, { replace: true });
+  };
+
   return (
     <PageShell dock={
       <PageHero
@@ -380,6 +408,31 @@ export default function OpportunitiesKanban({ setPage } = {}) {
     }>
 
       {toast && <div className={`ok-toast ok-toast-${toast.type}`}>{toast.msg}</div>}
+
+      {/* A filter the user did not set here must announce itself and be clearable,
+          otherwise the board just looks like it is missing columns. */}
+      {stageParam && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+          padding: '8px 12px', marginBottom: 10, borderRadius: 10,
+          background: stageFilterUnknown ? '#fef3c7' : '#ede9fe',
+          border: `1px solid ${stageFilterUnknown ? '#fcd34d' : '#ddd6fe'}`,
+          fontSize: 12, color: '#374151',
+        }}>
+          <span>
+            {stageFilterUnknown
+              ? <>No stage named <strong>{stageParam}</strong> — showing every stage.</>
+              : <>Showing the <strong>{visibleStages[0]?.label || stageParam}</strong> stage only.</>}
+          </span>
+          <button
+            onClick={clearStage}
+            style={{
+              border: '1px solid #c4b5fd', background: '#fff', color: '#5b21b6',
+              borderRadius: 7, padding: '3px 10px', fontSize: 11, fontWeight: 700, cursor: 'pointer',
+            }}
+          >Show all stages</button>
+        </div>
+      )}
 
       {readOnly && <ReadOnlyBanner />}
 
@@ -542,7 +595,7 @@ export default function OpportunitiesKanban({ setPage } = {}) {
       ) : (
         /* ── Kanban view ── */
         <div className="ok-board">
-          {stages.map(({ key, label, color }) => {
+          {visibleStages.map(({ key, label, color }) => {
             const cards = board[key] || [];
             const stageValue = cards.reduce((s, o) => s + parseFloat(o.expected_value || 0), 0);
             const unmapped = key === UNMAPPED_KEY;

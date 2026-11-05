@@ -2,7 +2,9 @@ import { test as setup, expect, request } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 
-const AUTH_FILE  = 'tests/.auth/user.json';
+// PULSE_AUTH_FILE lets the isolated test-database run (playwright.testdb.config.ts)
+// keep its own session, so it never overwrites the developer-server one.
+const AUTH_FILE  = process.env.PULSE_AUTH_FILE ?? 'tests/.auth/user.json';
 // Overridable so the suite can be pointed at a staging build, or at a second
 // backend/frontend pair started from a working tree, without editing this file.
 // Defaults are the documented dev ports, so nothing changes for a normal run.

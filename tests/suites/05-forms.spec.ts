@@ -45,26 +45,67 @@ async function openNewModal(page: Parameters<typeof test>[1] extends (args: { pa
   return false;
 }
 
-// ─── New Complaint ────────────────────────────────────────────────────────────
+// ─── New Complaint ──────────────────────────────────────────────────────────
+//
+// ⚠ THESE TWO USED TO DRIVE `/NewComplaint`, WHICH IS NOT A ROUTE.
+//
+// That was a STALE TEST, not a missing feature, and it is worth being precise
+// about which because the failure looked identical either way. The standalone
+// complaint list + create pages were retired on 2026-07-17 and folded into
+// `CustomerComplaintsIPCS` — the decision is recorded in
+// frontend/src/config/routes.jsx ("The list + create pages were retired
+// 2026-07-17 and are served by CustomerComplaintsIPCS ... see
+// SERVICE_MASTER_IPCS_PLAN.md 3c"), and no `NewComplaint` component has existed
+// since. `tests/reports/route-gap-analysis.md` had already logged
+// `/NewComplaint` as a route in the smoke manifest with no nav entry.
+//
+// GlobalSearch.jsx is CLEAN: it mentions NewComplaint only in a comment
+// recording the same retirement, and routes the old labels to
+// CustomerComplaintsIPCS so muscle memory still lands somewhere real. This
+// suite was the last thing still pointing at the dead URL.
+//
+// So the tests are REPOINTED at the surviving create path rather than deleted.
+// Deleting them would drop the only browser coverage that a complaint can be
+// raised at all; weakening them (a `.skip`, or dropping the heading assertion)
+// would hide a real regression if the IPCS dialog ever broke. What they prove
+// is unchanged: the create form opens, and it is the real one.
 
 test('@P1 New Complaint form loads without error', async ({ page }) => {
-  await page.goto(`${BASE}/NewComplaint`);
+  await page.goto(`${BASE}/CustomerComplaintsIPCS`);
   await waitForPageLoad(page);
   await assertNoErrorBoundary(page);
 
-  const heading = page.locator('h1, h2').filter({ hasText: /complaint/i }).first();
-  await expect(heading).toBeVisible({ timeout: 8_000 });
+  // The create dialog is behind the page's "New" action.
+  const newBtn = page.locator('button', { hasText: /^\s*New\s*$/ }).first();
+  await expect(newBtn, 'the New Complaint action is missing').toBeVisible({ timeout: 10_000 });
+  await newBtn.click();
+
+  // ⚠ Anchored to "New Complaint", not /complaint/i: the PAGE's own <h1> reads
+  // "Customer Complaints" and matches the loose pattern first, so the test
+  // would pass with the dialog still closed.
+  const heading = page.locator('h1, h2').filter({ hasText: /^New Complaint$/ }).first();
+  await expect(heading, 'the New Complaint dialog did not open').toBeVisible({ timeout: 8_000 });
+  await assertNoErrorBoundary(page);
 });
 
 test('@P1 New Complaint: submitting empty form shows validation', async ({ page }) => {
-  await page.goto(`${BASE}/NewComplaint`);
+  await page.goto(`${BASE}/CustomerComplaintsIPCS`);
   await waitForPageLoad(page);
   await assertNoErrorBoundary(page);
 
-  const submitBtn = page.locator('button[type="submit"], button').filter({ hasText: /Submit|Raise|Save|Send/i }).first();
+  const newBtn = page.locator('button', { hasText: /^\s*New\s*$/ }).first();
+  if (!(await newBtn.isVisible({ timeout: 10_000 }).catch(() => false))) {
+    test.info().annotations.push({ type: 'info', description: 'New Complaint action not available to this role' });
+    return;
+  }
+  await newBtn.click();
+
+  const dialog = page.locator('h2', { hasText: /New Complaint/i }).locator('xpath=ancestor::div[1]/..');
+  const submitBtn = dialog.locator('button').filter({ hasText: /Submit|Raise|Save|Send|Create/i }).first();
   if (await submitBtn.isVisible({ timeout: 5_000 }).catch(() => false)) {
     await submitBtn.click();
     await page.waitForTimeout(1_500);
+    // The point of the case: an empty submit must not blow the page up.
     await assertNoErrorBoundary(page);
 
     const errorEl = page.locator('[class*="error"], [class*="invalid"], [class*="required"], [role="alert"]').first();

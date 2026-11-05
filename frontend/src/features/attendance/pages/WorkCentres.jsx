@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import api from '@/services/api/client';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import { localDay } from '@/utils/dateFormatter';
 
 const P = '#6B3FDB';
 const CARD = { background: '#fff', borderRadius: 12, border: '1px solid #f0f0f4', padding: 24 };
@@ -25,7 +26,7 @@ function hoursPreview(checkIn, checkOut) {
 
 const EMPTY_FORM = {
   employee_id: '', work_centre_id: '', work_centre_name: '', shift_id: '',
-  date: new Date().toISOString().split('T')[0],
+  date: localDay(),
   check_in: '', check_out: '', units_produced: 0, remarks: '',
 };
 
@@ -40,7 +41,7 @@ function RecordModal({ editRecord, workCentres, onSave, onClose }) {
         work_centre_id:   editRecord.work_centre_id   || '',
         work_centre_name: editRecord.work_centre_name || '',
         shift_id:         editRecord.shift_id         || '',
-        date:             editRecord.attendance_date  || new Date().toISOString().split('T')[0],
+        date:             editRecord.attendance_date  || localDay(),
         check_in:         editRecord.check_in         || '',
         check_out:        editRecord.check_out        || '',
         units_produced:   editRecord.units_produced   ?? 0,
@@ -261,8 +262,8 @@ function RecordModal({ editRecord, workCentres, onSave, onClose }) {
 
 // ─── Analytics Tab ───────────────────────────────────────────────────────────
 function AnalyticsTab() {
-  const today    = new Date().toISOString().slice(0, 10);
-  const sevenAgo = new Date(Date.now() - 6 * 86400000).toISOString().slice(0, 10);
+  const today    = localDay();
+  const sevenAgo = localDay(-6);
 
   const [fromDate, setFromDate] = useState(sevenAgo);
   const [toDate, setToDate]     = useState(today);
@@ -567,7 +568,7 @@ export default function WorkCentres() {
   const [showForm, setShowForm]       = useState(false);
   const [editRecord, setEditRecord]   = useState(null);
   const [showPanel, setShowPanel]     = useState(false);
-  const [filterDate, setFilterDate]   = useState(new Date().toISOString().split('T')[0]);
+  const [filterDate, setFilterDate]   = useState(localDay());
   const [filterWC, setFilterWC]       = useState('');
   const [msg, setMsg]                 = useState({ text: '', ok: true });
   const [deleteConfirm, setDeleteConfirm] = useState(null);
@@ -629,7 +630,7 @@ export default function WorkCentres() {
   const totalHours  = filtered.reduce((s, r) => s + (parseFloat(r.hours_worked) || 0), 0);
   const uniqueWCCnt = new Set(records.map(r => r.work_centre_name).filter(Boolean)).size;
 
-  const today = new Date().toISOString().split('T')[0];
+  const today = localDay();
 
   return (
     <PageShell dock={

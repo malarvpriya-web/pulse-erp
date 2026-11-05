@@ -1,84 +1,294 @@
 // PATH: frontend/src/features/employees/pages/EmployeesDashboard.jsx
-import { useState, useEffect, useCallback, useRef } from 'react';
+/**
+ * Employees ▸ Dashboard — the page HR opens first thing in the morning.
+ *
+ * It answers, without a scroll and without a hover: how many people do we
+ * have, who is joining, who joined recently, who is on probation, whose
+ * documents are expiring, who is leaving, what the hiring/attrition trend is,
+ * and which departments hold how many. Every number links to its records.
+ *
+ * ── Period semantics (read before adding a card) ───────────────────────────
+ * Three different time scopes live on this page and each is labelled on the
+ * metric itself, because a number whose window you have to guess is worse
+ * than no number:
+ *
+ *   AS OF TODAY   headcount, status, department, gender, skill, tenure, data
+ *                 quality. Point-in-time population. The period filter must
+ *                 NOT move these — "how many people work here" cannot have a
+ *                 different answer because you looked at last quarter.
+ *   SELECTED      new hires, exits, attrition, the trend chart. Activity.
+ *   NEXT N DAYS   joinees, exits, documents, confirmations, birthdays. A
+ *                 rolling forward window that also keeps anything overdue.
+ *                 Never period-scoped: a narrow filter must not hide work.
+ *
+ * The API states which is which in `period_scoped` / `point_in_time`.
+ *
+ * ── Joinees are not hires ──────────────────────────────────────────────────
+ * An upcoming joinee is a candidate with an accepted offer and no employee
+ * record. They are deliberately absent from headcount and from New Hires, and
+ * they create no employee row — see upcomingJoinees.service.js.
+ */
+import { Fragment, useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   Users, UserCheck, UserPlus, Clock, TrendingUp, UserX, RefreshCw,
-  AlertCircle, LayoutDashboard,
+  AlertCircle, LayoutDashboard, ArrowUpRight, AlertTriangle, CalendarPlus,
+  DoorOpen,
 } from 'lucide-react';
 import {
   PieChart, Pie, Cell, Tooltip, Legend, ResponsiveContainer,
-  BarChart, Bar, XAxis, YAxis, CartesianGrid,
-  AreaChart, Area,
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, LabelList,
+  ComposedChart, Area, Line,
 } from 'recharts';
 import api from '@/services/api/client';
+import { useAuth } from '@/context/AuthContext';
 import { ChartExpandButton } from '@/components/dashboard/DashCard';
 import '@/components/dashboard/dashkit.css';
-import { PageHero, PageShell } from '@/components/pulse-ui';
+import { PageHero, PageShell, DashboardFilterBar } from '@/components/pulse-ui';
+import useDashboardFilters from '@/hooks/useDashboardFilters';
+// Bucket colours only — the dashboard receives already-bucketed labels from
+// the API, and re-deriving them in the browser is how the two drift apart.
+import { BUCKET_COLORS, bucketOf } from '../employeeStatus';
+import { setEmployeeListFilter } from '../employeeListFilter';
+import './EmployeesDashboard.css';
 
-const P      = '#6B3FDB';
-const LIGHT  = '#f5f3ff';
-const BORDER = '#e9e4ff';
+const P     = '#6B3FDB';
+const LIGHT = '#f5f3ff';
 
-const PIE_COLORS    = ['#6B3FDB', '#a78bfa', '#c4b5fd', '#ddd6fe', '#ede9fe'];
+const PIE_COLORS    = ['#6B3FDB', '#a78bfa', '#c4b5fd', '#ddd6fe', '#ede9fe', '#8b5cf6'];
 const GENDER_COLORS = { Male: '#6B3FDB', Female: '#ec4899', Other: '#10b981', 'Not specified': '#d1d5db' };
 
-// ─── Fiscal year helpers ──────────────────────────────────────────────────────
+/** Rolling forward window for the action strip. Not period-scoped. */
+const ALERT_WINDOW_DAYS = 30;
 
-function getFYOptions() {
-  const now      = new Date();
-  const year     = now.getFullYear();
-  const mon      = now.getMonth();
-  const curFYEnd = mon >= 3 ? year + 1 : year;
-  return Array.from({ length: 5 }, (_, i) => {
-    const fyEnd   = curFYEnd - i;
-    const fyStart = fyEnd - 1;
-    return {
-      label    : `FY${String(fyEnd).slice(-2)}`,
-      start    : `${fyStart}-04-01`,
-      end      : `${fyEnd}-03-31`,
-      key      : `FY${fyEnd}`,
-      isCurrent: i === 0,
-    };
-  });
+/** Departments shown before the rest collapse into an explicit "Others" bar. */
+const DEPT_TOP_N = 8;
+
+/** Compact forms of the server's period labels, for the KPI scope line. */
+const SHORT_PERIOD = {
+  mtd: 'This month', qtd: 'This quarter', ytd: 'Calendar YTD', fytd: 'This FY',
+  last7: 'Last 7 days', last30: 'Last 30 days', last90: 'Last 90 days',
+  last6m: 'Last 6 months', last12m: 'Last 12 months', all: 'All time',
+};
+
+/** Stable empties, so an absent payload does not churn every downstream memo. */
+const EMPTY_ARR = Object.freeze([]);
+const EMPTY_OBJ = Object.freeze({});
+
+// ─── Formatting ──────────────────────────────────────────────────────────────
+
+/**
+ * A share of the population the chart is drawn from, so "4 (12.1%)" always
+ * reconciles with the bar beside it. One decimal, trimmed when it is a round
+ * number — "91%" reads better than "91.0%", and "12.1%" carries information
+ * that "12%" loses.
+ */
+function pct(n, total) {
+  if (!total) return null;
+  const v = Math.round((n / total) * 1000) / 10;
+  return `${v % 1 === 0 ? v.toFixed(0) : v.toFixed(1)}%`;
 }
 
-const FY_OPTIONS = getFYOptions();
+/** "4 (12.1%)" */
+function countPct(n, total) {
+  const p = pct(n, total);
+  return p ? `${n} (${p})` : String(n);
+}
 
-// ─── Reusable primitives ──────────────────────────────────────────────────────
+function formatDate(dateStr) {
+  if (!dateStr) return '—';
+  const d = new Date(dateStr);
+  if (Number.isNaN(d.getTime())) return '—';
+  return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' });
+}
 
-function KPI({ icon: Icon, label, value, sub, color = P, loading, index = 0 }) {
+/**
+ * Average tenure in the unit an HR manager actually reasons in. "0.2 yrs" is
+ * a number you have to convert in your head before it means anything.
+ */
+function tenureDisplay(years, months) {
+  if (!years && !months) return { main: '—', sub: 'No joining dates recorded' };
+  if (months != null && months < 18) {
+    return { main: `${months} mo`, sub: years ? `${years} yrs` : null };
+  }
+  return { main: `${years} yrs`, sub: months ? `${months} mo` : null };
+}
+
+const sum = (rows, key = 'count') => (rows || []).reduce((n, r) => n + (Number(r[key]) || 0), 0);
+
+// ─── Small presentational pieces ─────────────────────────────────────────────
+
+/**
+ * A KPI tile. `onClick` makes it a real <button>, which is what gives it
+ * keyboard focus and a screen-reader role — the affordance is not just the
+ * arrow and the hover. `scope` names the window the number covers.
+ */
+function KPI({ icon: Icon, label, value, sub, scope, color = P, loading, index = 0, onClick, title }) {
+  const Tag = onClick ? 'button' : 'div';
   return (
-    <div className="kpi-card dk-anim" style={{
-      background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 11,
-      padding: '12px 14px', display: 'flex', alignItems: 'center', gap: 11, '--dk-i': index,
-    }}>
-      <div style={{
-        width: 38, height: 38, borderRadius: 10, background: LIGHT,
-        display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-      }}>
-        <Icon size={18} color={color} />
-      </div>
-      <div>
-        <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 1 }}>{label}</div>
+    <Tag
+      type={onClick ? 'button' : undefined}
+      onClick={onClick}
+      title={title}
+      className={`empdash-kpi dk-anim ${onClick ? 'empdash-clickable' : 'empdash-static'}`}
+      style={{ '--dk-i': index }}
+    >
+      {onClick && <span className="empdash-go" aria-hidden="true"><ArrowUpRight size={12} /></span>}
+      <span className="empdash-kpi-ico" style={{ background: LIGHT }}>
+        <Icon size={15} color={color} />
+      </span>
+      <span className="empdash-kpi-body">
+        <span className="empdash-kpi-label">{label}</span>
         {loading
-          ? <div style={{ height: 24, width: 60, background: '#f3f4f6', borderRadius: 4 }} />
-          : <div style={{ fontSize: 20, fontWeight: 700, color: '#111827' }}>{value}</div>
-        }
-        {sub && !loading && <div style={{ fontSize: 11, color: '#6b7280' }}>{sub}</div>}
-      </div>
+          ? <span className="empdash-skel" style={{ display: 'block', height: 20, width: 48 }} />
+          : <span className="empdash-kpi-value">{value}</span>}
+        {!loading && sub && <span className="empdash-kpi-sub">{sub}</span>}
+        {!loading && scope && <span className="empdash-scope">{scope}</span>}
+      </span>
+    </Tag>
+  );
+}
+
+/**
+ * The headcount tile: a value that opens everyone, and a composition line whose
+ * three segments each open their own slice.
+ *
+ * ⚠ It is NOT one big <button> like the other tiles. Nesting the three segment
+ * buttons inside an outer button is invalid HTML and browsers flatten it — the
+ * inner clicks would either not fire or fire both handlers. So the card is a
+ * plain container and each target is its own button.
+ */
+function HeadcountKPI({ total, parts, loading, index = 0, onOpenAll, onOpenPart }) {
+  return (
+    <div className="empdash-kpi empdash-kpi--headcount dk-anim" style={{ '--dk-i': index }}>
+      <span className="empdash-kpi-ico" style={{ background: LIGHT }}>
+        <Users size={15} color={P} />
+      </span>
+      <span className="empdash-kpi-body">
+        <span className="empdash-kpi-label">Current Headcount</span>
+        {loading ? (
+          <span className="empdash-skel" style={{ display: 'block', height: 20, width: 48 }} />
+        ) : (
+          <button
+            type="button" className="empdash-headline" onClick={onOpenAll}
+            title="Open all current employees"
+          >
+            {total}
+            <ArrowUpRight size={11} aria-hidden="true" />
+          </button>
+        )}
+        {!loading && (
+          <span className="empdash-parts">
+            {parts.filter(p => p.count > 0).map((p, i) => (
+              <Fragment key={p.status}>
+                {/* An explicit separator: at narrow widths the segments wrap
+                    and, with only whitespace between them, "31 Active" and
+                    "1 Probation" ran together as "31 Active1 Probation". */}
+                {i > 0 && <span className="empdash-part-sep" aria-hidden="true">·</span>}
+                <button
+                  type="button" className="empdash-part"
+                  style={{ '--part': BUCKET_COLORS[p.status] || P }}
+                  onClick={() => onOpenPart(p.status)}
+                  title={`Open ${p.count} ${p.status} employee${p.count === 1 ? '' : 's'}`}
+                >
+                  <b>{p.count}</b> {p.status}
+                </button>
+              </Fragment>
+            ))}
+          </span>
+        )}
+        {!loading && <span className="empdash-scope">As of today</span>}
+      </span>
     </div>
   );
 }
 
-function Card({ title, children, span = 1, action, index = 0 }) {
+/**
+ * An action tile: a count, an optional SEPARATE overdue count, and a scope.
+ *
+ * Overdue is never folded into the main number. "3 expiring" and "2 already
+ * expired" are different pieces of work, and the second one is the urgent one
+ * — it is also the one a `BETWEEN CURRENT_DATE AND …` window silently drops
+ * on the day it starts to matter.
+ */
+function ActionTile({
+  icon, label, count, overdue = 0, overdueLabel = 'overdue', warn = false,
+  scope, bg, color, loading, index = 0, onClick, onOverdueClick, title, overdueTitle,
+}) {
+  // When the badge has a destination of its own the tile cannot be one big
+  // <button> — nesting buttons is invalid HTML and browsers flatten it. The
+  // main count and the overdue count are different pieces of work, so when
+  // they lead to different lists they get different targets.
+  const splitTargets = Boolean(onOverdueClick) && overdue > 0;
+  const Shell = splitTargets ? 'div' : 'button';
+  const Main  = splitTargets ? 'button' : 'span';
   return (
-    <div className="dk-anim" style={{
-      background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 11,
-      padding: '13px 14px', gridColumn: `span ${span}`, '--dk-i': index,
-    }}>
+    <Shell
+      type={splitTargets ? undefined : 'button'}
+      onClick={splitTargets ? undefined : onClick}
+      title={splitTargets ? undefined : title}
+      className={`empdash-action dk-anim${splitTargets ? '' : ' empdash-clickable'}`}
+      style={{ '--dk-i': index }}
+    >
+      {!splitTargets && <span className="empdash-go" aria-hidden="true"><ArrowUpRight size={12} /></span>}
+      <span className="empdash-action-ico" style={{ background: bg, color }}>{icon}</span>
+      <span className="empdash-action-body">
+        <span className="empdash-action-label">{label}</span>
+        {loading ? (
+          <span className="empdash-skel" style={{ display: 'block', height: 19, width: 40 }} />
+        ) : (
+          <span className="empdash-action-counts">
+            <Main
+              type={splitTargets ? 'button' : undefined}
+              onClick={splitTargets ? onClick : undefined}
+              title={splitTargets ? title : undefined}
+              className={`empdash-action-main${count ? '' : ' is-zero'}${splitTargets ? ' is-target' : ''}`}
+            >
+              {count}
+            </Main>
+            {overdue > 0 && (
+              splitTargets ? (
+                <button
+                  type="button" onClick={onOverdueClick} title={overdueTitle || overdueLabel}
+                  className={`empdash-overdue-badge is-target${warn ? ' is-warn' : ''}`}
+                >
+                  <AlertTriangle size={9} aria-hidden="true" />
+                  {overdue} {overdueLabel}
+                </button>
+              ) : (
+                <span className={`empdash-overdue-badge${warn ? ' is-warn' : ''}`}>
+                  <AlertTriangle size={9} aria-hidden="true" />
+                  {overdue} {overdueLabel}
+                </span>
+              )
+            )}
+          </span>
+        )}
+        {!loading && scope && <span className="empdash-action-sub">{scope}</span>}
+      </span>
+    </Shell>
+  );
+}
+
+function Card({ title, subtitle, children, span = null, actions, index = 0, onTitleClick, viewAllLabel = 'View all' }) {
+  return (
+    <div
+      className="empdash-card dk-anim"
+      style={{ ...(span ? { gridColumn: `span ${span}` } : null), '--dk-i': index }}
+    >
       {title && (
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 9 }}>
-          <div style={{ fontSize: 13, fontWeight: 600, color: '#374151' }}>{title}</div>
-          {action}
+        <div className="empdash-card-hd">
+          <div className="empdash-card-title">
+            <span>{title}</span>
+            {subtitle && <span className="empdash-card-sub">{subtitle}</span>}
+          </div>
+          <div className="empdash-card-actions">
+            {onTitleClick && (
+              <button type="button" className="empdash-linkbtn" onClick={onTitleClick}>
+                {viewAllLabel} <ArrowUpRight size={10} />
+              </button>
+            )}
+            {actions}
+          </div>
         </div>
       )}
       {children}
@@ -86,105 +296,98 @@ function Card({ title, children, span = 1, action, index = 0 }) {
   );
 }
 
-function EmptyChart({ height = 200 }) {
-  return (
-    <div style={{ height, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#d1d5db', fontSize: 12 }}>
-      No data available
-    </div>
-  );
+function EmptyChart({ height = 160, message = 'No data available' }) {
+  return <div className="empdash-empty" style={{ minHeight: height }}>{message}</div>;
 }
 
-const ChartTip = ({ active, payload, label }) => {
+function ChartSkeleton({ height = 160 }) {
+  return <div className="empdash-skel" style={{ height, background: '#f9fafb' }} />;
+}
+
+const ChartTip = ({ active, payload, label, hint, total }) => {
   if (!active || !payload?.length) return null;
   return (
-    <div style={{ background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 8, padding: '8px 12px', fontSize: 12 }}>
-      {label && <div style={{ fontWeight: 600, marginBottom: 4, color: '#374151' }}>{label}</div>}
-      {payload.map((p, i) => (
-        <div key={i} style={{ color: p.color || P }}>{p.name}: <b>{p.value}</b></div>
+    <div style={{ background: '#fff', border: '1px solid #e9e4ff', borderRadius: 8, padding: '6px 10px', fontSize: 11, boxShadow: '0 4px 14px rgba(0,0,0,.07)' }}>
+      {label && <div style={{ fontWeight: 600, marginBottom: 3, color: '#374151' }}>{label}</div>}
+      {payload.filter(p => p.value != null).map((p, i) => (
+        <div key={i} style={{ color: p.color || P }}>
+          {p.name}: <b>{p.value}</b>{total ? ` (${pct(p.value, total)})` : ''}
+        </div>
       ))}
+      {hint && <div style={{ color: '#9ca3af', marginTop: 3, fontSize: 10 }}>{hint}</div>}
     </div>
   );
 };
 
 function Avatar({ name }) {
-  const initials = (name || '?').split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase();
-  return (
-    <div style={{
-      width: 34, height: 34, borderRadius: 8, background: LIGHT, color: P,
-      display: 'flex', alignItems: 'center', justifyContent: 'center',
-      fontSize: 12, fontWeight: 700, flexShrink: 0,
-    }}>
-      {initials}
-    </div>
-  );
+  const initials = (name || '?').split(' ').filter(Boolean).map(w => w[0]).slice(0, 2).join('').toUpperCase();
+  return <span className="empdash-avatar">{initials || '?'}</span>;
 }
 
-function EmployeeRow({ emp, sub }) {
-  const name = [emp.first_name, emp.last_name].filter(Boolean).join(' ') || emp.name || '—';
+function PersonRow({ name, meta, tag, tagTone, onClick, title }) {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: `1px solid #f3f4f6` }}>
+    <button type="button" className="empdash-emp-row" onClick={onClick} title={title}>
       <Avatar name={name} />
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 13, fontWeight: 600, color: '#111827', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{name}</div>
-        <div style={{ fontSize: 11, color: '#9ca3af' }}>{emp.designation || emp.department || '—'} {sub ? `· ${sub}` : ''}</div>
-      </div>
-      {emp.department && (
-        <span style={{ fontSize: 10, background: LIGHT, color: P, padding: '2px 8px', borderRadius: 20, whiteSpace: 'nowrap' }}>
-          {emp.department}
-        </span>
-      )}
-    </div>
+      <span style={{ flex: 1, minWidth: 0 }}>
+        <span className="empdash-emp-name" style={{ display: 'block' }}>{name}</span>
+        <span className="empdash-emp-meta" style={{ display: 'block' }}>{meta}</span>
+      </span>
+      {tag && <span className={`empdash-tag${tagTone ? ` is-${tagTone}` : ''}`}>{tag}</span>}
+    </button>
   );
 }
 
 function SkeletonRows({ n = 4 }) {
   return Array.from({ length: n }).map((_, i) => (
-    <div key={i} style={{ display: 'flex', gap: 10, padding: '8px 0', borderBottom: '1px solid #f3f4f6' }}>
-      <div style={{ width: 34, height: 34, borderRadius: 8, background: '#f3f4f6' }} />
+    <div key={i} style={{ display: 'flex', gap: 8, padding: '4px 0', borderBottom: '1px solid #f5f5f7' }}>
+      <div className="empdash-skel" style={{ width: 26, height: 26, borderRadius: 7 }} />
       <div style={{ flex: 1 }}>
-        <div style={{ height: 12, width: '60%', background: '#f3f4f6', borderRadius: 4, marginBottom: 6 }} />
-        <div style={{ height: 10, width: '40%', background: '#f3f4f6', borderRadius: 4 }} />
+        <div className="empdash-skel" style={{ height: 10, width: '58%', marginBottom: 5 }} />
+        <div className="empdash-skel" style={{ height: 8, width: '38%' }} />
       </div>
     </div>
   ));
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// ─── Main component ──────────────────────────────────────────────────────────
 
-function getThisMonthHires(newHiresMonthly = []) {
-  if (!newHiresMonthly.length) return 0;
-  const now   = new Date();
-  const label = now.toLocaleString('en-US', { month: 'short' }) + ' ' + String(now.getFullYear()).slice(-2);
-  const found = newHiresMonthly.find(r => r.month === label);
-  return found?.hires ?? newHiresMonthly[newHiresMonthly.length - 1]?.hires ?? 0;
-}
-
-function formatDate(dateStr) {
-  if (!dateStr) return '—';
-  return new Date(dateStr).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' });
-}
-
-// ─── Main Component ───────────────────────────────────────────────────────────
-
-export default function EmployeesDashboard({ setPage }) {
+export default function EmployeesDashboard({ setPage, setSelectedEmployee }) {
   const [analytics,     setAnalytics]     = useState(null);
-  const [probationList, setProbationList] = useState([]);
-  const [recentHires,   setRecentHires]   = useState([]);
-  const [birthdays,     setBirthdays]     = useState([]);
-  const [anniversaries, setAnniversaries] = useState([]);
-  const [confirmations, setConfirmations] = useState([]);
-  const [expiringDocs,  setExpiringDocs]  = useState([]);
-  const [upcomingExits, setUpcomingExits] = useState([]);
+  const [recentHires,   setRecentHires]   = useState(EMPTY_ARR);
+  const [birthdays,     setBirthdays]     = useState(EMPTY_ARR);
+  const [anniversaries, setAnniversaries] = useState(EMPTY_ARR);
+  const [confirmations, setConfirmations] = useState(EMPTY_ARR);
+  const [expiringDocs,  setExpiringDocs]  = useState(EMPTY_ARR);
+  const [upcomingExits, setUpcomingExits] = useState(EMPTY_ARR);
+  const [joinees,       setJoinees]       = useState(null);
   const [loading,       setLoading]       = useState(true);
   const [listLoading,   setListLoading]   = useState(true);
   const [error,         setError]         = useState(null);
   const [lastRefresh,   setLastRefresh]   = useState(null);
-  const [activeFY,      setActiveFY]      = useState(FY_OPTIONS[0].key);
+  const [showAllDepts,  setShowAllDepts]  = useState(false);
+  // The Documents tile opens HR's register, which is gated on
+  // employee_documents (§207). This dashboard is gated on employees:view,
+  // which managers also hold, so the tile is drawn for grant holders only.
+  const { hasPermission } = useAuth();
+  const canOpenDocs = hasPermission('employee_documents', 'view');
+
+  const filters = useDashboardFilters({
+    defaultPeriod: 'fytd',
+    dimensions: { department: 'all' },
+    storageKey: 'employees-dashboard',
+  });
+  const { params } = filters;
 
   const abortRef = useRef(null);
 
-  const load = useCallback(async (fyKey) => {
-    if (abortRef.current) abortRef.current.abort();
+  const load = useCallback(async (queryParams) => {
+    // The HR action window is rolling, never period-scoped — but it IS
+    // department-scoped, or the action strip would show the whole company
+    // beside a headcount filtered to one department, under one heading.
+    const deptParam = queryParams?.department && queryParams.department !== 'all'
+      ? { department: queryParams.department }
+      : {};
+    abortRef.current?.abort();
     abortRef.current = new AbortController();
     const { signal } = abortRef.current;
 
@@ -192,57 +395,50 @@ export default function EmployeesDashboard({ setPage }) {
     setListLoading(true);
     setError(null);
 
-    // Wave 1 — analytics KPIs + charts (FY-scoped)
     try {
-      const fy     = FY_OPTIONS.find(f => f.key === fyKey) || FY_OPTIONS[0];
-      const params = new URLSearchParams({ fy_start: fy.start, fy_end: fy.end });
-      const res    = await api.get(`/employees/analytics?${params}`);
+      const res = await api.get('/employees/analytics', { params: queryParams, signal });
       if (signal.aborted) return;
       setAnalytics(res.data || null);
     } catch (err) {
-      if (!signal.aborted) setError(err.message || 'Failed to load analytics');
+      if (err?.name === 'CanceledError' || err?.code === 'ERR_CANCELED' || signal.aborted) return;
+      setError(err.response?.data?.error || err.message || 'Failed to load analytics');
     } finally {
       if (!signal.aborted) setLoading(false);
     }
 
     if (signal.aborted) return;
 
-    // Wave 2 — live employee lists + HR widgets (always current)
-    const [probRes, allRes, bdRes, annRes, confRes, expRes, exitRes] = await Promise.allSettled([
-      api.get('/employees', { params: { status: 'probation' } }),
-      api.get('/employees'),
-      api.get('/hr-widgets/upcoming-birthdays?days=30'),
-      api.get('/hr-widgets/upcoming-anniversaries?days=30'),
-      api.get('/hr-widgets/pending-confirmations?days=14'),
-      api.get('/hr-widgets/expiring-documents?days=30'),
-      api.get('/hr-widgets/upcoming-exits?days=30'),
-    ]);
+    const [hiresRes, bdRes, annRes, confRes, expRes, exitRes, joinRes] =
+      await Promise.allSettled([
+        api.get('/employees', { params: { status: 'all' }, signal }),
+        api.get('/hr-widgets/upcoming-birthdays',     { params: { days: ALERT_WINDOW_DAYS, ...deptParam }, signal }),
+        api.get('/hr-widgets/upcoming-anniversaries', { params: { days: ALERT_WINDOW_DAYS, ...deptParam }, signal }),
+        api.get('/hr-widgets/pending-confirmations',  { params: { days: ALERT_WINDOW_DAYS, ...deptParam }, signal }),
+        api.get('/hr-widgets/expiring-documents',     { params: { days: ALERT_WINDOW_DAYS, ...deptParam }, signal }),
+        api.get('/hr-widgets/upcoming-exits',         { params: { days: ALERT_WINDOW_DAYS, ...deptParam }, signal }),
+        api.get('/hr-widgets/upcoming-joinees',       { params: { days: ALERT_WINDOW_DAYS, ...deptParam }, signal }),
+      ]);
 
     if (signal.aborted) return;
 
-    if (probRes.status === 'fulfilled') {
-      const raw = probRes.value.data;
-      setProbationList(Array.isArray(raw) ? raw.slice(0, 5) : []);
-    }
+    const arr = (r) => (r.status === 'fulfilled' && Array.isArray(r.value.data) ? r.value.data : EMPTY_ARR);
 
-    if (allRes.status === 'fulfilled') {
-      const raw = allRes.value.data;
-      if (Array.isArray(raw)) {
-        const cutoff = new Date();
-        cutoff.setDate(cutoff.getDate() - 30);
-        const recent = raw
-          .filter(e => e.joining_date && new Date(e.joining_date) >= cutoff)
-          .sort((a, b) => new Date(b.joining_date) - new Date(a.joining_date))
-          .slice(0, 5);
-        setRecentHires(recent);
-      }
-    }
+    // The five most recent joiners, however far back that reaches. The old
+    // version hardcoded 30 days and rendered "no new hires" on a page whose
+    // New Hires KPI read 27.
+    const all = arr(hiresRes);
+    setRecentHires(
+      all.filter(e => e.joining_date)
+        .sort((a, b) => String(b.joining_date).localeCompare(String(a.joining_date)))
+        .slice(0, 4),
+    );
 
-    if (bdRes.status   === 'fulfilled') setBirthdays(bdRes.value.data   || []);
-    if (annRes.status  === 'fulfilled') setAnniversaries(annRes.value.data || []);
-    if (confRes.status === 'fulfilled') setConfirmations(confRes.value.data || []);
-    if (expRes.status  === 'fulfilled') setExpiringDocs(expRes.value.data  || []);
-    if (exitRes.status === 'fulfilled') setUpcomingExits(exitRes.value.data || []);
+    setBirthdays(arr(bdRes));
+    setAnniversaries(arr(annRes));
+    setConfirmations(arr(confRes));
+    setExpiringDocs(arr(expRes));
+    setUpcomingExits(arr(exitRes));
+    setJoinees(joinRes.status === 'fulfilled' ? joinRes.value.data : null);
 
     if (!signal.aborted) {
       setListLoading(false);
@@ -251,49 +447,205 @@ export default function EmployeesDashboard({ setPage }) {
   }, []);
 
   useEffect(() => {
-    load(activeFY);
-    return () => { if (abortRef.current) abortRef.current.abort(); };
-  }, [activeFY, load]);
+    load(params);
+    return () => abortRef.current?.abort();
+  }, [params, load]);
 
-  const s            = analytics?.summary        || {};
-  const deptData     = analytics?.deptBreakdown  || [];
-  const genderData   = analytics?.genderBreakdown || [];
-  const skillData    = analytics?.skillBreakdown  || [];
-  const tenureData   = analytics?.tenureGroups    || [];
-  const statusData   = analytics?.statusBreakdown || [];
-  const hiresMonthly = analytics?.newHiresMonthly || [];
-  const exitsMonthly = analytics?.attritionMonthly || [];
+  // ── Derived ────────────────────────────────────────────────────────────────
 
-  const totalHeadcount = (s.total || 0) + (s.left || 0);
-  const attritionRate  = totalHeadcount > 0 ? ((s.left / totalHeadcount) * 100).toFixed(1) : '0.0';
-  const isCurrentFY    = activeFY === FY_OPTIONS[0].key;
-  const newHiresValue  = isCurrentFY
-    ? getThisMonthHires(hiresMonthly)
-    : hiresMonthly.reduce((acc, r) => acc + (r.hires || 0), 0);
+  const s          = analytics?.summary         ?? EMPTY_OBJ;
+  const period     = analytics?.period          ?? EMPTY_OBJ;
+  const deptData   = analytics?.deptBreakdown   ?? EMPTY_ARR;
+  const genderData = analytics?.genderBreakdown ?? EMPTY_ARR;
+  const skillData  = analytics?.skillBreakdown  ?? EMPTY_ARR;
+  const tenureData = analytics?.tenureGroups    ?? EMPTY_ARR;
+  const statusData = analytics?.statusBreakdown ?? EMPTY_ARR;
+  const trendData  = analytics?.hiringTrend     ?? EMPTY_ARR;
+  const dq         = analytics?.dataQuality     ?? EMPTY_OBJ;
 
-  const hasHires     = hiresMonthly.length > 0;
-  const hasAttrition = exitsMonthly.length > 0;
+  const periodLabel = period.label || 'this period';
+  /**
+   * The same window, short enough for a 180px KPI tile. The server's
+   * `period.label` is written for prose ("This financial year") and truncated
+   * to "THIS FINANCIAL YE…" in the tile's scope line, which reads as a broken
+   * string rather than a time scope. Cards and captions keep the long form.
+   */
+  const shortPeriod = SHORT_PERIOD[period.key] || (period.key === 'custom'
+    ? `${formatDate(period.from)}–${formatDate(period.to)}`
+    : periodLabel);
+  const total       = s.total ?? 0;
+  const joineeSum   = joinees?.summary ?? EMPTY_OBJ;
 
-  const trendData = hasHires
-    ? hiresMonthly.map(h => {
-        const ex = exitsMonthly.find(a => a.month === h.month);
-        return { month: h.month, Hires: h.hires, ...(hasAttrition ? { Exits: ex?.exits || 0 } : {}) };
-      })
-    : [];
+  const hasTrend = trendData.length > 0 && trendData.some(m => m.hires || m.exits);
+  const tenureKpi = tenureDisplay(s.avgTenure, s.avgTenureMonths);
+  const netChange = (s.newHires ?? 0) - (s.exits ?? 0);
+
+  /**
+   * Totals for the trend summary, taken from the SERIES the chart plots.
+   *
+   * Deriving them from the same array the chart renders is what makes the
+   * caption incapable of disagreeing with the picture above it — and the
+   * series itself is period-scoped and department-scoped by the API, so these
+   * track the New Hires KPI and the Workforce Movement ledger automatically.
+   */
+  const trendHires = sum(trendData, 'hires');
+  const trendExits = sum(trendData, 'exits');
+  const trendNet   = trendHires - trendExits;
+
+  /** Split counts for the action tiles. */
+  const docsExpired     = expiringDocs.filter(d => d.expiry_state === 'expired').length;
+  const docsExpiring    = expiringDocs.length - docsExpired;
+  const exitsOverdue    = upcomingExits.filter(e => e.exit_state === 'overdue').length;
+  /**
+   * Overdue exits belonging to the NOTICE cohort specifically.
+   *
+   * ⚠ Not `exitsOverdue`. On live data all four overdue exits belong to
+   * employees who are still `Active` (three of them) or already `resigned` —
+   * none is the one person on Notice. Putting the global figure on the Notice
+   * tile read "1 … 4 past last working day", which is not only wrong but
+   * arithmetically impossible.
+   */
+  const noticeOverdue   = upcomingExits.filter(
+    e => e.exit_state === 'overdue' && bucketOf(e.employee_status) === 'Notice',
+  ).length;
+  const exitsUpcoming   = upcomingExits.length - exitsOverdue;
+  const confOverdue     = confirmations.filter(c => c.confirmation_state === 'overdue').length;
+  const confUndated     = confirmations.filter(c => c.confirmation_state === 'undated').length;
+  const confDue         = confirmations.length - confOverdue - confUndated;
+  // The exact rows each number counted, so a click opens that population and
+  // nothing else. The tile used to count "due in the next 30 days" and open
+  // EVERY probationer; its overdue badge did the same when overdue and
+  // undated were both present. Department-filtered counts stay filtered too.
+  const confDueIds       = confirmations.filter(c => c.confirmation_state === 'due').map(c => c.id);
+  const confAttentionIds = confirmations.filter(c => c.confirmation_state !== 'due').map(c => c.id);
+
+  /**
+   * Departments, with the tail collapsed into an explicit "Others" bar.
+   * Never silently dropped — the old query's `LIMIT 12` against 14 live
+   * departments is exactly the failure this replaces. Others carries its own
+   * count, and the toggle shows every row.
+   */
+  const deptChartData = useMemo(() => {
+    if (showAllDepts || deptData.length <= DEPT_TOP_N + 1) return deptData;
+    const head = deptData.slice(0, DEPT_TOP_N);
+    const tail = deptData.slice(DEPT_TOP_N);
+    return [...head, {
+      department: `Others (${tail.length})`,
+      count:     sum(tail),
+      active:    sum(tail, 'active'),
+      probation: sum(tail, 'probation'),
+      notice:    sum(tail, 'notice'),
+      other:     sum(tail, 'other'),
+      isOthers:  true,
+    }];
+  }, [deptData, showAllDepts]);
+
+  /** department → "5 · 15%" for the chart's right-hand value axis. */
+  const deptTotals = useMemo(
+    () => Object.fromEntries(deptChartData.map(d => [d.department, `${d.count} · ${pct(d.count, total) ?? ''}`])),
+    [deptChartData, total],
+  );
+
+  // Department options come from the UNFILTERED breakdown, so picking one does
+  // not collapse the dropdown to the value already selected.
+  const activeDept = filters.dimensions.department;
+  /**
+   * The department filter narrows EVERY number on this page, and it persists
+   * in sessionStorage — so the page can come back scoped from a previous
+   * visit. Without saying so, "Hiring vs Attrition · This financial year"
+   * describes one department while looking exactly like the whole company:
+   * Procurement, for instance, reads "2 hires" against a company total of 27.
+   */
+  const activeDeptLabel = activeDept && activeDept !== 'all' ? activeDept : null;
+  const [deptOptionSource, setDeptOptionSource] = useState(EMPTY_ARR);
+  useEffect(() => {
+    if ((!activeDept || activeDept === 'all') && deptData.length) {
+      setDeptOptionSource(deptData.map(d => d.department));
+    }
+  }, [activeDept, deptData]);
+  const deptOptions = useMemo(
+    () => deptOptionSource.map(d => ({ value: d, label: d })),
+    [deptOptionSource],
+  );
+
+  // ── Navigation ─────────────────────────────────────────────────────────────
+
+  const goEmployees = useCallback((filter) => {
+    setEmployeeListFilter({ origin: 'EmployeesDashboard', ...filter });
+    setPage?.('EmployeesData');
+  }, [setPage]);
+
+  const openEmployee = useCallback((emp) => {
+    if (!emp?.id) return;
+    try {
+      sessionStorage.setItem('selectedEmployeeId', String(emp.id));
+      sessionStorage.setItem('selectedEmployee', JSON.stringify(emp));
+    } catch { /* private mode — the profile page falls back to its own fetch */ }
+    setSelectedEmployee?.(emp);
+    setPage?.('EmployeeProfile', { id: emp.id });
+  }, [setPage, setSelectedEmployee]);
+
+  /** New hires drill-down: the same window the KPI counted. */
+  const goNewHires = useCallback(() => goEmployees({
+    joinedFrom: period.from,
+    joinedTo:   period.to,
+    label:      `Joined ${periodLabel}${period.from ? ` (${formatDate(period.from)} – ${formatDate(period.to)})` : ''}`,
+  }), [goEmployees, period.from, period.to, periodLabel]);
+
+  const goExits   = useCallback(() => setPage?.('ExEmployees'), [setPage]);
+
+  /**
+   * Notice-period staff. They are still on the payroll, so this is the
+   * employee register filtered to Notice — not the ex-employee list. The list
+   * page turns this filter into its notice columns (last working day, days
+   * remaining, exit-request status), which only matter for this cohort.
+   */
+  const goNotice = useCallback(() => goEmployees({
+    status: 'Notice',
+    label: 'Employment status: Notice period',
+  }), [goEmployees]);
+
+  /** Document register, pre-filtered to whichever bucket has the work in it. */
+  const openDocs = useCallback((which) => {
+    setEmployeeListFilter({
+      origin: 'EmployeesDashboard',
+      expiry: which,
+      label: which === 'expired'
+        ? 'Documents that have already expired'
+        : `Documents expiring or expired within ${ALERT_WINDOW_DAYS} days`,
+    });
+    setPage?.('EmployeeDocuments');
+  }, [setPage]);
+  // Joinees are candidates with an accepted offer, so their records live in
+  // recruitment — NOT in the employee register, which is the whole point.
+  //
+  // OnboardingCenter, not OfferManagement: the hub is the row the sidebar
+  // actually offers (Offers · Checklist · Employee creation) and it opens on
+  // the offers tab, so the user lands somewhere they recognise. Both carry
+  // module 'recruitment'; hr, hr_manager and hr_exec all hold recruitment:view,
+  // so the HR audience for this page can open it. ⚠ payroll_admin cannot —
+  // they see the count but the drill-through will 403 to Unauthorized.
+  const goJoinees = useCallback(() => setPage?.('OnboardingCenter'), [setPage]);
+
+  // ── Charts ─────────────────────────────────────────────────────────────────
+  // Every chart prints its counts AND its share of the same population the
+  // chart is drawn from, so the percentages always reconcile with the bars.
 
   const genderChart = (h, r) => (
     <ResponsiveContainer width="100%" height={h}>
       <PieChart>
-        <Pie data={genderData} dataKey="count" nameKey="gender"
-          cx="50%" cy="50%" outerRadius={r}
-          label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
-          labelLine={false} fontSize={11}
+        <Pie
+          data={genderData} dataKey="count" nameKey="gender"
+          cx="50%" cy="50%" outerRadius={r} labelLine={false} fontSize={10}
+          label={({ value }) => countPct(value, sum(genderData))}
+          onClick={(d) => d?.gender && goEmployees({ gender: d.gender, label: `Gender: ${d.gender}` })}
         >
           {genderData.map((entry, i) => (
-            <Cell key={i} fill={GENDER_COLORS[entry.gender] || PIE_COLORS[i % PIE_COLORS.length]} />
+            <Cell key={entry.gender} fill={GENDER_COLORS[entry.gender] || PIE_COLORS[i % PIE_COLORS.length]} />
           ))}
         </Pie>
-        <Tooltip formatter={(v) => [v, 'Count']} />
+        <Tooltip content={<ChartTip hint="Click to open these employees" total={sum(genderData)} />} />
+        <Legend iconSize={8} wrapperStyle={{ fontSize: 10 }} />
       </PieChart>
     </ResponsiveContainer>
   );
@@ -301,43 +653,85 @@ export default function EmployeesDashboard({ setPage }) {
   const skillChart = (h, r) => (
     <ResponsiveContainer width="100%" height={h}>
       <PieChart>
-        <Pie data={skillData} dataKey="count" nameKey="skill"
-          cx="50%" cy="50%" outerRadius={r}
-          label={({ percent }) => `${(percent * 100).toFixed(0)}%`}
-          labelLine={false} fontSize={11}
+        <Pie
+          data={skillData} dataKey="count" nameKey="skill"
+          cx="50%" cy="50%" outerRadius={r} labelLine={false} fontSize={10}
+          label={({ value }) => countPct(value, sum(skillData))}
+          onClick={(d) => d?.skill && goEmployees({ skill: d.skill, label: `Skill type: ${d.skill}` })}
         >
-          {skillData.map((_, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
+          {skillData.map((entry, i) => <Cell key={entry.skill} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
         </Pie>
-        <Tooltip formatter={(v, n) => [v, n]} />
-        <Legend iconSize={10} wrapperStyle={{ fontSize: 11 }} />
+        <Tooltip content={<ChartTip hint="Click to open these employees" total={sum(skillData)} />} />
+        <Legend iconSize={8} wrapperStyle={{ fontSize: 10 }} />
       </PieChart>
     </ResponsiveContainer>
   );
 
   const tenureChart = (h) => (
     <ResponsiveContainer width="100%" height={h}>
-      <BarChart data={tenureData} margin={{ top: 4, right: 8, left: -20, bottom: 0 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke="#f0eeff" />
-        <XAxis dataKey="bucket" tick={{ fontSize: 11 }} />
-        <YAxis tick={{ fontSize: 11 }} />
-        <Tooltip content={<ChartTip />} />
-        <Bar dataKey="count" name="Employees" fill={P} radius={[4, 4, 0, 0]}>
-          {tenureData.map((_, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
+      <BarChart data={tenureData} margin={{ top: 15, right: 10, left: -18, bottom: 0 }}>
+        <CartesianGrid strokeDasharray="3 3" stroke="#f0eeff" vertical={false} />
+        <XAxis dataKey="bucket" tick={{ fontSize: 9.5 }} interval={0} />
+        <YAxis tick={{ fontSize: 9.5 }} allowDecimals={false} />
+        <Tooltip content={<ChartTip hint="Click a bar to open these employees" total={total} />} cursor={{ fill: '#faf8ff' }} />
+        <Bar
+          dataKey="count" name="Employees" radius={[4, 4, 0, 0]}
+          onClick={(d) => d?.bucket && goEmployees({ tenure: d.bucket, label: `Tenure: ${d.bucket}` })}
+        >
+          {tenureData.map((entry, i) => <Cell key={entry.bucket} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
+          <LabelList
+            dataKey="count" position="top" fontSize={9.5} fill="#4b5563"
+            formatter={(v) => (v > 0 ? `${v}·${pct(v, total)}` : '')}
+          />
         </Bar>
       </BarChart>
     </ResponsiveContainer>
   );
 
-  const deptChart = (h) => (
+  /**
+   * Department headcount: one stacked bar per department whose segments are
+   * mutually exclusive and sum to that department's headcount.
+   *
+   * ⚠ The count sits in a right-hand category axis, NOT a <LabelList>.
+   * recharts emits a rect only for NON-ZERO values, so whichever stacked
+   * series carried the label was missing from every department with none of
+   * that status — with live data the last series was zero everywhere and the
+   * chart rendered no totals at all. An axis emits a tick per category
+   * unconditionally.
+   */
+  const deptChart = (h, data = deptChartData) => (
     <ResponsiveContainer width="100%" height={h}>
-      <BarChart data={deptData} layout="vertical" margin={{ top: 4, right: 24, left: 80, bottom: 0 }}>
+      <BarChart data={data} layout="vertical" margin={{ top: 0, right: 4, left: 2, bottom: 0 }} barCategoryGap="18%">
         <CartesianGrid strokeDasharray="3 3" stroke="#f0eeff" horizontal={false} />
-        <XAxis type="number" tick={{ fontSize: 11 }} />
-        <YAxis type="category" dataKey="department" tick={{ fontSize: 11 }} width={78} />
-        <Tooltip content={<ChartTip />} />
-        <Legend iconSize={10} wrapperStyle={{ fontSize: 11 }} />
-        <Bar dataKey="active" name="Active" fill="#16a34a" radius={[0, 4, 4, 0]} stackId="a" />
-        <Bar dataKey="count"  name="Total"  fill={LIGHT}   radius={[0, 4, 4, 0]} stackId="b" />
+        <XAxis type="number" tick={{ fontSize: 9.5 }} allowDecimals={false} />
+        <YAxis yAxisId="dept" type="category" dataKey="department" tick={{ fontSize: 9.5 }} width={74} interval={0} />
+        <YAxis
+          yAxisId="total" type="category" dataKey="department" orientation="right"
+          tickLine={false} axisLine={false} width={56} interval={0}
+          tick={{ fontSize: 9.5, fill: '#4b5563', fontWeight: 600 }}
+          tickFormatter={(d) => deptTotals[d] ?? ''}
+        />
+        <Tooltip content={<ChartTip hint="Click to open this department" total={total} />} cursor={{ fill: '#faf8ff' }} />
+        <Legend iconSize={8} wrapperStyle={{ fontSize: 9.5 }} />
+        {[
+          ['active',    'Active'],
+          ['probation', 'Probation'],
+          ['notice',    'Notice'],
+          ['other',     'Other'],
+        ].map(([key, name], i, arr) => (
+          <Bar
+            key={key} yAxisId="dept" dataKey={key} name={name} stackId="hc"
+            fill={BUCKET_COLORS[name]}
+            radius={i === arr.length - 1 ? [0, 3, 3, 0] : 0}
+            onClick={(d) => {
+              // "Others" is an aggregate of several departments, so there is
+              // no single department to open — expand instead of navigating
+              // somewhere that would not match what was clicked.
+              if (d?.isOthers) { setShowAllDepts(true); return; }
+              if (d?.department) goEmployees({ department: d.department, label: `Department: ${d.department}` });
+            }}
+          />
+        ))}
       </BarChart>
     </ResponsiveContainer>
   );
@@ -347,328 +741,519 @@ export default function EmployeesDashboard({ setPage }) {
       <PieChart>
         <Pie
           data={statusData} dataKey="count" nameKey="status"
-          cx="50%" cy="46%" innerRadius={inner} outerRadius={outer} paddingAngle={3}
-          label={({ name, value }) => `${name}: ${value}`} labelLine={false} fontSize={11}
+          cx="50%" cy="50%" innerRadius={inner} outerRadius={outer} paddingAngle={3}
+          label={({ value }) => countPct(value, total)} labelLine={false} fontSize={10}
+          onClick={(d) => d?.status && goEmployees({ status: d.status, label: `Status: ${d.status}` })}
         >
-          {statusData.map((entry) => {
-            const colors = { Active: '#16a34a', Left: '#dc2626', Probation: '#6d28d9' };
-            return <Cell key={entry.status} fill={colors[entry.status] || P} />;
-          })}
+          {statusData.map(entry => (
+            <Cell key={entry.status} fill={BUCKET_COLORS[entry.status] || P} />
+          ))}
         </Pie>
-        <Tooltip formatter={(v) => [v, 'Count']} />
-        <text x="50%" y="44%" textAnchor="middle" dominantBaseline="middle" style={{ fontSize: 20, fontWeight: 700, fill: '#111827' }}>
-          {s.total}
+        <Tooltip content={<ChartTip hint="Click to open these employees" total={total} />} />
+        {/* The status NAME lives in the legend, not on the slice. Spelling
+            "Active 31 (93.9%)" onto a slice inside a span-3 card clipped it
+            to "tive 31 (93.9%)" at the card edge. */}
+        <Legend iconSize={8} wrapperStyle={{ fontSize: 9.5 }} />
+        <text x="50%" y="46%" textAnchor="middle" dominantBaseline="middle" style={{ fontSize: 19, fontWeight: 700, fill: '#111827' }}>
+          {total}
         </text>
-        <text x="50%" y="55%" textAnchor="middle" dominantBaseline="middle" style={{ fontSize: 10, fill: '#9ca3af' }}>
-          Current
+        <text x="50%" y="57%" textAnchor="middle" dominantBaseline="middle" style={{ fontSize: 8.5, fill: '#9ca3af' }}>
+          as of today
         </text>
       </PieChart>
     </ResponsiveContainer>
   );
 
+  /**
+   * Hiring vs attrition. The month axis comes from the SELECTED PERIOD, not
+   * from the months that happen to contain a hire — nothing here hardcodes a
+   * month, and the series arrives with a zero row for every empty month.
+   */
   const trendChart = (h) => (
     <ResponsiveContainer width="100%" height={h}>
-      <AreaChart data={trendData} margin={{ top: 4, right: 24, left: -10, bottom: 0 }}>
+      <ComposedChart data={trendData} margin={{ top: 16, right: 24, left: -26, bottom: 0 }}>
         <defs>
-          <linearGradient id="hiresGrad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="5%"  stopColor={P}         stopOpacity={0.18} />
-            <stop offset="95%" stopColor={P}         stopOpacity={0} />
-          </linearGradient>
-          <linearGradient id="exitsGrad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="5%"  stopColor="#dc2626"   stopOpacity={0.15} />
-            <stop offset="95%" stopColor="#dc2626"   stopOpacity={0} />
+          <linearGradient id="empdashHires" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="5%"  stopColor={P} stopOpacity={0.20} />
+            <stop offset="95%" stopColor={P} stopOpacity={0} />
           </linearGradient>
         </defs>
-        <CartesianGrid strokeDasharray="3 3" stroke="#f0eeff" />
-        <XAxis dataKey="month" tick={{ fontSize: 11 }} />
-        <YAxis tick={{ fontSize: 11 }} />
-        <Tooltip content={<ChartTip />} />
-        <Legend iconSize={10} wrapperStyle={{ fontSize: 11 }} />
-        <Area type="monotone" dataKey="Hires" name="New Hires" stroke={P}       strokeWidth={2} fill="url(#hiresGrad)" dot={{ r: 3 }} />
-        {hasAttrition && (
-          <Area type="monotone" dataKey="Exits" name="Exits"  stroke="#dc2626" strokeWidth={2} fill="url(#exitsGrad)" dot={{ r: 3 }} />
-        )}
-      </AreaChart>
+        <CartesianGrid strokeDasharray="3 3" stroke="#f0eeff" vertical={false} />
+        <XAxis
+          dataKey="month" tick={{ fontSize: 9.5 }}
+          interval={trendData.length > 18 ? 'preserveStartEnd' : 0}
+          angle={trendData.length > 10 ? -35 : 0}
+          textAnchor={trendData.length > 10 ? 'end' : 'middle'}
+          height={trendData.length > 10 ? 38 : 18}
+        />
+        <YAxis tick={{ fontSize: 9.5 }} allowDecimals={false} />
+        <Tooltip content={<ChartTip hint="Hires and exits completed in that month" />} cursor={{ fill: '#faf8ff' }} />
+        <Legend iconSize={8} wrapperStyle={{ fontSize: 9.5 }} />
+        {/* linear, not monotone: these are discrete monthly counts, and a
+            spline through 0, 0, 1, 24, 2, 0 draws a bell curve implying
+            hiring ramped through the two empty months before it. */}
+        <Area
+          type="linear" dataKey="hires" name="New hires"
+          stroke={P} strokeWidth={2} fill="url(#empdashHires)"
+          dot={{ r: 2 }} activeDot={{ r: 4 }}
+        >
+          <LabelList dataKey="hires" position="top" fontSize={9.5} fill={P}
+            formatter={(v) => (v > 0 ? v : '')} />
+        </Area>
+        <Line
+          type="linear" dataKey="exits" name="Exits"
+          stroke="#dc2626" strokeWidth={2} dot={{ r: 2 }} activeDot={{ r: 4 }}
+        >
+          <LabelList dataKey="exits" position="bottom" fontSize={9.5} fill="#dc2626"
+            formatter={(v) => (v > 0 ? v : '')} />
+        </Line>
+      </ComposedChart>
     </ResponsiveContainer>
   );
 
+  const deptChartHeight = showAllDepts
+    ? Math.max(180, Math.min(deptChartData.length * 21 + 34, 460))
+    : 212;
+
+  // ── Render ─────────────────────────────────────────────────────────────────
+
   return (
-    <PageShell dock={
-      <PageHero
-        icon={LayoutDashboard}
-        eyebrow="Employees"
-        title="Employee Overview"
-      />
-    }>
+    <PageShell dock={<PageHero icon={LayoutDashboard} eyebrow="Employees" title="Employee Overview" />}>
+      <div className="empdash-page">
 
-      {/* ── Page header ── */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 14, flexWrap: 'wrap', gap: 12 }}>
-        <div>
-
-          <p style={{ margin: '4px 0 0', fontSize: 12, color: '#9ca3af' }}>
-            Workforce headcount, analytics and trends
-            {lastRefresh && ` · Updated ${lastRefresh.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}`}
-          </p>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-          <select
-            value={activeFY}
-            onChange={e => setActiveFY(e.target.value)}
-            style={{
-              padding: '7px 12px', border: `1.5px solid ${BORDER}`, borderRadius: 9,
-              fontSize: 13, fontWeight: 600, color: '#374151', background: '#fff',
-              cursor: 'pointer', outline: 'none',
-            }}
-          >
-            {FY_OPTIONS.map(fy => (
-              <option key={fy.key} value={fy.key}>
-                {fy.label}{fy.isCurrent ? ' (Current)' : ''}
-              </option>
-            ))}
-          </select>
-          <button
-            onClick={() => load(activeFY)}
-            disabled={loading}
-            style={{
-              display: 'flex', alignItems: 'center', gap: 6,
-              padding: '8px 14px', borderRadius: 8, border: `1px solid ${BORDER}`,
-              background: '#fff', color: '#374151', fontSize: 13, cursor: 'pointer',
-            }}
-          >
-            <RefreshCw size={14} style={{ animation: loading ? 'spin 1s linear infinite' : 'none' }} />
-            Refresh
-          </button>
-        </div>
-      </div>
-
-      {/* ── Error banner ── */}
-      {error && (
-        <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 10, padding: '12px 16px', marginBottom: 20, display: 'flex', gap: 10, alignItems: 'center', color: '#dc2626', fontSize: 13 }}>
-          <AlertCircle size={16} />
-          {error}
-        </div>
-      )}
-
-      {/* ── KPI Row (6 cards) ── */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 10, marginBottom: 12 }}>
-        <KPI index={0} icon={Users}     label="Total Employees"                                 value={s.total     ?? '—'} sub="Active + Probation"                                                                loading={loading} />
-        <KPI index={1} icon={UserCheck} label="Active"                                          value={s.active    ?? '—'} sub={s.total > 0 ? `${((s.active / s.total) * 100).toFixed(0)}% of workforce` : 'Confirmed'} loading={loading} color="#16a34a" />
-        <KPI index={2} icon={Clock}     label="On Probation"                                    value={s.probation ?? '—'} sub="Pending confirmation"                                                             loading={loading} color="#6d28d9" />
-        <KPI index={3} icon={UserPlus}  label={isCurrentFY ? 'New Hires (Month)' : 'New Hires (FY)'} value={newHiresValue}  sub={isCurrentFY ? 'Joined this month' : `In ${activeFY}`}                          loading={loading} color="#3b82f6" />
-        <KPI index={4} icon={UserX}     label="Attrition Rate"                                  value={`${attritionRate}%`} sub={`${s.left ?? 0} exits`}                                                         loading={loading} color="#dc2626" />
-        <KPI index={5} icon={TrendingUp} label="Avg. Tenure"                                   value={s.avgTenure ? `${s.avgTenure} yrs` : '—'} sub="Active employees"                                          loading={loading} color={P} />
-      </div>
-
-      {/* ── HR Alerts Row ── */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 10, marginBottom: 12 }}>
-        {[
-          {
-            icon: '🎂', label: 'Birthdays', color: '#ec4899', bg: '#fdf2f8',
-            items: birthdays, dateKey: 'date_of_birth', badge: 'BD',
-          },
-          {
-            icon: '🎉', label: 'Anniversaries', color: '#6B3FDB', bg: LIGHT,
-            items: anniversaries, dateKey: 'joining_date', badge: 'ANN',
-          },
-          {
-            icon: '⏳', label: 'Confirmations Due', color: '#6d28d9', bg: '#f5f3ff',
-            items: confirmations, dateKey: 'probation_end_date', badge: 'PROB',
-          },
-          {
-            icon: '📄', label: 'Expiring Docs', color: '#dc2626', bg: '#fef2f2',
-            items: expiringDocs, dateKey: 'expiry_date', badge: 'EXP',
-          },
-          {
-            icon: '🚪', label: 'Upcoming Exits', color: '#6b7280', bg: '#f9fafb',
-            items: upcomingExits, dateKey: 'last_working_date', badge: 'EXIT',
-          },
-        ].map(({ icon, label, color, bg, items, dateKey, badge }) => (
-          <div key={label} className="dk-anim" style={{ background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 11, padding: '11px 13px' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-              <div style={{ fontSize: 13, fontWeight: 600, color: '#374151' }}>{icon} {label}</div>
-              <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 7px', borderRadius: 10, background: bg, color }}>{items.length}</span>
-            </div>
-            {listLoading ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                {[0,1].map(i => <div key={i} style={{ height: 10, background: '#f3f4f6', borderRadius: 4 }} />)}
-              </div>
-            ) : items.length === 0 ? (
-              <div style={{ fontSize: 12, color: '#d1d5db' }}>None in next 30 days</div>
-            ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-                {items.slice(0, 4).map((emp, i) => {
-                  const name = [emp.first_name, emp.last_name].filter(Boolean).join(' ') || emp.name || '—';
-                  const date = emp[dateKey] ? new Date(emp[dateKey]).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—';
-                  return (
-                    <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                      <span style={{ fontSize: 10, fontWeight: 700, padding: '1px 5px', borderRadius: 6, background: bg, color, flexShrink: 0 }}>{date}</span>
-                      <span style={{ fontSize: 12, color: '#374151', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</span>
-                    </div>
-                  );
-                })}
-                {items.length > 4 && <div style={{ fontSize: 11, color: '#9ca3af' }}>+{items.length - 4} more</div>}
-              </div>
-            )}
-          </div>
-        ))}
-      </div>
-
-      {/* ── Charts Row 1: Gender | Skill | Tenure ── */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(12, 1fr)', gap: 12, marginBottom: 12 }}>
-
-        <Card index={11} title="Gender Distribution" span={4}
-          action={!loading && genderData.length > 0 && (
-            <ChartExpandButton title="Gender Distribution">{genderChart(430, 150)}</ChartExpandButton>
-          )}>
-          {loading ? (
-            <div style={{ height: 180, background: '#f9fafb', borderRadius: 8 }} />
-          ) : genderData.length === 0 ? (
-            <EmptyChart height={180} />
-          ) : genderChart(180, 66)}
-        </Card>
-
-        <Card index={12} title="Skill Type Distribution" span={4}
-          action={!loading && skillData.length > 0 && (
-            <ChartExpandButton title="Skill Type Distribution">{skillChart(430, 150)}</ChartExpandButton>
-          )}>
-          {loading ? (
-            <div style={{ height: 180, background: '#f9fafb', borderRadius: 8 }} />
-          ) : skillData.length === 0 ? (
-            <EmptyChart height={180} />
-          ) : skillChart(180, 66)}
-        </Card>
-
-        <Card index={13} title="Tenure Distribution (Active)" span={4}
-          action={!loading && !tenureData.every(g => g.count === 0) && (
-            <ChartExpandButton title="Tenure Distribution (Active)">{tenureChart(430)}</ChartExpandButton>
-          )}>
-          {loading ? (
-            <div style={{ height: 180, background: '#f9fafb', borderRadius: 8 }} />
-          ) : tenureData.every(g => g.count === 0) ? (
-            <EmptyChart height={180} />
-          ) : tenureChart(180)}
-        </Card>
-
-      </div>
-
-      {/* ── Charts Row 2: Dept Headcount | Employment Status ── */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(12, 1fr)', gap: 12, marginBottom: 12 }}>
-
-        <Card index={14} title="Department Headcount" span={7}
-          action={!loading && deptData.length > 0 && (
-            <ChartExpandButton title="Department Headcount">{deptChart(430)}</ChartExpandButton>
-          )}>
-          {loading ? (
-            <div style={{ height: 215, background: '#f9fafb', borderRadius: 8 }} />
-          ) : deptData.length === 0 ? (
-            <EmptyChart height={215} />
-          ) : (
-            <>
-              {deptChart(215)}
-              <div style={{ display: 'flex', gap: 16, marginTop: 6 }}>
-                {[{ color: '#16a34a', label: 'Active' }, { color: P, label: 'Total headcount' }].map(l => (
-                  <span key={l.label} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: '#6b7280' }}>
-                    <span style={{ width: 10, height: 10, borderRadius: 2, background: l.color, display: 'inline-block' }} />
-                    {l.label}
-                  </span>
-                ))}
-              </div>
-            </>
+        <DashboardFilterBar
+          filters={filters}
+          periodLabel="Period"
+          dimensions={[{ key: 'department', label: 'Department', options: deptOptions, allLabel: 'All Departments', width: 140 }]}
+          actions={(
+            <button type="button" className="empdash-linkbtn" onClick={() => load(params)} disabled={loading}>
+              <RefreshCw size={12} style={{ animation: loading ? 'empdash-spin 1s linear infinite' : 'none' }} />
+              Refresh
+            </button>
           )}
-        </Card>
+        />
 
-        <Card index={15} title="Employment Status" span={5}
-          action={!loading && statusData.length > 0 && (
-            <ChartExpandButton title="Employment Status">{statusChart(430, 105, 165)}</ChartExpandButton>
-          )}>
-          {loading ? (
-            <div style={{ height: 215, background: '#f9fafb', borderRadius: 8 }} />
-          ) : statusData.length === 0 ? (
-            <EmptyChart height={215} />
-          ) : statusChart(215, 50, 80)}
-        </Card>
+        <p className="empdash-caption">
+          Headcount and workforce composition are <strong>as of today</strong>; hiring, exits and
+          attrition cover <strong>{periodLabel}</strong>
+          {period.from ? ` (${formatDate(period.from)} – ${formatDate(period.to)})` : ''};
+          HR actions look <strong>{ALERT_WINDOW_DAYS} days ahead</strong> and keep anything overdue.
+          {lastRefresh && ` · Updated ${lastRefresh.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}`}
+          {activeDeptLabel && (
+            <span className="empdash-scopechip">
+              Every figure filtered to <strong>{activeDeptLabel}</strong>
+            </span>
+          )}
+        </p>
 
-      </div>
+        {error && (
+          <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 9, padding: '8px 12px', marginBottom: 9, display: 'flex', gap: 8, alignItems: 'center', color: '#dc2626', fontSize: 12 }}>
+            <AlertCircle size={14} />
+            {error}
+          </div>
+        )}
 
-      {/* ── Hiring vs Attrition Trend ── */}
-      <div style={{ marginBottom: 12 }}>
-        <Card index={16} title={`Hiring vs Attrition — ${activeFY}`}
-          action={!loading && hasHires && (
-            <ChartExpandButton title={`Hiring vs Attrition — ${activeFY}`}>{trendChart(430)}</ChartExpandButton>
-          )}>
-          {loading ? (
-            <div style={{ height: 195, background: '#f9fafb', borderRadius: 8 }} />
-          ) : !hasHires ? (
-            <EmptyChart height={195} />
-          ) : (
-            <>
-              {trendChart(195)}
-              {!hasAttrition && (
-                <div style={{ marginTop: 8, fontSize: 11, color: '#9ca3af' }}>
-                  Attrition trend unavailable — exit date tracking not yet enabled
+        {/* ── KPI band ──
+            Seven compact tiles, no large cards. Avg. Tenure is deliberately
+            NOT here: it is an analytical number, not something HR acts on
+            this morning, so it lives on the Tenure chart it describes. */}
+        <div className="empdash-kpis">
+          <HeadcountKPI
+            index={0} total={total} loading={loading}
+            parts={[
+              { status: 'Active',    count: s.active ?? 0 },
+              { status: 'Probation', count: s.probation ?? 0 },
+              { status: 'Notice',    count: s.notice ?? 0 },
+              { status: 'Other',     count: s.other ?? 0 },
+            ]}
+            onOpenAll={() => goEmployees({ status: 'All', label: 'All current employees' })}
+            onOpenPart={(status) => (status === 'Notice' ? goNotice() : goEmployees({ status, label: `Status: ${status}` }))}
+          />
+          <KPI
+            index={1} icon={UserCheck} label="Active" value={s.active ?? '—'}
+            sub={total > 0 ? `${pct(s.active, total)} of headcount` : 'Confirmed'}
+            scope="As of today" loading={loading} color={BUCKET_COLORS.Active}
+            onClick={() => goEmployees({ status: 'Active', label: 'Status: Active' })}
+            title="Open active employees"
+          />
+          <KPI
+            index={2} icon={Clock} label="On Probation" value={s.probation ?? '—'}
+            sub={confUndated || confOverdue
+              ? `${confUndated + confOverdue} need attention`
+              : (total > 0 ? `${pct(s.probation, total)} of headcount` : 'Pending confirmation')}
+            scope="As of today" loading={loading} color={BUCKET_COLORS.Probation}
+            onClick={() => goEmployees({ status: 'Probation', label: 'Status: Probation' })}
+            title="Open employees on probation"
+          />
+          {/* Notice period had no action of its own: it was a word inside the
+              headcount subtitle. It is a distinct HR workflow — these people
+              are still on the payroll but have a last working day. */}
+          <KPI
+            index={3} icon={DoorOpen} label="Notice Period" value={s.notice ?? 0}
+            sub={noticeOverdue ? `${noticeOverdue} past last working day` : 'Serving notice'}
+            scope="As of today" loading={loading} color={BUCKET_COLORS.Notice}
+            onClick={goNotice}
+            title="Open employees serving notice"
+          />
+          <KPI
+            index={4} icon={CalendarPlus} label="Upcoming Joinees"
+            value={joineeSum.total ?? 0}
+            sub={
+              joineeSum.next7
+                ? `${joineeSum.next7} within 7 days`
+                : joineeSum.pendingAcceptance
+                  ? `${joineeSum.pendingAcceptance} pending acceptance`
+                  : 'Accepted offers only'
+            }
+            scope={`Next ${ALERT_WINDOW_DAYS} days`} loading={listLoading} color="#0891b2"
+            onClick={goJoinees}
+            title="Open offers and onboarding"
+          />
+          <KPI
+            index={5} icon={UserPlus} label="New Hires" value={s.newHires ?? '—'}
+            sub={total > 0 ? `${pct(s.newHires, total)} of headcount` : undefined}
+            scope={shortPeriod} loading={loading} color="#3b82f6"
+            onClick={goNewHires}
+            title={`Open employees who joined ${periodLabel}`}
+          />
+          <KPI
+            index={6} icon={UserX} label="Attrition Rate"
+            value={s.attritionRate != null ? `${s.attritionRate}%` : '—'}
+            sub={`${s.exits ?? 0} exit${s.exits === 1 ? '' : 's'} · avg HC ${s.avgHeadcount ?? 0}`}
+            scope={shortPeriod} loading={loading} color="#dc2626"
+            onClick={goExits}
+            title="Open ex-employees"
+          />
+        </div>
+
+        {/* ── HR actions ──
+            One area, not six free-floating boxes. Every row is an exception
+            worth a click, the overdue count is always its own badge, and the
+            two event counters sit at the end where an empty one costs a line
+            rather than a panel. */}
+        <div className="empdash-actionbar">
+          <span className="empdash-actionbar-hd">
+            <AlertTriangle size={11} aria-hidden="true" />
+            Needs attention
+            <span className="empdash-actionbar-scope">next {ALERT_WINDOW_DAYS} days · overdue always shown</span>
+          </span>
+          <div className="empdash-actions">
+            {canOpenDocs && (
+              <ActionTile
+                index={7} icon="📄" label="Documents" bg="#fef2f2" color="#dc2626"
+                count={docsExpiring} overdue={docsExpired} overdueLabel="expired"
+                scope="Expiring" loading={listLoading}
+                onClick={() => openDocs('expiring')}
+                title="Open documents expiring soon"
+                onOverdueClick={() => openDocs('expired')}
+                overdueTitle="Open documents that have already expired"
+              />
+            )}
+            <ActionTile
+              index={8} icon="🚪" label="Exits" bg="#fffbeb" color="#b45309"
+              count={exitsUpcoming} overdue={exitsOverdue} overdueLabel="overdue"
+              scope="Upcoming" loading={listLoading}
+              onClick={() => setPage?.('ExitManagement')}
+              title="Open exit management"
+            />
+            <ActionTile
+              index={9} icon="⏳" label="Confirmations" bg="#f5f3ff" color="#6d28d9"
+              count={confDue} overdue={confOverdue + confUndated}
+              overdueLabel={confOverdue && confUndated ? 'overdue / no date' : confUndated && !confOverdue ? 'no date set' : 'overdue'}
+              // A deliberately BROADER overview than the probation reminder:
+              // ALERT_WINDOW_DAYS (30) is the window every "next N days" tile
+              // on this page shares. The reminder job and the home alert use
+              // the company's probation_review_reminder_days (default 14) —
+              // see backend shared/probationDates.js. Same stored end date and
+              // the same calendar-day rule (today counts as due); only the
+              // horizon differs, and the label says which.
+              scope={`Next ${ALERT_WINDOW_DAYS} days`} loading={listLoading}
+              onClick={() => goEmployees({
+                ids: confDueIds,
+                label: `Probation ends today or in the next ${ALERT_WINDOW_DAYS} days`,
+              })}
+              title={`Open the probations ending today or in the next ${ALERT_WINDOW_DAYS} days`}
+              // The actionable subset, not the whole cohort: overdue, plus any
+              // probation with no end date (which never raises a reminder).
+              onOverdueClick={() => goEmployees({
+                ids: confAttentionIds,
+                label: confUndated && !confOverdue
+                  ? 'On probation with no end date set'
+                  : confOverdue && !confUndated
+                    ? 'Probation ended — confirmation overdue'
+                    : 'Probation overdue or with no end date set',
+              })}
+              overdueTitle="Open the probations that need attention"
+            />
+            <ActionTile
+              index={10} icon="🧩" label="Data Quality" bg="#f1f5f9" color="#475569"
+              count={dq.critical ?? 0} overdue={dq.incomplete ?? 0} overdueLabel="incomplete" warn
+              scope="Records" loading={loading}
+              onClick={() => goEmployees({
+                missing: 'critical',
+                label: 'Missing joining date, probation end date or bank details',
+              })}
+              title="Open records whose gaps block a workflow"
+              onOverdueClick={() => goEmployees({
+                missing: 'any',
+                label: 'Records with incomplete master data',
+              })}
+              overdueTitle="Open records with incomplete master data"
+            />
+            <ActionTile
+              index={11} icon="🎂" label="Birthdays" bg="#fdf2f8" color="#ec4899"
+              count={birthdays.length} scope="Events" loading={listLoading}
+              // The ids, not just a label: "whose birthday falls in the
+              // window" is not a predicate the list page can express, and a
+              // label alone would open all 33 employees under a chip
+              // promising a handful of birthdays.
+              onClick={() => goEmployees({
+                ids: birthdays.map(b => b.id),
+                label: `Birthdays in the next ${ALERT_WINDOW_DAYS} days`,
+              })}
+              title="Open these employees"
+            />
+            <ActionTile
+              index={12} icon="🎉" label="Anniversaries" bg={LIGHT} color={P}
+              count={anniversaries.length} scope="Events" loading={listLoading}
+              onClick={() => goEmployees({
+                ids: anniversaries.map(a => a.id),
+                label: `Work anniversaries in the next ${ALERT_WINDOW_DAYS} days`,
+              })}
+              title="Open these employees"
+            />
+          </div>
+        </div>
+
+        {/* ── Movement + trend ── */}
+        <div className="empdash-row">
+          <Card
+            index={13} span={4}
+            title="Workforce Movement"
+            subtitle={activeDeptLabel ? `${periodLabel} · ${activeDeptLabel}` : periodLabel}
+          >
+            {loading ? <ChartSkeleton height={96} /> : (
+              <>
+                <div className="empdash-movement">
+                  <span className="empdash-mv">
+                    <span className="empdash-mv-label">Opening</span>
+                    <span className="empdash-mv-value" style={{ color: '#374151' }}>{s.headcountStart ?? 0}</span>
+                    <span className="empdash-mv-note">{formatDate(period.from)}</span>
+                  </span>
+                  <span className="empdash-mv-op" aria-hidden="true">+</span>
+                  <button type="button" className="empdash-mv is-link" onClick={goNewHires} title="Open these joiners">
+                    <span className="empdash-mv-label">Hires</span>
+                    <span className="empdash-mv-value" style={{ color: '#16a34a' }}>{s.newHires ?? 0}</span>
+                    <span className="empdash-mv-note">joined</span>
+                  </button>
+                  <span className="empdash-mv-op" aria-hidden="true">−</span>
+                  <button type="button" className="empdash-mv is-link" onClick={goExits} title="Open ex-employees">
+                    <span className="empdash-mv-label">Exits</span>
+                    <span className="empdash-mv-value" style={{ color: '#dc2626' }}>{s.exits ?? 0}</span>
+                    <span className="empdash-mv-note">left</span>
+                  </button>
+                  <span className="empdash-mv-op" aria-hidden="true">=</span>
+                  <span className="empdash-mv" style={{ background: '#f5f3ff', borderColor: '#ddd4fb' }}>
+                    <span className="empdash-mv-label">Closing</span>
+                    <span className="empdash-mv-value" style={{ color: P }}>{s.headcountEnd ?? 0}</span>
+                    <span className="empdash-mv-note">{formatDate(period.to)}</span>
+                  </span>
+                </div>
+                {/* A second band, deliberately BELOW the ledger rule: these
+                    are derived or forward-looking figures, and a joinee has
+                    not started, so folding them into closing headcount would
+                    report people who are not on the payroll. */}
+                <div className="empdash-movement" style={{ marginTop: 5 }}>
+                  <span className="empdash-mv">
+                    <span className="empdash-mv-label">Net change</span>
+                    <span className="empdash-mv-value" style={{ color: netChange >= 0 ? '#16a34a' : '#dc2626' }}>
+                      {netChange >= 0 ? '+' : ''}{netChange}
+                    </span>
+                    {/* shortPeriod, not periodLabel: this cell is ~100px and
+                        "This financial year" overflows it by a hair. */}
+                    <span className="empdash-mv-note">{shortPeriod}</span>
+                  </span>
+                  <span className="empdash-mv">
+                    <span className="empdash-mv-label">Attrition</span>
+                    <span className="empdash-mv-value" style={{ color: '#dc2626' }}>{s.attritionRate ?? 0}%</span>
+                    <span className="empdash-mv-note">of avg {s.avgHeadcount ?? 0}</span>
+                  </span>
+                  <button type="button" className="empdash-mv is-link" onClick={goJoinees} title="Open offers and onboarding">
+                    <span className="empdash-mv-label">Joining</span>
+                    <span className="empdash-mv-value" style={{ color: '#0891b2' }}>{joineeSum.total ?? 0}</span>
+                    <span className="empdash-mv-note">not yet staff</span>
+                  </button>
+                </div>
+                <div className="empdash-mv-foot">
+                  <span>
+                    Opening and closing are headcount on those two dates; hires and exits are
+                    what happened between them.
+                  </span>
+                </div>
+                {(s.headcountStart ?? 0) + (s.newHires ?? 0) - (s.exits ?? 0) !== (s.headcountEnd ?? 0) && (
+                  <div className="empdash-hint">
+                    Opening + hires − exits does not equal closing: some records have no joining
+                    or exit date recorded. See Needs Attention.
+                  </div>
+                )}
+              </>
+            )}
+          </Card>
+
+          <Card
+            index={14} span={8}
+            title="Hiring vs Attrition"
+            subtitle={activeDeptLabel ? `${periodLabel} · ${activeDeptLabel}` : periodLabel}
+            actions={!loading && hasTrend && (
+              <ChartExpandButton title={`Hiring vs Attrition — ${periodLabel}`}>{trendChart(420)}</ChartExpandButton>
+            )}
+          >
+            {loading ? <ChartSkeleton height={150} />
+              : trendData.length === 0 ? <EmptyChart height={150} message="No months in the selected period" />
+                : (
+                  <>
+                    {trendChart(150)}
+                    <div className="empdash-hint">
+                      {/* Summed over the WHOLE period series the chart is
+                          drawn from — never the last point, the visible
+                          points, or the non-zero ones. `trendHires` and
+                          `trendExits` are the same figures the New Hires KPI
+                          and the Workforce Movement ledger use, and a
+                          regression test asserts all three agree. */}
+                      <strong>{trendHires}</strong> hire{trendHires === 1 ? '' : 's'}
+                      {' · '}<strong>{trendExits}</strong> exit{trendExits === 1 ? '' : 's'}
+                      {' · net '}<strong>{trendNet >= 0 ? '+' : ''}{trendNet}</strong>
+                      {' across '}{trendData.length} month{trendData.length === 1 ? '' : 's'}
+                      {activeDeptLabel && ` in ${activeDeptLabel}`}
+                      {!hasTrend && ' — no hiring or exits recorded in this window'}
+                      {period.trendTruncated && ` — chart shows the most recent ${trendData.length} months; the KPIs cover all of ${periodLabel}`}
+                    </div>
+                  </>
+                )}
+          </Card>
+        </div>
+
+        {/* ── Composition ── */}
+        <div className="empdash-row">
+          <Card
+            index={15} span={5}
+            title="Department Headcount"
+            subtitle={`${deptData.length} depts · ${sum(deptData)} people`}
+            onTitleClick={deptData.length > DEPT_TOP_N + 1 ? () => setShowAllDepts(v => !v) : undefined}
+            viewAllLabel={showAllDepts ? 'Show top 8' : `Show all ${deptData.length}`}
+            actions={!loading && deptData.length > 0 && (
+              <ChartExpandButton title="Department Headcount">
+                {deptChart(Math.max(430, deptData.length * 26), deptData)}
+              </ChartExpandButton>
+            )}
+          >
+            {loading ? <ChartSkeleton height={212} />
+              : deptData.length === 0 ? <EmptyChart height={212} />
+                : deptChart(deptChartHeight)}
+          </Card>
+
+          <Card
+            index={16} span={3}
+            title="Employment Status" subtitle="as of today"
+            onTitleClick={() => goEmployees({ status: 'All', label: 'All current employees' })}
+            actions={!loading && statusData.length > 0 && (
+              <ChartExpandButton title="Employment Status">{statusChart(430, 105, 165)}</ChartExpandButton>
+            )}
+          >
+            {loading ? <ChartSkeleton height={212} />
+              : statusData.length === 0 ? <EmptyChart height={212} />
+                : (
+                  <>
+                    {statusChart(186, 42, 68)}
+                    <div className="empdash-hint">
+                      Sums to {sum(statusData)} (100%) — matches Current Headcount.
+                      {s.exited ? ` ${s.exited} ex-employee${s.exited === 1 ? '' : 's'} excluded.` : ''}
+                    </div>
+                  </>
+                )}
+          </Card>
+
+          <Card
+            index={17} span={4}
+            title="Tenure Distribution"
+            subtitle={tenureKpi.main !== '—' ? `avg ${tenureKpi.main} · as of today` : 'as of today'}
+            actions={!loading && tenureData.some(g => g.count > 0) && (
+              <ChartExpandButton title="Tenure Distribution">{tenureChart(430)}</ChartExpandButton>
+            )}
+          >
+            {loading ? <ChartSkeleton height={212} />
+              : !tenureData.some(g => g.count > 0) ? <EmptyChart height={212} />
+                : (
+                  <>
+                    {tenureChart(186)}
+                    <div className="empdash-hint">
+                      Sums to {sum(tenureData)} (100%) — matches Current Headcount
+                      {s.tenureUnknown ? `, including ${s.tenureUnknown} with no join date` : ''}.
+                    </div>
+                  </>
+                )}
+          </Card>
+        </div>
+
+        {/* ── Demographics + recent hires ──
+            The "Upcoming Joinees" and "On Probation" list cards that used to
+            sit here are GONE. Both restated a number the KPI band already
+            carries, and the probation card's only unique content — who has no
+            probation end date — is an exception, so it belongs in the
+            Confirmations action, which now drills straight to it. Summary in
+            the KPI row, detail on the destination page, never both. */}
+        <div className="empdash-row">
+          <Card
+            index={18} span={3}
+            title="Gender" subtitle={`${sum(genderData)} · 100%`}
+            actions={!loading && genderData.length > 0 && (
+              <ChartExpandButton title="Gender Distribution">{genderChart(430, 150)}</ChartExpandButton>
+            )}
+          >
+            {loading ? <ChartSkeleton height={152} />
+              : genderData.length === 0 ? <EmptyChart height={152} />
+                : genderChart(152, 44)}
+          </Card>
+
+          <Card
+            index={19} span={3}
+            title="Skill Type" subtitle={`${sum(skillData)} · 100%`}
+            actions={!loading && skillData.length > 0 && (
+              <ChartExpandButton title="Skill Type Distribution">{skillChart(430, 150)}</ChartExpandButton>
+            )}
+          >
+            {loading ? <ChartSkeleton height={152} />
+              : skillData.length === 0 ? <EmptyChart height={152} />
+                : skillChart(152, 40)}
+          </Card>
+
+          <Card
+            index={20} span={6}
+            title="Recent New Hires"
+            subtitle={recentHires.length ? `latest ${recentHires.length} · ${shortPeriod} total ${s.newHires ?? 0}` : undefined}
+            onTitleClick={goNewHires}
+          >
+            {listLoading ? <SkeletonRows n={4} />
+              : recentHires.length === 0 ? (
+                <EmptyChart height={100} message="No employee has a recorded joining date" />
+              ) : (
+                <div className="empdash-hirelist">
+                  {recentHires.map((emp, i) => (
+                    <PersonRow
+                      key={emp.id || i}
+                      name={[emp.first_name, emp.last_name].filter(Boolean).join(' ') || emp.name || '—'}
+                      meta={`${emp.department || emp.designation || '—'} · ${formatDate(emp.joining_date)}`}
+                      onClick={() => openEmployee(emp)}
+                      title="Open employee"
+                    />
+                  ))}
                 </div>
               )}
-            </>
-          )}
-        </Card>
+          </Card>
+        </div>
+
+        <style>{'@keyframes empdash-spin { to { transform: rotate(360deg); } }'}</style>
       </div>
-
-      {/* ── Lists Row ── */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-
-        <Card
-          index={17}
-          title="Recent New Hires"
-          action={
-            <button onClick={() => setPage?.('EmployeesData')}
-              style={{ fontSize: 12, color: P, background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
-              View all →
-            </button>
-          }
-        >
-          {listLoading ? (
-            <SkeletonRows n={4} />
-          ) : recentHires.length === 0 ? (
-            <div style={{ padding: '24px 0', textAlign: 'center', color: '#d1d5db', fontSize: 13 }}>
-              No new hires in the last 30 days
-            </div>
-          ) : (
-            recentHires.map((emp, i) => (
-              <EmployeeRow key={emp.id || i} emp={emp} sub={`Joined ${formatDate(emp.joining_date)}`} />
-            ))
-          )}
-        </Card>
-
-        <Card
-          index={18}
-          title="On Probation"
-          action={
-            <button onClick={() => setPage?.('EmployeesData')}
-              style={{ fontSize: 12, color: P, background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
-              View all →
-            </button>
-          }
-        >
-          {listLoading ? (
-            <SkeletonRows n={4} />
-          ) : probationList.length === 0 ? (
-            <div style={{ padding: '24px 0', textAlign: 'center', color: '#d1d5db', fontSize: 13 }}>
-              No employees currently on probation
-            </div>
-          ) : (
-            probationList.map((emp, i) => (
-              <EmployeeRow
-                key={emp.id || i}
-                emp={emp}
-                sub={emp.joining_date ? `Joined ${formatDate(emp.joining_date)}` : undefined}
-              />
-            ))
-          )}
-        </Card>
-
-      </div>
-
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </PageShell>
   );
 }

@@ -3,6 +3,7 @@
  * Mixed auth: public /auth/login + portal-token-protected customer routes
  * + verifyToken-protected internal staff management routes
  */
+import { normalizeLoginEmail, LOGIN_EMAIL_KEY } from '../../../shared/loginEmail.js';
 import express from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
@@ -55,8 +56,11 @@ router.post('/auth/login', async (req, res) => {
       return res.status(400).json({ error: 'Email, password and company_id are required' });
     }
     const { rows } = await pool.query(
-      `SELECT * FROM customer_portal_users WHERE email = $1 AND company_id = $2 AND is_active = true LIMIT 1`,
-      [email.toLowerCase().trim(), company_id]
+      // LOWER(BTRIM(email)), not the bare column: this lowercased what was
+      // typed and compared it to the stored value exactly, and every stored
+      // portal email held capitals — no portal account could sign in.
+      `SELECT * FROM customer_portal_users WHERE ${LOGIN_EMAIL_KEY} = $1 AND company_id = $2 AND is_active = true LIMIT 1`,
+      [normalizeLoginEmail(email) ?? '', company_id]
     );
     if (!rows.length) return res.status(401).json({ error: 'Invalid credentials' });
     const user = rows[0];
@@ -105,6 +109,55 @@ router.get('/portal/equipment', verifyPortalToken, async (req, res) => {
       [req.portal.portalUserId, req.portal.company_id]
     );
     res.json(rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+/**
+ * GET /customer-portal/portal/shipments — where the customer's orders are.
+ *
+ * "Customer delivery visibility" was the one fulfilment component with no
+ * customer-facing surface at all: Pulse tracked the shipment, computed OTIF
+ * against the promise, and showed none of it to the person waiting for the
+ * goods, who then telephoned to ask.
+ *
+ * Scoped by the portal user's CRM account, falling back to an exact customer
+ * name match. `customerPortalShipments` is deliberately a single query with the
+ * portal user bound into it - a portal token must never be able to widen its
+ * own scope through a query parameter.
+ */
+router.get('/portal/shipments', verifyPortalToken, async (req, res) => {
+  try {
+    const customerPortalShipments = `
+      SELECT s.id, s.dispatch_ref, s.status, s.direction,
+             s.dispatch_date, s.promised_date, s.expected_delivery, s.actual_delivery,
+             s.tracking_number, s.package_count, s.courier_partner,
+             c.carrier_name, c.tracking_url_template,
+             so.order_number, so.order_date,
+             CASE WHEN s.actual_delivery IS NOT NULL AND s.promised_date IS NOT NULL
+                  THEN (s.actual_delivery::date <= s.promised_date::date) END AS delivered_on_time
+        FROM shipments s
+        JOIN sales_orders so ON so.id = s.sales_order_id
+        LEFT JOIN carriers c ON c.id = s.carrier_id
+        JOIN customer_portal_users u ON u.id = $1
+       WHERE s.company_id = $2
+         AND COALESCE(s.direction, 'outbound') = 'outbound'
+         AND ( (u.crm_account_id IS NOT NULL AND so.customer_id::text = u.crm_account_id::text)
+            OR (so.customer_name IS NOT NULL AND so.customer_name = u.customer_name) )
+       ORDER BY COALESCE(s.dispatch_date, s.created_at) DESC
+       LIMIT 200`;
+    const { rows } = await pool.query(customerPortalShipments,
+      [req.portal.portalUserId, req.portal.company_id]);
+    res.json({
+      shipments: rows,
+      summary: {
+        total: rows.length,
+        in_transit: rows.filter(r => !r.actual_delivery && r.dispatch_date).length,
+        delivered: rows.filter(r => r.actual_delivery).length,
+        // Only shipments that were both promised and delivered can be scored.
+        on_time: rows.filter(r => r.delivered_on_time === true).length,
+        measurable: rows.filter(r => r.delivered_on_time !== null).length,
+      },
+    });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -349,7 +402,7 @@ router.post('/accounts', verifyToken, requirePermission('servicedesk', 'add'), a
       `INSERT INTO customer_portal_users
          (company_id, customer_name, contact_person, email, phone, password_hash, crm_account_id, project_ids)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id, customer_name, email, contact_person, phone, is_active, created_at`,
-      [cid(req), customer_name, contact_person, email.toLowerCase().trim(), phone, hash, crm_account_id, project_ids || []]
+      [cid(req), customer_name, contact_person, normalizeLoginEmail(email), phone, hash, crm_account_id, project_ids || []]
     );
     await logAudit(pool, { userId: uid(req), company_id: cid(req), action: 'CREATE', module: 'CustomerPortal', record_id: rows[0].id, description: `Portal account created for ${customer_name}` });
     res.status(201).json(rows[0]);

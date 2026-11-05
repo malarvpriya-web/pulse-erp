@@ -4,6 +4,7 @@ import { requirePermission } from '../../../middlewares/auth.middleware.js';
 import { logAudit } from '../../../services/AuditService.js';
 import { captureBefore } from '../../../middlewares/captureBefore.js';
 
+const SHIPPED_STATUSES = ['shipped', 'dispatched', 'delivered'];
 const router = express.Router();
 
 // ── GET /inventory/serials ────────────────────────────────────────────────────
@@ -82,6 +83,13 @@ router.post('/', requirePermission('inventory', 'add'), async (req, res) => {
   if (!serial_number || !item_id) {
     return res.status(422).json({ error: 'serial_number and item_id are required' });
   }
+  // A unit is shipped by packing and dispatching it, never created shipped:
+  // nothing here can attach the package that must account for it
+  // (trg_serial_shipped_accounted, migration 20261028000008).
+  if (SHIPPED_STATUSES.includes(String(status || '').toLowerCase())) {
+    return res.status(422).json({ code: 'SHIPPED_REQUIRES_PACKAGE',
+      error: `A unit cannot be created as '${status}'; create it in stock and ship it through packing and dispatch.` });
+  }
 
   const companyId = req.scope?.company_id ?? null;
   try {
@@ -110,6 +118,7 @@ router.post('/', requirePermission('inventory', 'add'), async (req, res) => {
     res.status(201).json(sn);
   } catch (e) {
     if (e.code === '23505') return res.status(409).json({ error: `Serial number '${serial_number}' already exists for this item` });
+    if (e.code === '23514') return res.status(409).json({ code: 'SHIPPED_REQUIRES_PACKAGE', error: e.message });
     res.status(500).json({ error: e.message });
   }
 });
@@ -163,7 +172,10 @@ router.put('/:id', requirePermission('inventory', 'edit'), async (req, res) => {
     logAudit({ userId: req.user?.userId, module: 'inventory', recordId: sn.id, recordType: 'serial_number', action: 'update', oldData: old, newData: sn, req });
     res.json(sn);
   } catch (e) {
-    await client.query('ROLLBACK');
+    await client.query('ROLLBACK').catch(() => {});
+    // A shipped status with no package of the unit's company accounting for it
+    // (trg_serial_shipped_requires_package / trg_serial_shipped_accounted).
+    if (e.code === '23514') return res.status(409).json({ code: 'SHIPPED_REQUIRES_PACKAGE', error: e.message });
     res.status(500).json({ error: e.message });
   } finally {
     client.release();

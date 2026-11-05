@@ -17,6 +17,7 @@ import { employeeOf } from '../../shared/scope.js';
 import { runMRP, computeATP } from './mrpEngine.service.js';
 import { computeCTP } from './ctpEngine.service.js';
 import { copyRoutingToProductionOperations } from './routingCopy.service.js';
+import { generateMPSFromDemand, firmMPSLine } from './mpsGeneration.service.js';
 import { captureBefore } from '../../middlewares/captureBefore.js';
 
 const router = Router();
@@ -36,9 +37,11 @@ router.post('/run', requirePermission('production', 'edit'), async (req, res) =>
       include_sales_orders = true,
       include_mps = true,
       include_forecast = true,
+      planning_warehouse_id = null,
     } = req.body || {};
     const result = await runMRP({
       companyId: cidOf(req),
+      planningWarehouseId: planning_warehouse_id ? parseInt(planning_warehouse_id, 10) : null,
       horizonDays: Math.max(1, Math.min(730, parseInt(horizon_days, 10) || 90)),
       bucketDays: Math.max(1, Math.min(31, parseInt(bucket_days, 10) || 7)),
       includeSalesOrders: !!include_sales_orders,
@@ -145,6 +148,75 @@ router.get('/planned-orders', requirePermission('production', 'view'), async (re
       `SELECT * FROM mrp_planned_orders ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
        ORDER BY low_level_code, order_type, item_name LIMIT 1000`, vals);
     res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+/* GET /mrp/shortages?run_id= — where the plan does not cover demand.
+ *
+ * Shortage was previously "implicit in net requirements": the numbers were in
+ * the time-phased grid and nothing collected them, so a planner had to read a
+ * 11,000-row grid to find the item that runs out. Two distinct conditions are
+ * reported, because they call for different actions:
+ *
+ *   PROJECTED   the MRP grid goes negative in some bucket. Supply is planned
+ *               but not early enough, or not at all.
+ *   ON HAND     stock is already at or below safety stock today, regardless of
+ *               what the plan says. This one does not wait for a run.
+ */
+router.get('/shortages', requirePermission('production', 'view'), async (req, res) => {
+  try {
+    const cid = cidOf(req);
+    let runId = req.query.run_id ? Number(req.query.run_id) : null;
+    if (!runId) {
+      const { rows } = await pool.query(
+        `SELECT id FROM mrp_runs
+          WHERE status = 'completed' AND ($1::int IS NULL OR company_id = $1 OR company_id IS NULL)
+          ORDER BY id DESC LIMIT 1`, [cid]);
+      runId = rows[0]?.id ?? null;
+    }
+
+    const projected = runId ? (await pool.query(`
+      SELECT DISTINCT ON (tp.item_id)
+             tp.item_id, tp.item_code, tp.item_name, tp.bucket_index,
+             tp.bucket_start, tp.bucket_end,
+             tp.projected_available, tp.gross_requirements, tp.net_requirements,
+             ABS(LEAST(tp.projected_available, 0)) AS shortfall_qty,
+             (SELECT COUNT(*)::int FROM mrp_planned_orders po
+               WHERE po.run_id = tp.run_id AND po.item_id = tp.item_id) AS planned_orders
+        FROM mrp_time_phased tp
+       WHERE tp.run_id = $1
+         AND tp.projected_available < 0
+       ORDER BY tp.item_id, tp.bucket_index`, [runId])).rows : [];
+
+    const { rows: onHand } = await pool.query(`
+      SELECT i.id AS item_id, i.item_code, i.item_name,
+             COALESCE(i.current_stock,0)  AS on_hand,
+             COALESCE(i.safety_stock,0)   AS safety_stock,
+             COALESCE(i.reorder_level,0)  AS reorder_level,
+             COALESCE(i.lead_time_days,0) AS lead_time_days
+        FROM inventory_items i
+       WHERE ($1::int IS NULL OR i.company_id = $1)
+         AND i.deleted_at IS NULL AND COALESCE(i.is_active,true) = true
+         AND COALESCE(i.safety_stock,0) > 0
+         AND COALESCE(i.current_stock,0) <= COALESCE(i.safety_stock,0)
+       ORDER BY (COALESCE(i.safety_stock,0) - COALESCE(i.current_stock,0)) DESC`, [cid]);
+
+    res.json({
+      run_id: runId,
+      projected_shortages: projected.map(r => ({
+        ...r,
+        first_short_on: r.bucket_start,
+        uncovered: Number(r.planned_orders) === 0,
+      })),
+      below_safety_stock: onHand.map(r => ({
+        ...r, shortfall_qty: Number(r.safety_stock) - Number(r.on_hand),
+      })),
+      summary: {
+        projected: projected.length,
+        below_safety_stock: onHand.length,
+        uncovered: projected.filter(r => Number(r.planned_orders) === 0).length,
+      },
+    });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -297,6 +369,48 @@ router.post('/mps', requirePermission('production', 'edit'), async (req, res) =>
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+/* POST /mrp/mps/generate — net demand into a proposed schedule.
+ *
+ * The MPS had no path from demand into it: every row was hand-typed, and the
+ * audit found all of them netting to zero. Generated rows land as `planned`;
+ * firming them stays a person's decision. */
+router.post('/mps/generate', requirePermission('production', 'edit'), async (req, res) => {
+  try {
+    const horizonDays = Math.min(365, Math.max(7, Number(req.body?.horizon_days) || 90));
+    const out = await generateMPSFromDemand({ companyId: cidOf(req), horizonDays, actor: actor(req) });
+    res.json({
+      run: out.run,
+      lines: out.lines,
+      summary: {
+        rows_created: out.lines.length,
+        rows_superseded: out.run.rows_superseded,
+        demand_from_orders: out.run.demand_from_orders,
+        demand_from_forecast: out.run.demand_from_forecast,
+        existing_supply_netted: out.run.existing_supply,
+      },
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+/* GET /mrp/mps/generation-runs — history of generations */
+router.get('/mps/generation-runs', requirePermission('production', 'view'), async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT * FROM mps_generation_runs WHERE ($1::int IS NULL OR company_id = $1)
+        ORDER BY id DESC LIMIT 50`, [cidOf(req)]);
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+/* POST /mrp/mps/:id/firm — a planner takes ownership of a proposal */
+router.post('/mps/:id/firm', requirePermission('production', 'edit'), async (req, res) => {
+  try {
+    const row = await firmMPSLine({ id: req.params.id, companyId: cidOf(req), actor: actor(req) });
+    if (!row) return res.status(404).json({ error: 'MPS entry not found' });
+    res.json(row);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 router.put('/mps/:id', requirePermission('production', 'edit'), captureBefore('master_production_schedule'), async (req, res) => {
   try {
     const { product_id, product_name, due_date, quantity, quantity_produced, status, notes } = req.body || {};
@@ -306,8 +420,8 @@ router.put('/mps/:id', requirePermission('production', 'edit'), captureBefore('m
         due_date = COALESCE($4, due_date), quantity = COALESCE($5, quantity),
         quantity_produced = COALESCE($6, quantity_produced), status = COALESCE($7, status),
         notes = COALESCE($8, notes), updated_at = NOW()
-      WHERE id = $1 RETURNING *`,
-      [req.params.id, product_id, product_name, due_date, quantity, quantity_produced, status, notes]);
+      WHERE id = $1 AND ($9::int IS NULL OR company_id = $9) RETURNING *`,
+      [req.params.id, product_id, product_name, due_date, quantity, quantity_produced, status, notes, cidOf(req)]);
     if (!row) return res.status(404).json({ error: 'MPS entry not found' });
     res.json(row);
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -315,7 +429,7 @@ router.put('/mps/:id', requirePermission('production', 'edit'), captureBefore('m
 
 router.delete('/mps/:id', requirePermission('production', 'edit'), captureBefore('master_production_schedule'), async (req, res) => {
   try {
-    await pool.query(`DELETE FROM master_production_schedule WHERE id = $1`, [req.params.id]);
+    await pool.query(`DELETE FROM master_production_schedule WHERE id = $1 AND ($2::int IS NULL OR company_id = $2)`, [req.params.id, cidOf(req)]);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });

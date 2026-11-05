@@ -24,6 +24,8 @@
  *   npx playwright test --project=db-consistency
  */
 
+import { execFileSync } from 'node:child_process';
+import path from 'node:path';
 import { test, expect } from '../fixtures/base';
 import {
   waitForPageLoad,
@@ -31,8 +33,26 @@ import {
   assertPageHasContent,
 } from '../helpers/page-helpers';
 
-const BASE    = 'http://localhost:5173';
-const API     = 'http://localhost:5000/api/v1';
+// §221 — this spec CREATES an employee (employee code sequence), a leave and a
+// project (project code sequence). It runs ONLY under
+// playwright.testdb.config.ts, against the isolated test database. It used to
+// hardcode the developer frontend (:5173) and backend (:5000).
+const FRONT_ORIGIN = process.env.PULSE_FRONT_BASE ?? '';
+const API_ORIGIN   = process.env.PULSE_API_BASE ?? '';
+const BASE    = FRONT_ORIGIN;
+const API     = API_ORIGIN ? `${API_ORIGIN}/api/v1` : '';
+
+// Fail closed before any test in this file can write: the flag, the bases, and
+// a live proof that the API server serves the marked test database.
+test.beforeAll(() => {
+  if (process.env.PULSE_TEST_DB !== '1' || !FRONT_ORIGIN || !API_ORIGIN
+      || /:5000(\/|$)/.test(API_ORIGIN) || /:5173(\/|$)/.test(FRONT_ORIGIN)) {
+    throw new Error('06-db-consistency.spec creates employees, leaves and projects: run it with  npx playwright test -c playwright.testdb.config.ts  (isolated test database only).');
+  }
+  execFileSync(process.execPath, ['scripts/test-db/assert-server.mjs', API_ORIGIN], {
+    cwd: path.resolve(__dirname, '../../backend'), stdio: 'inherit', env: process.env,
+  });
+});
 const UNIQUE  = `PW_AUDIT_${Date.now()}`;
 
 // ─── Token helper ─────────────────────────────────────────────────────────────
@@ -140,9 +160,21 @@ test.describe('Employee Create → DB → UI → Dashboard consistency', () => {
       company_email:  `audit_${Date.now()}@playwright.test`,
       phone:          '9999999999',
       department:     'Engineering',
-      designation:    'QA Automation',
+      // A designation that is actually IN master_designations. 'QA Automation' was
+      // not, and `validateMasterValue` has always rejected a value absent from both
+      // the master and the employees table — so this fixture only passed when an
+      // EARLIER run of itself had leaked a row carrying that designation, which its
+      // own teardown then deleted. Self-dependent, and stale independently of the
+      // Employee ID work.
+      designation:    'Engineer',
       employment_type:'full_time',
       joining_date:   new Date().toISOString().split('T')[0],
+      // `status` is required on create as of 2026-09-28. employees.status DEFAULTs
+      // to 'Probation', so a create that omitted it silently filed the new hire as
+      // a probationer — see REQUIRED_ON_CREATE in backend employee.service.js.
+      // Without this the POST is a correct 400 and every later step in this file
+      // skips on a null createdEmpId.
+      status:         'Active',
     };
 
     const res = await request.post(`${API}/employees`, {

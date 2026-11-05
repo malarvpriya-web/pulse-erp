@@ -15,6 +15,8 @@
 
 import cron         from 'node-cron';
 import { spawnSync } from 'child_process';
+import { runJob } from './jobRun.js';
+import { resolveDbTarget, pgToolEnv } from '../config/dbTarget.js';
 import fs            from 'fs';
 import path          from 'path';
 import { fileURLToPath } from 'url';
@@ -36,13 +38,17 @@ const RETAIN_DAYS    = parseInt(process.env.BACKUP_RETAIN_DAYS || '7', 10);
 // Default: 02:00 IST = 20:30 UTC
 const CRON_SCHEDULE  = process.env.BACKUP_CRON_SCHEDULE || '30 20 * * *';
 
-const DB = () => ({
-  host:     process.env.DB_HOST     || 'localhost',
-  port:     process.env.DB_PORT     || '5432',
-  name:     process.env.DB_NAME     || 'Pulse',
-  user:     process.env.DB_USER     || 'postgres',
-  password: process.env.DB_PASSWORD || '',
-});
+// The application role cannot read sequences, so pg_dump fails under it. A backup
+// login is supplied separately; without one this uses the application's login and
+// the failure is reported, not hidden.
+const DB = () => {
+  const target = resolveDbTarget(process.env);
+  return {
+    ...target,
+    user:     process.env.BACKUP_DB_USER     || target.user,
+    password: process.env.BACKUP_DB_PASSWORD || target.password,
+  };
+};
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -108,10 +114,10 @@ async function uploadToS3(filePath) {
 
 // ── Core backup ───────────────────────────────────────────────────────────────
 
-async function runBackup() {
+export async function runBackup() {
   const ts  = new Date().toISOString();
   const db  = DB();
-  const env = { ...process.env, PGPASSWORD: db.password };
+  const env = pgToolEnv(db, process.env);
 
   // Guard: pg_dump must be available
   const check = spawnSync('pg_dump', ['--version'], { encoding: 'utf8' });
@@ -120,7 +126,7 @@ async function runBackup() {
     console.error(`[backup] ${msg}`);
     writeLog({ ts, status: 'error', error: msg });
     await sendAlert(`❌ *Pulse ERP — BACKUP FAILED*\n${msg}\nTime: ${ts}`);
-    return;
+    throw new Error(msg);
   }
 
   fs.mkdirSync(BACKUP_DIR, { recursive: true });
@@ -138,7 +144,9 @@ async function runBackup() {
     console.error(`[backup] pg_dump failed: ${err}`);
     writeLog({ ts, status: 'error', file: path.basename(file), error: err });
     await sendAlert(`❌ *Pulse ERP — BACKUP FAILED*\npg_dump error: ${err}\nTime: ${ts}`);
-    return;
+    // A partial dump must not sit among the good ones and be pruned against them.
+    fs.rmSync(file, { force: true });
+    throw new Error(`pg_dump failed: ${err}`);
   }
 
   const stat   = fs.statSync(file);
@@ -151,7 +159,8 @@ async function runBackup() {
     console.error(`[backup] ${msg}`);
     writeLog({ ts, status: 'error', file: path.basename(file), error: msg });
     await sendAlert(`❌ *Pulse ERP — BACKUP INVALID*\n${msg}\nFile: ${path.basename(file)}\nTime: ${ts}`);
-    return;
+    fs.rmSync(file, { force: true });
+    throw new Error(msg);
   }
 
   // Prune old backups
@@ -197,6 +206,7 @@ export function startBackupCron() {
     return;
   }
 
-  cron.schedule(CRON_SCHEDULE, runBackup, { timezone: 'UTC' });
+  // runJob records the failure and never rejects, so a failed backup cannot read as success.
+  cron.schedule(CRON_SCHEDULE, () => runJob('backup', runBackup), { timezone: 'UTC' });
   console.log(`💾 Backup cron started — schedule: "${CRON_SCHEDULE}" UTC (default: 02:00 IST daily)`);
 }

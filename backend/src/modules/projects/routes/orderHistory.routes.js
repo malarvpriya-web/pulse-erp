@@ -10,6 +10,7 @@ import pool from '../../shared/db.js';
 import { companyOf } from '../../../shared/scope.js';
 import { sqlPoCommitted } from '../../../shared/statusSets.js';
 import { poSpendInr } from '../../procurement/services/spendAnalytics.service.js';
+import { requirePermission } from '../../../middlewares/auth.middleware.js';
 
 const router = Router();
 
@@ -24,10 +25,20 @@ async function safeQuery(sql, params = []) {
   }
 }
 
-router.get('/:id/full-history', async (req, res) => {
+// Gated like every other project read (it returns cost and profit). Every
+// lookup after the project itself is held to the PROJECT's company ($co
+// below): the chain follows stored links (sales_order_ref, a lifecycle's
+// sales_order_id, the quotation's opportunity...) and a mis-linked row used to
+// pull another company's order, quotation, production orders and so on into
+// this response. The router shares the /projects mount, so the gate is per
+// route, not router.use.
+router.get('/:id/full-history', requirePermission('projects', 'view'), async (req, res) => {
   try {
     const projectId = parseInt(req.params.id, 10);
     const companyId = cid(req);
+    if (companyId == null && req.scope?.isGlobal !== true) {
+      return res.status(403).json({ error: 'No company is assigned to this login.' });
+    }
 
     // ── Core project ─────────────────────────────────────────────────────
     const [project] = await safeQuery(
@@ -49,6 +60,7 @@ router.get('/:id/full-history', async (req, res) => {
       [projectId, companyId]
     );
     if (!project) return res.status(404).json({ error: 'Project not found' });
+    const co = project.company_id ?? null;
 
     // ── Lifecycle instance ────────────────────────────────────────────────
     const [li] = await safeQuery(
@@ -56,11 +68,11 @@ router.get('/:id/full-history', async (req, res) => {
               so.order_number, so.order_status, so.total_amount AS order_value,
               so.quotation_id
        FROM lifecycle_instances li
-       LEFT JOIN sales_orders so ON so.id = li.sales_order_id
-       WHERE li.project_id=$1
+       LEFT JOIN sales_orders so ON so.id = li.sales_order_id AND so.company_id IS NOT DISTINCT FROM $2
+       WHERE li.project_id=$1 AND li.company_id IS NOT DISTINCT FROM $2
        ORDER BY li.created_at DESC
        LIMIT 1`,
-      [projectId]
+      [projectId, co]
     );
 
     // Also try via sales_order_ref if lifecycle not found by project_id
@@ -70,8 +82,9 @@ router.get('/:id/full-history', async (req, res) => {
        FROM lifecycle_instances li
        JOIN sales_orders so ON so.id = li.sales_order_id
        WHERE so.order_number = $1
+         AND so.company_id IS NOT DISTINCT FROM $2 AND li.company_id IS NOT DISTINCT FROM $2
        ORDER BY li.created_at DESC LIMIT 1`,
-      [salesOrderRef]
+      [salesOrderRef, co]
     ) : [null];
 
     const lifecycle = li || liFromRef || null;
@@ -92,8 +105,8 @@ router.get('/:id/full-history', async (req, res) => {
       `SELECT so.*, e.name AS created_by_name
        FROM sales_orders so
        LEFT JOIN employees e ON e.id = so.created_by
-       WHERE so.id=$1`,
-      [salesOrderId]
+       WHERE so.id=$1 AND so.company_id IS NOT DISTINCT FROM $2`,
+      [salesOrderId, co]
     ) : [null];
 
     // ── Quotation ─────────────────────────────────────────────────────────
@@ -102,16 +115,17 @@ router.get('/:id/full-history', async (req, res) => {
       `SELECT q.*, e.name AS created_by_name
        FROM quotations q
        LEFT JOIN employees e ON e.id = q.created_by
-       WHERE q.id=$1`,
-      [quotationId]
+       WHERE q.id=$1 AND q.company_id IS NOT DISTINCT FROM $2`,
+      [quotationId, co]
     ) : [null];
 
     const quotationRevisions = quotation ? await safeQuery(
       `SELECT id, quotation_number, revision, status, total_amount, created_at
        FROM quotations
        WHERE COALESCE(original_id, id) = COALESCE($1::int, $2::int)
+         AND company_id IS NOT DISTINCT FROM $3
        ORDER BY revision ASC`,
-      [quotation.original_id, quotation.id]
+      [quotation.original_id, quotation.id, co]
     ) : [];
 
     // ── Opportunity ───────────────────────────────────────────────────────
@@ -121,14 +135,14 @@ router.get('/:id/full-history', async (req, res) => {
        FROM opportunities o
        LEFT JOIN employees e ON e.id = o.assigned_to
        LEFT JOIN accounts  a ON a.id = o.account_id
-       WHERE o.id=$1`,
-      [quotation.opportunity_id]
+       WHERE o.id=$1 AND o.company_id IS NOT DISTINCT FROM $2`,
+      [quotation.opportunity_id, co]
     ) : [null];
 
     const opportunityStageHistory = opportunity ? await safeQuery(
       `SELECT * FROM opportunity_stage_history
-       WHERE opportunity_id=$1 ORDER BY changed_at ASC`,
-      [opportunity.id]
+       WHERE opportunity_id=$1 AND company_id IS NOT DISTINCT FROM $2 ORDER BY changed_at ASC`,
+      [opportunity.id, co]
     ) : [];
 
     // ── Technical & Commercial Proposals ─────────────────────────────────
@@ -136,16 +150,16 @@ router.get('/:id/full-history', async (req, res) => {
       `SELECT tp.*, e.name AS prepared_by_name
        FROM technical_proposals tp
        LEFT JOIN employees e ON e.id = tp.prepared_by
-       WHERE tp.id=$1`,
-      [opportunity.tech_proposal_id]
+       WHERE tp.id=$1 AND tp.company_id IS NOT DISTINCT FROM $2`,
+      [opportunity.tech_proposal_id, co]
     ) : [null];
 
     const [commercialProposal] = opportunity?.comm_proposal_id ? await safeQuery(
       `SELECT cp.*, e.name AS prepared_by_name
        FROM commercial_proposals cp
        LEFT JOIN employees e ON e.id = cp.prepared_by
-       WHERE cp.id=$1`,
-      [opportunity.comm_proposal_id]
+       WHERE cp.id=$1 AND cp.company_id IS NOT DISTINCT FROM $2`,
+      [opportunity.comm_proposal_id, co]
     ) : [null];
 
     // ── Lead (origin) ─────────────────────────────────────────────────────
@@ -153,8 +167,8 @@ router.get('/:id/full-history', async (req, res) => {
       `SELECT l.*, e.name AS assigned_to_name
        FROM leads l
        LEFT JOIN employees e ON e.id = l.assigned_to
-       WHERE l.id=$1`,
-      [opportunity.lead_id]
+       WHERE l.id=$1 AND l.company_id IS NOT DISTINCT FROM $2`,
+      [opportunity.lead_id, co]
     ) : [null];
 
     // ── BOM ───────────────────────────────────────────────────────────────
@@ -162,9 +176,9 @@ router.get('/:id/full-history', async (req, res) => {
       `SELECT bh.*, e.name AS created_by_name
        FROM bom_headers bh
        LEFT JOIN employees e ON e.id = bh.created_by
-       WHERE bh.project_id=$1 OR bh.sales_order_id=$2
+       WHERE (bh.project_id=$1 OR bh.sales_order_id=$2) AND bh.company_id IS NOT DISTINCT FROM $3
        ORDER BY bh.created_at DESC`,
-      [projectId, salesOrderId]
+      [projectId, salesOrderId, co]
     );
 
     // ── Production Orders ─────────────────────────────────────────────────
@@ -172,9 +186,9 @@ router.get('/:id/full-history', async (req, res) => {
       `SELECT po.*, b.bom_number, b.version AS bom_revision
        FROM production_orders po
        LEFT JOIN bom_headers b ON b.id = po.bom_id
-       WHERE po.project_id=$1 OR po.sales_order_id=$2
+       WHERE (po.project_id=$1 OR po.sales_order_id=$2) AND po.company_id IS NOT DISTINCT FROM $3
        ORDER BY po.created_at DESC`,
-      [projectId, salesOrderId]
+      [projectId, salesOrderId, co]
     );
 
     // ── Purchase Orders ───────────────────────────────────────────────────
@@ -191,8 +205,9 @@ router.get('/:id/full-history', async (req, res) => {
        FROM purchase_orders po
        LEFT JOIN vendors v ON v.id = po.supplier_id
        WHERE (po.project_id=$1 OR po.sales_order_id=$2) AND po.deleted_at IS NULL
+         AND po.company_id IS NOT DISTINCT FROM $3
        ORDER BY po.created_at DESC`,
-      [projectId, salesOrderId]
+      [projectId, salesOrderId, co]
     );
     const procurementSpend = purchaseOrders.reduce((s, r) => s + parseFloat(r.spend || 0), 0);
 
@@ -211,63 +226,64 @@ router.get('/:id/full-history', async (req, res) => {
     // ── GRN ───────────────────────────────────────────────────────────────
     const grns = purchaseOrders.length ? await safeQuery(
       `SELECT g.* FROM goods_receipt_notes g
-       WHERE g.po_id = ANY($1::int[])
+       WHERE g.po_id = ANY($1::int[]) AND g.company_id IS NOT DISTINCT FROM $2
        ORDER BY g.received_date DESC`,
-      [purchaseOrders.map(p => p.id)]
+      [purchaseOrders.map(p => p.id), co]
     ) : [];
 
     // ── Batch / material consumption ──────────────────────────────────────
     const batches = productionOrders.length ? await safeQuery(
       `SELECT bt.* FROM inventory_batches bt
-       WHERE bt.production_order_id = ANY($1::int[])
+       WHERE bt.production_order_id = ANY($1::int[]) AND bt.company_id IS NOT DISTINCT FROM $2
        ORDER BY bt.created_at DESC`,
-      [productionOrders.map(p => p.id)]
+      [productionOrders.map(p => p.id), co]
     ) : [];
 
     // ── FAT / SAT / NCR ───────────────────────────────────────────────────
     const fatReports = await safeQuery(
-      `SELECT * FROM fat_trackers WHERE project_id=$1 ORDER BY actual_date DESC`,
-      [projectId]
+      `SELECT * FROM fat_trackers WHERE project_id=$1 AND company_id IS NOT DISTINCT FROM $2 ORDER BY actual_date DESC`,
+      [projectId, co]
     );
     const satReports = await safeQuery(
-      `SELECT * FROM sat_trackers WHERE project_id=$1 ORDER BY actual_date DESC`,
-      [projectId]
+      `SELECT * FROM sat_trackers WHERE project_id=$1 AND company_id IS NOT DISTINCT FROM $2 ORDER BY actual_date DESC`,
+      [projectId, co]
     );
     // ncr_reports has no production_order_id. It carries project_id directly,
     // plus a polymorphic reference_type/reference_id pair — so an NCR raised
     // against one of this project's production orders is reachable either way.
     const ncrs = await safeQuery(
       `SELECT n.* FROM ncr_reports n
-        WHERE n.project_id = $1
+        WHERE (n.project_id = $1
            OR (LOWER(n.reference_type) = 'production_order'
-               AND n.reference_id = ANY($2::int[]))
+               AND n.reference_id = ANY($2::int[])))
+          AND n.company_id IS NOT DISTINCT FROM $3
         ORDER BY n.created_at DESC`,
-      [projectId, productionOrders.map(p => p.id)]
+      [projectId, productionOrders.map(p => p.id), co]
     );
 
     // ── Shipments ─────────────────────────────────────────────────────────
     const shipments = salesOrderId ? await safeQuery(
       `SELECT s.* FROM shipments s
-       WHERE s.reference_type='sales_order' AND s.reference_id=$1
+       WHERE s.reference_type='sales_order' AND s.reference_id=$1 AND s.company_id IS NOT DISTINCT FROM $2
        ORDER BY s.created_at DESC`,
-      [salesOrderId]
+      [salesOrderId, co]
     ) : [];
 
     // ── Commissioning ─────────────────────────────────────────────────────
     const commissioningReports = lifecycle ? await safeQuery(
       `SELECT cr.* FROM commissioning_reports cr
-       WHERE cr.lifecycle_instance_id=$1
+       WHERE cr.lifecycle_instance_id=$1 AND cr.company_id IS NOT DISTINCT FROM $2
        ORDER BY cr.commissioning_date DESC`,
-      [lifecycle.id]
+      [lifecycle.id, co]
     ) : [];
 
     // ── Warranty ──────────────────────────────────────────────────────────
     const warranties = await safeQuery(
       `SELECT pw.*,
               CASE WHEN pw.warranty_end_date >= CURRENT_DATE THEN 'active' ELSE 'expired' END AS computed_status
-       FROM project_warranties pw WHERE pw.project_id=$1
+       FROM project_warranties pw WHERE pw.project_id=$1 AND pw.company_id IS NOT DISTINCT FROM $2
        ORDER BY pw.warranty_end_date DESC`,
-      [projectId]
+      [projectId, co]
     );
 
     // ── Service Tickets ───────────────────────────────────────────────────
@@ -275,9 +291,9 @@ router.get('/:id/full-history', async (req, res) => {
       `SELECT st.*, e.name AS assigned_to_name
        FROM support_tickets st
        LEFT JOIN employees e ON e.id = st.assigned_to
-       WHERE st.project_id=$1 AND st.deleted_at IS NULL
+       WHERE st.project_id=$1 AND st.deleted_at IS NULL AND st.company_id IS NOT DISTINCT FROM $2
        ORDER BY st.created_at DESC`,
-      [projectId]
+      [projectId, co]
     );
 
     // ── AMC Contracts ─────────────────────────────────────────────────────
@@ -285,10 +301,11 @@ router.get('/:id/full-history', async (req, res) => {
       `SELECT ac.*,
               (SELECT COUNT(*)::int FROM amc_renewal_history ar WHERE ar.amc_contract_id=ac.id) AS renewal_count
        FROM amc_contracts ac
-       WHERE ac.project_id=$1
-          OR (ac.lifecycle_instance_id IS NOT NULL AND ac.lifecycle_instance_id=$2)
+       WHERE (ac.project_id=$1
+          OR (ac.lifecycle_instance_id IS NOT NULL AND ac.lifecycle_instance_id=$2))
+         AND ac.company_id IS NOT DISTINCT FROM $3
        ORDER BY ac.start_date DESC`,
-      [projectId, lifecycle?.id || null]
+      [projectId, lifecycle?.id || null, co]
     );
 
     // ── Documents ─────────────────────────────────────────────────────────
@@ -297,10 +314,11 @@ router.get('/:id/full-history', async (req, res) => {
               dm.linked_entity_type, dm.revision, dm.revision_label,
               dm.approval_status, dm.signed_status, dm.created_at
        FROM document_master dm
-       WHERE (dm.linked_entity_type='project' AND dm.linked_entity_id=$1)
-          OR ($2::int IS NOT NULL AND dm.linked_entity_type='sales_order' AND dm.linked_entity_id=$2)
+       WHERE ((dm.linked_entity_type='project' AND dm.linked_entity_id=$1)
+          OR ($2::int IS NOT NULL AND dm.linked_entity_type='sales_order' AND dm.linked_entity_id=$2))
+         AND dm.company_id IS NOT DISTINCT FROM $3
        ORDER BY dm.created_at DESC`,
-      [projectId, salesOrderId]
+      [projectId, salesOrderId, co]
     );
 
     // ── Milestones ────────────────────────────────────────────────────────

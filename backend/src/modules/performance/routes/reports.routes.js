@@ -1,6 +1,7 @@
 import express from 'express';
 import pool from '../../../config/db.js';
 import { companyOf } from '../../../shared/scope.js';
+import { toCsvObjects } from '../../../shared/csv.js';
 
 const router = express.Router();
 
@@ -9,16 +10,11 @@ const getCid = req => req.scope?.company_id ?? companyOf(req);
 const isHR   = req => ['hr', 'super_admin', 'admin'].includes(role(req));
 const isMgr  = req => ['manager', 'hr', 'super_admin', 'admin'].includes(role(req));
 
-function toCSV(rows) {
-  if (!rows.length) return '';
-  const headers = Object.keys(rows[0]);
-  const esc = v => {
-    if (v == null) return '';
-    const s = String(v);
-    return s.includes(',') || s.includes('"') || s.includes('\n') ? `"${s.replace(/"/g, '""')}"` : s;
-  };
-  return [headers.map(esc).join(','), ...rows.map(r => headers.map(h => esc(r[h])).join(','))].join('\n');
-}
+// Delegates to the shared writer, which additionally neutralises values a
+// spreadsheet would EVALUATE as formulas (a leading = + - @). `minimal: true`
+// preserves this helper's conditional quoting, so only the injection changes.
+// See shared/csv.js.
+const toCSV = (rows) => (rows.length ? toCsvObjects(rows, { minimal: true }) : '');
 
 function sendReport(res, rows, filename, format) {
   if (format === 'csv') {

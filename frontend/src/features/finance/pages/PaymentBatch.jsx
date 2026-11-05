@@ -267,28 +267,38 @@ export default function PaymentBatch() {
     } finally { setActioningId(null); }
   };
 
-  // ── bank file download ─────────────────────────────────────────────────────
-  const downloadBankFile = async (batch, format) => {
+  // ── bank file (PC-02b-0 B-04): released once, then downloaded as stored ─────
+  const releaseBankFile = async (batch, format) => {
     setDownloading(true);
     try {
-      const res = await api.get(`/finance/payment-batches/${batch.id}/bank-file`, {
-        params: { format }, responseType: 'blob',
-      });
+      await api.post(`/finance/payment-batches/${batch.id}/release`, { format });
+      showToast('Bank file released. Download it, then process the batch.', 'success');
+      setBankFileBatch(null);
+      setViewBatch(null);
+      load();
+    } catch (e) {
+      const data = e?.response?.data;
+      const problems = (data?.problems || []).map(p => `${p.supplier}: ${p.reason}`).join('; ');
+      showToast(problems ? `${data.error} — ${problems}` : (data?.error || 'Release failed'), 'error');
+    } finally { setDownloading(false); }
+  };
+
+  const downloadBankFile = async (batch) => {
+    setDownloading(true);
+    try {
+      const res = await api.get(`/finance/payment-batches/${batch.id}/bank-file`, { responseType: 'blob' });
       const url = URL.createObjectURL(new Blob([res.data], { type: 'text/csv' }));
       const a   = Object.assign(document.createElement('a'), {
-        href: url, download: `batch-${batch.batch_number}-${format}.csv`,
+        href: url, download: batch.bank_file?.file_name || `batch-${batch.batch_number}.csv`,
       });
       a.click();
       URL.revokeObjectURL(url);
-      setBankFileBatch(null);
     } catch (e) {
       let msg = 'Download failed';
       try {
         const text   = e?.response?.data instanceof Blob ? await e.response.data.text() : null;
         const parsed = text ? JSON.parse(text) : null;
-        if (parsed?.missing_suppliers?.length)
-          msg = `Missing bank details: ${parsed.missing_suppliers.join(', ')}`;
-        else if (parsed?.error) msg = parsed.error;
+        if (parsed?.error) msg = parsed.error;
       } catch { /* ignore parse error */ }
       showToast(msg, 'error');
     } finally { setDownloading(false); }
@@ -671,24 +681,26 @@ export default function PaymentBatch() {
                             </button>
                           </>
                         )}
-                        {batch.status === 'approved' && canApprove && (
-                          <>
-                            <button className="pb-action-process" disabled={!!actioningId}
-                              onClick={() => handleAction(batch, 'process')}>
-                              <Play size={12} /> {actioningId === batch.id ? 'Processing…' : 'Process'}
-                            </button>
-                            <button className="pb-btn-outline" style={{ fontSize: 12, padding: '4px 10px' }}
-                              onClick={() => setBankFileBatch(batch)}>
-                              <Download size={11} /> Bank File
-                            </button>
-                          </>
+                        {batch.status === 'approved' && canApprove && !batch.bank_file && (
+                          <button className="pb-btn-outline" style={{ fontSize: 12, padding: '4px 10px' }}
+                            onClick={() => setBankFileBatch(batch)}>
+                            <FileText size={11} /> Release Bank File
+                          </button>
+                        )}
+                        {batch.status === 'approved' && canApprove && batch.bank_file && (
+                          <button className="pb-action-process" disabled={!!actioningId}
+                            onClick={() => handleAction(batch, 'process')}>
+                            <Play size={12} /> {actioningId === batch.id ? 'Processing…' : 'Process'}
+                          </button>
+                        )}
+                        {canApprove && batch.bank_file && (
+                          <button className="pb-btn-outline" style={{ fontSize: 12, padding: '4px 10px' }} disabled={downloading}
+                            onClick={() => downloadBankFile(batch)}>
+                            <Download size={11} /> Bank File
+                          </button>
                         )}
                         {batch.status === 'processed' && (
                           <>
-                            <button className="pb-btn-outline" style={{ fontSize: 12, padding: '4px 10px' }}
-                              onClick={() => setBankFileBatch(batch)}>
-                              <Download size={11} /> Bank File
-                            </button>
                             <button className="pb-btn-outline" style={{ fontSize: 12, padding: '4px 10px' }}
                               onClick={() => downloadPaymentAdvice(batch)}>
                               <FileText size={11} /> Advice
@@ -710,7 +722,7 @@ export default function PaymentBatch() {
                 background: '#fff', borderRadius: 14, width: 360, padding: 28,
                 boxShadow: '0 20px 50px rgba(0,0,0,.2)',
               }} onClick={e => e.stopPropagation()}>
-                <h3 style={{ margin: '0 0 4px', fontSize: 16, fontWeight: 700 }}>Download Bank File</h3>
+                <h3 style={{ margin: '0 0 4px', fontSize: 16, fontWeight: 700 }}>Release Bank File</h3>
                 <p style={{ margin: '0 0 20px', fontSize: 13, color: '#6b7280' }}>
                   {bankFileBatch.batch_number} · {fmtFull(bankFileBatch.total_amount)}
                 </p>
@@ -728,7 +740,7 @@ export default function PaymentBatch() {
                   ))}
                 </div>
                 <p style={{ fontSize: 11, color: '#9ca3af', marginBottom: 16 }}>
-                  Supplier bank details (account number + IFSC) must be saved in party records.
+                  Every supplier needs a Finance-verified bank detail. The file is stored at release and cannot be changed or released again.
                 </p>
                 <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
                   <button onClick={() => setBankFileBatch(null)}
@@ -736,9 +748,9 @@ export default function PaymentBatch() {
                     Cancel
                   </button>
                   <button disabled={downloading}
-                    onClick={() => downloadBankFile(bankFileBatch, bankFileFormat)}
+                    onClick={() => releaseBankFile(bankFileBatch, bankFileFormat)}
                     style={{ padding: '8px 18px', background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
-                    {downloading ? 'Downloading…' : '⬇ Download CSV'}
+                    {downloading ? 'Releasing…' : 'Release file'}
                   </button>
                 </div>
               </div>
@@ -764,9 +776,15 @@ export default function PaymentBatch() {
                     </div>
                   </div>
                   <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                    {(viewBatch.status === 'approved' || viewBatch.status === 'processed') && (
+                    {viewBatch.status === 'approved' && canApprove && !viewBatch.bank_file && (
                       <button className="pb-btn-outline"
                         onClick={() => { setViewBatch(null); setBankFileBatch(viewBatch); }}>
+                        <FileText size={13} /> Release Bank File
+                      </button>
+                    )}
+                    {canApprove && viewBatch.bank_file && (
+                      <button className="pb-btn-outline" disabled={downloading}
+                        onClick={() => downloadBankFile(viewBatch)}>
                         <Download size={13} /> Bank File
                       </button>
                     )}
@@ -867,7 +885,7 @@ export default function PaymentBatch() {
                         </button>
                       </>
                     )}
-                    {viewBatch.status === 'approved' && canApprove && (
+                    {viewBatch.status === 'approved' && canApprove && viewBatch.bank_file && (
                       <button className="pb-full-process" onClick={() => handleAction(viewBatch, 'process')}>
                         <Play size={14} /> Process Payments
                       </button>

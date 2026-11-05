@@ -141,14 +141,87 @@
 .form-grid textarea { resize: vertical; min-height: 70px; }
 select { height: auto !important; cursor: pointer; }
 
-/* gender radio inline */
-.form-grid div > div { display: flex; gap: 16px; align-items: center; padding: 6px 0; }
-.form-grid div > div label {
+/* ── Inline radio / checkbox row ──────────────────────────────────────────────
+ * Opt-in via .field-inline-options. It used to be `.form-grid div > div`, and
+ * that selector is the root cause of the broken Department / Designation /
+ * Asset Type dropdowns reported on this page.
+ *
+ * `.form-grid div > div` matches EVERY div nested one level inside any div
+ * under .form-grid. The MasterSelect / VocabSelect combobox renders
+ *   field cell  >  wrapper div  >  combo div  >  MENU div  >  option divs
+ * so the popup MENU matched it and was handed `display: flex`. The options
+ * laid out side by side inside a ~230px column, each one ellipsis-clipped to
+ * two or three characters, and because the menu also carried `overflow-y:auto`
+ * the browser resolved overflow-x to `auto` as well — producing the horizontal
+ * scrollbar with arrow buttons that the bug report described.
+ *
+ * Only the three pickers with more than twelve master rows showed it:
+ * Department (14+), Designation (24) and Asset Type (13) cross MasterSelect's
+ * SEARCH_THRESHOLD and render the custom combobox, while Grade, Band,
+ * Qualification (7), Employment Type (9) and Skill Type (3) stay a native
+ * <select>, whose popup the OS draws outside the page entirely.
+ *
+ * The component was hardened too (the menu is portalled to <body> and declares
+ * its own layout inline), so this rule can no longer reach it either way. It is
+ * narrowed here regardless: a bare descendant selector in an UNPREFIXED, and
+ * therefore global, page stylesheet is the trap, not just its one victim —
+ * .form-grid is used by six other pages that load this same file.
+ *
+ * ⚠ No page currently renders radios in a .form-grid cell, so nothing uses the
+ * class today. Kept rather than deleted because the styling is still the house
+ * pattern for an inline option row; add `className="field-inline-options"` to
+ * opt a wrapper in. Do NOT widen the selector back.
+ * ────────────────────────────────────────────────────────────────────────── */
+.form-grid .field-inline-options { display: flex; gap: 16px; align-items: center; padding: 6px 0; }
+.form-grid .field-inline-options label {
   display: flex; align-items: center; gap: 5px;
   font-size: 13px !important; font-weight: 500 !important;
   text-transform: none; letter-spacing: 0; cursor: pointer; color: #374151;
 }
-.form-grid div > div input[type="radio"] { width: 14px; height: 14px; accent-color: #5B35D5; }
+.form-grid .field-inline-options input[type="radio"],
+.form-grid .field-inline-options input[type="checkbox"] {
+  width: 14px; height: 14px; accent-color: #5B35D5;
+}
+
+/* ── Required-field marking ───────────────────────────────────────────────────
+ * The asterisk was typed into each label's text ("Department *"), which a
+ * screen reader reads as the word "star" and which nothing could restyle or
+ * count. `.req` carries it instead, with aria-hidden on the glyph and the
+ * accessible name coming from the control's own required attribute.
+ * ────────────────────────────────────────────────────────────────────────── */
+.form-grid label .req { color: #dc2626; margin-left: 2px; font-weight: 800; }
+
+/* ── Field-level validation message ─────────────────────────────────────────── */
+.field-error {
+  display: block; font-size: 11px; font-weight: 600; color: #dc2626;
+  letter-spacing: 0; text-transform: none; margin-top: 1px;
+}
+.form-grid .is-invalid input,
+.form-grid .is-invalid select,
+.form-grid .is-invalid textarea,
+.form-grid .is-invalid [role="combobox"] {
+  border-color: #dc2626 !important;
+  background: #fef2f2 !important;
+}
+
+/* ── Save bar ─────────────────────────────────────────────────────────────────
+ * The Save button used to be a bare <button> at the end of a ~1900px form, so
+ * on a 1280×800 screen the only way to reach it was to scroll to the bottom of
+ * twelve accordion sections. It is sticky now, and it is where the saving and
+ * error states are announced.
+ * ────────────────────────────────────────────────────────────────────────── */
+.ae-save-bar {
+  position: sticky; bottom: 0; z-index: 20;
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  margin-top: 16px; padding: 12px 16px;
+  background: rgba(255,255,255,.96);
+  backdrop-filter: blur(6px);
+  border: 1px solid #E8E1FC; border-radius: 12px;
+  box-shadow: 0 -2px 14px rgba(75,45,206,.1);
+}
+.ae-save-bar .save-btn { margin-top: 0; }
+.ae-save-hint { font-size: 12px; color: #6b7280; }
+.ae-save-hint.is-error { color: #dc2626; font-weight: 600; }
 
 /* ── Upload grid ── */
 .upload-grid {
@@ -250,8 +323,11 @@ select { height: auto !important; cursor: pointer; }
   display: inline-flex; align-items: center; gap: 8px;
   letter-spacing: .02em;
 }
-.save-btn:hover { opacity: .88; transform: translateY(-1px); }
-.save-btn:active { transform: translateY(0); }
+.save-btn:hover:not(:disabled) { opacity: .88; transform: translateY(-1px); }
+.save-btn:active:not(:disabled) { transform: translateY(0); }
+/* The in-flight guard's only visible signal. Without it a second click on a
+   button that still looks live is the obvious thing for a user to try. */
+.save-btn:disabled { opacity: .55; cursor: not-allowed; transform: none; box-shadow: none; }
 
 /* ── Toast message ── */
 .add-employee-page > div[style*="position: fixed"] {

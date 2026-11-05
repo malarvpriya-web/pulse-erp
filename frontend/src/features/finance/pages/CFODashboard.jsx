@@ -183,7 +183,7 @@ const WaterfallChart = ({ data }) => {
 // tests/suites/16-kpi-reconciliation.spec.ts asserts they stay in step.
 const ALERT_ACTION_PAGE = {
   'View Invoices':   'InvoicesNew',
-  'Manage Expenses': 'Expenses',
+  'Manage Expenses': 'PayablesPage',
   'View Projects':   'ProjectsDashboard',
   'Review Leaves':   'LeaveApprovals',
   'View Inventory':  'InventoryDashboard',
@@ -588,7 +588,7 @@ export default function CFODashboard({ setPage }) {
       label: 'Monthly Burn Rate',
       value: monthlyBurn > 0 ? fmtCr(monthlyBurn) : '—',
       sub: runway != null ? `Runway ${runway} mo` : 'Runway: N/A',
-      page: 'Expenses',
+      page: 'PayablesPage',
     },
   ];
 

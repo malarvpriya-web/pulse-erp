@@ -176,8 +176,7 @@ const EMPTY_PL = {
 function adaptPL(d) {
   if (!d) return EMPTY_PL;
   const revenue = groupOf((d.revenue_accounts || []).filter(a => a.sub_type !== 'other'), 'account_name', 'net_amount');
-  const cogsRows = (d.expense_accounts || []).filter(a => a.sub_type === 'cogs');
-  const cogs = groupOf(cogsRows, 'account_name', 'net_amount');
+  const cogs = groupOf(d.cogs_accounts || [], 'account_name', 'net_amount');
   const opex = groupOf(d.operating_expenses || [], 'account_name', 'net_amount');
   return {
     revenue: { items: revenue.items, total: num(d.total_revenue) || revenue.total },
@@ -187,7 +186,9 @@ function adaptPL(d) {
     operatingProfit: num(d.operating_profit),
     otherIncome:     num(d.other_income),
     netProfit:       num(d.net_profit),
-    hasData: (d.revenue_accounts?.length || 0) + (d.expense_accounts?.length || 0) > 0,
+    hasData: (d.revenue_accounts?.length || 0)
+           + (d.cogs_accounts?.length || 0)
+           + (d.operating_expenses?.length || 0) > 0,
   };
 }
 

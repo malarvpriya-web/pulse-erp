@@ -2,6 +2,8 @@ import { Router } from 'express';
 import pool from '../shared/db.js';
 import { dimension } from '../../shared/dashboardFilters.js';
 import { captureBefore } from '../../middlewares/captureBefore.js';
+import { projectLifecycleJoinSql, projectStageColumnsSql } from '../../shared/projectStages.js';
+import { requirePermission } from '../../middlewares/auth.middleware.js';
 
 const router = Router();
 
@@ -98,22 +100,39 @@ router.get('/filter-options', async (req, res) => {
 });
 
 // GET /api/operations/project-tracker
-router.get('/project-tracker', async (req, res) => {
+// Each row carries the project's stage DERIVED from its lifecycle (the shared
+// mapping in shared/projectStages.js): production_stage, lifecycle_stage,
+// lifecycle_status, stage_source ('unavailable' when the project has no
+// lifecycle in its company) and stored_production_stage. Before, the page fell
+// back to the administrative status and showed it as the stage.
+//
+// It lists projects, so it is gated like every other project list —
+// projects:view — and was gated by nothing before (any logged-in user). A
+// login with no company that is not a global super admin would read every
+// company (company NULL = no filter) and is refused. Soft-deleted projects are
+// not listed; they used to be.
+router.get('/project-tracker', requirePermission('projects', 'view'), async (req, res) => {
   try {
     const { status, manager } = req.query;
     const companyId = cid(req);
+    if (companyId == null && req.scope?.isGlobal !== true) {
+      return res.status(403).json({ error: 'No company is assigned to this login.' });
+    }
     const r = await pool.query(`
       SELECT p.*,
              COUNT(t.id) AS total_tasks,
              COUNT(t.id) FILTER (WHERE t.status IN ('completed','done','Completed','Done')) AS completed_tasks,
-             e.first_name || ' ' || e.last_name AS manager_name
+             e.first_name || ' ' || e.last_name AS manager_name,
+             ${projectStageColumnsSql('p', 'plc')}
       FROM projects p
       LEFT JOIN tasks t ON t.project_id = p.id
       LEFT JOIN employees e ON p.project_manager_id = e.id
-      WHERE ($1::text IS NULL OR p.status = $1)
+      ${projectLifecycleJoinSql('p', 'plc')}
+      WHERE p.deleted_at IS NULL
+        AND ($1::text IS NULL OR p.status = $1)
         AND ($2::text IS NULL OR (e.first_name || ' ' || e.last_name) ILIKE '%' || $2 || '%')
         AND ($3::int IS NULL OR p.company_id = $3)
-      GROUP BY p.id, e.first_name, e.last_name
+      GROUP BY p.id, e.first_name, e.last_name, plc.id, plc.current_stage, plc.status
       ORDER BY p.created_at DESC
     `, [status || null, manager || null, companyId]);
     res.json(r.rows);

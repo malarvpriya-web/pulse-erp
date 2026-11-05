@@ -8,6 +8,7 @@ import {
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import { localDay } from '@/utils/dateFormatter';
 
 const P = '#6B3FDB';
 const CARD = { background: '#fff', borderRadius: 12, border: '1px solid #f0f0f4', padding: 24 };
@@ -717,7 +718,7 @@ export default function ContractLabour() {
   const [mainView,      setMainView]      = useState('workers'); // 'workers' | 'attendance'
 
   // attendance tab state
-  const [attDate,       setAttDate]       = useState(() => new Date().toISOString().split('T')[0]);
+  const [attDate,       setAttDate]       = useState(() => localDay());
   const [attRecords,    setAttRecords]    = useState([]);
   const [attLoading,    setAttLoading]    = useState(false);
   const [attMarking,    setAttMarking]    = useState({}); // workerId → true

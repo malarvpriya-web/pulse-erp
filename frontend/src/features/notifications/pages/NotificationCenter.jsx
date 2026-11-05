@@ -1,10 +1,13 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Bell, Clock, AlertTriangle, UserCheck, Info, CheckCircle2,
   Check, Trash2, Inbox,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import { useAuth } from '@/context/AuthContext';
+import { canRoleOpenPage } from '@/config/menuCatalog';
+import { notificationTarget } from '../notificationTarget';
 import './NotificationCenter.css';
 import { useToast } from '@/context/ToastContext';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
@@ -62,7 +65,8 @@ function shortTime(ts) {
 
 const NotificationCenter = () => {
   const toast = useToast();
-  const { user } = useAuth();
+  const navigate = useNavigate();
+  const { user, role, menuAccess } = useAuth();
   const [notifications, setNotifications] = useState([]);
   const [filter, setFilter] = useState('all');
   const [showDecisionForm, setShowDecisionForm] = useState(false);
@@ -160,6 +164,23 @@ const NotificationCenter = () => {
     }
   };
 
+  /* Opening a notification takes you to the record's module. The destination
+     comes from module_name/notification_type (notificationTarget.js) and is
+     filtered through the role gate, so a row only becomes clickable when the
+     signed-in role can actually open where it points. */
+  const targetFor = useCallback(
+    (notif) => notificationTarget(notif, pg => canRoleOpenPage(role, pg, { menuAccess })),
+    [role, menuAccess]
+  );
+
+  const openNotification = (notif) => {
+    const target = targetFor(notif);
+    if (!target) return;
+    if (!notif.is_read) markAsRead(notif.id);
+    const qs = new URLSearchParams(target.params).toString();
+    navigate(`/${target.page}${qs ? `?${qs}` : ''}`);
+  };
+
   const isProbationNotif = (notif) =>
     ['probation_warning', 'probation_due', 'approval'].includes(notif.notification_type) &&
     (notif.module_name || '').toLowerCase() === 'probation';
@@ -249,10 +270,17 @@ const NotificationCenter = () => {
               {rows.map(notif => {
                 const cfg = typeCfg(notif.notification_type);
                 const { Icon } = cfg;
+                const linked = Boolean(targetFor(notif));
                 return (
                   <div
                     key={notif.id}
-                    className={`nc-row${notif.is_read ? '' : ' nc-row-unread'}`}
+                    className={`nc-row${notif.is_read ? '' : ' nc-row-unread'}${linked ? ' nc-row-link' : ''}`}
+                    role={linked ? 'button' : undefined}
+                    tabIndex={linked ? 0 : undefined}
+                    onClick={linked ? () => openNotification(notif) : undefined}
+                    onKeyDown={linked ? (e => {
+                      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openNotification(notif); }
+                    }) : undefined}
                   >
                     <span className="nc-ico" style={{ background: cfg.bg, color: cfg.color }}>
                       <Icon size={14} />
@@ -273,7 +301,9 @@ const NotificationCenter = () => {
 
                     <div className="nc-right">
                       <span className="nc-time">{shortTime(notif.created_at)}</span>
-                      <div className="nc-acts">
+                      {/* Approve/reject/read/delete act on the row — they must
+                          not also open it. */}
+                      <div className="nc-acts" onClick={e => e.stopPropagation()}>
                         {isProbationNotif(notif) && !notif.is_read && (
                           <>
                             <button className="nc-btn nc-btn-ok" onClick={() => handleProbationAction(notif, 'approve')}>

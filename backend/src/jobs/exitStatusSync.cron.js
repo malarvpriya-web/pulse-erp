@@ -19,11 +19,15 @@
 
 import cron from 'node-cron';
 import pool from '../modules/shared/db.js';
+import { EXIT_STATUS } from '../shared/employeeStatus.js';
 
 function terminalStatusFor(separationType) {
   if (separationType === 'termination') return 'terminated';
-  if (separationType === 'retirement') return 'left';
-  return 'resigned';
+  // Every separation ends in the same employment status. See EXIT_STATUS in
+  // shared/employeeStatus.js: the separation TYPE is already recorded on the
+  // exit_request this cron is reading, and duplicating it into `status` is what
+  // let this mapping and hr.routes.js's copy of it disagree about 'retirement'.
+  return EXIT_STATUS;
 }
 
 async function runExitStatusSync() {

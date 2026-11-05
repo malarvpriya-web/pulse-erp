@@ -4,13 +4,15 @@ import { useNavigate } from "react-router-dom";
 import {
   Bell, Search, ChevronLeft, X, LogOut, CheckCheck, RefreshCw,
   AlertTriangle, Clock, Info, UserCheck, Settings, Zap,
-  Users, Package, Layers, Briefcase, FolderOpen, Database,
+  Users, Package, Layers, Briefcase, FolderOpen, Database, SlidersHorizontal,
+  LayoutGrid,
 } from "lucide-react";
 import api from "@/services/api/client";
 import "./Topbar.css";
 import logo from "../assets/logo.png";
 import { NAV_ITEMS } from "@/config/routes";
 import { canRoleOpenPage } from "@/config/menuCatalog";
+import { notificationTarget } from "@/features/notifications/notificationTarget";
 
 // Build search list from NAV_ITEMS. `divider` rows (the sidebar's domain
 // bands) and `separator` rows (submenu group headings) are labels, not pages —
@@ -33,7 +35,7 @@ const SEARCH_PAGES = [
   { label: 'Comp Off',               page: 'CompOff',              group: 'Leaves' },
   { label: 'Leave Encashment',       page: 'LeaveEncashment',      group: 'Leaves' },
   { label: 'Profile Settings',        page: 'ProfileSettings',      group: '' },
-  { label: 'Notifications',          page: 'Notifications',        group: '' },
+  { label: 'Notifications',          page: 'NotificationCenter',   group: '' },
   { label: 'Inventory Report',       page: 'InventoryReport',      group: 'Inventory' },
   { label: 'Delivery Note',          page: 'DeliveryNote',         group: 'Service Desk' },
   { label: 'Review Customers',       page: 'ReviewCustomers',      group: 'Service Desk' },
@@ -212,9 +214,23 @@ export default function Topbar({ goBack, currentPage }) {
     return () => document.removeEventListener('mousedown', handler);
   }, []);
 
-  const navigate = pg => {
-    navigateTo(pg === 'Home' ? '/' : `/${pg}`);
+  const navigate = (pg, params) => {
+    const base = pg === 'Home' ? '/' : `/${pg}`;
+    const qs = params ? new URLSearchParams(params).toString() : '';
+    navigateTo(qs ? `${base}?${qs}` : base);
     setShowBell(false); setSearch(''); setShowSearch(false); setShowUser(false);
+  };
+
+  // Clicking a notification opens the record's module, not just a read receipt.
+  // The target is derived from module_name/notification_type (see
+  // notificationTarget.js) and filtered through the same role gate the search
+  // uses, so a click never lands on Unauthorized. A notification with no
+  // resolvable home still marks itself read, and the panel stays open rather
+  // than closing on a click that went nowhere.
+  const openNotif = (n) => {
+    if (!n.is_read) markRead(n.id);
+    const target = notificationTarget(n, pg => canRoleOpenPage(role, pg, { menuAccess }));
+    if (target) navigate(target.page, target.params);
   };
 
   const displayName = user?.name || user?.username || user?.email?.split('@')[0] || 'User';
@@ -225,9 +241,15 @@ export default function Topbar({ goBack, currentPage }) {
 
       {/* Left — back */}
       <div className="tb-left">
+        {/*
+          The STANDARD back control for every page in Pulse. A page that wants a
+          back affordance uses this one — it does not render its own. Add
+          Employee used to draw a second one under its hero; that duplicate was
+          removed rather than this.
+        */}
         {currentPage && currentPage !== 'Home' && (
-          <button className="tb-back-btn" onClick={goBack}>
-            <ChevronLeft size={15} /> Back
+          <button className="tb-back-btn" onClick={goBack} aria-label="Go back">
+            <ChevronLeft size={15} aria-hidden="true" /> Back
           </button>
         )}
       </div>
@@ -314,7 +336,7 @@ export default function Topbar({ goBack, currentPage }) {
           >
             <Bell size={18} strokeWidth={1.8} />
             {unreadCount > 0 && (
-              <span className="tb-badge">{Math.min(unreadCount, 99)}</span>
+              <span className="tb-badge">{unreadCount > 99 ? '99+' : unreadCount}</span>
             )}
           </button>
 
@@ -360,7 +382,12 @@ export default function Topbar({ goBack, currentPage }) {
                       <div
                         key={n.id}
                         className={`tb-notif-row${n.is_read ? '' : ' tb-notif-unread'}`}
-                        onClick={() => { if (!n.is_read) markRead(n.id); }}
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => openNotif(n)}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openNotif(n); }
+                        }}
                       >
                         <div className="tb-notif-icon" style={{ background: cfg.bg, color: cfg.color }}>
                           <Icon size={14} />
@@ -418,6 +445,19 @@ export default function Topbar({ goBack, currentPage }) {
               <div className="tb-user-divider" />
               <button className="tb-drop-item" onClick={() => navigate('ProfileSettings')}>
                 <Settings size={14} /> Profile settings
+              </button>
+              {/* PERSONAL_PAGES (menuCatalog) — every role may open these two
+                  regardless of its section allowlist, so they belong here
+                  rather than only inside a gated menu. 'My requests' is a
+                  shortcut to the Approval Center's My Requests tab. */}
+              <button className="tb-drop-item" onClick={() => navigate('EmployeeDashboard')}>
+                <LayoutGrid size={14} /> My dashboard
+              </button>
+              <button className="tb-drop-item" onClick={() => navigate('MyRequests')}>
+                <CheckCheck size={14} /> My requests
+              </button>
+              <button className="tb-drop-item" onClick={() => navigate('UserPreferences')}>
+                <SlidersHorizontal size={14} /> Preferences
               </button>
               {(role === 'super_admin' || role === 'admin') && (
                 <button className="tb-drop-item" onClick={() => navigate('SettingsCenter')}>

@@ -1,13 +1,64 @@
 import pool from '../../shared/db.js';
 
 class StockLedgerRepository {
+  // The company a stock posting belongs to, with its warehouse and every item
+  // checked against it — the rule assertParentsInCompany() applies in
+  // advancedInventory.repository. Shared by every writer that posts through
+  // createEntry() on a caller's behalf (RM issue, stock movement).
+  //   companyId: the caller's company, or null for a super admin's global
+  //   scope. undefined (a caller that forgot it) throws.
+  //   - the warehouse must be in that scope; a global caller gets the
+  //     warehouse's own company, and a warehouse with none is refused, because
+  //     the posting could not be attributed;
+  //   - every item must belong to THAT company. Items are never shared across
+  //     companies — a NULL-company item is refused, as it is invisible to
+  //     company-scoped reads everywhere else.
+  // A foreign row gets the same 404 as a missing one. Items are locked in id
+  // order so concurrent postings of the same item serialise on the stock check.
+  async resolveStockOwnership(client, { warehouseId, itemIds, companyId }) {
+    if (companyId === undefined) {
+      throw Object.assign(new Error("resolveStockOwnership() was called without a company scope. Pass the caller's company, or an explicit null for a deliberate global scope."), { status: 500 });
+    }
+    let scope = null;
+    if (companyId !== null) {
+      scope = parseInt(String(companyId), 10);
+      if (Number.isNaN(scope)) throw Object.assign(new Error('resolveStockOwnership() was given an invalid company scope.'), { status: 500 });
+    }
+    const wh = parseInt(warehouseId, 10);
+    if (!Number.isInteger(wh)) throw Object.assign(new Error('warehouse_id is required'), { status: 422 });
+    const ids = [...new Set(itemIds.map(i => parseInt(i, 10)))];
+    if (ids.some(i => !Number.isInteger(i))) throw Object.assign(new Error('Every line needs an item_id'), { status: 422 });
+
+    const { rows: [w] } = await client.query(
+      `SELECT id, company_id FROM warehouses
+        WHERE id = $1 AND deleted_at IS NULL AND ($2::int IS NULL OR company_id = $2)`,
+      [wh, scope]);
+    if (!w) throw Object.assign(new Error(`Warehouse ${wh} not found`), { status: 404 });
+    if (w.company_id == null) {
+      throw Object.assign(new Error(`Warehouse ${wh} has no company, so stock posted to it cannot be attributed`), { status: 422 });
+    }
+
+    const { rows: found } = await client.query(
+      `SELECT id FROM inventory_items
+        WHERE id = ANY($1::int[]) AND deleted_at IS NULL AND company_id = $2
+        ORDER BY id FOR UPDATE`,
+      [ids, w.company_id]);
+    const ok = new Set(found.map(r => r.id));
+    const missing = ids.find(i => !ok.has(i));
+    if (missing !== undefined) throw Object.assign(new Error(`Item ${missing} not found`), { status: 404 });
+
+    return w.company_id;
+  }
+
   getHoldingRate() {
     const parsed = Number.parseFloat(process.env.INVENTORY_HOLDING_COST_RATE ?? '0.18');
     if (!Number.isFinite(parsed) || parsed < 0) return 0.18;
     return parsed;
   }
   async createEntry(client, data) {
-    const { item_id, warehouse_id, transaction_type, quantity_in, quantity_out, rate, reference_type, reference_id, transaction_date, remarks, created_by } = data;
+    // company_id is optional: a caller that knows the posting's company passes
+    // it (the RM issue does); the others still write NULL, as before.
+    const { item_id, warehouse_id, transaction_type, quantity_in, quantity_out, rate, reference_type, reference_id, transaction_date, remarks, created_by, company_id = null } = data;
     
     // Get current balance
     const balanceResult = await client.query(
@@ -22,9 +73,9 @@ class StockLedgerRepository {
     const value = (parseFloat(quantity_in || 0) - parseFloat(quantity_out || 0)) * parseFloat(rate || 0);
     
     const result = await client.query(
-      `INSERT INTO stock_ledger (item_id, warehouse_id, transaction_type, quantity_in, quantity_out, balance_qty, rate, value, reference_type, reference_id, transaction_date, remarks, created_by) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING *`,
-      [item_id, warehouse_id, transaction_type, quantity_in, quantity_out, newBalance, rate, value, reference_type, reference_id, transaction_date, remarks, created_by]
+      `INSERT INTO stock_ledger (item_id, warehouse_id, transaction_type, quantity_in, quantity_out, balance_qty, rate, value, reference_type, reference_id, transaction_date, remarks, created_by, company_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING *`,
+      [item_id, warehouse_id, transaction_type, quantity_in, quantity_out, newBalance, rate, value, reference_type, reference_id, transaction_date, remarks, created_by, company_id]
     );
     
     return result.rows[0];
@@ -41,13 +92,17 @@ class StockLedgerRepository {
   }
 
   async getStockSummary(filters = {}) {
+    // Same-company pairing, as in getLowStockItems below. This was a CROSS
+    // JOIN with the company filter on the item only, so a ledger row placing
+    // company A's item in company B's warehouse surfaced to A under B's
+    // warehouse name. The HAVING balance > 0 hid the empty pairs, not that one.
     let query = `SELECT
                   ii.id, ii.item_code, ii.item_name, ii.unit_of_measure, ii.reorder_level,
                   w.id as warehouse_id, w.warehouse_name,
                   COALESCE(SUM(sl.quantity_in - sl.quantity_out), 0) as balance,
                   COALESCE(AVG(sl.rate), 0) as avg_rate
                  FROM inventory_items ii
-                 CROSS JOIN warehouses w
+                 JOIN warehouses w ON w.company_id IS NOT DISTINCT FROM ii.company_id
                  LEFT JOIN stock_ledger sl ON ii.id = sl.item_id AND w.id = sl.warehouse_id
                  WHERE ii.deleted_at IS NULL AND w.deleted_at IS NULL`;
     const params = [];
@@ -87,13 +142,21 @@ class StockLedgerRepository {
       params.push(company_id);
       companyFilter = ` AND ii.company_id = $${params.length}`;
     }
+    // Items are paired only with warehouses of the SAME company. This was a
+    // CROSS JOIN, and the company filter applies to the item alone, so company
+    // A's items were paired with every other tenant's warehouses. No ledger row
+    // can join a pair like that, so its balance is 0 and it always passes the
+    // <= reorder_level test: the Low Stock count was inflated with other
+    // tenants' rows and showed their warehouse names. IS NOT DISTINCT FROM so a
+    // NULL-company item pairs only with a NULL-company warehouse (only reachable
+    // with a global scope), not with every tenant.
     const result = await pool.query(
       `SELECT
         ii.id, ii.item_code, ii.item_name, ii.reorder_level,
         w.warehouse_name,
         COALESCE(SUM(sl.quantity_in - sl.quantity_out), 0) as balance
        FROM inventory_items ii
-       CROSS JOIN warehouses w
+       JOIN warehouses w ON w.company_id IS NOT DISTINCT FROM ii.company_id
        LEFT JOIN stock_ledger sl ON ii.id = sl.item_id AND w.id = sl.warehouse_id
        WHERE ii.deleted_at IS NULL AND w.deleted_at IS NULL${companyFilter}
        GROUP BY ii.id, ii.item_code, ii.item_name, ii.reorder_level, w.warehouse_name
@@ -177,7 +240,12 @@ class StockLedgerRepository {
     const isLayered = method === 'FIFO' || method === 'FEFO';
 
     if (isLayered) {
-      const params = [];
+      // Tenant predicate first, as in the branch below. This branch had none:
+      // a company set to FIFO/FEFO valued every tenant's layers. The item is
+      // the owner (as in v_stock_summary), and a layer's warehouse must be the
+      // item's company's — a layer with no warehouse stays, since postStock()
+      // writes and depletes those.
+      const params = [companyId ?? null];
       let whFilter = '';
       if (warehouseId) { params.push(warehouseId); whFilter = ` AND l.warehouse_id = $${params.length}`; }
       const { rows } = await pool.query(`
@@ -192,7 +260,9 @@ class StockLedgerRepository {
           FROM inventory_fifo_layers l
           JOIN inventory_items ii ON ii.id = l.item_id
           LEFT JOIN warehouses w  ON w.id = l.warehouse_id
-         WHERE l.qty_remaining > 0 AND ii.deleted_at IS NULL${whFilter}
+         WHERE l.qty_remaining > 0 AND ii.deleted_at IS NULL
+           AND ($1::INTEGER IS NULL OR ii.company_id = $1)
+           AND (l.warehouse_id IS NULL OR w.company_id IS NOT DISTINCT FROM ii.company_id)${whFilter}
          GROUP BY ii.id, ii.item_code, ii.item_name, ii.item_type, ii.hsn_code, ii.gst_rate, w.warehouse_name
          ORDER BY value DESC`, params);
 
@@ -231,12 +301,15 @@ class StockLedgerRepository {
                   ${rateExpr}                                                   AS avg_rate,
                   COALESCE(SUM(sl.quantity_in - sl.quantity_out), 0) * ${rateExpr} AS value
                  FROM inventory_items ii
-                 CROSS JOIN warehouses w
+                 JOIN warehouses w ON w.company_id IS NOT DISTINCT FROM ii.company_id
                  LEFT JOIN stock_ledger sl ON ii.id = sl.item_id AND w.id = sl.warehouse_id
                  WHERE ii.deleted_at IS NULL AND w.deleted_at IS NULL
                    AND ($1::INTEGER IS NULL OR ii.company_id = $1)`;
     // Tenant predicate first, so every later $n stays positional. Without it
     // this priced every company's stock into one caller's valuation.
+    // Same-company pairing, as in getStockSummary: the predicate above is on
+    // the item only, so a ledger row placing A's item in B's warehouse was
+    // valued for A under B's warehouse name.
     const params = [companyId ?? null];
 
     if (warehouseId) {

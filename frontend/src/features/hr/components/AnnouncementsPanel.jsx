@@ -1,7 +1,9 @@
 import { Megaphone, ChevronRight } from 'lucide-react';
 import { useAnnouncements } from '@/hooks/useAnnouncements';
 
-const PRIORITY_DOT = { Urgent: '#ef4444', Important: '#7c5cf0', Normal: '#9ca3af' };
+// Keyed by the stored values (announcements.priority is high / medium / low);
+// the old Urgent / Important / Normal keys matched nothing, so every dot was grey.
+const PRIORITY_DOT = { high: '#ef4444', medium: '#7c5cf0', low: '#9ca3af' };
 
 /**
  * AnnouncementsPanel — compact widget for Home / dashboard pages.

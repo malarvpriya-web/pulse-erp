@@ -15,6 +15,31 @@
 import auditRepository from '../modules/audit/repositories/audit.repository.js';
 
 /**
+ * Bank and identity numbers never reach audit_logs in full (§202). Employee
+ * edits snapshot the whole employees row before and after, and the request
+ * floor (auditMutations) records the body — so an HR bank change wrote the old
+ * AND new account numbers, plus Aadhaar and PAN, into a widely-read log. Each
+ * is kept as its last four characters, so the history still shows THAT a value
+ * changed (and which one) without holding the number.
+ */
+const MASKED_KEYS = /^(account_number|bank_account|aadhaar_number|aadhaar|pan_number|passport_number|driving_license_number)$/i;
+export function maskSensitive(value, depth = 0) {
+  if (value == null || depth > 5) return value;
+  if (Array.isArray(value)) return value.map(v => maskSensitive(v, depth + 1));
+  if (typeof value !== 'object' || value instanceof Date) return value;
+  const out = {};
+  for (const [k, v] of Object.entries(value)) {
+    if (MASKED_KEYS.test(k) && v != null && v !== '') {
+      const s = String(v).replace(/\s+/g, '');
+      out[k] = s.length > 4 ? `XXXX${s.slice(-4)}` : 'XXXX';
+    } else {
+      out[k] = maskSensitive(v, depth + 1);
+    }
+  }
+  return out;
+}
+
+/**
  * Write an audit log entry (non-blocking).
  *
  * @param {object}            params
@@ -73,8 +98,8 @@ export function logAudit({
     action_type   : action,
     reference_id  : recordId != null ? String(recordId) : null,
     reference_type: recordType,
-    old_data_json : before,
-    new_data_json : newData,
+    old_data_json : maskSensitive(before),
+    new_data_json : maskSensitive(newData),
     ip_address    : req?.ip ?? null,
     user_agent    : req?.get?.('user-agent') ?? null,
     company_id    : company_id ?? req?.scope?.company_id ?? null,

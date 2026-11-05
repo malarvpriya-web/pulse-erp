@@ -20,6 +20,7 @@ import { uploadFile } from '../../../services/StorageService.js';
 import { pickUpdatable } from '../../../shared/safeUpdate.js';
 import { respondError } from '../../../shared/pgErrors.js';
 import { captureBefore } from '../../../middlewares/captureBefore.js';
+import { companyOf } from '../../../shared/scope.js';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
@@ -516,6 +517,23 @@ router.put('/invoices/:id', requirePermission('finance', 'edit'), async (req, re
 
     // pickUpdatable validates every key against the real invoices columns, so a
     // caller cannot mass-assign status, company_id or paid_amount through here.
+    // status is NOT among pickUpdatable's protected columns, so this edit was
+    // the only way an invoice could be "cancelled" or "paid" — by assignment,
+    // with no journal reversal, no receipt and no stock consequence. An edit
+    // may move an invoice between the working states the Invoices screen
+    // uses (draft / pending / sent); paying has its own route, and there is no
+    // cancellation workflow (a credit note is the instrument).
+    if (req.body?.status !== undefined) {
+      const wanted = String(req.body.status).trim().toLowerCase();
+      if (!['draft', 'pending', 'sent'].includes(wanted)) {
+        return res.status(409).json({
+          error: `An invoice cannot be set to '${req.body.status}' by editing it. `
+               + (wanted === 'paid' ? 'Use Mark as paid.' : 'There is no invoice cancellation workflow; raise a credit note.'),
+          code: 'INVOICE_STATUS_NOT_EDITABLE',
+        });
+      }
+    }
+
     const safe = await pickUpdatable('invoices', req.body);
     if (Object.keys(safe).length === 0) {
       return res.status(422).json({ error: 'No updatable fields supplied' });
@@ -525,11 +543,15 @@ router.put('/invoices/:id', requirePermission('finance', 'edit'), async (req, re
     const sets = keys.map((k, i) => `"${k}" = $${i + 1}`).join(', ');
     const vals = keys.map(k => safe[k]);
     vals.push(req.params.id);
+    vals.push(companyId);
 
     const { rows: [updated] } = await pool.query(
-      `UPDATE invoices SET ${sets}, updated_at = NOW() WHERE id = $${vals.length} RETURNING *`,
+      `UPDATE invoices SET ${sets}, updated_at = NOW()
+        WHERE id = $${vals.length - 1} AND ($${vals.length}::int IS NULL OR company_id = $${vals.length})
+        RETURNING *`,
       vals
     );
+    if (!updated) return res.status(404).json({ error: 'Invoice not found' });
 
     logAudit({
       userId: req.user?.userId ?? req.user?.id, module: 'finance',
@@ -759,35 +781,18 @@ router.get('/receipts', requirePermission('finance', 'view'), async (req, res) =
 });
 
 // Expense Claims
-router.post('/expenses', requirePermission('finance', 'add'), async (req, res) => {
-  try {
-    const { valid, errors } = await validate('finance', req.body, { partial: false });
-    if (!valid) return res.status(422).json({ error: 'Validation failed', code: 'VALIDATION_ERROR', module: 'finance', errors });
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-      const claimNumber = await expenseRepo.getNextNumber();
-      const claim = await expenseRepo.create(client, { ...req.body, claim_number: claimNumber });
-      
-      for (const item of req.body.items) {
-        await expenseRepo.createItem(client, { expense_claim_id: claim.id, ...item });
-      }
-      
-      await client.query('COMMIT');
-      logAudit({ userId: req.user?.userId, module: 'finance', recordId: claim.id, recordType: 'expense_claim', action: 'create', newData: claim, req });
-      const ruleResults = await evaluateRules('finance', claim).catch(() => []);
-      const ruleAlerts = ruleResults.filter(r => r.triggered);
-      res.status(201).json({ ...claim, ...(ruleAlerts.length ? { rule_alerts: ruleAlerts } : {}) });
-    } catch (error) {
-      await client.query('ROLLBACK');
-      throw error;
-    } finally {
-      client.release();
-    }
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
+// Expense claim MUTATIONS are retired here (§202). `expense_claims` is owned by
+// the claim workflow in travel-reimbursement.routes.js (/reimbursement/claims):
+// Draft → Submitted → Manager → Accounts → Management → Paid, which the Approval
+// Center and Self-Service use. These three wrote the SAME rows by a different
+// rule — approve set status 'Approved' from ANY status (Draft or Paid included)
+// and posted a new journal entry on EVERY call, so one claim could be approved
+// outside its chain and expensed twice. Nothing in the UI called them. The two
+// GETs below stay.
+const CLAIMS_MOVED = { code: 'CLAIMS_MOVED', error: 'Expense claims are created, approved and paid through /reimbursement/claims.' };
+router.post('/expenses', requirePermission('finance', 'add'), (req, res) => res.status(410).json(CLAIMS_MOVED));
+router.post('/expenses/:id/approve', requirePermission('finance', 'approve'), (req, res) => res.status(410).json(CLAIMS_MOVED));
+router.post('/expenses/:id/reject', requirePermission('finance', 'approve'), (req, res) => res.status(410).json(CLAIMS_MOVED));
 
 router.get('/expenses', requirePermission('finance', 'view'), async (req, res) => {
   try {
@@ -801,7 +806,9 @@ router.get('/expenses', requirePermission('finance', 'view'), async (req, res) =
 router.get('/expenses/:id', requirePermission('finance', 'view'), async (req, res) => {
   try {
     const expense = await expenseRepo.findById(req.params.id);
-    if (!expense) {
+    // Same tenant rule as the list: another company's claim reads as missing.
+    const companyId = req.scope?.company_id ?? null;
+    if (!expense || (companyId != null && expense.company_id !== companyId)) {
       return res.status(404).json({ error: 'Expense claim not found' });
     }
     expense.items = await expenseRepo.getItems(req.params.id);
@@ -811,103 +818,13 @@ router.get('/expenses/:id', requirePermission('finance', 'view'), async (req, re
   }
 });
 
-router.post('/expenses/:id/approve', requirePermission('finance', 'approve'), async (req, res) => {
-  try {
-    const oldExpense = await expenseRepo.findById(req.params.id);
-    if (!oldExpense) return res.status(404).json({ error: 'Expense claim not found' });
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-      const expense = await expenseRepo.approve(client, req.params.id, req.user.userId ?? req.user.id);
-
-      // Create journal entry: DR Expense accounts / CR Employee Payable (2040)
-      const companyId = req.scope?.company_id ?? null;
-      const totalAmount = parseFloat(expense.total_amount) || 0;
-      if (totalAmount > 0) {
-        // Resolve account IDs from COA
-        const { rows: accts } = await client.query(
-          `SELECT id, code, name FROM chart_of_accounts WHERE code IN ('5022','2040') AND is_active = true`
-        );
-        const acctMap = accts.reduce((m, a) => { m[a.code] = a; return m; }, {});
-        const expAcct = acctMap['5022']; // Office Expenses (fallback if specific category account missing)
-        const payAcct = acctMap['2040']; // Employee / Salary Payable
-        if (expAcct && payAcct) {
-          // Derive the next JE number from MAX(id)+1 (same pattern as credit/debit
-          // note posting). The previous code referenced a non-existent sequence
-          // (seq_accounting_je) whose .catch() fallback never worked — a failed
-          // statement poisons the open transaction, so the fallback errored too.
-          const { rows: [{ nextval }] } = await client.query(`SELECT COALESCE(MAX(id),0)+1 AS nextval FROM journal_entries`);
-          const entryNumber = `JE-${new Date().getFullYear()}-${String(nextval).padStart(5,'0')}`;
-          const { rows: [je] } = await client.query(
-            `INSERT INTO journal_entries
-               (entry_number, entry_date, entry_type, description, reference_type, reference_id, status, total_debit, total_credit, company_id, created_by)
-             VALUES ($1, NOW()::date, 'ExpenseApproval', $2, 'expense_claim', $3, 'posted', $4, $4, $5, $6) RETURNING id`,
-            [
-              entryNumber,
-              `Expense claim approved — ${expense.claim_number || req.params.id}`,
-              req.params.id,
-              totalAmount,
-              companyId,
-              req.user?.userId ?? req.user?.id ?? null,
-            ]
-          );
-          await client.query(
-            `INSERT INTO journal_lines (entry_id, account_id, account_code, account_name, debit, credit, narration, company_id)
-             VALUES ($1,$2,$3,$4,$5,0,$6,$7),
-                    ($1,$8,$9,$10,0,$5,$6,$7)`,
-            [
-              je.id,
-              expAcct.id, '5022', expAcct.name, totalAmount,
-              `Expense claim — ${expense.claim_number || req.params.id}`,
-              companyId,
-              payAcct.id, '2040', payAcct.name,
-            ]
-          );
-          // Link journal entry back to expense claim
-          await client.query(`UPDATE expense_claims SET journal_entry_id = $1 WHERE id = $2`, [je.id, req.params.id]);
-        }
-      }
-
-      await client.query('COMMIT');
-      logAudit({ userId: req.user?.userId, module: 'finance', recordId: req.params.id, recordType: 'expense_claim', action: 'approve', oldData: oldExpense ?? null, newData: { ...expense, actor_id: req.user?.userId, approved_at: new Date().toISOString() }, req });
-      res.json(expense);
-    } catch (error) {
-      await client.query('ROLLBACK');
-      throw error;
-    } finally {
-      client.release();
-    }
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-router.post('/expenses/:id/reject', requirePermission('finance', 'approve'), async (req, res) => {
-  try {
-    const oldExpense = await expenseRepo.findById(req.params.id);
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-      const expense = await expenseRepo.reject(client, req.params.id, req.body.reason);
-      await client.query('COMMIT');
-      logAudit({ userId: req.user?.userId, module: 'finance', recordId: req.params.id, recordType: 'expense_claim', action: 'reject', oldData: oldExpense ?? null, newData: { ...expense, actor_id: req.user?.userId, rejected_at: new Date().toISOString(), reason: req.body.reason }, req });
-      res.json(expense);
-    } catch (error) {
-      await client.query('ROLLBACK');
-      throw error;
-    } finally {
-      client.release();
-    }
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
 
 // Journal & Ledger
 router.get('/journal/general-ledger', requirePermission('finance', 'view'), async (req, res) => {
   try {
     const { account_id, start_date, end_date } = req.query;
-    const ledger = await journalRepo.getGeneralLedger(account_id, start_date, end_date);
+    // Unscoped, this returned every tenant's postings for the given account id.
+    const ledger = await journalRepo.getGeneralLedger(account_id, start_date, end_date, companyOf(req));
     res.json(ledger);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -917,7 +834,7 @@ router.get('/journal/general-ledger', requirePermission('finance', 'view'), asyn
 router.get('/journal/trial-balance', requirePermission('finance', 'view'), async (req, res) => {
   try {
     const { start_date, end_date } = req.query;
-    const trialBalance = await journalRepo.getTrialBalance(start_date, end_date);
+    const trialBalance = await journalRepo.getTrialBalance(start_date, end_date, companyOf(req));
     res.json(trialBalance);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -928,7 +845,7 @@ router.get('/journal/trial-balance', requirePermission('finance', 'view'), async
 router.get('/reports/profit-loss', requirePermission('finance', 'view'), async (req, res) => {
   try {
     const { start_date, end_date } = req.query;
-    const report = await reportsService.getProfitAndLoss(start_date, end_date);
+    const report = await reportsService.getProfitAndLoss(start_date, end_date, companyOf(req));
     res.json(report);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -938,7 +855,7 @@ router.get('/reports/profit-loss', requirePermission('finance', 'view'), async (
 router.get('/reports/balance-sheet', requirePermission('finance', 'view'), async (req, res) => {
   try {
     const { as_of_date } = req.query;
-    const report = await reportsService.getBalanceSheet(as_of_date);
+    const report = await reportsService.getBalanceSheet(as_of_date, companyOf(req));
     res.json(report);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -948,7 +865,7 @@ router.get('/reports/balance-sheet', requirePermission('finance', 'view'), async
 router.get('/reports/cash-flow', requirePermission('finance', 'view'), async (req, res) => {
   try {
     const { start_date, end_date } = req.query;
-    const report = await reportsService.getCashFlow(start_date, end_date);
+    const report = await reportsService.getCashFlow(start_date, end_date, companyOf(req));
     res.json(report);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -1034,6 +951,8 @@ router.get('/dashboard', requirePermission('finance', 'view'), async (req, res) 
     const dashboard = await reportsService.getFinanceDashboard({
       fyStart: req.query.fyStart,
       fyEnd:   req.query.fyEnd,
+      // B-03 D4: the cash total is the caller's company (null = global super admin)
+      companyId: companyOf(req),
     });
     res.json(dashboard);
   } catch (error) {

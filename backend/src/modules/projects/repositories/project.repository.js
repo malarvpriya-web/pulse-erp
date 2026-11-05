@@ -1,27 +1,33 @@
 import pool from '../../shared/db.js';
 import { nextProjectCode } from '../../../shared/docNumber.js';
 import { pickUpdatable } from '../../../shared/safeUpdate.js';
+import { projectLifecycleJoinSql, projectStageColumnsSql } from '../../../shared/projectStages.js';
 
 const projectRepository = {
-  async create(data) {
+  // Called only by projectCreation.service.js ensureProject(), inside its
+  // transaction (`db` = that client). start_date defaults to today, as the
+  // conversion and order paths always did.
+  async create(data, db = pool) {
     const { project_code, project_name, customer_name, start_date, end_date, project_manager_id, status, budget_amount, description, created_by, company_id, opportunity_id,
       project_type, zone, site_address, site_city, site_state, latitude, longitude,
-      production_stage, target_date, forecast_date, product_type, product_line_id, billing_type } = data;
-    const result = await pool.query(
+      target_date, forecast_date, product_type, product_line_id, billing_type, sales_order_ref } = data;
+    const result = await db.query(
       `INSERT INTO projects (project_code, project_name, customer_name, start_date, end_date, project_manager_id, status, budget_amount, description, created_by, company_id, opportunity_id,
          project_type, zone, site_address, site_city, site_state, latitude, longitude,
-         production_stage, target_date, forecast_date, product_type, product_line_id, billing_type)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25) RETURNING *`,
-      [project_code, project_name, customer_name || null, start_date, end_date || null, project_manager_id || null, status, budget_amount || null, description || null, created_by || null, company_id || null, opportunity_id || null,
+         production_stage, target_date, forecast_date, product_type, product_line_id, billing_type, sales_order_ref)
+       VALUES ($1, $2, $3, COALESCE($4::date, CURRENT_DATE), $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26) RETURNING *`,
+      [project_code, project_name, customer_name || null, start_date || null, end_date || null, project_manager_id || null, status, budget_amount || null, description || null, created_by || null, company_id || null, opportunity_id || null,
         project_type || 'EPC', zone || null, site_address || null, site_city || null, site_state || null,
         (latitude === '' || latitude === undefined ? null : latitude),
         (longitude === '' || longitude === undefined ? null : longitude),
-        production_stage || null, target_date || null, forecast_date || null,
+        // production_stage is never stored by a create: the stage is derived
+        // from the project's lifecycle (Phase 5), whatever a form sends.
+        null, target_date || null, forecast_date || null,
         // product_type is the legacy LV/MV/HV class; product_line_id supersedes it
         // and reads COALESCE the two. Both are accepted so older callers still work.
         product_type || null,
         (product_line_id === '' || product_line_id === undefined ? null : product_line_id),
-        billing_type || 'fixed']
+        billing_type || 'fixed', sales_order_ref || null]
     );
     return result.rows[0];
   },
@@ -33,11 +39,13 @@ const projectRepository = {
         CONCAT(e.first_name, ' ', e.last_name) as manager_name,
         COUNT(DISTINCT t.id) as total_tasks,
         COUNT(DISTINCT CASE WHEN t.status = 'done' THEN t.id END) as completed_tasks,
-        COALESCE(pcs.total_cost, p.actual_cost, 0) AS actual_cost
+        COALESCE(pcs.total_cost, p.actual_cost, 0) AS actual_cost,
+        ${projectStageColumnsSql('p', 'plc')}
       FROM projects p
       LEFT JOIN employees e ON p.project_manager_id = e.id
       LEFT JOIN tasks t ON p.id = t.project_id AND t.deleted_at IS NULL
       LEFT JOIN project_cost_summary pcs ON pcs.project_id = p.id
+      ${projectLifecycleJoinSql('p', 'plc')}
       WHERE p.deleted_at IS NULL
         AND ($1::int IS NULL OR p.company_id = $1)
     `;
@@ -70,6 +78,15 @@ const projectRepository = {
       paramCount++;
     }
 
+    // Business line. Bound as an integer id, never the display name: the name
+    // lives in product_lines and is editable, so filtering on it would silently
+    // stop matching the moment someone renames a line.
+    if (filters.product_line_id) {
+      query += ` AND p.product_line_id = $${paramCount}`;
+      params.push(filters.product_line_id);
+      paramCount++;
+    }
+
     // Period filter: a project belongs to the window if its run overlaps it, not
     // if it merely started inside it — an 18-month EPC job is still "in" Q3.
     // An open-ended project (no end_date) counts as running indefinitely.
@@ -85,7 +102,7 @@ const projectRepository = {
       paramCount++;
     }
 
-    query += ` GROUP BY p.id, e.first_name, e.last_name, pcs.total_cost ORDER BY p.created_at DESC`;
+    query += ` GROUP BY p.id, e.first_name, e.last_name, pcs.total_cost, plc.id, plc.current_stage, plc.status ORDER BY p.created_at DESC`;
 
     const result = await pool.query(query, params);
     return result.rows;
@@ -94,9 +111,11 @@ const projectRepository = {
   async findById(id, company_id = null) {
     const result = await pool.query(
       `SELECT p.*,
-        CONCAT(e.first_name, ' ', e.last_name) as manager_name
+        CONCAT(e.first_name, ' ', e.last_name) as manager_name,
+        ${projectStageColumnsSql('p', 'plc')}
        FROM projects p
        LEFT JOIN employees e ON p.project_manager_id = e.id
+       ${projectLifecycleJoinSql('p', 'plc')}
        WHERE p.id = $1 AND p.deleted_at IS NULL
          AND ($2::int IS NULL OR p.company_id = $2)`,
       [id, company_id]
@@ -125,7 +144,10 @@ const projectRepository = {
     // columns minus the protected set. Schema-derived rather than a hand-written
     // list because this table is wide and drifts: a static list silently drops
     // legitimate fields the moment a migration adds one.
-    const safe = await pickUpdatable('projects', data);
+    // production_stage is derived from the lifecycle (Phase 5): an edit form that
+    // still sends the old value must not overwrite anything, so it is refused
+    // here for every caller of update().
+    const safe = await pickUpdatable('projects', data, { protect: ['production_stage'] });
 
     Object.keys(safe).forEach(key => {
       fields.push(`${key} = $${paramCount}`);
@@ -148,10 +170,11 @@ const projectRepository = {
       `UPDATE projects SET ${fields.join(', ')}
         WHERE id = $${paramCount}
           AND ($${paramCount + 1}::int IS NULL OR company_id = $${paramCount + 1})
-        RETURNING *`,
+        RETURNING id`,
       values
     );
-    return result.rows[0];
+    // Re-read so the caller gets the same shape as a GET, with the derived stage.
+    return result.rows[0] ? this.findById(result.rows[0].id, company_id) : undefined;
   },
 
   /** company_id: NULL = unscoped (super_admin). See update() above. */

@@ -1,0 +1,330 @@
+/* TalentBank — §17 / §19. Prefix: `.tbank`.
+ *
+ * NOT `.tb`. That prefix belongs to Topbar (components/Topbar.css), which is loaded
+ * on every page in the app, and `.tb-search` collided exactly: this page's search
+ * panel and the global topbar search box shared a class, so each stylesheet was
+ * restyling the other's element on every screen. Playwright caught it as a strict-
+ * mode violation ("resolved to 2 elements"); nothing in the build or the unit tests
+ * would have.
+ *
+ * Renamed wholesale rather than patching the one collision, because `tb-` is
+ * Topbar's namespace and any future class on either side would collide again.
+ */
+
+.tbank { display: flex; flex-direction: column; gap: 12px; }
+
+/* ── Recontacts due (§18) ──────────────────────────────────────────────── */
+
+.tbank-due {
+  background: #ECFEFF;
+  border: 1px solid #A5F3FC;
+  border-radius: 10px;
+  padding: 11px 13px;
+}
+
+.tbank-due-head { display: flex; align-items: center; gap: 7px; margin-bottom: 9px; color: #0E7490; }
+.tbank-due-head h3 { margin: 0; font-size: 12.5px; font-weight: 800; }
+
+.tbank-due-list { display: flex; flex-direction: column; gap: 5px; }
+
+.tbank-due-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 7px 10px;
+  background: rgba(255, 255, 255, .7);
+  border-radius: 7px;
+}
+.tbank-due-main { min-width: 0; }
+.tbank-due-sub { display: block; font-size: 11px; color: #0f766e; margin-top: 1px; }
+.tbank-due-acts { display: flex; gap: 5px; flex: none; }
+
+/* ── Category chips (§17) ──────────────────────────────────────────────── */
+
+.tbank-cats {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px 9px;
+  padding: 11px 13px;
+  background: #fff;
+  border: 1px solid #ecedf3;
+  border-radius: 10px;
+}
+
+.tbank-cat-group { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+
+.tbank-cat-label {
+  font-size: 9px;
+  font-weight: 800;
+  color: #b6bfcc;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  margin-right: 2px;
+}
+
+.tbank-cat {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #475569;
+  cursor: pointer;
+  font-family: inherit;
+}
+.tbank-cat:hover { border-color: #67E8F9; background: #F0FDFF; }
+.tbank-cat.is-on { background: #ECFEFF; border-color: #22D3EE; color: #0E7490; font-weight: 700; }
+
+.tbank-cat-n {
+  font-size: 9px;
+  font-weight: 800;
+  color: #94a3b8;
+  background: #f1f5f9;
+  border-radius: 20px;
+  padding: 0 5px;
+}
+.tbank-cat.is-on .tbank-cat-n { background: rgba(255, 255, 255, .75); color: #0E7490; }
+
+/* ── Search ────────────────────────────────────────────────────────────── */
+
+.tbank-search {
+  background: #fff;
+  border: 1px solid #ecedf3;
+  border-radius: 10px;
+  padding: 11px 13px;
+}
+
+.tbank-search-row { display: flex; align-items: center; gap: 9px; margin-bottom: 11px; }
+
+.tbank-q { position: relative; display: flex; align-items: center; flex: 1 1 auto; min-width: 0; }
+.tbank-q-icon { position: absolute; left: 9px; color: #94a3b8; pointer-events: none; }
+.tbank-q-input {
+  width: 100%;
+  padding: 8px 28px 8px 30px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  font-size: 12.5px;
+  font-family: inherit;
+  color: #1f2937;
+}
+.tbank-q-input:focus { outline: 2px solid #A5F3FC; outline-offset: -1px; border-color: #67E8F9; }
+.tbank-q-clear {
+  position: absolute; right: 7px; display: inline-flex; padding: 2px;
+  background: none; border: 0; color: #94a3b8; cursor: pointer;
+}
+
+.tbank-reset {
+  flex: none;
+  padding: 7px 11px;
+  background: none;
+  border: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: #0E7490;
+  cursor: pointer;
+}
+.tbank-reset:hover { text-decoration: underline; }
+
+.tbank-filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(178px, 1fr));
+  gap: 9px 11px;
+}
+
+.tbank-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.tbank-field-label {
+  font-size: 9.5px;
+  font-weight: 800;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
+
+.tbank-in,
+.tbank-sel {
+  width: 100%;
+  padding: 7px 9px;
+  border: 1px solid #e5e7eb;
+  border-radius: 7px;
+  font-size: 12px;
+  font-family: inherit;
+  color: #1f2937;
+  background: #fff;
+}
+.tbank-sel { cursor: pointer; }
+.tbank-in:focus,
+.tbank-sel:focus { outline: 2px solid #A5F3FC; outline-offset: -1px; border-color: #67E8F9; }
+
+/* ── Count ─────────────────────────────────────────────────────────────── */
+
+.tbank-count { font-size: 12px; font-weight: 600; color: #475569; padding: 0 2px; }
+.tbank-count-dim { font-weight: 500; color: #94a3b8; }
+
+/* ── Results ───────────────────────────────────────────────────────────── */
+/* Cards, not a table. A banked candidate is read as a whole — "who is this person
+   and would they suit the role I am about to open" — where a candidate in the
+   pipeline is scanned in a column. Different question, different shape. */
+
+.tbank-results {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 10px;
+}
+
+.tbank-card {
+  background: #fff;
+  border: 1px solid #ecedf3;
+  border-radius: 10px;
+  padding: 12px 13px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.tbank-card:hover { border-color: #ddd3fb; }
+
+.tbank-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+
+.tbank-link {
+  background: none;
+  border: 0;
+  padding: 0;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: #4B2DCE;
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+  overflow-wrap: anywhere;
+}
+.tbank-link:hover { text-decoration: underline; }
+.tbank-link--lg { font-size: 13.5px; }
+
+.tbank-card-role { margin: 0; font-size: 11.5px; color: #64748b; overflow-wrap: anywhere; }
+
+.tbank-card-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  font-size: 11px;
+  color: #475569;
+}
+.tbank-card-facts span { white-space: nowrap; }
+
+.tbank-card-chips,
+.tbank-card-pools { display: flex; flex-wrap: wrap; gap: 4px; }
+
+.tbank-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 8px;
+  border-radius: 20px;
+  font-size: 10.5px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.tbank-chip--xs { font-size: 9.5px; padding: 1px 6px; }
+.tbank-chip--dim { background: #f1f5f9; color: #64748b; }
+.tbank-chip--pool { background: #ECFEFF; color: #0E7490; }
+.tbank-chip--score { background: #F5F3FF; color: #6C47FF; }
+.tbank-chip--due { background: #FEF3C7; color: #92400E; }
+
+.tbank-card-suited {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: #4B2DCE;
+  overflow-wrap: anywhere;
+}
+
+.tbank-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 2px;
+  padding-top: 8px;
+  border-top: 1px solid #f4f5f9;
+}
+
+.tbank-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  background: none;
+  border: 0;
+  padding: 0;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: #4B2DCE;
+  cursor: pointer;
+  font-family: inherit;
+}
+.tbank-open:hover { text-decoration: underline; }
+
+/* ── Buttons ───────────────────────────────────────────────────────────── */
+
+.tbank-mini {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 9px;
+  background: #fff;
+  border: 1px solid #A5F3FC;
+  border-radius: 6px;
+  font-size: 10.5px;
+  font-weight: 700;
+  color: #0E7490;
+  cursor: pointer;
+  font-family: inherit;
+}
+.tbank-mini:hover { background: #F0FDFF; }
+.tbank-mini--go { background: #0E7490; border-color: #0E7490; color: #fff; }
+.tbank-mini--go:hover { background: #0b5d73; }
+
+.tbank-btn {
+  margin-top: 4px;
+  padding: 7px 14px;
+  background: #0E7490;
+  border: 1px solid #0E7490;
+  border-radius: 7px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #fff;
+  cursor: pointer;
+  font-family: inherit;
+}
+.tbank-btn:hover { background: #0b5d73; }
+
+/* ── Empty ─────────────────────────────────────────────────────────────── */
+
+.tbank-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 50px 22px;
+  text-align: center;
+  color: #94a3b8;
+  background: #fff;
+  border: 1px solid #ecedf3;
+  border-radius: 10px;
+}
+.tbank-empty-title { margin: 0; font-size: 13.5px; font-weight: 700; color: #334155; }
+.tbank-empty-sub { margin: 0; font-size: 12px; color: #64748b; max-width: 460px; line-height: 1.6; }
+
+@media (max-width: 640px) {
+  .tbank-results { grid-template-columns: 1fr; }
+  .tbank-due-row { align-items: flex-start; }
+  .tbank-due-acts { margin-left: 0; }
+}

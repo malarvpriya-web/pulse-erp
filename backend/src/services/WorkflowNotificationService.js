@@ -101,6 +101,26 @@ export const EVENT_MAP = {
     message: (ctx) => `AMC Contract #${ctx.recordId} has been created successfully.`,
     notify: 'submitter',
   },
+  // Claim payment recorded (travel-reimbursement.routes.js PUT /claims/:id/pay).
+  // The route has always fired 'paid'; with no entry here it was a silent no-op.
+  paid: {
+    notification_type: 'success',
+    title: (ctx) => `${ctx.module} Paid`,
+    message: (ctx) => `Your ${ctx.module} (#${ctx.recordId}) has been paid.`,
+    notify: 'submitter',
+  },
+  // HR saved a change to an employee's bank details (employee.controller.js).
+  // Sent to the company's Accounts / Finance users so they update their own
+  // bank / payee records. Carries the employee's name and code ONLY — never
+  // an account number, IFSC or bank name — and triggers nothing.
+  bank_details_changed: {
+    notification_type: 'warning',
+    title: () => 'Employee bank details changed',
+    message: (ctx) => (ctx.context?.action === 'verified'
+      ? `HR verified the bank details of ${ctx.context?.employeeLabel || `employee #${ctx.recordId}`} as they are on record (no change). Check them against your bank / payee records.`
+      : `HR updated the bank details of ${ctx.context?.employeeLabel || `employee #${ctx.recordId}`}. Update the bank / payee records before the next payment. Open the employee record in Pulse to see the new details.`),
+    notify: 'submitter',
+  },
   goods_received: {
     notification_type: 'info',
     title: () => 'Goods Received',
@@ -159,15 +179,19 @@ export const EVENT_MAP = {
 // recipient their notification. Degrading to null instead keeps the rest of the
 // batch intact and routes the failure into the same counter healthMonitor
 // already watches.
+// Recipient = the login linked by users.employee_id. The company_email <-> login
+// email fallback was removed on 2026-10-12: company email is editable on Edit
+// Employee, so it could deliver this employee's approvals to another account,
+// in another tenant. No account relied on it.
 async function resolveEmployeeUserId(employeeId) {
   if (!employeeId) return null;
   try {
     const { rows } = await pool.query(
       `SELECT u.id
          FROM employees e
-         JOIN users u ON (u.employee_id = e.id OR LOWER(u.email) = LOWER(e.company_email))
+         JOIN users u ON u.employee_id = e.id
         WHERE e.id = $1 AND u.is_active = true
-        ORDER BY (u.employee_id = e.id) DESC
+      ORDER BY u.id
         LIMIT 1`,
       [employeeId]
     );
@@ -225,6 +249,8 @@ async function _insert(userId, title, message, moduleName, recordId, notificatio
  *                                          this overrides submitterUserId/approverUserId
  *                                          entirely, since the caller already knows
  *                                          exactly who should be notified.
+ * @param {number[]} [ctx.recipientUserIds] - explicit recipients as users.id
+ *                                          values; wins over recipientIds.
  * @param {string}  [ctx.comments]        - rejection reason
  */
 export function notifyWorkflowEvent(event, ctx) {
@@ -243,7 +269,11 @@ export function notifyWorkflowEvent(event, ctx) {
       if (!flags.NOTIFICATION_ENGINE_ENABLED) return; // re-check: flag may have changed since scheduling
 
       let targetUserIds;
-      if (Array.isArray(ctx.recipientIds) && ctx.recipientIds.length) {
+      if (Array.isArray(ctx.recipientUserIds) && ctx.recipientUserIds.length) {
+        // Already users.id values (e.g. Finance users, who may have no
+        // employee record) — no resolution needed.
+        targetUserIds = [...new Set(ctx.recipientUserIds.filter(Boolean).map(Number))];
+      } else if (Array.isArray(ctx.recipientIds) && ctx.recipientIds.length) {
         const resolved = await Promise.all(ctx.recipientIds.filter(Boolean).map(resolveEmployeeUserId));
         targetUserIds = [...new Set(resolved.filter(Boolean))];
       } else {

@@ -64,7 +64,7 @@ export async function getPayrollTrends(months = 12, companyId = null) {
         ROUND(SUM(pr.tds)::NUMERIC, 2)                          AS total_tds
       FROM payroll_runs pr
       JOIN employees e ON e.id = pr.employee_id
-      WHERE
+      WHERE pr.is_test = false AND
         TO_DATE(pr.year::TEXT || '-' || LPAD(pr.month::TEXT, 2, '0') || '-01', 'YYYY-MM-DD')
           >= DATE_TRUNC('month', NOW()) - ($1 || ' months')::INTERVAL
         AND ($2::int IS NULL OR e.company_id = $2)
@@ -137,7 +137,7 @@ export async function getDepartmentCostAnalysis(companyId = null) {
     const { rows: latestRows } = await pool.query(`
       SELECT pr.year, pr.month FROM payroll_runs pr
       JOIN employees e ON e.id = pr.employee_id
-      WHERE ($1::int IS NULL OR e.company_id = $1)
+      WHERE pr.is_test = false AND ($1::int IS NULL OR e.company_id = $1)
       ORDER BY pr.year DESC, pr.month DESC LIMIT 1
     `, [companyId]);
 
@@ -154,7 +154,7 @@ export async function getDepartmentCostAnalysis(companyId = null) {
           ROUND(AVG(pr.gross)::NUMERIC, 2)                         AS avg_gross_per_employee
         FROM payroll_runs pr
         JOIN employees e ON e.id = pr.employee_id
-        WHERE pr.year = $1 AND pr.month = $2
+        WHERE pr.is_test = false AND pr.year = $1 AND pr.month = $2
           AND e.department IS NOT NULL
           AND ($3::int IS NULL OR e.company_id = $3)
         GROUP BY e.department
@@ -234,7 +234,7 @@ export async function getAnomalyFlags(threshold = 0.20, companyId = null) {
         ROUND(SUM(pr.gross)::NUMERIC, 2)          AS total_gross
       FROM payroll_runs pr
       JOIN employees e ON e.id = pr.employee_id
-      WHERE ($2::int IS NULL OR e.company_id = $2)
+      WHERE pr.is_test = false AND ($2::int IS NULL OR e.company_id = $2)
       GROUP BY pr.year, pr.month
     ),
     Comparison AS (
@@ -479,7 +479,7 @@ export async function buildQueryContext(query) {
     try {
       const [hc, pending] = await Promise.allSettled([
         pool.query(`SELECT department, COUNT(*) AS cnt FROM employees WHERE status='active' GROUP BY department ORDER BY cnt DESC LIMIT 8`),
-        pool.query(`SELECT COUNT(*) AS cnt FROM leave_requests WHERE status='pending'`),
+        pool.query(`SELECT COUNT(*) AS cnt FROM leave_applications WHERE deleted_at IS NULL AND status='pending'`),
       ]);
       if (hc.status === 'fulfilled' && hc.value.rows.length) {
         const total = hc.value.rows.reduce((s, r) => s + parseInt(r.cnt), 0);

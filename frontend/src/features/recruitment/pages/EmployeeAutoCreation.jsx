@@ -52,7 +52,7 @@ export default function EmployeeAutoCreation() {
   };
 
   const CHECKLIST_ITEMS = [
-    { step: 'Employee Code Generated', icon: '🆔', desc: 'Unique EMP-XXXX code assigned' },
+    { step: 'Employee Code Generated', icon: '🆔', desc: 'Unique EMP001-style code assigned' },
     { step: 'Employee Record Created', icon: '📋', desc: 'Name, department, designation, joining date from offer' },
     { step: 'Email Request', icon: '📧', desc: 'Official email creation request to IT' },
     { step: 'Onboarding Checklist', icon: '✅', desc: 'Welcome kit, ID card, documents checklist' },
@@ -163,7 +163,7 @@ export default function EmployeeAutoCreation() {
                   <td style={{ padding:'10px 12px', color:'#6b7280' }}>{c.department || '—'}</td>
                   <td style={{ padding:'10px 12px', color:'#374151' }}>{fmtDate(c.joining_date)}</td>
                   <td style={{ padding:'10px 12px', color:'#059669', fontWeight:600 }}>
-                    {c.offered_salary ? `₹${Number(c.offered_salary).toLocaleString('en-IN')}/mo` : '—'}
+                    {c.offered_salary ? `₹${Number(c.offered_salary).toLocaleString('en-IN')}/yr (annual CTC)` : '—'}
                   </td>
                   <td style={{ padding:'10px 12px' }}>
                     {c.creation_status === 'completed' ? (

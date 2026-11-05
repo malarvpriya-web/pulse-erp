@@ -8,6 +8,8 @@ import {
 import api from '@/services/api/client';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import { fmtScore } from '@/utils/format';
+import { downloadSuccessionCsv } from '../utils/successionCsv';
 
 /* ─── constants ─────────────────────────────────────────────── */
 
@@ -18,7 +20,7 @@ const NINE_BOX_META = {
   '1_2': { label: 'Underperformers',   color: '#ef4444', bg: '#fef2f2', desc: 'Medium potential, low performance'  },
   '2_2': { label: 'Core Contributors', color: '#2563eb', bg: '#eff6ff', desc: 'Solid performance & potential'      },
   '3_2': { label: 'High Performers',   color: '#16a34a', bg: '#f0fdf4', desc: 'High performance, medium potential' },
-  '1_1': { label: 'Deadwood',          color: '#6b7280', bg: '#f9fafb', desc: 'Low performance & potential'        },
+  '1_1': { label: 'Low Performance / Low Potential', color: '#6b7280', bg: '#f9fafb', desc: 'Low performance & potential' },
   '2_1': { label: 'Inconsistent',      color: '#6d28d9', bg: '#f5f3ff', desc: 'Low potential, medium performance'  },
   '3_1': { label: 'Workhorses',        color: '#0891b2', bg: '#ecfeff', desc: 'High performance, lower potential'  },
 };
@@ -118,7 +120,7 @@ function RiskBadge({ level }) {
 }
 function ReadyBadge({ level }) {
   const c = READY_COLORS[level] ?? '#6b7280';
-  return <Chip color={c}>{READY_LABELS[level] ?? level}</Chip>;
+  return <Chip color={c}>{READY_LABELS[level] ?? 'Unclassified'}</Chip>;
 }
 
 function EmployeeChip({ emp, onSelect }) {
@@ -166,7 +168,7 @@ function ScoreBar({ label, score, max = 5, color }) {
     <div style={{ marginBottom: 12 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 4 }}>
         <span style={{ color: '#6b7280' }}>{label}</span>
-        <strong style={{ color }}>{score}/{max}</strong>
+        <strong style={{ color }}>{fmtScore(score, max)}</strong>
       </div>
       <div style={{ height: 6, background: '#f0ebff', borderRadius: 4, overflow: 'hidden' }}>
         <div style={{ height: '100%', width: `${(score / max) * 100}%`, background: color, borderRadius: 4,
@@ -192,27 +194,7 @@ function ScoreButtons({ value, onChange, max = 5, activeColor = '#6B3FDB' }) {
   );
 }
 
-/* ─── CSV export helper ─────────────────────────────────────── */
-function downloadCSV(data, filename) {
-  if (!data.length) return;
-  const headers = Object.keys(data[0]);
-  const escape  = (v) => {
-    if (v == null) return '';
-    const s = String(v);
-    return s.includes(',') || s.includes('"') || s.includes('\n')
-      ? `"${s.replace(/"/g, '""')}"` : s;
-  };
-  const csv = [headers.map(escape).join(','),
-               ...data.map(r => headers.map(h => escape(r[h])).join(','))].join('\n');
-  const blob = new Blob([csv], { type: 'text/csv' });
-  const url  = URL.createObjectURL(blob);
-  const a    = document.createElement('a');
-  a.href = url; a.download = filename;
-  a.click(); URL.revokeObjectURL(url);
-}
-
 /* ─── main component ────────────────────────────────────────── */
-
 export default function SuccessionPlanning() {
   const [tab, setTab]                 = useState('ninebox');
   const [nineBox, setNineBox]         = useState([]);
@@ -228,6 +210,9 @@ export default function SuccessionPlanning() {
   const [candLoading, setCandLoading] = useState(false);
   const [msg, setMsg]                 = useState({ text: '', type: '' });
   const [deptFilter, setDeptFilter]   = useState('');
+  const [loadError, setLoadError]     = useState('');
+  const [alerts, setAlerts]           = useState([]);
+  const [showAlerts, setShowAlerts]   = useState(false);
 
   const [showAssessForm, setShowAssessForm] = useState(false);
   const [editAssessId, setEditAssessId]     = useState(null);
@@ -260,8 +245,32 @@ export default function SuccessionPlanning() {
     if (nbRes.status === 'fulfilled') setNineBox(nbRes.value.data || []);
     if (crRes.status === 'fulfilled') setCritRoles(crRes.value.data || []);
     if (dRes.status === 'fulfilled')  setDashData(dRes.value.data);
+    // A failed request used to leave its section at zero with no word said,
+    // which reads as "no successors" rather than "could not load".
+    const failed = [nbRes, crRes, dRes].find(r => r.status === 'rejected');
+    setLoadError(failed ? (failed.reason?.response?.data?.message || 'Some succession data could not be loaded') : '');
     setPageLoading(false);
   }, []);
+
+  /* ── alerts (GET /alerts, PATCH /alerts/:id/read had no caller: the banner
+        count could never go down) ── */
+  const loadAlerts = async () => {
+    try {
+      const r = await api.get('/succession/alerts');
+      setAlerts(r.data || []);
+    } catch (err) { flash(err.response?.data?.message || 'Could not load alerts', 'error'); }
+  };
+  const toggleAlerts = () => {
+    if (!showAlerts) loadAlerts();
+    setShowAlerts(v => !v);
+  };
+  const markAlertRead = async (id) => {
+    try {
+      await api.patch(`/succession/alerts/${id}/read`);
+      await loadAlerts();
+      load();
+    } catch (err) { flash(err.response?.data?.message || 'Could not mark the alert read', 'error'); }
+  };
 
   useEffect(() => { load(); }, [load]);
 
@@ -317,7 +326,9 @@ export default function SuccessionPlanning() {
   const startEditAssessment = (emp) => {
     setAssessForm({
       employee_id:           emp.employee_id,
-      performance_score:     emp.performance_score,
+      // numeric(3,2) arrives as "3.00"; a fractional synced rating (3.5)
+      // highlights no button and is saved back unchanged unless one is picked.
+      performance_score:     emp.performance_score == null ? emp.performance_score : Number(emp.performance_score),
       potential_score:       emp.potential_score,
       flight_risk:           emp.flight_risk || 'low',
       readiness:             emp.readiness || '1-2-years',
@@ -475,11 +486,11 @@ export default function SuccessionPlanning() {
   };
 
   /* ── CSV export (bench strength tab) ── */
+  // From the server, which checks succession:export. This used to fetch the
+  // JSON report and build the file here, so the export grant was never asked.
   const exportBenchCSV = async () => {
-    try {
-      const r = await api.get('/succession/reports/bench-strength');
-      downloadCSV(r.data, 'bench_strength.csv');
-    } catch { flash('Export failed', 'error'); }
+    try { await downloadSuccessionCsv('bench-strength', 'bench_strength.csv'); }
+    catch (err) { flash(err.message, 'error'); }
   };
 
   /* ── computed ── */
@@ -507,10 +518,11 @@ export default function SuccessionPlanning() {
   ];
   const hasFlightData  = flightData.some(d => d.value > 0);
   const readyData      = (dashData?.readiness_summary || []).map(r => ({
-    name:  READY_LABELS[r.readiness] || r.readiness,
+    name:  READY_LABELS[r.readiness] || 'Unclassified',
     count: parseInt(r.cnt) || 0,
   }));
   const benchPct       = dashData?.bench_strength_pct || 0;
+  const hipo           = dashData?.hipo_thresholds || { potential: 4, performance: 3 };
   const addedCandIds   = new Set(candidates.map(c => c.candidate_employee_id));
   const candEmployees  = employees.filter(e => !addedCandIds.has(e.id));
   const editingEmployee = editAssessId
@@ -571,14 +583,42 @@ export default function SuccessionPlanning() {
         </div>
       )}
 
+      {loadError && (
+        <div role="alert" style={{ marginBottom: 12, padding: '10px 16px', borderRadius: 8, fontSize: 13,
+                                   background: '#fef2f2', color: '#dc2626', border: '1px solid #fecaca' }}>
+          {loadError}. The figures below may be incomplete.
+        </div>
+      )}
+
       {/* Unread alerts banner */}
       {dashData?.unread_alerts > 0 && (
         <div style={{ marginBottom: 12, padding: '10px 16px', borderRadius: 8,
                       background: '#fff7ed', border: '1px solid #ddd6fe',
                       color: '#5b21b6', fontSize: 13, fontWeight: 500 }}>
-          {dashData.unread_alerts} succession alert{dashData.unread_alerts > 1 ? 's' : ''} need attention
-          {dashData.zero_successor_count > 0 &&
-            ` — ${dashData.zero_successor_count} critical role${dashData.zero_successor_count > 1 ? 's' : ''} without any successor`}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+            <span>
+              {dashData.unread_alerts} succession alert{dashData.unread_alerts > 1 ? 's' : ''} need attention
+              {dashData.zero_successor_count > 0 &&
+                ` — ${dashData.zero_successor_count} critical role${dashData.zero_successor_count > 1 ? 's' : ''} without any successor`}
+            </span>
+            <button type="button" onClick={toggleAlerts} style={BTN('ghost', true)} aria-expanded={showAlerts}>
+              {showAlerts ? 'Hide alerts' : 'Review alerts'}
+            </button>
+          </div>
+          {showAlerts && (
+            <ul style={{ listStyle: 'none', margin: '10px 0 0', padding: 0 }}>
+              {alerts.filter(a => !a.is_read).map(a => (
+                <li key={a.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 12,
+                                        padding: '6px 0', borderTop: '1px solid #f0ebff', fontWeight: 400 }}>
+                  <span>
+                    {a.message}
+                    {a.role_title && <span style={{ color: '#6b7280' }}> · {a.role_title}</span>}
+                  </span>
+                  <button type="button" onClick={() => markAlertRead(a.id)} style={BTN('outline', true)}>Mark read</button>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       )}
 
@@ -1264,7 +1304,7 @@ export default function SuccessionPlanning() {
 
                         {c.performance_score && (
                           <div style={{ display: 'flex', gap: 10, fontSize: 11, color: '#6b7280', marginBottom: 6 }}>
-                            <span>Perf: <strong style={{ color: '#16a34a' }}>{c.performance_score}/5</strong></span>
+                            <span>Perf: <strong style={{ color: '#16a34a' }}>{fmtScore(c.performance_score, 5)}</strong></span>
                             <span>Pot: <strong style={{ color: '#6B3FDB' }}>{c.potential_score}/5</strong></span>
                             {c.leadership_score && (
                               <span>Lead: <strong style={{ color: '#0891b2' }}>{c.leadership_score}/5</strong></span>
@@ -1350,7 +1390,7 @@ export default function SuccessionPlanning() {
                                       color: benchPct >= 75 ? '#16a34a' : benchPct >= 40 ? '#6d28d9' : '#6B3FDB' }}>
                           {benchPct}%
                         </div>
-                        <div style={{ fontSize: 10, color: '#6b7280' }}>critical roles<br />covered</div>
+                        <div style={{ fontSize: 10, color: '#6b7280' }}>with a ready-now<br />successor</div>
                       </div>
                     </div>
                     {critRoles.length > 0 && (
@@ -1443,13 +1483,13 @@ export default function SuccessionPlanning() {
                 <h4 style={{ color: '#4c1d95', margin: '0 0 12px' }}>
                   Top High-Potential Employees
                   <span style={{ fontWeight: 400, fontSize: 12, color: '#6b7280', marginLeft: 8 }}>
-                    (potential score &ge; 4)
+                    (potential &ge; {hipo.potential} and performance &ge; {hipo.performance}, from Settings)
                   </span>
                 </h4>
 
                 {(dashData?.top_high_potential || []).length === 0 ? (
                   <EmptyState icon="-" title="No high-potential employees yet"
-                    body="Employees with a potential score of 4 or 5 will appear here." />
+                    body={`Employees with potential ${hipo.potential}+ and performance ${hipo.performance}+ will appear here.`} />
                 ) : (
                   <div style={{ overflowX: 'auto' }}>
                     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
@@ -1475,7 +1515,7 @@ export default function SuccessionPlanning() {
                             <td style={{ padding: '8px 12px', color: '#6b7280' }}>{emp.department}</td>
                             <td style={{ padding: '8px 12px', color: '#6b7280' }}>{emp.designation}</td>
                             <td style={{ padding: '8px 12px', fontWeight: 700, color: '#16a34a' }}>
-                              {emp.performance_score}/5
+                              {fmtScore(emp.performance_score, 5)}
                             </td>
                             <td style={{ padding: '8px 12px', fontWeight: 700, color: '#6B3FDB' }}>
                               {emp.potential_score}/5

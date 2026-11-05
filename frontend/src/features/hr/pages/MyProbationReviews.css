@@ -1,0 +1,25 @@
+/* My Probation Reviews (MyProbationReviews.jsx) — prefix mpr- */
+.mpr-page { display: flex; flex-direction: column; gap: 12px; }
+.mpr-list { display: grid; gap: 12px; }
+.mpr-card { border: 1px solid #e9e4ff; border-radius: 12px; background: #fff; padding: 14px 16px; }
+.mpr-card.is-highlighted { border-color: #7c5cf0; box-shadow: 0 0 0 2px #ede9fe; }
+.mpr-card-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; flex-wrap: wrap; }
+.mpr-card-head h2 { margin: 0; font-size: 15px; color: #1f2937; }
+.mpr-muted { color: #6b7280; font-size: 12px; }
+.mpr-status { font-size: 11px; font-weight: 600; padding: 3px 8px; border-radius: 999px; }
+.mpr-status.is-requested { background: #fef3c7; color: #92400e; }
+.mpr-status.is-submitted { background: #dcfce7; color: #166534; }
+.mpr-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 8px 16px; margin: 12px 0; }
+.mpr-facts dt { font-size: 11px; color: #6b7280; }
+.mpr-facts dd { margin: 2px 0 0; font-size: 13px; color: #111827; }
+.mpr-overdue { margin-left: 6px; padding: 1px 6px; border-radius: 999px; background: #fee2e2; color: #b91c1c; font-size: 11px; }
+.mpr-form fieldset { border: 0; padding: 0; margin: 0 0 10px; display: flex; flex-wrap: wrap; gap: 6px 14px; }
+.mpr-form legend { font-size: 12px; font-weight: 600; color: #374151; margin-bottom: 4px; }
+.mpr-rating { font-size: 13px; display: inline-flex; gap: 4px; align-items: center; }
+.mpr-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 600; color: #374151; margin-bottom: 10px; }
+.mpr-field textarea, .mpr-field select { font: inherit; font-weight: 400; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 8px; max-width: 100%; }
+.mpr-error { color: #b91c1c; font-size: 12px; margin: 0 0 8px; }
+.mpr-submit { background: #6d28d9; color: #fff; border: 0; border-radius: 8px; padding: 8px 14px; font-weight: 600; cursor: pointer; }
+.mpr-submit:disabled { opacity: .6; cursor: default; }
+.mpr-submitted { display: grid; gap: 4px; font-size: 13px; color: #374151; }
+.mpr-unavailable { padding: 10px 12px; border-radius: 8px; background: #fef2f2; color: #991b1b; font-size: 13px; }

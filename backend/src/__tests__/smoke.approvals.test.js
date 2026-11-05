@@ -33,6 +33,8 @@ vi.mock('../middlewares/auth.middleware.js', () => ({
     return held.map(r => String(r).toLowerCase()).some(r => want.includes(r));
   },
   allowRoles: () => (_req, _res, next) => next(),
+  // approvals.sources.js mirrors module permission gates through permissionFor.
+  permissionFor: async () => null,
 }));
 
 vi.mock('../services/AuditService.js', () => ({ logAudit: vi.fn() }));
@@ -123,19 +125,17 @@ describe('GET /api/approvals/history', () => {
 // ── Stats ───────────────────────────────────────────────────────────────────────
 
 describe('GET /api/approvals/stats', () => {
-  it('200 returns approval statistics', async () => {
-    // getApprovalStats: 4 parallel count queries need rows[0].count (can't be undefined)
-    pool.query
-      .mockResolvedValueOnce({ rows: [{ count: '5' }] })  // centralPending
-      .mockResolvedValueOnce({ rows: [{ count: '2' }] })  // approvedToday
-      .mockResolvedValueOnce({ rows: [{ count: '1' }] })  // rejectedToday
-      .mockResolvedValueOnce({ rows: [{ count: '0' }] })  // centralOverdue
-      .mockResolvedValue({ rows: [] });                    // 7 source queries + SLA
+  it('200 returns approval statistics computed from the same rows as the tabs', async () => {
+    pool.query.mockResolvedValue({ rows: [] });
 
     const res = await request(app).get('/api/approvals/stats')
       .set('Authorization', `Bearer ${adminToken()}`);
 
     expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ pending: 0, overdue: 0, approvedToday: 0, rejectedToday: 0 });
+    // No decisions in the window → no compliance figure, never a fake 100%.
+    expect(res.body.slaCompliance).toBeNull();
+    expect(res.body.sla.default_hours).toBe(48);
   });
 });
 
@@ -144,8 +144,9 @@ describe('GET /api/approvals/stats', () => {
 describe('POST /api/approvals/:id/approve', () => {
   it('200 approves a pending request', async () => {
     pool.query
+      .mockResolvedValueOnce({ rows: [{ module_name: null, reference_id: null }] }) // SELECT the row
       .mockResolvedValueOnce({ rows: [APPROVED] }) // UPDATE approvals SET status='Approved'
-      .mockResolvedValue({ rows: [] });             // source-item approve + audit
+      .mockResolvedValue({ rows: [] });
 
     const res = await request(app).post('/api/approvals/7/approve')
       .set('Authorization', `Bearer ${managerToken()}`)
@@ -165,78 +166,32 @@ describe('POST /api/approvals/:id/approve', () => {
   });
 });
 
-// ── Overtime source items ───────────────────────────────────────────────────────
+// ── Module records are decided by their module ─────────────────────────────────
 //
-// `ot:<id>` is a source pseudo-id, so canActOnApproval only checks that the
-// caller holds an approver role and can claim the 'ot' category -- it never sees
-// the OT row. The controller therefore has to re-read the record and apply the
-// same guards the direct PUT /attendance/overtime/:id/approve route applies:
-// a pending-state check and assertCanDecideFor. Before that was added, the
-// Approval Center went straight to the UPDATE, so an already-decided record
-// could be flipped back. See ATTENDANCE_DUPLICATION_FLOW_AUDIT.md §3.
+// The Approval Center used to re-implement every module's transition (leave
+// skipped L2/HR and never deducted balance; OT/regularization re-guarded by hand;
+// ECN ignored parallel approvers). It now refuses, pointing at the module's own
+// endpoint, which GET /pending hands to the UI as `actions`.
 
-describe('Approval Center — overtime source items are re-guarded', () => {
-  const otRow = (status) => ({ rows: [{ employee_id: 42, company_id: 1, status }] });
+describe('Approval Center — module records go to the module endpoint', () => {
+  for (const id of ['ot:5', 'leave:12', 'exp:3', 'pr:8', 'reg:2', 'ecn:4', 'pay:1', 'travel:9', 'adv:1']) {
+    it(`409 USE_MODULE_ENDPOINT for ${id} and nothing is written`, async () => {
+      const res = await request(app).post(`/api/approvals/${id}/approve`)
+        .set('Authorization', `Bearer ${managerToken()}`)
+        .send({});
 
-  it('409 when approving an OT record that is no longer pending', async () => {
-    pool.query.mockResolvedValueOnce(otRow('rejected')); // assertCanActOnOvertime SELECT
+      expect(res.status).toBe(409);
+      expect(res.body.code).toBe('USE_MODULE_ENDPOINT');
+      expect(pool.query).not.toHaveBeenCalled();
+    });
+  }
 
-    const res = await request(app).post('/api/approvals/ot:5/approve')
+  it('reject without a reason is refused before anything is written', async () => {
+    const res = await request(app).post('/api/approvals/requisition:5/reject')
       .set('Authorization', `Bearer ${managerToken()}`)
       .send({});
-
-    expect(res.status).toBe(409);
-    expect(res.body.error).toMatch(/already rejected/i);
-  });
-
-  it('409 when rejecting an OT record that is already approved', async () => {
-    pool.query.mockResolvedValueOnce(otRow('approved'));
-
-    const res = await request(app).post('/api/approvals/ot:5/reject')
-      .set('Authorization', `Bearer ${managerToken()}`)
-      .send({ comment: 'changed my mind' });
-
-    expect(res.status).toBe(409);
-    expect(res.body.error).toMatch(/already approved/i);
-  });
-
-  it('does not reach the UPDATE when the pending guard fails', async () => {
-    pool.query.mockResolvedValueOnce(otRow('approved'));
-
-    await request(app).post('/api/approvals/ot:5/approve')
-      .set('Authorization', `Bearer ${managerToken()}`)
-      .send({});
-
-    // Exactly one query: the guard's SELECT. No UPDATE, no audit row.
-    expect(pool.query).toHaveBeenCalledTimes(1);
-    expect(pool.query.mock.calls[0][0]).toMatch(/FROM attendance_ot_records/i);
-  });
-
-  it('200 approves a pending OT record for a privileged caller', async () => {
-    // Mock caller holds super_admin, so assertCanDecideFor short-circuits to
-    // allowed and the UPDATE proceeds.
-    pool.query
-      .mockResolvedValueOnce(otRow('pending')) // guard SELECT
-      .mockResolvedValue({ rows: [] });        // UPDATE + approvals bookkeeping
-
-    const res = await request(app).post('/api/approvals/ot:5/approve')
-      .set('Authorization', `Bearer ${managerToken()}`)
-      .send({});
-
-    expect(res.status).toBe(200);
-    expect(res.body.status).toBe('Approved');
-  });
-
-  it('falls through to the UPDATE when the OT record is missing', async () => {
-    // Mirrors the reg/leave cases: a vanished row lets the UPDATE no-op rather
-    // than inventing a 404 the other source types do not return.
-    pool.query.mockResolvedValue({ rows: [] });
-
-    const res = await request(app).post('/api/approvals/ot:404/approve')
-      .set('Authorization', `Bearer ${managerToken()}`)
-      .send({});
-
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(400);
+    expect(pool.query).not.toHaveBeenCalled();
   });
 });
 
@@ -245,12 +200,13 @@ describe('Approval Center — overtime source items are re-guarded', () => {
 describe('POST /api/approvals/:id/reject', () => {
   it('200 rejects a pending request with a reason', async () => {
     pool.query
+      .mockResolvedValueOnce({ rows: [{ module_name: null, reference_id: null }] }) // SELECT the row
       .mockResolvedValueOnce({ rows: [REJECTED] }) // UPDATE approvals SET status='Rejected'
       .mockResolvedValue({ rows: [] });
 
     const res = await request(app).post('/api/approvals/7/reject')
       .set('Authorization', `Bearer ${managerToken()}`)
-      .send({ notes: 'Insufficient leave balance' });
+      .send({ comment: 'Insufficient leave balance' });
 
     expect(res.status).toBe(200);
   });
@@ -287,7 +243,7 @@ describe('POST /api/approvals/bulk-reject', () => {
 
     const res = await request(app).post('/api/approvals/bulk-reject')
       .set('Authorization', `Bearer ${adminToken()}`)
-      .send({ ids: [7, 8], notes: 'Budget freeze' });
+      .send({ ids: [7, 8], comment: 'Budget freeze' });
 
     expect([200, 201]).toContain(res.status);
   });
@@ -296,17 +252,35 @@ describe('POST /api/approvals/bulk-reject', () => {
 // ── Escalate ────────────────────────────────────────────────────────────────────
 
 describe('POST /api/approvals/:id/escalate', () => {
-  it('200 escalates approval to next level', async () => {
-    const escalated = { ...PENDING, status: 'Escalated', approver_id: 2 };
+  it('200 reassigns a central row to a named approver and keeps it Pending', async () => {
+    const reassigned = { ...PENDING, approver_id: 2 };
     pool.query
-      .mockResolvedValueOnce({ rows: [escalated] }) // UPDATE approvals SET status='Escalated'
+      .mockResolvedValueOnce({ rows: [{ '?column?': 1 }] }) // target is an active user in the company
+      .mockResolvedValueOnce({ rows: [reassigned] })        // UPDATE approvals SET approver_id
       .mockResolvedValue({ rows: [] });
 
     const res = await request(app).post('/api/approvals/7/escalate')
       .set('Authorization', `Bearer ${managerToken()}`)
-      .send({ reason: 'Requires senior approval' });
+      .send({ approver_user_id: 2 });
 
     expect(res.status).toBe(200);
+    expect(res.body.status).toBe('Pending');
+    expect(pool.query.mock.calls[1][0]).not.toMatch(/'Escalated'/);
+  });
+
+  it('400 without a target — it no longer silently drops the request from every queue', async () => {
+    const res = await request(app).post('/api/approvals/7/escalate')
+      .set('Authorization', `Bearer ${managerToken()}`)
+      .send({});
+    expect(res.status).toBe(400);
+  });
+
+  it('400 for a module record — those escalate automatically under the module SLA', async () => {
+    const res = await request(app).post('/api/approvals/leave:3/escalate')
+      .set('Authorization', `Bearer ${managerToken()}`)
+      .send({ approver_user_id: 2 });
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('ESCALATION_IS_AUTOMATIC');
   });
 });
 
@@ -325,9 +299,9 @@ describe('getAllApprovals — non-supervisor callers are scoped to their own app
     return res;
   };
 
-  it('supervisor role gets no approver_id filter (company-wide)', async () => {
+  it('override role (admin) gets no approver_id filter (company-wide)', async () => {
     pool.query.mockResolvedValue({ rows: [] });
-    const req = { user: { userId: 1, role: 'manager' }, scope: { company_id: 5 }, query: {} };
+    const req = { user: { userId: 1, role: 'admin', roles: ['admin'] }, scope: { company_id: 5 }, query: {} };
 
     await approvalsController.getAllApprovals(req, mockRes());
 
@@ -335,9 +309,9 @@ describe('getAllApprovals — non-supervisor callers are scoped to their own app
     expect(sql).not.toMatch(/approver_id/);
   });
 
-  it('non-supervisor role is filtered to approver_id = caller', async () => {
+  it('manager/employee are filtered to approver_id = caller', async () => {
     pool.query.mockResolvedValue({ rows: [] });
-    const req = { user: { userId: 4, role: 'employee' }, scope: { company_id: 5 }, query: {} };
+    const req = { user: { userId: 4, role: 'manager', roles: ['manager'] }, scope: { company_id: 5 }, query: {} };
 
     await approvalsController.getAllApprovals(req, mockRes());
 

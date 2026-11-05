@@ -257,8 +257,12 @@ router.post('/bom/:id/lines', requirePermission('bom', 'edit'), async (req, res)
     const safeCompId = Number.parseInt(component_id, 10);
     const safeLevel  = Number.parseInt(level, 10);
     const { rows } = await pool.query(
-      `INSERT INTO bom_lines (bom_id, component_id, component_name, qty, unit, unit_cost, level, parent_line_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+      // company_id is derived from the parent header in the statement itself, so it
+      // is correct no matter which caller reaches here and needs no extra param.
+      // Without it a BOM line is tenant-less: invisible under `company_id = $1`
+      // scoping and visible to every tenant under `OR company_id IS NULL`.
+      `INSERT INTO bom_lines (bom_id, component_id, component_name, qty, unit, unit_cost, level, parent_line_id, company_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,(SELECT company_id FROM bom_headers WHERE id = $1)) RETURNING *`,
       [
         req.params.id,
         Number.isNaN(safeCompId) ? null : safeCompId,
@@ -332,10 +336,13 @@ router.post('/bom/:id/version', requirePermission('bom', 'add'), async (req, res
 
     // Create the ECN
     const { rows: [ecn] } = await client.query(
+      // company_id: the ECN raised here belongs to the tenant that owns the BOM.
+      // ecn.routes.js already stamped it; this second creation path did not, which
+      // is why engineering_changes carried a tenant-less row.
       `INSERT INTO engineering_changes
         (ecn_number, title, change_type, status, severity, reason, impact_summary,
-         requested_by, requested_by_name)
-       VALUES ($1,$2,'ECN','draft',$3,$4,$5,$6,$7)
+         requested_by, requested_by_name, company_id)
+       VALUES ($1,$2,'ECN','draft',$3,$4,$5,$6,$7,$8)
        RETURNING *`,
       [
         ecnNumber,
@@ -345,6 +352,7 @@ router.post('/bom/:id/version', requirePermission('bom', 'add'), async (req, res
         change_summary?.trim() || null,
         actor.id,
         actor.name,
+        cid,
       ]
     );
 
@@ -378,8 +386,8 @@ router.post('/bom/:id/version', requirePermission('bom', 'add'), async (req, res
     const idMap = {};
     for (const line of lines) {
       const { rows: [newLine] } = await client.query(
-        `INSERT INTO bom_lines (bom_id, component_id, component_name, qty, unit, unit_cost, level, parent_line_id)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,NULL) RETURNING id`,
+        `INSERT INTO bom_lines (bom_id, component_id, component_name, qty, unit, unit_cost, level, parent_line_id, company_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,NULL,(SELECT company_id FROM bom_headers WHERE id = $1)) RETURNING id`,
         [newBOM.id, line.component_id, line.component_name, line.qty, line.unit, line.unit_cost, line.level]
       );
       idMap[line.id] = newLine.id;
@@ -782,8 +790,8 @@ router.post('/bom/import-csv', requirePermission('bom', 'add'), async (req, res)
           );
           for (const comp of data.components) {
             await client.query(
-              `INSERT INTO bom_lines (bom_id, component_name, qty, unit, unit_cost, level)
-               VALUES ($1,$2,$3,$4,$5,1)`,
+              `INSERT INTO bom_lines (bom_id, component_name, qty, unit, unit_cost, level, company_id)
+               VALUES ($1,$2,$3,$4,$5,1,(SELECT company_id FROM bom_headers WHERE id = $1))`,
               [newBom.id, comp.component_name, comp.qty, comp.unit, comp.unit_cost]
             );
           }

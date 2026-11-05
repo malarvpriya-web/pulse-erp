@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import { getProjectIssues, createProjectIssue, updateProjectIssue, deleteProjectIssue, getProjects, getProjectEmployees } from '../services/projectsService';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import VocabSelect from '@/components/core/VocabSelect';
 import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const SEVERITY_META = {
@@ -22,7 +23,12 @@ const STATUS_META = {
   wont_fix:    { bg: '#e0e7ff', color: '#4338ca', label: "Won't Fix" },
 };
 
-const ISSUE_TYPES = ['general', 'technical', 'scope', 'resource', 'schedule', 'quality', 'commercial'];
+// Issue types were seven lowercase keys held here. `project_issues.issue_type`
+// is free text and every row in it is Title Case, so NONE of the stored values
+// matched an option: the Type field rendered blank on every existing issue and
+// the next save rewrote it. They now come from the issue-type master, and
+// MasterSelect renders a stored value absent from the master as its own option
+// rather than dropping it. See backend/src/modules/master/vocabularies.js.
 
 // The client retries a short 429 on its own; anything that reaches here has
 // already outlasted that budget, so tell the user what to do rather than
@@ -38,7 +44,10 @@ function describeLoadError(err) {
 }
 
 const empty = () => ({
-  title: '', description: '', issue_type: 'general', severity: 'medium',
+  // 'General', not 'general': the master is Title Case and the route falls back
+  // to lowercase 'general' only when the field is absent, which is what put two
+  // spellings of the same type in the column to begin with.
+  title: '', description: '', issue_type: 'General', severity: 'medium',
   priority: 'medium', assigned_to: '', due_date: '', is_blocker: false,
   root_cause: '', status: 'open', resolution: '',
 });
@@ -356,9 +365,14 @@ export default function IssueManagement({ setPage, urlParams }) {
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 14 }}>
               <div>
                 <label style={{ display: 'block', fontSize: 12, fontWeight: 600, marginBottom: 4, color: 'var(--color-text-secondary)' }}>Issue Type</label>
-                <select value={f('issue_type')} onChange={sf('issue_type')} style={{ width: '100%', padding: '8px 10px', border: '1px solid var(--color-border)', borderRadius: 6, background: 'var(--color-background)', color: 'var(--color-text-primary)' }}>
-                  {ISSUE_TYPES.map(t => <option key={t} value={t}>{t.charAt(0).toUpperCase() + t.slice(1).replace('_', ' ')}</option>)}
-                </select>
+                {/* sf() already accepts a bare value as well as an event, so
+                    MasterSelect's onChange(value, row) needs no adapter. */}
+                <VocabSelect
+                  vocab="issue-types"
+                  value={f('issue_type')}
+                  onChange={sf('issue_type')}
+                  selectStyle={{ width: '100%', padding: '8px 10px', border: '1px solid var(--color-border)', borderRadius: 6, background: 'var(--color-background)', color: 'var(--color-text-primary)' }}
+                />
               </div>
               <div>
                 <label style={{ display: 'block', fontSize: 12, fontWeight: 600, marginBottom: 4, color: 'var(--color-text-secondary)' }}>Severity</label>

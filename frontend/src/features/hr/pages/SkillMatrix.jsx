@@ -4,6 +4,7 @@ import { GraduationCap } from 'lucide-react';
 import api from '@/services/api/client';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import { localDay } from '@/utils/dateFormatter';
 
 const P      = '#6B3FDB';
 const LIGHT  = '#f5f3ff';
@@ -219,7 +220,7 @@ export default function SkillMatrix({ setPage }) {
     const csv = [headers, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
     const a = document.createElement('a');
     a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
-    a.download = `skill-matrix-${new Date().toISOString().split('T')[0]}.csv`;
+    a.download = `skill-matrix-${localDay()}.csv`;
     a.click();
   };
 

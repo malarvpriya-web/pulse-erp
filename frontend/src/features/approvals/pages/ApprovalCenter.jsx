@@ -1,640 +1,590 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { CheckSquare } from 'lucide-react';
-import api from "@/services/api/client";
-import "./ApprovalCenter.css";
+import api from '@/services/api/client';
+import { useAuth } from '@/context/AuthContext';
+import { canRoleOpenPage } from '@/config/menuCatalog';
+import { fmtDate } from '@/utils/dateFormatter';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import { runApprovalAction, actionError } from '../approvalActions';
+import './ApprovalCenter.css';
 
-const TYPE_META = {
-  leave:            { bg: '#eef2ff', color: '#4338ca' },
-  expense:          { bg: '#ede9fe', color: '#5b21b6' },
-  travel:           { bg: '#f0fdf4', color: '#166534' },
-  purchase:         { bg: '#fce7f3', color: '#9d174d' },
-  purchase_request: { bg: '#fce7f3', color: '#9d174d' },
-  payment:          { bg: '#dcfce7', color: '#15803d' },
-  timesheet:        { bg: '#ddd6fe', color: '#4c1d95' },
-  access:           { bg: '#f3e8ff', color: '#7e22ce' },
-  recruitment:      { bg: '#cffafe', color: '#155e75' },
-  discount:         { bg: '#fdf2f8', color: '#be185d' },
-  regularization:   { bg: '#fff7ed', color: '#5b21b6' },
-  ot:               { bg: '#ede9fe', color: '#5b21b6' },
-  ecn:              { bg: '#f0f9ff', color: '#0369a1' },
-  ncr:              { bg: '#fef2f2', color: '#dc2626' },
-  capa:             { bg: '#fdf4ff', color: '#7e22ce' },
-  // backend emits 'Payment' for payment_batches — alias
-  payment_batches:  { bg: '#dcfce7', color: '#15803d' },
+/*
+ * Approval Center — the single Approvals page.
+ *
+ *   My Pending Approvals  requests the originating module lets ME decide now
+ *   My Requests           requests I submitted in any module, with status and current approver
+ *   Approval History      decisions I made
+ *
+ * Requests are never created here: they are raised in their own module (Leave,
+ * Attendance, Expense, Travel, Purchase, Recruitment, Engineering) and appear
+ * here automatically. Every Approve/Reject/Delegate/Withdraw button runs the
+ * originating module's own endpoint (see approvalActions.js).
+ */
+
+const TABS = [
+  { id: 'pending',     label: 'My Pending Approvals', approverOnly: true },
+  { id: 'my-requests', label: 'My Requests' },
+  { id: 'history',     label: 'Approval History',     approverOnly: true },
+];
+
+// Where each kind of request is raised. Shown in My Requests' help text and
+// empty state; each entry is shown only if the viewer can open that page.
+const SUBMIT_IN = [
+  { label: 'Leave',                      page: 'ApplyLeave' },
+  { label: 'Attendance correction / OT', page: 'AttendanceDashboard' },
+  { label: 'Expense claim',              page: 'ExpenseClaims' },
+  { label: 'Travel request',             page: 'TravelRequests' },
+  { label: 'Travel advance',             page: 'TravelAdvances' },
+  { label: 'Purchase request',           page: 'PurchaseRequest' },
+  { label: 'Job requisition / offer',    page: 'JobRequisitionPipeline' },
+  { label: 'Engineering change',         page: 'ECNManagement' },
+];
+
+const TYPE_TONE = {
+  leave: 'indigo', reg: 'amber', ot: 'violet', exp: 'violet', pr: 'pink', ecn: 'sky',
+  pay: 'green', travel: 'green', adv: 'green', requisition: 'cyan', offer: 'cyan', appr: 'grey',
+  ieval: 'amber', prob: 'indigo', gate: 'cyan',
 };
-const typeMeta = t => TYPE_META[(t || '').toLowerCase()] || { bg: '#f3f4f6', color: '#374151' };
 
-const PRIORITY_META = {
-  high:   { bg: '#fee2e2', color: '#dc2626' },
-  medium: { bg: '#ede9fe', color: '#5b21b6' },
-  low:    { bg: '#f3f4f6', color: '#6b7280' },
-};
-const prioMeta = p => PRIORITY_META[(p || '').toLowerCase()] || PRIORITY_META.medium;
+// Review queues (intern evaluation, probation review) are completed on their
+// own form, not approved/rejected: the row's only action is `open`.
+const isForm = (r) => !!r?.actions?.open;
+const STATUS_TONE = { Pending: 'violet', Approved: 'green', Rejected: 'red', 'Sent back': 'amber', Cancelled: 'grey' };
 
-const fmt      = d => d ? new Date(d).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—';
-const waitDays = d => d ? Math.floor((Date.now() - new Date(d)) / 86400000) : 0;
-const waitHrs  = d => d ? Math.floor((Date.now() - new Date(d)) / 3600000)  : 0;
-
-function rowClass(a) {
-  const days = waitDays(a.request_date);
-  if (days > 5) return 'row-overdue';
-  if (days > 2) return 'row-warning';
-  return 'row-new';
+const money = (n) => `₹${Number(n).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
+function fmtAmount(r) {
+  if (r.amount == null) return '—';
+  if (r.amount_unit === 'days')  return `${Number(r.amount)} day${Number(r.amount) === 1 ? '' : 's'}`;
+  if (r.amount_unit === 'hours') return `${Number(r.amount)} h`;
+  return money(r.amount);
+}
+function fmtWaiting(h) {
+  if (h == null) return '—';
+  if (h < 1) return '<1h';
+  if (h < 48) return `${h}h`;
+  return `${Math.floor(h / 24)}d`;
 }
 
-export default function ApprovalCenter() {
-  const [activeTab,           setActiveTab]           = useState('pending');
-  const [approvals,           setApprovals]           = useState([]);
-  const [history,             setHistory]             = useState([]);
-  const [stats,               setStats]               = useState({});
-  const [selectedApproval,    setSelectedApproval]    = useState(null);
-  const [approvalChain,       setApprovalChain]       = useState([]);
-  const [filters,             setFilters]             = useState({ type: '', priority: '', search: '' });
-  const [selectedItems,       setSelectedItems]       = useState([]);
+const Badge = ({ tone = 'grey', children, title }) => (
+  <span className={`ac-badge ac-tone-${tone}`} title={title}>{children}</span>
+);
 
-  // reject
-  const [rejectComment,       setRejectComment]       = useState('');
-  const [showRejectModal,     setShowRejectModal]     = useState(false);
+export default function ApprovalCenter({ initialTab } = {}) {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const { role, menuAccess } = useAuth();
+  const canOpen = useCallback((page) => !!page && canRoleOpenPage(role, page, { menuAccess }), [role, menuAccess]);
+  const open = (page, params) => {
+    if (!page) return;
+    const qs = params && Object.keys(params).length ? `?${new URLSearchParams(params)}` : '';
+    navigate(`/${page}${qs}`);
+  };
+  const openForm = (r) => open(r.actions.open.page, r.actions.open.params);
 
-  // bulk reject
-  const [showBulkRejectModal, setShowBulkRejectModal] = useState(false);
-  const [bulkRejectComment,   setBulkRejectComment]   = useState('');
+  const urlTab = new URLSearchParams(location.search).get('tab');
+  const [tab, setTab] = useState(urlTab || initialTab || null);
 
-  // delegation
-  const [showDelegateModal,   setShowDelegateModal]   = useState(false);
-  const [delegateUserId,      setDelegateUserId]      = useState('');
-  const [delegateSearch,      setDelegateSearch]      = useState('');
-  const [delegateUsers,       setDelegateUsers]       = useState([]);
-  const [delegateScope,       setDelegateScope]       = useState('all'); // 'all' | 'selected'
-  const [loadingDelegates,    setLoadingDelegates]    = useState(false);
+  const [stats, setStats]       = useState(null);
+  const [pending, setPending]   = useState([]);
+  const [mine, setMine]         = useState([]);
+  const [history, setHistory]   = useState([]);
+  const [loading, setLoading]   = useState({ pending: false, mine: false, history: false, stats: true });
+  const [errors, setErrors]     = useState({});
+  const [toast, setToast]       = useState(null);
+  const [busy, setBusy]         = useState(null);        // id (or 'bulk') being actioned
+  const [selected, setSelected] = useState([]);
+  const [detail, setDetail]     = useState(null);        // { row, kind: 'pending'|'mine'|'history' }
+  const [chain, setChain]       = useState([]);
+  const [modal, setModal]       = useState(null);        // { kind, rows, action }
+  const [text, setText]         = useState('');
+  const [filters, setFilters]   = useState({ q: '', type: '', status: '' });
 
-  const [toast,               setToast]               = useState(null);
-  const [loadingAppr,         setLoadingAppr]         = useState(false);
-  const [loadingStats,        setLoadingStats]        = useState(false);
-  const [loadingHistory,      setLoadingHistory]      = useState(false);
-  const [actioning,           setActioning]           = useState(null); // id being approved/rejected
-
-  const isMounted = useRef(true);
-  useEffect(() => {
-    isMounted.current = true;
-    return () => { isMounted.current = false; };
-  }, []);
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
 
   const showToast = (msg, type = 'success') => {
     setToast({ msg, type });
-    setTimeout(() => setToast(null), 3000);
+    setTimeout(() => mounted.current && setToast(null), 4500);
   };
 
-  /* ── Data fetching ── */
-  const fetchApprovals = async () => {
-    setLoadingAppr(true);
+  const load = useCallback(async (key, url, setter, pick = (d) => d) => {
+    setLoading((l) => ({ ...l, [key]: true }));
     try {
-      const res = await api.get('/approvals/pending');
-      if (!isMounted.current) return;
-      setApprovals(Array.isArray(res.data) ? res.data : []);
-    } catch { if (isMounted.current) showToast('Could not load approvals', 'error'); }
-    finally { if (isMounted.current) setLoadingAppr(false); }
-  };
-
-  const fetchHistory = async () => {
-    setLoadingHistory(true);
-    try {
-      const res = await api.get('/approvals/history');
-      if (!isMounted.current) return;
-      setHistory(Array.isArray(res.data) ? res.data : []);
-    } catch { if (isMounted.current) showToast('Could not load history', 'error'); }
-    finally { if (isMounted.current) setLoadingHistory(false); }
-  };
-
-  const fetchStats = async () => {
-    setLoadingStats(true);
-    try {
-      const res = await api.get('/approvals/stats');
-      if (!isMounted.current) return;
-      setStats(res.data || {});
-    } catch { /* Stats supplementary */ }
-    finally { if (isMounted.current) setLoadingStats(false); }
-  };
-
-  const fetchChain = async (id) => {
-    try {
-      const res = await api.get(`/approvals/${id}/chain`);
-      if (!isMounted.current) return;
-      setApprovalChain(Array.isArray(res.data) ? res.data : []);
-    } catch { if (isMounted.current) setApprovalChain([]); }
-  };
-
-  useEffect(() => { fetchApprovals(); fetchStats(); }, []);
-  useEffect(() => { if (activeTab === 'history') fetchHistory(); }, [activeTab]);
-
-  const fetchDelegateUsers = async (q = '') => {
-    setLoadingDelegates(true);
-    try {
-      const res = await api.get('/approvals/delegates', { params: { q } });
-      if (!isMounted.current) return;
-      setDelegateUsers(Array.isArray(res.data) ? res.data : []);
-    } catch { /* silent */ }
-    finally { if (isMounted.current) setLoadingDelegates(false); }
-  };
-
-  /* ── Actions ── */
-  const openDetail = (a) => { setSelectedApproval(a); fetchChain(a.id); };
-
-  // P1 fix: pass request_type so backend can fire module-specific side effects
-  const handleApprove = async (id, requestType) => {
-    if (actioning) return;
-    setActioning(id);
-    try {
-      await api.post(`/approvals/${id}/approve`, { request_type: requestType });
-      if (!isMounted.current) return;
-      showToast('Request approved');
-      setSelectedItems(prev => prev.filter(i => String(i) !== String(id)));
-      setSelectedApproval(null);
-      fetchApprovals(); fetchStats();
-      window.dispatchEvent(new Event('pulse:approvals-updated'));
-    } catch {
-      if (isMounted.current) showToast('Failed to approve — try again', 'error');
+      const res = await api.get(url);
+      if (!mounted.current) return;
+      setter(pick(res.data));
+      setErrors((e) => ({ ...e, [key]: null }));
+    } catch (err) {
+      if (mounted.current) setErrors((e) => ({ ...e, [key]: actionError(err, 'Could not load.') }));
     } finally {
-      if (isMounted.current) setActioning(null);
+      if (mounted.current) setLoading((l) => ({ ...l, [key]: false }));
     }
+  }, []);
+
+  const loadStats   = useCallback(() => load('stats', '/approvals/stats', setStats), [load]);
+  const loadPending = useCallback(() => load('pending', '/approvals/pending', (d) => setPending(Array.isArray(d) ? d : [])), [load]);
+  const loadMine    = useCallback(() => load('mine', '/approvals/my-requests', (d) => setMine(Array.isArray(d?.submitted) ? d.submitted : [])), [load]);
+  const loadHistory = useCallback(() => load('history', '/approvals/history', (d) => setHistory(Array.isArray(d) ? d : [])), [load]);
+
+  useEffect(() => { loadStats(); loadMine(); }, [loadStats, loadMine]);
+
+  const isApprover = !!stats?.isApprover;
+  const visibleTabs = TABS.filter((t) => !t.approverOnly || isApprover);
+
+  // Default tab once we know whether the viewer approves anything.
+  useEffect(() => {
+    if (!stats) return;
+    if (!tab || !visibleTabs.some((t) => t.id === tab)) setTab(isApprover ? 'pending' : 'my-requests');
+  }, [stats]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (tab === 'pending' && isApprover) loadPending();
+    if (tab === 'history' && isApprover) loadHistory();
+    setSelected([]);
+  }, [tab, isApprover, loadPending, loadHistory]);
+
+  const switchTab = (id) => {
+    setTab(id);
+    const params = new URLSearchParams(location.search);
+    params.set('tab', id);
+    navigate({ pathname: location.pathname, search: `?${params}` }, { replace: true });
   };
 
-  const handleReject = async (id) => {
-    if (!rejectComment.trim()) return showToast('Please enter a rejection reason', 'error');
-    if (actioning) return;
-    setActioning(id);
+  const refreshAfterDecision = () => {
+    loadPending(); loadStats(); loadHistory();
+    window.dispatchEvent(new Event('pulse:approvals-updated'));
+  };
+
+  /* ── decisions ─────────────────────────────────────────────────────────── */
+
+  const decide = async (row, kind, comment) => {
+    const action = row.actions?.[kind];
+    if (!action) return showToast('This action is not available for this request.', 'error');
+    setBusy(row.id);
     try {
-      await api.post(`/approvals/${id}/reject`, {
-        comment: rejectComment,
-        request_type: selectedApproval?.request_type,
-      });
-      if (!isMounted.current) return;
-      showToast('Request rejected');
-      setSelectedItems(prev => prev.filter(i => String(i) !== String(id)));
-      setSelectedApproval(null); setShowRejectModal(false); setRejectComment('');
-      fetchApprovals(); fetchStats();
-      window.dispatchEvent(new Event('pulse:approvals-updated'));
-    } catch {
-      if (isMounted.current) showToast('Failed to reject — try again', 'error');
+      await runApprovalAction(action, { comment });
+      if (!mounted.current) return;
+      showToast(kind === 'approve' ? 'Approved' : `${action.label || 'Rejected'} — the requester has been notified`);
+      setDetail(null); setModal(null); setText('');
+      setSelected((s) => s.filter((id) => id !== row.id));
+      refreshAfterDecision();
+    } catch (err) {
+      if (mounted.current) showToast(actionError(err, 'Could not complete the action.'), 'error');
     } finally {
-      if (isMounted.current) setActioning(null);
+      if (mounted.current) setBusy(null);
     }
   };
 
-  const handleBulkApprove = async () => {
-    if (!selectedItems.length) return;
-    try {
-      await api.post('/approvals/bulk-approve', { ids: selectedItems });
-      showToast(`${selectedItems.length} requests approved`);
-      setSelectedItems([]);
-      fetchApprovals(); fetchStats();
-      window.dispatchEvent(new Event('pulse:approvals-updated'));
-    } catch { showToast('Bulk approve failed', 'error'); }
-  };
-
-  const handleBulkReject = async () => {
-    if (!bulkRejectComment.trim()) return showToast('Please enter a rejection reason', 'error');
-    try {
-      await api.post('/approvals/bulk-reject', { ids: selectedItems, comment: bulkRejectComment });
-      showToast(`${selectedItems.length} requests rejected`);
-      setSelectedItems([]); setShowBulkRejectModal(false); setBulkRejectComment('');
-      fetchApprovals(); fetchStats();
-      window.dispatchEvent(new Event('pulse:approvals-updated'));
-    } catch { showToast('Bulk reject failed', 'error'); }
-  };
-
-  const handleEscalate = async (id) => {
-    try {
-      await api.post(`/approvals/${id}/escalate`);
-      showToast('Escalated to next approver');
-      fetchApprovals();
-    } catch { showToast('Escalation failed', 'error'); }
-  };
-
-  const handleDelegate = async () => {
-    if (!delegateUserId) return showToast('Select a person to delegate to', 'error');
-    const ids = delegateScope === 'selected' ? selectedItems : approvals.map(a => a.id);
-    if (!ids.length) return showToast('No approvals to delegate', 'error');
-    const chosen = delegateUsers.find(u => String(u.id) === String(delegateUserId));
-    try {
-      const res = await api.post('/approvals/delegate', { ids, delegate_to_user_id: delegateUserId });
-      const results = Array.isArray(res.data?.approvals) ? res.data.approvals : [];
-      const failed = results.filter(r => r.delegated === false);
-      if (failed.length > 0) {
-        showToast(`${results.length - failed.length} delegated, ${failed.length} could not be delegated (unsupported item type)`, 'error');
-      } else {
-        showToast(`${ids.length} approval(s) delegated to ${chosen?.name || 'delegate'}`);
-      }
-      fetchApprovals();
-      setShowDelegateModal(false); setDelegateUserId(''); setDelegateSearch(''); setDelegateUsers([]);
-      if (delegateScope === 'selected') setSelectedItems([]);
-    } catch { showToast('Delegation failed', 'error'); }
-  };
-
-  /* ── Filtering ── */
-  const filtered = approvals.filter(a => {
-    if (filters.type && (a.request_type || '').toLowerCase() !== filters.type.toLowerCase()) return false;
-    if (filters.priority && (a.priority || '').toLowerCase() !== filters.priority.toLowerCase()) return false;
-    if (filters.search) {
-      const q = filters.search.toLowerCase();
-      if (!a.requested_by?.toLowerCase().includes(q) && !a.request_title?.toLowerCase().includes(q)) return false;
+  const bulk = async (kind, comment) => {
+    const rows = pending.filter((r) => selected.includes(r.id) && r.actions?.[kind]);
+    if (!rows.length) return;
+    setBusy('bulk');
+    const failures = [];
+    for (const row of rows) {
+      try { await runApprovalAction(row.actions[kind], { comment }); }
+      catch (err) { failures.push(`${row.request_title}: ${actionError(err)}`); }
     }
+    if (!mounted.current) return;
+    setBusy(null); setModal(null); setText(''); setSelected([]);
+    const done = rows.length - failures.length;
+    showToast(failures.length
+      ? `${done} of ${rows.length} ${kind === 'approve' ? 'approved' : 'rejected'}. ${failures[0]}${failures.length > 1 ? ` (+${failures.length - 1} more)` : ''}`
+      : `${done} request${done === 1 ? '' : 's'} ${kind === 'approve' ? 'approved' : 'rejected'}`,
+    failures.length ? 'error' : 'success');
+    refreshAfterDecision();
+  };
+
+  const withdraw = async (row, reason) => {
+    setBusy(row.id);
+    try {
+      await runApprovalAction(row.actions.withdraw, { comment: reason });
+      if (!mounted.current) return;
+      showToast('Request withdrawn');
+      setModal(null); setText('');
+      loadMine();
+    } catch (err) {
+      if (mounted.current) showToast(actionError(err, 'Could not withdraw.'), 'error');
+    } finally {
+      if (mounted.current) setBusy(null);
+    }
+  };
+
+  /* ── delegation ────────────────────────────────────────────────────────── */
+
+  const [delegateQ, setDelegateQ] = useState('');
+  const [delegates, setDelegates] = useState([]);
+  const [delegatePick, setDelegatePick] = useState(null);
+  useEffect(() => {
+    if (modal?.kind !== 'delegate') return undefined;
+    const t = setTimeout(async () => {
+      try {
+        const res = await api.get('/approvals/delegates', { params: { q: delegateQ } });
+        if (mounted.current) setDelegates(Array.isArray(res.data) ? res.data : []);
+      } catch { if (mounted.current) setDelegates([]); }
+    }, 250);
+    return () => clearTimeout(t);
+  }, [delegateQ, modal]);
+
+  const delegate = async () => {
+    const row = modal.rows[0];
+    const action = row.actions.delegate;
+    const id = action.delegateIdField === 'user_id' ? delegatePick.user_id : delegatePick.id;
+    setBusy(row.id);
+    try {
+      await runApprovalAction(action, { delegateId: id });
+      if (!mounted.current) return;
+      showToast(`Delegated to ${delegatePick.name}`);
+      setModal(null); setDelegatePick(null); setDelegateQ('');
+      refreshAfterDecision();
+    } catch (err) {
+      if (mounted.current) showToast(actionError(err, 'Could not delegate.'), 'error');
+    } finally {
+      if (mounted.current) setBusy(null);
+    }
+  };
+
+  /* ── detail panel ──────────────────────────────────────────────────────── */
+
+  const openDetail = async (row, kind) => {
+    setDetail({ row, kind });
+    setChain([]);
+    if (/^(leave|exp|ecn):\d+$/.test(row.id) || /^\d+$/.test(row.id)) {
+      try {
+        const res = await api.get(`/approvals/${encodeURIComponent(row.id)}/chain`);
+        if (mounted.current) setChain(Array.isArray(res.data) ? res.data : []);
+      } catch { /* the trail is supplementary */ }
+    }
+  };
+
+  /* ── filtering ─────────────────────────────────────────────────────────── */
+
+  const matches = (r) => {
+    const q = filters.q.trim().toLowerCase();
+    if (filters.type && r.type !== filters.type) return false;
+    if (filters.status && r.status !== filters.status && r.decision !== filters.status) return false;
+    if (q && ![r.request_title, r.requested_by, r.request_type, r.current_approver]
+      .some((v) => String(v || '').toLowerCase().includes(q))) return false;
     return true;
-  });
+  };
+  const rowsFor = { pending, 'my-requests': mine, history };
+  const current = (rowsFor[tab] || []).filter(matches);
+  const typeOptions = useMemo(() => {
+    const m = new Map();
+    for (const r of rowsFor[tab] || []) m.set(r.type, r.request_type);
+    return [...m.entries()];
+  }, [tab, pending, mine, history]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const setF = (k, v) => setFilters(p => ({ ...p, [k]: v }));
+  const submitLinks = SUBMIT_IN.filter((s) => canOpen(s.page));
+  const slaNote = stats?.sla
+    ? [...(stats.sla.configured || []).map((c) => `${c.label} ${c.hours}h (configured)`),
+       `others ${stats.sla.default_hours}h (default)`].join(' · ')
+    : '';
+
+  /* ── render ────────────────────────────────────────────────────────────── */
 
   return (
-    <PageShell dock={
-      <PageHero
-        icon={CheckSquare}
-        eyebrow="Approvals"
-        title="Approval Center"
-      />
-    }>
+    <PageShell dock={<PageHero icon={CheckSquare} eyebrow="Approvals" title="Approval Center" />}>
+      <div className="ac-page">
+        {toast && <div className={`ac-toast ac-toast-${toast.type}`} role="status">{toast.msg}</div>}
 
-      {/* Toast */}
-      {toast && (
-        <div className={`ac-toast ${toast.type === 'error' ? 'ac-toast-error' : 'ac-toast-success'}`}>
-          {toast.msg}
-        </div>
-      )}
-
-
-
-      {/* Stats — 5 cards */}
-      <div className="stats-grid">
-        {[
-          { value: stats.pending ?? approvals.length, label: 'Pending',        cls: '' },
-          { value: stats.approvedToday ?? 0,          label: 'Approved Today', cls: '' },
-          { value: stats.rejectedToday ?? 0,          label: 'Rejected Today', cls: '' },
-          { value: stats.overdue ?? 0,                label: 'Overdue (>48h)', cls: ' overdue' },
-          { value: stats.slaCompliance != null ? `${stats.slaCompliance}%` : '—', label: 'SLA Compliance', cls: ' sla' },
-        ].map(({ value, label, cls }) => (
-          <div key={label} className={`stat-card${cls}`}>
-            <span className="stat-value">
-              {loadingStats ? <span className="stat-skeleton" /> : value}
-            </span>
-            <span className="stat-label">{label}</span>
+        {isApprover && (
+          <div className="ac-kpis">
+            <Kpi label="Pending" value={stats.pending} hint="Awaiting your decision" />
+            <Kpi label="Approved today" value={stats.approvedToday} />
+            <Kpi label="Rejected today" value={stats.rejectedToday} />
+            <Kpi label="Overdue" value={stats.overdue} tone={stats.overdue ? 'danger' : ''}
+                 hint="Waiting longer than the SLA" title={`SLA: ${slaNote}`} />
+            <Kpi label="SLA compliance"
+                 value={stats.slaCompliance == null ? 'No data' : `${stats.slaCompliance}%`}
+                 tone={stats.slaCompliance == null ? 'muted' : 'ok'}
+                 hint={stats.slaCompliance == null ? 'No decisions in the last 30 days' : `${stats.slaDecisions} decision${stats.slaDecisions === 1 ? '' : 's'}, last 30 days`}
+                 title={`Share of your decisions made within SLA. ${slaNote}`} />
           </div>
-        ))}
-      </div>
+        )}
 
-      {/* Tabs */}
-      <div className="tabs">
-        <button className={`tab${activeTab === 'pending' ? ' active' : ''}`} onClick={() => setActiveTab('pending')}>
-          Pending Approvals {approvals.length > 0 && `(${approvals.length})`}
-        </button>
-        <button className={`tab${activeTab === 'history' ? ' active' : ''}`} onClick={() => setActiveTab('history')}>
-          My Approval History
-        </button>
-      </div>
-
-      {activeTab === 'pending' && (
-        <>
-          <div className="filters-bar">
-            <input
-              className="search-input"
-              placeholder="Search by name or request…"
-              value={filters.search}
-              onChange={e => setF('search', e.target.value)}
-            />
-            <select value={filters.type} onChange={e => setF('type', e.target.value)}>
-              <option value="">All Types</option>
-              {['Leave','Expense','Purchase','Payment','Regularization','OT','ECN']
-                .map(t => <option key={t} value={t}>{t}</option>)}
-            </select>
-            <select value={filters.priority} onChange={e => setF('priority', e.target.value)}>
-              <option value="">All Priorities</option>
-              <option value="High">High</option>
-              <option value="Medium">Medium</option>
-              <option value="Low">Low</option>
-            </select>
-
-            <button className="btn-delegate" onClick={() => { setDelegateScope('all'); setShowDelegateModal(true); }}>
-              Delegate
+        <div className="ac-tabs" role="tablist">
+          {visibleTabs.map((t) => (
+            <button key={t.id} role="tab" aria-selected={tab === t.id}
+                    className={`ac-tab${tab === t.id ? ' is-active' : ''}`} onClick={() => switchTab(t.id)}>
+              {t.label}
+              {t.id === 'pending' && stats?.pending > 0 && <span className="ac-count">{stats.pending}</span>}
             </button>
-
-            {selectedItems.length > 0 && (
-              <>
-                <button className="btn-bulk" onClick={handleBulkApprove}>
-                  ✓ Approve {selectedItems.length}
-                </button>
-                <button className="btn-bulk-reject" onClick={() => setShowBulkRejectModal(true)}>
-                  ✗ Reject {selectedItems.length}
-                </button>
-                <button className="btn-delegate-sel" onClick={() => { setDelegateScope('selected'); setShowDelegateModal(true); }}>
-                  Delegate {selectedItems.length}
-                </button>
-              </>
-            )}
-          </div>
-
-          <div className="approvals-table-container">
-            {loadingAppr ? (
-              <div className="ac-empty">Loading…</div>
-            ) : filtered.length === 0 ? (
-              <div className="ac-empty">No pending approvals ✅</div>
-            ) : (
-              <table className="approvals-table">
-                <thead>
-                  <tr>
-                    <th>
-                      <input type="checkbox" onChange={e =>
-                        setSelectedItems(e.target.checked ? filtered.map(a => a.id) : [])
-                      } />
-                    </th>
-                    <th>Type</th>
-                    <th>Request</th>
-                    <th>Requested By</th>
-                    <th>Date</th>
-                    <th>Amount</th>
-                    <th>Priority</th>
-                    <th>Waiting</th>
-                    <th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filtered.map(a => {
-                    const tm = typeMeta(a.request_type);
-                    const pm = prioMeta(a.priority);
-                    const overdue = waitHrs(a.request_date) > 48;
-                    return (
-                      <tr key={a.id} className={rowClass(a)}>
-                        <td>
-                          {a.can_act !== false && (
-                            <input type="checkbox"
-                              checked={selectedItems.includes(a.id)}
-                              onChange={e => setSelectedItems(prev =>
-                                e.target.checked ? [...prev, a.id] : prev.filter(i => i !== a.id)
-                              )}
-                            />
-                          )}
-                        </td>
-                        <td>
-                          <span style={{ display:'inline-block', padding:'3px 10px', borderRadius:10, fontSize:11, fontWeight:600, background:tm.bg, color:tm.color }}>
-                            {a.request_type}
-                          </span>
-                        </td>
-                        <td style={{ maxWidth: 200 }}>
-                          <span>{a.request_title}</span>
-                          {overdue && <span className="badge-overdue">Overdue</span>}
-                        </td>
-                        <td>{a.requested_by}</td>
-                        <td style={{ whiteSpace:'nowrap' }}>{fmt(a.request_date)}</td>
-                        <td>{a.amount ? `₹${Number(a.amount).toLocaleString('en-IN')}` : '—'}</td>
-                        <td>
-                          <span style={{ display:'inline-block', padding:'3px 10px', borderRadius:10, fontSize:11, fontWeight:600, background:pm.bg, color:pm.color }}>
-                            {a.priority}
-                          </span>
-                        </td>
-                        <td style={{ whiteSpace:'nowrap' }}>{waitDays(a.request_date)}d</td>
-                        <td className="action-cell">
-                          <button className="btn-view"    onClick={() => openDetail(a)}>View</button>
-                          {a.can_act === false ? (
-                            <span className="badge-view-only" title="Not assigned to your role — view only">View only</span>
-                          ) : (
-                            <>
-                              <button className="btn-approve" onClick={() => handleApprove(a.id, a.request_type)} title="Approve" disabled={!!actioning} style={actioning === a.id ? { opacity: 0.6, cursor: 'not-allowed' } : {}}>✓</button>
-                              <button className="btn-reject"  onClick={() => { setSelectedApproval(a); setShowRejectModal(true); }} title="Reject" disabled={!!actioning}>✗</button>
-                            </>
-                          )}
-                          {overdue && a.can_act !== false && (
-                            <button className="btn-escalate" onClick={() => handleEscalate(a.id)} title="Escalate to next approver">↑</button>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            )}
-          </div>
-        </>
-      )}
-
-      {activeTab === 'history' && (
-        <div className="history-table-container">
-          {loadingHistory ? (
-            <div className="ac-empty">Loading history…</div>
-          ) : history.length === 0 ? (
-            <div className="ac-empty">No approval history yet</div>
-          ) : (
-            <table className="approvals-table">
-              <thead>
-                <tr>
-                  <th>Type</th><th>Request</th><th>Requested By</th>
-                  <th>Decision</th><th>Date</th><th>Comments</th>
-                </tr>
-              </thead>
-              <tbody>
-                {history.map(item => {
-                  const tm = typeMeta(item.request_type);
-                  const dec = (item.status || item.decision || '').toLowerCase();
-                  return (
-                    <tr key={item.id}>
-                      <td>
-                        <span style={{ display:'inline-block', padding:'3px 10px', borderRadius:10, fontSize:11, fontWeight:600, background:tm.bg, color:tm.color }}>
-                          {item.request_type}
-                        </span>
-                      </td>
-                      <td>{item.request_title}</td>
-                      <td>{item.requested_by}</td>
-                      <td>
-                        <span style={{
-                          display:'inline-block', padding:'3px 10px', borderRadius:10, fontSize:11, fontWeight:600,
-                          background: dec === 'approved' ? '#dcfce7' : '#fee2e2',
-                          color:      dec === 'approved' ? '#15803d' : '#dc2626',
-                        }}>
-                          {item.status || item.decision}
-                        </span>
-                      </td>
-                      <td style={{ whiteSpace:'nowrap' }}>{fmt(item.decision_date)}</td>
-                      <td>{item.comments || '—'}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          )}
+          ))}
         </div>
-      )}
 
-      {/* ── Detail side panel ── */}
-      {selectedApproval && !showRejectModal && (
-        <div className="side-panel">
-          <div className="panel-overlay" onClick={() => setSelectedApproval(null)} />
-          <div className="panel-content">
-            <div className="panel-header">
-              <h2>Approval Details</h2>
-              <button className="close-btn" onClick={() => setSelectedApproval(null)}>×</button>
+        {tab === 'my-requests' && (
+          <p className="ac-help">
+            Requests are raised in their own modules and appear here automatically once submitted.
+            {submitLinks.length > 0 && <> Submit new: {submitLinks.map((s, i) => (
+              <span key={s.page}>{i > 0 && ' · '}<button type="button" className="ac-link" onClick={() => open(s.page)}>{s.label}</button></span>
+            ))}</>}
+          </p>
+        )}
+
+        {tab && (
+          <div className="ac-filters">
+            <input className="ac-search" placeholder={tab === 'my-requests' ? 'Search requests…' : 'Search by request or person…'}
+                   value={filters.q} onChange={(e) => setFilters((f) => ({ ...f, q: e.target.value }))} />
+            <select value={filters.type} onChange={(e) => setFilters((f) => ({ ...f, type: e.target.value }))} aria-label="Type">
+              <option value="">All types</option>
+              {typeOptions.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+            </select>
+            {tab !== 'pending' && (
+              <select value={filters.status} onChange={(e) => setFilters((f) => ({ ...f, status: e.target.value }))} aria-label="Status">
+                <option value="">All statuses</option>
+                {(tab === 'history' ? ['Approved', 'Rejected'] : ['Pending', 'Approved', 'Rejected', 'Sent back', 'Cancelled'])
+                  .map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+            )}
+            {tab === 'pending' && selected.length > 0 && (
+              <div className="ac-bulk">
+                <span>{selected.length} selected</span>
+                <button className="ac-btn ac-btn-primary" disabled={busy === 'bulk'} onClick={() => bulk('approve')}>Approve selected</button>
+                <button className="ac-btn ac-btn-danger" disabled={busy === 'bulk'} onClick={() => { setText(''); setModal({ kind: 'bulk-reject', rows: [] }); }}>Reject selected</button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {tab === 'pending' && (
+          <Table loading={loading.pending} error={errors.pending} onRetry={loadPending} empty={filters.q || filters.type ? 'No pending requests match these filters.' : 'Nothing is waiting for your decision.'}
+          rows={current} head={
+            <tr>
+              <th className="ac-check"><input type="checkbox" aria-label="Select all"
+                checked={current.some((r) => !isForm(r)) && current.filter((r) => !isForm(r)).every((r) => selected.includes(r.id))}
+                onChange={(e) => setSelected(e.target.checked ? current.filter((r) => !isForm(r)).map((r) => r.id) : [])} /></th>
+              <th>Type</th><th>Request</th><th>Requested by</th><th>Stage</th><th>Submitted</th><th>Amount</th><th>Waiting</th><th>Actions</th>
+            </tr>
+          } render={(r) => (
+            <tr key={r.id} className={r.overdue ? 'is-overdue' : ''}>
+              <td className="ac-check">{!isForm(r) && <input type="checkbox" aria-label={`Select ${r.request_title}`}
+                checked={selected.includes(r.id)}
+                onChange={(e) => setSelected((s) => (e.target.checked ? [...s, r.id] : s.filter((x) => x !== r.id)))} />}</td>
+              <td><Badge tone={TYPE_TONE[r.type]}>{r.request_type}</Badge></td>
+              <td className="ac-title">{r.request_title}</td>
+              <td>{r.requested_by}</td>
+              <td className="ac-muted">{r.stage}</td>
+              <td className="ac-nowrap">{fmtDate(r.request_date)}</td>
+              <td className="ac-nowrap">{fmtAmount(r)}</td>
+              <td className="ac-nowrap">
+                {fmtWaiting(r.waiting_hours)}
+                {r.overdue && <Badge tone="red" title={`SLA ${r.sla_hours}h (${r.sla_source})`}>Overdue</Badge>}
+              </td>
+              <td className="ac-actions">
+                <button className="ac-btn ac-btn-ghost" onClick={() => openDetail(r, 'pending')}>View</button>
+                {isForm(r) ? (
+                  <button className="ac-btn ac-btn-primary" onClick={() => openForm(r)}>Open</button>
+                ) : (
+                  <>
+                    <button className="ac-btn ac-btn-ok" disabled={!!busy} onClick={() => decide(r, 'approve')}>Approve</button>
+                    <button className="ac-btn ac-btn-no" disabled={!!busy}
+                            onClick={() => { setText(''); setModal({ kind: 'reject', rows: [r], action: r.actions.reject }); }}>
+                      {r.actions?.reject?.label || 'Reject'}
+                    </button>
+                  </>
+                )}
+                {r.actions?.delegate && (
+                  <button className="ac-btn ac-btn-ghost" disabled={!!busy}
+                          onClick={() => { setDelegatePick(null); setDelegateQ(''); setModal({ kind: 'delegate', rows: [r] }); }}>Delegate</button>
+                )}
+              </td>
+            </tr>
+          )} />
+        )}
+
+        {tab === 'my-requests' && (
+          <Table loading={loading.mine} error={errors.mine} onRetry={loadMine} rows={current} empty={
+            <div className="ac-empty-body">
+              <p><strong>{mine.length ? 'No requests match these filters.' : 'You haven\'t submitted any requests yet.'}</strong></p>
+              {!mine.length && <p>There is no form here — raise a request in its own module (for example Apply Leave, Expense Claims or Travel Requests) and it will appear in this list as soon as you submit it, with its status and who it is waiting on.</p>}
             </div>
-            <div className="panel-body">
-              <div className="detail-section">
-                <h3>Requester</h3>
-                <p><strong>Name:</strong> {selectedApproval.requested_by}</p>
-                <p><strong>Department:</strong> {selectedApproval.department || '—'}</p>
-                <p><strong>Email:</strong> {selectedApproval.requester_email || '—'}</p>
-              </div>
-              <div className="detail-section">
-                <h3>Request Details</h3>
-                <p><strong>Type:</strong> {selectedApproval.request_type}</p>
-                <p><strong>Title:</strong> {selectedApproval.request_title}</p>
-                <p><strong>Description:</strong> {selectedApproval.description || '—'}</p>
-                <p><strong>Amount:</strong> {selectedApproval.amount ? `₹${Number(selectedApproval.amount).toLocaleString('en-IN')}` : 'N/A'}</p>
-                <p><strong>Priority:</strong> {selectedApproval.priority}</p>
-                <p><strong>Submitted:</strong> {fmt(selectedApproval.request_date)}</p>
-                <p><strong>Waiting:</strong> {waitDays(selectedApproval.request_date)} day(s)</p>
-              </div>
+          } head={
+            <tr><th>Type</th><th>Request</th><th>Submitted</th><th>Amount</th><th>Status</th><th>Waiting on</th><th>Notes</th><th>Actions</th></tr>
+          } render={(r) => (
+            <tr key={r.id}>
+              <td><Badge tone={TYPE_TONE[r.type]}>{r.request_type}</Badge></td>
+              <td className="ac-title">{r.request_title}</td>
+              <td className="ac-nowrap">{fmtDate(r.request_date)}</td>
+              <td className="ac-nowrap">{fmtAmount(r)}</td>
+              <td><Badge tone={STATUS_TONE[r.status]} title={r.status_detail}>{r.status}</Badge></td>
+              <td>{r.current_approver || '—'}</td>
+              <td className="ac-notes">{r.comments || '—'}</td>
+              <td className="ac-actions">
+                <button className="ac-btn ac-btn-ghost" onClick={() => openDetail(r, 'mine')}>View</button>
+                {canOpen(r.link_page) && <button className="ac-btn ac-btn-ghost" onClick={() => open(r.link_page)}>Track</button>}
+                {r.actions?.withdraw && (
+                  <button className="ac-btn ac-btn-no" disabled={!!busy}
+                          onClick={() => { setText(''); setModal({ kind: 'withdraw', rows: [r] }); }}>Withdraw</button>
+                )}
+                {r.actions?.resubmitPage && canOpen(r.actions.resubmitPage) && (
+                  <button className="ac-btn ac-btn-primary" onClick={() => open(r.actions.resubmitPage)}>Revise &amp; resubmit</button>
+                )}
+              </td>
+            </tr>
+          )} />
+        )}
 
-              {/* Approval chain visualization */}
-              {approvalChain.length > 0 && (
-                <div className="detail-section">
-                  <h3>Approval Chain</h3>
-                  <div className="approval-chain">
-                    {approvalChain.map((step, i) => {
-                      const s = (step.status || 'pending').toLowerCase();
+        {tab === 'history' && (
+          <Table loading={loading.history} error={errors.history} onRetry={loadHistory} rows={current}
+                 empty="You haven't approved or rejected any requests yet."
+                 head={<tr><th>Type</th><th>Request</th><th>Requested by</th><th>Level</th><th>Decision</th><th>Decided</th><th>Comments</th><th></th></tr>}
+                 render={(r) => (
+                   <tr key={r.key || r.id}>
+                     <td><Badge tone={TYPE_TONE[r.type]}>{r.request_type}</Badge></td>
+                     <td className="ac-title">{r.request_title}</td>
+                     <td>{r.requested_by}</td>
+                     <td className="ac-muted">{r.stage || '—'}</td>
+                     <td><Badge tone={STATUS_TONE[r.decision]}>{r.decision}</Badge></td>
+                     <td className="ac-nowrap">{fmtDate(r.decision_date)}</td>
+                     <td className="ac-notes">{r.comments || '—'}</td>
+                     <td className="ac-actions"><button className="ac-btn ac-btn-ghost" onClick={() => openDetail(r, 'history')}>View</button></td>
+                   </tr>
+                 )} />
+        )}
+
+        {detail && (
+          <div className="ac-panel" role="dialog" aria-label="Request details">
+            <div className="ac-panel-overlay" onClick={() => setDetail(null)} />
+            <div className="ac-panel-body">
+              <div className="ac-panel-head">
+                <h2>{detail.row.request_title}</h2>
+                <button className="ac-close" aria-label="Close" onClick={() => setDetail(null)}>×</button>
+              </div>
+              <dl className="ac-dl">
+                <dt>Type</dt><dd>{detail.row.request_type}</dd>
+                {detail.row.requested_by && <><dt>Requested by</dt><dd>{detail.row.requested_by}{detail.row.department ? ` · ${detail.row.department}` : ''}</dd></>}
+                <dt>Submitted</dt><dd>{fmtDate(detail.row.request_date)}</dd>
+                {detail.row.amount != null && <><dt>Amount</dt><dd>{fmtAmount(detail.row)}</dd></>}
+                {detail.row.stage && <><dt>{detail.kind === 'history' ? 'Level' : 'Current stage'}</dt><dd>{detail.row.stage}</dd></>}
+                {detail.row.status && <><dt>Status</dt><dd>{detail.row.status}</dd></>}
+                {detail.kind === 'mine' && <><dt>Waiting on</dt><dd>{detail.row.current_approver || '—'}</dd></>}
+                {detail.row.decision && <><dt>Your decision</dt><dd>{detail.row.decision} · {fmtDate(detail.row.decision_date)}</dd></>}
+                {detail.kind === 'pending' && <><dt>SLA</dt><dd>{detail.row.sla_hours}h ({detail.row.sla_source}) · waiting {fmtWaiting(detail.row.waiting_hours)}</dd></>}
+                {detail.row.description && <><dt>Details</dt><dd className="ac-pre">{detail.row.description}</dd></>}
+                {detail.row.comments && <><dt>Comments</dt><dd className="ac-pre">{detail.row.comments}</dd></>}
+              </dl>
+
+              {chain.length > 0 && (
+                <div className="ac-chain">
+                  <h3>Approval trail</h3>
+                  <ol>
+                    {chain.map((s, i) => {
+                      const st = String(s.status || 'pending').toLowerCase();
                       return (
-                        <div key={i} className={`chain-step chain-step-${s}`}>
-                          <div className="chain-dot" />
-                          <div className="chain-info">
-                            <span className="chain-name">{step.approver_name || step.approver}</span>
-                            <span className={`chain-status-badge chain-status-${s}`}>
-                              {step.status || 'Pending'}
-                            </span>
-                            {step.decision_date && (
-                              <span className="chain-date">{fmt(step.decision_date)}</span>
-                            )}
-                            {step.comment && (
-                              <span className="chain-comment">"{step.comment}"</span>
-                            )}
-                          </div>
-                        </div>
+                        <li key={i} className={`is-${st}`}>
+                          <span className="ac-chain-step">{s.step}</span>
+                          <span>{s.approver_name || s.approver || '—'}</span>
+                          <Badge tone={STATUS_TONE[s.status] || (st === 'pending' ? 'violet' : 'grey')}>{s.status || 'Pending'}</Badge>
+                          {s.decision_date && <span className="ac-muted">{fmtDate(s.decision_date)}</span>}
+                          {s.comment && <span className="ac-muted">“{s.comment}”</span>}
+                        </li>
                       );
                     })}
-                  </div>
+                  </ol>
                 </div>
               )}
 
-              {selectedApproval.attachments && (
-                <div className="detail-section">
-                  <h3>Attachments</h3>
-                  <p>{selectedApproval.attachments}</p>
-                </div>
-              )}
+              <div className="ac-panel-foot">
+                {detail.kind === 'pending' && isForm(detail.row) ? (
+                  <button className="ac-btn ac-btn-primary" onClick={() => openForm(detail.row)}>Open</button>
+                ) : canOpen(detail.row.link_page) && (
+                  <button className="ac-btn ac-btn-ghost" onClick={() => open(detail.row.link_page)}>Open in module</button>
+                )}
+                {detail.kind === 'pending' && !isForm(detail.row) && (
+                  <>
+                    <button className="ac-btn ac-btn-ok" disabled={!!busy} onClick={() => decide(detail.row, 'approve')}>Approve</button>
+                    <button className="ac-btn ac-btn-no" disabled={!!busy}
+                            onClick={() => { setText(''); setModal({ kind: 'reject', rows: [detail.row], action: detail.row.actions.reject }); }}>
+                      {detail.row.actions?.reject?.label || 'Reject'}
+                    </button>
+                  </>
+                )}
+              </div>
             </div>
-            <div className="panel-footer">
-              {selectedApproval.can_act === false ? (
-                <p className="panel-view-only-note">Not assigned to your role — view only.</p>
+          </div>
+        )}
+
+        {modal && (
+          <div className="ac-modal" role="dialog" aria-modal="true">
+            <div className="ac-panel-overlay" onClick={() => !busy && setModal(null)} />
+            <div className="ac-modal-body">
+              {modal.kind === 'delegate' ? (
+                <>
+                  <h2>Delegate this approval</h2>
+                  <p className="ac-muted">{modal.rows[0].request_title} — the colleague you choose will be able to decide it.</p>
+                  <input className="ac-search" autoFocus placeholder="Search colleague by name or email…"
+                         value={delegateQ} onChange={(e) => { setDelegateQ(e.target.value); setDelegatePick(null); }} />
+                  <ul className="ac-picklist">
+                    {delegates.map((u) => (
+                      <li key={u.id}>
+                        <button type="button" className={delegatePick?.id === u.id ? 'is-picked' : ''} onClick={() => setDelegatePick(u)}>
+                          <strong>{u.name}</strong>{u.designation && <span className="ac-muted"> · {u.designation}</span>}
+                        </button>
+                      </li>
+                    ))}
+                    {!delegates.length && <li className="ac-muted">No matching colleagues with an active login.</li>}
+                  </ul>
+                  <div className="ac-modal-actions">
+                    <button className="ac-btn ac-btn-ghost" onClick={() => setModal(null)} disabled={!!busy}>Cancel</button>
+                    <button className="ac-btn ac-btn-primary" disabled={!delegatePick || !!busy} onClick={delegate}>Delegate</button>
+                  </div>
+                </>
               ) : (
                 <>
-                  <button className="btn-approve-large" onClick={() => handleApprove(selectedApproval.id, selectedApproval.request_type)} disabled={!!actioning} style={actioning ? { opacity: 0.6, cursor: 'not-allowed' } : {}}>
-                    {actioning === selectedApproval.id ? 'Approving…' : '✓ Approve'}
-                  </button>
-                  <button className="btn-reject-large" onClick={() => setShowRejectModal(true)} disabled={!!actioning}>
-                    ✗ Reject
-                  </button>
+                  <h2>{modal.kind === 'withdraw' ? 'Withdraw request'
+                    : modal.kind === 'bulk-reject' ? `Reject ${selected.length} requests`
+                    : `${modal.action?.label || 'Reject'} request`}</h2>
+                  {modal.rows[0] && <p className="ac-muted">{modal.rows[0].request_title}</p>}
+                  <label className="ac-label" htmlFor="ac-reason">
+                    {modal.kind === 'withdraw' ? 'Reason for withdrawing' : 'Reason (shown to the requester)'} <span className="ac-req">*</span>
+                  </label>
+                  <textarea id="ac-reason" rows={4} autoFocus value={text} onChange={(e) => setText(e.target.value)} />
+                  <div className="ac-modal-actions">
+                    <button className="ac-btn ac-btn-ghost" onClick={() => setModal(null)} disabled={!!busy}>Cancel</button>
+                    <button className="ac-btn ac-btn-danger" disabled={!text.trim() || !!busy}
+                            onClick={() => (modal.kind === 'withdraw' ? withdraw(modal.rows[0], text.trim())
+                              : modal.kind === 'bulk-reject' ? bulk('reject', text.trim())
+                              : decide(modal.rows[0], 'reject', text.trim()))}>
+                      {busy ? 'Working…' : modal.kind === 'withdraw' ? 'Withdraw' : (modal.action?.label || 'Reject')}
+                    </button>
+                  </div>
                 </>
               )}
             </div>
           </div>
-        </div>
-      )}
-
-      {/* ── Reject modal ── */}
-      {showRejectModal && (
-        <div className="modal">
-          <div className="modal-overlay" onClick={() => setShowRejectModal(false)} />
-          <div className="modal-content">
-            <h2>Reject Request</h2>
-            <p>Provide a reason for rejection (required):</p>
-            <textarea
-              rows={4}
-              value={rejectComment}
-              onChange={e => setRejectComment(e.target.value)}
-              placeholder="Enter rejection reason…"
-            />
-            <div className="modal-actions">
-              <button className="btn-cancel" onClick={() => { setShowRejectModal(false); setRejectComment(''); }} disabled={!!actioning}>Cancel</button>
-              <button className="btn-reject-confirm" onClick={() => handleReject(selectedApproval?.id)} disabled={!!actioning} style={actioning ? { opacity: 0.6, cursor: 'not-allowed' } : {}}>
-                {actioning ? 'Rejecting…' : 'Confirm Reject'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ── Bulk reject modal ── */}
-      {showBulkRejectModal && (
-        <div className="modal">
-          <div className="modal-overlay" onClick={() => setShowBulkRejectModal(false)} />
-          <div className="modal-content">
-            <h2>Reject {selectedItems.length} Requests</h2>
-            <p>This will reject all {selectedItems.length} selected requests. Provide a reason:</p>
-            <textarea
-              rows={4}
-              value={bulkRejectComment}
-              onChange={e => setBulkRejectComment(e.target.value)}
-              placeholder="Enter rejection reason…"
-            />
-            <div className="modal-actions">
-              <button className="btn-cancel" onClick={() => { setShowBulkRejectModal(false); setBulkRejectComment(''); }}>Cancel</button>
-              <button className="btn-reject-confirm" onClick={handleBulkReject}>Confirm Reject All</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ── Delegate modal ── */}
-      {showDelegateModal && (
-        <div className="modal">
-          <div className="modal-overlay" onClick={() => { setShowDelegateModal(false); setDelegateUserId(''); setDelegateSearch(''); setDelegateUsers([]); }} />
-          <div className="modal-content">
-            <h2>Delegate Approvals</h2>
-            <p>
-              {delegateScope === 'selected'
-                ? `Delegate ${selectedItems.length} selected approval(s) to a colleague.`
-                : `Delegate all ${approvals.length} pending approval(s) to a colleague.`}
-            </p>
-            <label className="modal-label">Search colleague</label>
-            <input
-              className="modal-text-input"
-              type="text"
-              value={delegateSearch}
-              onChange={e => { setDelegateSearch(e.target.value); setDelegateUserId(''); fetchDelegateUsers(e.target.value); }}
-              placeholder="Type a name to search…"
-              autoFocus
-            />
-            {loadingDelegates && <p style={{ fontSize: 12, color: '#6b7280', margin: '4px 0' }}>Searching…</p>}
-            {delegateUsers.length > 0 && !delegateUserId && (
-              <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, maxHeight: 160, overflowY: 'auto', marginTop: 4 }}>
-                {delegateUsers.map(u => (
-                  <div
-                    key={u.id}
-                    onClick={() => { setDelegateUserId(u.id); setDelegateSearch(u.name); setDelegateUsers([]); }}
-                    style={{ padding: '8px 12px', cursor: 'pointer', borderBottom: '1px solid #f3f4f6', fontSize: 13 }}
-                    onMouseEnter={e => e.currentTarget.style.background = '#f5f3ff'}
-                    onMouseLeave={e => e.currentTarget.style.background = ''}
-                  >
-                    <strong>{u.name}</strong>
-                    {u.designation && <span style={{ color: '#6b7280', marginLeft: 6 }}>{u.designation}</span>}
-                  </div>
-                ))}
-              </div>
-            )}
-            {delegateUserId && (
-              <p style={{ fontSize: 12, color: '#059669', margin: '6px 0' }}>
-                ✓ Selected: {delegateSearch}
-              </p>
-            )}
-            <div className="modal-actions">
-              <button className="btn-cancel" onClick={() => { setShowDelegateModal(false); setDelegateUserId(''); setDelegateSearch(''); setDelegateUsers([]); }}>Cancel</button>
-              <button className="btn-delegate-confirm" onClick={handleDelegate} disabled={!delegateUserId}>Confirm Delegation</button>
-            </div>
-          </div>
-        </div>
-      )}
+        )}
+      </div>
     </PageShell>
+  );
+}
+
+function Kpi({ label, value, hint, tone = '', title }) {
+  return (
+    <div className={`ac-kpi${tone ? ` ac-kpi-${tone}` : ''}`} title={title}>
+      <span className="ac-kpi-value">{value ?? '—'}</span>
+      <span className="ac-kpi-label">{label}</span>
+      {hint && <span className="ac-kpi-hint">{hint}</span>}
+    </div>
+  );
+}
+
+function Table({ loading, error, onRetry, rows, head, render, empty }) {
+  if (loading && !rows.length) return <div className="ac-empty">Loading…</div>;
+  if (error) {
+    return (
+      <div className="ac-empty ac-error">
+        {error} <button className="ac-link" onClick={onRetry}>Retry</button>
+      </div>
+    );
+  }
+  if (!rows.length) return <div className="ac-empty">{empty}</div>;
+  return (
+    <div className="ac-table-wrap">
+      <table className="ac-table">
+        <thead>{head}</thead>
+        <tbody>{rows.map(render)}</tbody>
+      </table>
+    </div>
   );
 }

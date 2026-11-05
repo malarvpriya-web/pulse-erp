@@ -19,6 +19,7 @@ import ConfirmDialog from '@/components/core/ConfirmDialog';
 import { usePageAccess } from '@/hooks/usePageAccess';
 import ReadOnlyBanner from '@/components/ReadOnlyBanner';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import VocabSelect from '@/components/core/VocabSelect';
 
 const INDIAN_STATES = [
   'Andhra Pradesh','Arunachal Pradesh','Assam','Bihar','Chhattisgarh','Goa','Gujarat',
@@ -42,10 +43,11 @@ const PAYMENT_TERMS = [
   {value:90, label:'Net 90'},
 ];
 
-const INDUSTRIES = [
-  'Technology','Manufacturing','Retail','Healthcare','Finance',
-  'Construction','Education','Logistics','Media','Consulting','Other'
-];
+// Industries, account types and lead sources were hardcoded arrays here AND in
+// two other pages, and the copies had drifted. Four of the seven values actually
+// stored in accounts.industry (IT Services, Analytics, Engineering, FMCG) were in
+// none of them, so those accounts showed a blank Industry and the next save wiped
+// it. They now come from the shared master — backend/src/modules/master/vocabularies.js.
 
 const CSV_TEMPLATE_HEADERS = [
   'name','type','party_code','email','phone','gstin','pan','state',
@@ -950,10 +952,8 @@ export default function Parties({ setPage }) {
                 </div>
                 <div className="pt-field">
                   <label>Industry</label>
-                  <select value={form.industry} onChange={e=>setForm(f=>({...f,industry:e.target.value}))}>
-                    <option value="">Select…</option>
-                    {INDUSTRIES.map(i=><option key={i}>{i}</option>)}
-                  </select>
+                  <VocabSelect vocab="industries" value={form.industry} placeholder="Select…"
+                    onChange={v=>setForm(f=>({...f,industry:v}))} />
                 </div>
               </div>
               <div className="pt-form-row-3">

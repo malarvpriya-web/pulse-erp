@@ -12,26 +12,27 @@ import JobOpenings from './JobOpenings';
  * entries meant constantly bouncing between menu items to follow one job from
  * request to posting. Same tab-container pattern as Candidates.jsx.
  */
+/**
+ * EXPORTED with a `page` key per tab, for the same reason as Candidates.jsx:
+ * nav.hubs.test.jsx verifies every `inHub: 'Jobs'` row is genuinely a tab here.
+ */
+export const TABS = [
+  { id: 'requisitions', label: 'Requisitions', icon: ClipboardList, page: 'JobRequisitionPipeline' },
+  { id: 'openings',     label: 'Job Openings', icon: Briefcase,     page: 'JobOpenings' },
+];
+
 export default function Jobs({ setPage }) {
   return (
     <TabPage
       icon={Briefcase}
       title="Jobs"
       subtitle="Raise and approve requisitions, then post the openings they authorise — one job, from request to advert"
-      tabs={[
-        {
-          id: 'requisitions',
-          label: 'Requisitions',
-          icon: ClipboardList,
-          render: () => <JobRequisitionPipeline setPage={setPage} embedded />,
-        },
-        {
-          id: 'openings',
-          label: 'Job Openings',
-          icon: Briefcase,
-          render: () => <JobOpenings setPage={setPage} embedded />,
-        },
-      ]}
+      tabs={TABS.map(t => ({
+        ...t,
+        render: t.page === 'JobRequisitionPipeline'
+          ? () => <JobRequisitionPipeline setPage={setPage} embedded />
+          : () => <JobOpenings setPage={setPage} embedded />,
+      }))}
     />
   );
 }

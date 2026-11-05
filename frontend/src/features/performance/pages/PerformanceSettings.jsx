@@ -65,15 +65,42 @@ const SECTIONS = [
 export default function PerformanceSettings({ setPage }) {
   const [settings, setSettings] = useState({});
   const [saving, setSaving] = useState(false);
+  // 'loading' | 'ready' | 'error'. POST /settings/performance REPLACES the
+  // stored blob, so Save must send the blob it read plus the edits. Before the
+  // read succeeds there is no such blob: the form used to render (and Save
+  // post) `{}` while loading and after a swallowed failure, wiping every saved
+  // key. So the form and Save exist only once the read has succeeded.
+  // GET answers 200 {} when nothing is saved, 500 when the read fails (§200).
+  const [loadState, setLoadState] = useState('loading');
+  const [loadError, setLoadError] = useState(null);
+  const [attempt, setAttempt] = useState(0);
   const toast = useToast();
 
   useEffect(() => {
+    let alive = true;
+    setLoadState('loading');
+    setLoadError(null);
     api.get('/settings/performance').then(r => {
-      setSettings(r.data || {});
-    }).catch(() => {});
-  }, []);
+      if (!alive) return;
+      const body = r?.data ?? {};
+      // An HTML error page or an array is not a settings blob.
+      if (typeof body !== 'object' || Array.isArray(body)) {
+        setLoadError('the server returned something that is not a settings object');
+        setLoadState('error');
+        return;
+      }
+      setSettings(body);
+      setLoadState('ready');
+    }).catch(err => {
+      if (!alive) return;
+      setLoadError(err?.response?.data?.message || err?.response?.data?.error || err?.message || 'request failed');
+      setLoadState('error');
+    });
+    return () => { alive = false; };
+  }, [attempt]);
 
   const save = async () => {
+    if (loadState !== 'ready') return;   // never save over settings that did not load
     setSaving(true);
     try {
       await api.post('/settings/performance', settings);
@@ -115,6 +142,25 @@ export default function PerformanceSettings({ setPage }) {
       />
     }>
 
+      {loadState === 'loading' && (
+        <div style={{ padding: 40, textAlign: 'center', color: '#9ca3af', fontSize: 14 }}>Loading settings…</div>
+      )}
+
+      {loadState === 'error' && (
+        <div role="alert" style={{ maxWidth: 740, padding: '14px 16px', borderRadius: 8, background: '#fef2f2',
+          border: '1px solid #fecaca', color: '#991b1b', fontSize: 13 }}>
+          Could not load the saved Performance settings ({loadError}). They are not shown and cannot be saved
+          until they load, so nothing can overwrite them.
+          <div style={{ marginTop: 10 }}>
+            <button onClick={() => setAttempt(a => a + 1)} style={{ padding: '7px 16px', borderRadius: 7,
+              border: '1px solid #fecaca', background: '#fff', color: '#991b1b', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
+              Retry
+            </button>
+          </div>
+        </div>
+      )}
+
+      {loadState === 'ready' && <>
       {SECTIONS.map(section => (
         <div key={section.id} style={{ background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 12, padding: 20, marginBottom: 16 }}>
           <h3 style={{ fontWeight: 700, fontSize: 15, color: '#1f2937', margin: '0 0 16px', display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -164,6 +210,7 @@ export default function PerformanceSettings({ setPage }) {
         <button onClick={() => setPage?.('PerformanceReviews')} style={{ padding: '10px 24px', borderRadius: 8, border: `1px solid ${BORDER}`, background: '#fff', color: '#374151', fontWeight: 600, fontSize: 14, cursor: 'pointer' }}>Cancel</button>
         <button onClick={save} disabled={saving} style={{ padding: '10px 24px', borderRadius: 8, background: saving ? '#d1d5db' : PURPLE, color: '#fff', fontWeight: 700, fontSize: 14, border: 'none', cursor: saving ? 'not-allowed' : 'pointer' }}>{saving ? 'Saving…' : 'Save Settings'}</button>
       </div>
+      </>}
     </PageShell>
   );
 }

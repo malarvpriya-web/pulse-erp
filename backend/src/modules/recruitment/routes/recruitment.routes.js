@@ -10,8 +10,17 @@ import {
 } from '../../../services/recruitmentDriveService.js';
 import notificationsRepository from '../../notifications/repositories/notifications.repository.js';
 import { logAudit } from '../../../services/AuditService.js';
+import { changeLegalHold, LegalHoldError } from '../candidateLegalHold.js';
 import { triggerEmail } from '../../../services/emailTrigger.js';
 import { companyOf, employeeOf } from '../../../shared/scope.js';
+import { createProposal, ProposalError } from '../../payroll/salaryProposals.service.js';
+// Resolves the display name stored on each candidate_activity row. See
+// modules/recruitment/actorName.js for why the name is denormalised.
+import { actorNameOf } from '../actorName.js';
+// The activity timeline (§21). Every event a recruiter needs to account for later
+// is appended here as well as being applied, so the candidate's own page tells
+// the whole story without the reader having to visit five other screens.
+import candidateIntelligence from '../repositories/candidateIntelligence.repository.js';
 import { resolveRange, dimension } from '../../../shared/dashboardFilters.js';
 import { requirePermission } from '../../../middlewares/auth.middleware.js';
 // Turns Postgres constraint violations into actionable 4xx responses instead of
@@ -23,10 +32,11 @@ import { respondError, httpFromPgError } from '../../../shared/pgErrors.js';
 // with no CHECK constraint, so `status: 'banana'` used to insert and then render as
 // an unknown badge on every page that read it.
 import { validateBody, validatePatch } from '../../../shared/requestSchema.js';
+import { parseResume } from '../../../services/resumeParser.service.js';
 import {
   requisitionSchema, openingSchema, candidateSchema, moveStageSchema,
   interviewSchema, interviewNoteSchema, submitFeedbackSchema,
-  offerSchema, emailTemplateSchema,
+  offerSchema, emailTemplateSchema, recommendSchema, applicationStageSchema,
 } from './recruitment.schemas.js';
 
 // GET → view, POST create → add, PUT/POST-mutation → edit, DELETE → delete.
@@ -40,6 +50,13 @@ const view   = requirePermission('recruitment', 'view');
 const add    = requirePermission('recruitment', 'add');
 const edit   = requirePermission('recruitment', 'edit');
 const remove = requirePermission('recruitment', 'delete');
+// Bulk export of candidate PII is a materially different act from reading one
+// record on screen, and the permission matrix already distinguishes them —
+// `can_export` is granted to 4 recruitment roles, not the 7 that hold view. It
+// was never enforced anywhere; the Candidates page's CSV button simply called
+// the list endpoint and built a file client-side, so anyone who could see the
+// list could take a copy of it.
+const exportPerm = requirePermission('recruitment', 'export');
 
 const notify = (userId, module, recordId, message) => {
   if (!userId) return;
@@ -98,19 +115,13 @@ pool.query(`
   );
 `).catch(() => {});
 
-// Migrate any already-created copies of the two tables above off the wrong
-// UUID typing. Both tables were (per the CREATE statements' own IF NOT
-// EXISTS) never successfully written to with a real candidate/job id, so
-// these columns should be empty/unused wherever this has already run —
-// each ALTER is independently caught so one succeeding or failing never
-// blocks the others.
-for (const stmt of [
-  `ALTER TABLE interview_schedules ALTER COLUMN candidate_id TYPE INTEGER USING NULLIF(candidate_id::text, '')::integer`,
-  `ALTER TABLE offer_letters ALTER COLUMN candidate_id TYPE INTEGER USING NULLIF(candidate_id::text, '')::integer`,
-  `ALTER TABLE offer_letters ALTER COLUMN job_opening_id TYPE INTEGER USING NULLIF(job_opening_id::text, '')::integer`,
-]) {
-  pool.query(stmt).catch(() => {});
-}
+// The UUID → INTEGER conversion of these tables' candidate_id / job_opening_id
+// used to run here, unconditionally, on every import. Against an
+// already-integer column it still took ACCESS EXCLUSIVE locks on
+// interview_schedules and candidates, and deadlocked concurrent deletes of
+// employees and companies (§223). It is now migration
+// 20261103000001_recruitment_id_columns_integer, which alters a column only
+// when its current type is not integer.
 
 const ALLOWED_RESUME_TYPES = new Set([
   'application/pdf',
@@ -278,6 +289,22 @@ router.post('/openings', add, validateBody(openingSchema), async (req, res) => {
     createJobFolderStructure(title, opening.id).catch(err =>
       console.warn('[Drive] createJobFolderStructure failed:', err.message)
     );
+
+    // An open role is on the careers page the moment it exists — that is what
+    // the public endpoint serves. Recording it here means the distribution
+    // tracker is accurate for jobs created from now on, not just the ones the
+    // migration backfilled; otherwise the checklist would show "Careers page:
+    // draft" for a role that is already publicly advertised.
+    if ((opening.status || '').toLowerCase() === 'open') {
+      pool.query(
+        `INSERT INTO job_distributions
+           (company_id, job_opening_id, channel, status, posting_mode, posted_at, created_by)
+         SELECT $1, $2, 'careers', 'posted', 'automatic', NOW(), $3
+          WHERE EXISTS (SELECT 1 FROM careers_portals WHERE company_id = $1 AND is_active)
+         ON CONFLICT (job_opening_id, channel) DO NOTHING`,
+        [cid(req), opening.id, req.user?.userId ?? null]
+      ).catch(err => console.warn('[Distribution] careers row failed:', err.message));
+    }
     res.status(201).json(opening);
   } catch (error) {
     // createOpening() tags the approval-gate rejections with 404/400; without this
@@ -309,12 +336,70 @@ router.put('/openings/:id', edit, validatePatch(openingSchema), async (req, res)
 });
 
 // ==================== CANDIDATES ====================
+// Filters: applied_job_id, current_stage, overall_status, source, search,
+// location, experience_min/max, notice_period_max, expected_ctc_max, min_rating,
+// skills (repeatable or comma-separated — ALL must match), sort_by, sort_dir,
+// limit, offset. Everything but education, which has no column to filter on.
 router.get('/candidates', view, async (req, res) => {
   try {
-    const candidates = await recruitmentRepository.findCandidates({
-      ...req.query, company_id: cid(req),
+    const result = await recruitmentRepository.findCandidates({
+      ...req.query,
+      // `recruiter_id=me` is resolved HERE, not in the repository and not in the
+      // browser. The browser does not reliably know its own users.id (the auth
+      // store carries a role and an email), and letting the client send an id it
+      // claims is its own would make "my candidates" a filter anyone could point
+      // at anyone. 'unassigned' passes through untouched.
+      recruiter_id: req.query.recruiter_id === 'me'
+        ? (req.user?.userId ?? req.user?.id ?? null)
+        : req.query.recruiter_id,
+      // `?skills=a&skills=b` and `?skills=a,b` are both natural to write; the
+      // repository normaliser accepts either, this just avoids it seeing a
+      // single-element array of "a,b".
+      skills: Array.isArray(req.query.skills)
+        ? req.query.skills
+        : (req.query.skills ? String(req.query.skills).split(',') : undefined),
+      company_id: cid(req),
     });
-    res.json(candidates);
+    // The list is now paginated, so the count callers need is no longer
+    // `response.length`. Header first (so a client reading the array still
+    // works), envelope second.
+    res.set('X-Total-Count', String(result.total));
+    res.json(result);
+  } catch (error) {
+    respondError(res, error);
+  }
+});
+
+// Declared BEFORE /candidates/:id. Express matches in registration order, so a
+// literal path that comes after a :param route on the same prefix is
+// unreachable — '/candidates/export' would be captured as id='export' and
+// answer 'Candidate not found'. Same reason /filter-options sits where it does.
+router.get('/candidates/export', exportPerm, async (req, res) => {
+  try {
+    const result = await recruitmentRepository.findCandidates({
+      ...req.query,
+      skills: Array.isArray(req.query.skills)
+        ? req.query.skills
+        : (req.query.skills ? String(req.query.skills).split(',') : undefined),
+      company_id: cid(req),
+      limit: 500,
+    });
+    const rows = result.rows.filter(r => !r.anonymised_at);
+
+    logAudit({
+      userId: req.user?.userId ?? req.user?.id,
+      module: 'Recruitment', recordId: null, recordType: 'candidate_export',
+      action: 'export',
+      newData: { rows: rows.length, filters: req.query },
+      req,
+    });
+    await pool.query(
+      `INSERT INTO candidate_retention_log (company_id, candidate_id, action, reason, triggered_by)
+       VALUES ($1, NULL, 'exported', $2, $3)`,
+      [cid(req), `${rows.length} candidates`, req.user?.userId ?? null]
+    ).catch(() => {});
+
+    res.json({ rows, total: rows.length, exported_at: new Date().toISOString() });
   } catch (error) {
     respondError(res, error);
   }
@@ -358,6 +443,32 @@ router.post('/candidates', add, upload.single('resume'), validateBody(candidateS
         req.file.originalname,
         req.file.mimetype
       ).catch(err => console.warn('[Drive] uploadResume failed:', err.message));
+    }
+
+    // The first entry on the candidate's timeline. Awaited rather than
+    // fire-and-forget: a swallowed history write that still answers 201 is how
+    // this codebase lost ledger rows once already.
+    await candidateIntelligence.recordActivity({
+      company_id: cid(req),
+      candidate_id: candidate.id,
+      event_type: 'application_received',
+      summary: candidate.job_title
+        ? `Application received for ${candidate.job_title}`
+        : 'Candidate profile created',
+      detail: { source: candidate.source || null, has_resume: Boolean(req.file) },
+      actor_user_id: req.user?.userId ?? req.user?.id ?? null,
+      actor_name: await actorNameOf(req),
+    });
+    if (req.file) {
+      await candidateIntelligence.recordActivity({
+        company_id: cid(req),
+        candidate_id: candidate.id,
+        event_type: 'resume_uploaded',
+        summary: `Résumé uploaded (${req.file.originalname})`,
+        detail: { filename: req.file.originalname, mimetype: req.file.mimetype },
+        actor_user_id: req.user?.userId ?? req.user?.id ?? null,
+        actor_name: await actorNameOf(req),
+      });
     }
 
     res.status(201).json(candidate);
@@ -412,7 +523,19 @@ router.put('/candidates/:id', edit, validatePatch(candidateSchema), async (req, 
 router.post('/candidates/:id/move-stage', edit, validateBody(moveStageSchema), async (req, res) => {
   try {
     const { new_stage, moved_by, notes } = req.body;
-    await recruitmentRepository.moveCandidateStage(req.params.id, new_stage, moved_by, notes, cid(req));
+    // `moved_by` is the employee FK (often absent); `moved_by_user_id` is the
+    // acting login and is always known. Passing both means the history names
+    // an actor even for accounts with no employee record.
+    await recruitmentRepository.moveCandidateStage(
+      req.params.id, new_stage,
+      moved_by ?? req.user?.employee_id ?? null,
+      notes, cid(req), null,
+      req.user?.userId ?? req.user?.id ?? null,
+      // The activity timeline stores the actor's NAME as well as their id, so a
+      // move stays attributable after the account is gone. Resolved once per
+      // request and cached for five minutes.
+      { actor_name: await actorNameOf(req) },
+    );
 
     logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'Recruitment', recordId: parseInt(req.params.id), recordType: 'candidate', action: 'stage_change', newData: { stage: new_stage }, req });
 
@@ -445,6 +568,338 @@ router.post('/candidates/:id/move-stage', edit, validateBody(moveStageSchema), a
     }
 
     res.json({ message: 'Candidate moved to new stage' });
+  } catch (error) {
+    respondError(res, error);
+  }
+});
+
+// ==================== CONSENT & RETENTION ====================
+// See migration 20260917000037 and jobs/candidateRetention.cron.js.
+
+/**
+ * GET /recruitment/candidates/export — the server-side export.
+ *
+ * Exists so that taking a copy of the candidate database is an act the system
+ * can (a) require a distinct permission for and (b) record. Both were missing:
+ * the CSV button built the file in the browser from the ordinary list response,
+ * so every holder of `recruitment:view` could export everything and nothing
+ * anywhere showed that they had.
+ *
+ * Anonymised candidates are excluded — re-exporting a record that was erased on
+ * request would undo the erasure.
+ */
+/**
+ * POST /recruitment/candidates/:id/withdraw-consent
+ *
+ * A candidate asking to be removed. Recorded, not acted on immediately: the
+ * nightly retention job anonymises withdrawn records, so the destructive step
+ * runs in one place with one set of rules and one log, rather than being
+ * duplicated behind a button.
+ */
+router.post('/candidates/:id/withdraw-consent', edit, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `UPDATE candidates
+          SET consent_withdrawn_at = NOW(), updated_at = NOW()
+        WHERE id = $1 AND ($2::int IS NULL OR company_id = $2) AND deleted_at IS NULL
+        RETURNING id, company_id, full_name, consent_withdrawn_at`,
+      [req.params.id, cid(req)]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Candidate not found' });
+
+    await pool.query(
+      `INSERT INTO candidate_retention_log (company_id, candidate_id, action, reason, triggered_by)
+       VALUES ($1, $2, 'withdrawn', $3, $4)`,
+      [rows[0].company_id, rows[0].id, String(req.body?.reason || 'requested by candidate').slice(0, 60),
+       req.user?.userId ?? null]
+    );
+    logAudit({
+      userId: req.user?.userId ?? req.user?.id,
+      module: 'Recruitment', recordId: parseInt(req.params.id), recordType: 'candidate',
+      action: 'withdraw_consent', newData: { reason: req.body?.reason || null }, req,
+    });
+
+    res.json({
+      ...rows[0],
+      message: 'Consent withdrawn. This record will be anonymised on the next retention run.',
+    });
+  } catch (error) {
+    respondError(res, error);
+  }
+});
+
+/**
+ * Legal hold — POST (place) / PUT (amend reason) / DELETE (release)
+ * /recruitment/candidates/:id/legal-hold, body { reason } (required, 5–500 chars).
+ *
+ * A held candidate is never anonymised by the retention job and nothing of theirs
+ * is queued for file deletion, even after a consent withdrawal. Authority is
+ * recruitment:APPROVE (admin, super_admin, hr_manager), deliberately stronger than
+ * the `edit` that withdraw-consent / extend-retention use: recruiters, managers
+ * and department heads hold `edit`. Own company only — a caller with no company
+ * is refused, never treated as "every company". Logic and audit trail:
+ * ../candidateLegalHold.js.
+ */
+const legalHold = (action) => async (req, res) => {
+  try {
+    const hold = await changeLegalHold({
+      action, candidateId: req.params.id, companyId: cid(req),
+      userId: req.user?.userId ?? req.user?.id ?? null, reason: req.body?.reason, req,
+    });
+    res.json(hold);
+  } catch (error) {
+    if (error instanceof LegalHoldError) return res.status(error.status).json({ error: error.message });
+    respondError(res, error);
+  }
+};
+const approveRecruitment = requirePermission('recruitment', 'approve');
+router.post('/candidates/:id/legal-hold',   approveRecruitment, legalHold('place'));
+router.put('/candidates/:id/legal-hold',    approveRecruitment, legalHold('amend'));
+router.delete('/candidates/:id/legal-hold', approveRecruitment, legalHold('release'));
+
+/** POST /recruitment/candidates/:id/extend-retention — keep a record longer. */
+router.post('/candidates/:id/extend-retention', edit, async (req, res) => {
+  try {
+    const months = parseInt(req.body?.months, 10);
+    if (!Number.isFinite(months) || months < 1 || months > 240) {
+      return res.status(400).json({ error: 'Give a number of months between 1 and 240.' });
+    }
+    const { rows } = await pool.query(
+      `UPDATE candidates
+          SET retain_until = (CURRENT_DATE + ($3::int * INTERVAL '1 month'))::date,
+              updated_at = NOW()
+        WHERE id = $1 AND ($2::int IS NULL OR company_id = $2) AND deleted_at IS NULL
+          AND anonymised_at IS NULL
+        RETURNING id, company_id, retain_until`,
+      [req.params.id, cid(req), months]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Candidate not found, or already anonymised.' });
+
+    await pool.query(
+      `INSERT INTO candidate_retention_log (company_id, candidate_id, action, reason, retain_until, triggered_by)
+       VALUES ($1, $2, 'extended', $3, $4, $5)`,
+      [rows[0].company_id, rows[0].id, `extended by ${months} months`, rows[0].retain_until,
+       req.user?.userId ?? null]
+    );
+    res.json(rows[0]);
+  } catch (error) {
+    respondError(res, error);
+  }
+});
+
+/**
+ * GET /recruitment/privacy/summary — what the module is holding, and on what basis.
+ *
+ * The question a privacy review actually asks. `legacy` is called out
+ * separately: those records predate consent capture and have no retention date,
+ * so nothing will ever expire them. Somebody has to decide about them, and this
+ * is where the number is visible.
+ */
+router.get('/privacy/summary', view, async (req, res) => {
+  try {
+    const companyId = cid(req);
+    const { rows: [summary] } = await pool.query(
+      `SELECT
+         COUNT(*)::int                                                              AS total,
+         COUNT(*) FILTER (WHERE consent_basis = 'consent')::int                     AS with_consent,
+         COUNT(*) FILTER (WHERE consent_basis = 'legacy')::int                      AS legacy_no_consent,
+         COUNT(*) FILTER (WHERE retain_until IS NOT NULL)::int                      AS with_retention_date,
+         COUNT(*) FILTER (WHERE retain_until IS NOT NULL
+                            AND retain_until < CURRENT_DATE
+                            AND anonymised_at IS NULL
+                            AND NOT legal_hold
+                            AND COALESCE(overall_status,'') NOT IN ('active','hired'))::int AS due_for_purge,
+         COUNT(*) FILTER (WHERE consent_withdrawn_at IS NOT NULL AND anonymised_at IS NULL)::int AS withdrawal_pending,
+         -- Held records are never purged while the hold lasts (candidateLegalHold.js).
+         COUNT(*) FILTER (WHERE legal_hold AND anonymised_at IS NULL)::int          AS on_legal_hold,
+         COUNT(*) FILTER (WHERE anonymised_at IS NOT NULL)::int                     AS anonymised
+       FROM candidates
+       WHERE ($1::int IS NULL OR company_id = $1) AND deleted_at IS NULL`,
+      [companyId]
+    );
+    const { rows: recent } = await pool.query(
+      `SELECT action, reason, candidate_id, created_at
+         FROM candidate_retention_log
+        WHERE ($1::int IS NULL OR company_id = $1)
+        ORDER BY created_at DESC LIMIT 50`,
+      [companyId]
+    );
+    res.json({ summary, recent });
+  } catch (error) {
+    respondError(res, error);
+  }
+});
+
+// ==================== RESUME PARSING ====================
+
+/**
+ * POST /recruitment/resume/parse — read a résumé, suggest the fields.
+ *
+ * This endpoint WRITES NOTHING. It returns extracted values and a per-field
+ * confidence for a recruiter to review, correct and then submit through the
+ * ordinary create-candidate route.
+ *
+ * That separation is the point. Parsing is a heuristic over somebody's PDF
+ * layout: it is right most of the time and confidently wrong some of the time,
+ * and a pipeline full of silently-mis-parsed candidates is worse than one
+ * filled in by hand. Making the human press "create" keeps a person between the
+ * guess and the record.
+ *
+ * Also returns `duplicate_of` when the parsed email is already in the pipeline,
+ * so the recruiter finds out before filling in a form, not after submitting it.
+ */
+router.post('/resume/parse', add, upload.single('resume'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'Attach a résumé to parse.' });
+
+    const parsed = await parseResume(req.file.buffer, req.file.mimetype, req.file.originalname);
+
+    let duplicate_of = null;
+    if (parsed.fields.email) {
+      const { rows } = await pool.query(
+        `SELECT id, full_name, current_stage FROM candidates
+          WHERE company_id = $1 AND LOWER(TRIM(email)) = LOWER(TRIM($2)) AND deleted_at IS NULL
+          LIMIT 1`,
+        [cid(req), parsed.fields.email]
+      );
+      if (rows.length) duplicate_of = rows[0];
+    }
+
+    res.json({
+      fields: parsed.fields,
+      confidence: parsed.confidence,
+      warnings: parsed.warnings,
+      duplicate_of,
+      // Sent back so the create call can store it without re-uploading and
+      // re-parsing the file. Truncated: the column is for search, not archival,
+      // and a 40-page PDF in a JSON response helps nobody.
+      resume_text: parsed.text.slice(0, 20000),
+      parse_source: req.file.originalname,
+    });
+  } catch (error) {
+    const status = error.statusCode || error.status || 500;
+    res.status(status).json({
+      error: status === 415
+        ? error.message
+        : 'Could not read that file. It may be a scanned image or password-protected.',
+    });
+  }
+});
+
+// ==================== APPLICATIONS (candidate × opening) ====================
+
+// Every opening this candidate is being considered for, each with its own stage.
+router.get('/candidates/:id/applications', view, async (req, res) => {
+  try {
+    const rows = await recruitmentRepository.findCandidateApplications(req.params.id, cid(req));
+    res.json(rows);
+  } catch (error) {
+    respondError(res, error);
+  }
+});
+
+/**
+ * POST /candidates/:id/recommend — put a candidate forward for other openings.
+ *
+ * The audit's most-requested missing capability, and the reason
+ * candidate_applications exists: HR assesses someone for Electrical Engineer,
+ * decides Service Engineer suits them better, and forwards them in one action.
+ * The original application keeps its stage, its interviews and its history; no
+ * second candidate profile is created; the two are tracked separately from here.
+ */
+router.post('/candidates/:id/recommend', add, validateBody(recommendSchema), async (req, res) => {
+  try {
+    const ids = (Array.isArray(req.body.job_opening_ids)
+      ? req.body.job_opening_ids
+      : String(req.body.job_opening_ids || '').split(','))
+      .map(n => parseInt(n, 10))
+      .filter(n => Number.isInteger(n) && n > 0);
+
+    if (!ids.length) {
+      return res.status(400).json({ error: 'Select at least one job opening to recommend this candidate for.' });
+    }
+
+    const { candidate, created, alreadyThere } = await recruitmentRepository.recommendCandidateForJobs(
+      req.params.id, ids,
+      {
+        company_id: cid(req),
+        recommended_by: req.user?.userId ?? req.user?.id ?? null,
+        notes: req.body.notes || null,
+      }
+    );
+
+    // "Notify the relevant recruiter or hiring manager." The requisition's
+    // requested_by is the person who asked for the role, so they are the one who
+    // needs to know a candidate has been put forward for it.
+    for (const app of created) {
+      const { rows } = await pool.query(
+        `SELECT u.id AS user_id
+           FROM job_openings jo
+           JOIN job_requisitions jr ON jr.id = jo.requisition_id
+           JOIN users u ON u.employee_id = jr.requested_by
+          WHERE jo.id = $1
+          LIMIT 1`,
+        [app.job_opening_id]
+      ).catch(() => ({ rows: [] }));
+      const target = rows[0]?.user_id ?? req.user?.userId ?? req.user?.id;
+      notify(target, 'recruitment', candidate.id,
+        `${candidate.full_name} has been recommended for ${app.job_title}`);
+    }
+
+    logAudit({
+      userId: req.user?.userId ?? req.user?.id,
+      module: 'Recruitment',
+      recordId: parseInt(req.params.id),
+      recordType: 'candidate',
+      action: 'recommend',
+      newData: { job_opening_ids: created.map(a => a.job_opening_id), notes: req.body.notes || null },
+      req,
+    });
+
+    for (const app of created) {
+      await candidateIntelligence.recordActivity({
+        company_id: cid(req),
+        candidate_id: candidate.id,
+        application_id: app.id,
+        event_type: 'recommended_for_role',
+        summary: `Put forward for ${app.job_title}`,
+        detail: {
+          job_opening_id: app.job_opening_id,
+          job_title: app.job_title,
+          notes: req.body.notes || null,
+        },
+        actor_user_id: req.user?.userId ?? req.user?.id ?? null,
+        actor_name: await actorNameOf(req),
+      });
+    }
+
+    res.status(created.length ? 201 : 200).json({
+      candidate_id: candidate.id,
+      candidate_name: candidate.full_name,
+      created,
+      already_applied: alreadyThere,
+      message: created.length
+        ? `${candidate.full_name} recommended for ${created.map(a => a.job_title).join(', ')}.`
+        : 'Already under consideration for every opening selected — nothing to add.',
+    });
+  } catch (error) {
+    respondError(res, error);
+  }
+});
+
+// Move ONE application through its own pipeline. A secondary application's
+// stage is independent of the candidate's headline stage; the primary one
+// writes through to it. See the repository for why.
+router.post('/applications/:id/move-stage', edit, validateBody(applicationStageSchema), async (req, res) => {
+  try {
+    const app = await recruitmentRepository.moveApplicationStage(req.params.id, req.body.stage, {
+      company_id: cid(req),
+      moved_by: req.user?.employee_id ?? null,
+      moved_by_user_id: req.user?.userId ?? req.user?.id ?? null,
+      notes: req.body.notes || null,
+      actor_name: await actorNameOf(req),
+    });
+    res.json(app);
   } catch (error) {
     respondError(res, error);
   }
@@ -499,6 +954,9 @@ router.post('/candidates/:id/hire', edit, async (req, res) => {
 });
 
 // ==================== PIPELINE ====================
+// Per-opening board. Counts and columns both read candidate_applications, so a
+// candidate recommended onto this role appears here exactly like one who applied
+// to it directly — which is the whole point of having the table.
 router.get('/pipeline/:job_opening_id', view, async (req, res) => {
   try {
     const pipeline = await recruitmentRepository.getPipelineSummary(cid(req), req.params.job_opening_id);
@@ -575,6 +1033,22 @@ router.post('/interviews', add, validateBody(interviewSchema), async (req, res) 
       interview_date:   interview.interview_date  || '',
       interview_mode:   interview.interview_mode  || '',
     }, cid(req));
+    await candidateIntelligence.recordActivity({
+      company_id: cid(req),
+      candidate_id: interview.candidate_id,
+      event_type: 'interview_scheduled',
+      summary: `Interview scheduled for ${interview.interview_date}`
+             + (interview.interview_time ? ` at ${String(interview.interview_time).slice(0, 5)}` : '')
+             + (interview.interview_mode ? ` (${interview.interview_mode})` : ''),
+      detail: {
+        interview_id: interview.id, interview_date: interview.interview_date,
+        interview_mode: interview.interview_mode || null,
+        interviewer_id: interview.interviewer_id || null,
+      },
+      actor_user_id: req.user?.userId ?? req.user?.id ?? null,
+      actor_name: await actorNameOf(req),
+    });
+
     res.status(201).json(interview);
   } catch (error) {
     respondError(res, error);
@@ -614,6 +1088,21 @@ router.post('/interviews/:id/submit-feedback', edit, validateBody(submitFeedback
     if (!schedRes.rows.length) return res.status(404).json({ error: 'Interview not found' });
     const schedule = schedRes.rows[0];
 
+    // Feedback is a one-shot action per scheduled interview. Without this, a
+    // second submit against the SAME interview ran the whole handler again and
+    // walked the candidate another stage — 1st_level → 2nd_level → offer off one
+    // interview, auto-drafting an offer for a round that never happened. A
+    // double-click was enough. Step 5 below already marks the row completed, so
+    // this is the matching read side of that write.
+    if (String(schedule.status || '').toLowerCase() === 'completed') {
+      return res.status(409).json({
+        error: 'Feedback has already been submitted for this interview. Schedule the next round to record another assessment.',
+      });
+    }
+    if (String(schedule.status || '').toLowerCase() === 'cancelled') {
+      return res.status(409).json({ error: 'This interview was cancelled — feedback cannot be recorded against it.' });
+    }
+
     // 2. Load candidate → get current_stage (previously unscoped too)
     const candRes = await pool.query(
       'SELECT * FROM candidates WHERE id = $1 AND ($2::int IS NULL OR company_id = $2)',
@@ -632,13 +1121,25 @@ router.post('/interviews/:id/submit-feedback', edit, validateBody(submitFeedback
     const interviewRound = ROUND_LABELS[currentStage] || currentStage;
 
     // 4. Save interview note
+    // interviewer_id is interview_notes' FK to employees(id). It used to be taken
+    // unconditionally from the schedule, so the note recorded who was BOOKED to
+    // interview rather than who actually filed the assessment — and nothing
+    // checked that the submitter was that person. Prefer the submitter's own
+    // employee id and fall back to the scheduled interviewer for callers with no
+    // employee record (the admin accounts), so attribution is real where it can be.
     await pool.query(
       `INSERT INTO interview_notes (candidate_id, interviewer_id, interview_round, rating, comments, recommendation)
        VALUES ($1, $2, $3, $4, $5, $6)`,
-      [schedule.candidate_id, schedule.interviewer_id, interviewRound,
+      [schedule.candidate_id, req.user?.employee_id ?? schedule.interviewer_id, interviewRound,
        rating ?? null, comments ?? null,
        outcome === 'selected' ? 'hire' : 'reject']
     );
+
+    // This handler writes its note with a raw INSERT rather than through
+    // createInterviewNote(), so it has to refresh the rollup itself — otherwise
+    // candidates.overall_rating stays NULL for every candidate whose rating
+    // arrived through the interview flow, which is most of them.
+    await recruitmentRepository.refreshOverallRating(schedule.candidate_id);
 
     // 5. Mark interview as completed
     await pool.query(
@@ -661,10 +1162,14 @@ router.post('/interviews/:id/submit-feedback', edit, validateBody(submitFeedback
         schedule.candidate_id,
         nextStage,
         // candidate_stage_history.moved_by FKs employees(id), not users(id) —
-        // getCandidateStageHistory's own read joins on employees.
+        // getCandidateStageHistory's own read joins on employees. moved_by_user_id
+        // (last argument) carries the login, which is what keeps the trail intact
+        // when the submitter has no employee record.
         req.user?.employee_id ?? null,
         rejection_reason || `Interview outcome: ${outcome}`,
-        company_id
+        company_id,
+        null,
+        req.user?.userId ?? req.user?.id ?? null,
       );
       moveResumeOnStageChange(String(schedule.candidate_id), nextStage).catch(err =>
         console.warn('[Drive] submit-feedback moveResume failed:', err.message)
@@ -691,6 +1196,27 @@ router.post('/interviews/:id/submit-feedback', edit, validateBody(submitFeedback
       recruitmentRepository.autoDraftOfferForCandidate(schedule.candidate_id, company_id)
         .catch(err => console.warn('[Recruitment] auto-draft-offer failed:', err.message));
     }
+
+    // The stage move above already appended its own stage_change event (see
+    // moveCandidateStage). This records the FEEDBACK, which is a separate fact
+    // and the one a recruiter goes looking for six months later.
+    await candidateIntelligence.recordActivity({
+      company_id,
+      candidate_id: schedule.candidate_id,
+      event_type: 'interview_feedback_added',
+      summary: `Interview feedback: ${String(outcome).replace(/_/g, ' ')}`
+             + (rating ? ` (${rating}/5)` : ''),
+      detail: {
+        interview_id: req.params.id, outcome, rating: rating ?? null,
+        // The comments themselves stay in interview_notes. The timeline records
+        // that feedback exists and what it concluded, not its full text.
+        has_comments: Boolean(comments),
+        rejection_reason: rejection_reason || null,
+        next_stage: nextStage || null,
+      },
+      actor_user_id: req.user?.userId ?? req.user?.id ?? null,
+      actor_name: await actorNameOf(req),
+    });
 
     logAudit({
       userId: req.user?.userId ?? req.user?.id,
@@ -794,6 +1320,19 @@ router.post('/offers', add, validateBody(offerSchema), async (req, res) => {
       created_by: await employeeOf(req, pool),
     });
     logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'Recruitment', recordId: offer.id, recordType: 'offer', action: 'create', newData: offer, req });
+    if (offer.candidate_id) {
+      await candidateIntelligence.recordActivity({
+        company_id: cid(req),
+        candidate_id: offer.candidate_id,
+        event_type: 'offer_drafted',
+        summary: 'Offer drafted'
+               + (offer.offered_salary ? ` at ${offer.offered_salary}` : '')
+               + (offer.joining_date ? `, joining ${String(offer.joining_date).slice(0, 10)}` : ''),
+        detail: { offer_id: offer.id, offer_status: offer.offer_status || null },
+        actor_user_id: req.user?.userId ?? req.user?.id ?? null,
+        actor_name: await actorNameOf(req),
+      });
+    }
     res.status(201).json(offer);
   } catch (error) {
     respondError(res, error);
@@ -821,6 +1360,39 @@ router.put('/offers/:id', edit, validatePatch(offerSchema), async (req, res) => 
   }
 });
 
+// POST /recruitment/offers/:id/salary-proposal — HR-reviewed conversion of an
+// accepted offer's ANNUAL CTC into a DRAFT salary revision for the hired
+// employee (PAYROLL_DATA_FLOW_AUDIT.md Part 4). Nothing is paid from it until
+// an approver approves the proposal in Payroll → Salary Structure. One live
+// proposal per offer (unique index); the offer, the employee and the structure
+// must all belong to the caller's company; the effective date defaults to the
+// joining date and may not fall in an approved payroll month.
+router.post('/offers/:id/salary-proposal', edit, async (req, res) => {
+  const company_id = cid(req);
+  if (company_id == null) return res.status(400).json({ message: 'Company context required' });
+  try {
+    const { rows: [o] } = await pool.query(
+      `SELECT id, candidate_id, offered_salary, offer_status, joining_date
+         FROM offer_letters WHERE id::text = $1 AND company_id = $2 AND deleted_at IS NULL`, [String(req.params.id), company_id]);
+    if (!o) return res.status(404).json({ message: 'Offer not found' });
+    if (String(o.offer_status).toLowerCase() !== 'accepted') return res.status(409).json({ message: `Offer is "${o.offer_status}" — only an accepted offer can be converted` });
+    if (!(Number(o.offered_salary) > 0)) return res.status(422).json({ message: 'The offer has no annual CTC' });
+    const { rows: [emp] } = await pool.query(
+      `SELECT id, joining_date FROM employees WHERE source_candidate_id = $1 AND company_id = $2 AND deleted_at IS NULL LIMIT 1`,
+      [o.candidate_id, company_id]);
+    if (!emp) return res.status(409).json({ message: 'The candidate has not been hired yet — convert the offer after the employee record exists' });
+    const day = (d) => (d == null ? null : (d instanceof Date ? d.toISOString() : String(d)).slice(0, 10));
+    const effective_from = req.body?.effective_from || day(o.joining_date) || day(emp.joining_date);
+    if (!effective_from) return res.status(422).json({ message: 'No joining date on the offer or the employee — give effective_from' });
+    const r = await createProposal({ company_id, employee_id: emp.id, structure_id: req.body?.structure_id ?? null, effective_from,
+      annual_ctc: Number(o.offered_salary), source_type: 'offer', source_id: o.id, userId: req.user?.userId ?? null, req });
+    res.status(201).json(r);
+  } catch (e) {
+    if (e instanceof ProposalError) return res.status(e.status).json({ message: e.message, ...e.extra });
+    res.status(500).json({ message: e.message });
+  }
+});
+
 router.post('/offers/:id/accept', edit, async (req, res) => {
   try {
     const offer = await recruitmentRepository.acceptOffer(req.params.id, cid(req));
@@ -834,6 +1406,18 @@ router.post('/offers/:id/accept', edit, async (req, res) => {
     recruitmentRepository.autoCreateEmployeeFromCandidate(
       offer.candidate_id, cid(req), req.user?.userId ?? req.user?.id ?? null
     ).catch(err => console.warn('[Recruitment] auto-create-on-hire failed:', err.message));
+
+    if (offer.candidate_id) {
+      await candidateIntelligence.recordActivity({
+        company_id: cid(req),
+        candidate_id: offer.candidate_id,
+        event_type: 'offer_accepted',
+        summary: 'Offer accepted — candidate joining',
+        detail: { offer_id: offer.id, joining_date: offer.joining_date || null },
+        actor_user_id: req.user?.userId ?? req.user?.id ?? null,
+        actor_name: await actorNameOf(req),
+      });
+    }
 
     res.json(offer);
   } catch (error) {
@@ -1006,6 +1590,18 @@ router.get('/auto-creation/pending', view, async (req, res) => {
         LEFT JOIN offer_letters o ON o.candidate_id = c.id AND LOWER(COALESCE(o.offer_status, o.offer_status, '')) = 'accepted'
         LEFT JOIN recruitment_employee_creation_log ecl ON ecl.candidate_id = c.id AND ecl.company_id = $1
        WHERE c.company_id = $1 AND LOWER(c.current_stage) = 'hired'
+         -- "Pending" must mean pending. This returned EVERY hired candidate,
+         -- including those whose employee record already exists, so the
+         -- "Awaiting Creation" badge over-counted permanently and each
+         -- already-created candidate kept a Create button that answers 409.
+         -- employees.source_candidate_id is the same idempotency key
+         -- hireCandidate() checks, so the two agree by construction.
+         AND NOT EXISTS (
+           SELECT 1 FROM employees e
+            WHERE e.source_candidate_id = c.id
+              AND ($1::int IS NULL OR e.company_id = $1)
+              AND e.deleted_at IS NULL
+         )
        ORDER BY o.joining_date ASC NULLS LAST, c.updated_at DESC
     `, [cid(req)]);
     res.json(rows);

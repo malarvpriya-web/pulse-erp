@@ -153,13 +153,19 @@ router.post('/service-parts/:id/reverse', requirePermission('iot', 'edit'), asyn
       reason: req.body?.reason ?? null,
     });
     if (!result.ok) {
-      const status = result.code === 'NOT_FOUND' ? 404 : result.code === 'ALREADY_REVERSED' ? 409 : 500;
+      // A refusal to reverse unverifiable records is a conflict with the data,
+      // not a server failure.
+      const status = result.code === 'NOT_FOUND' ? 404
+        : ['ALREADY_REVERSED', 'JOURNAL_ALREADY_REVERSED', 'JOURNAL_ORIGINAL_UNVERIFIED', 'LEDGER_ORIGINAL_UNVERIFIED'].includes(result.code) ? 409
+        : 500;
       return res.status(status).json({ error: result.error, code: result.code });
     }
     logAudit({
       userId: req.user?.userId, module: 'iot', recordId: result.row.id,
       recordType: 'iot_service_part', action: 'update',
-      newData: { reversal_of: req.params.id, reason: req.body?.reason }, req, company_id: target.companyId,
+      newData: { reversal_of: req.params.id, reason: req.body?.reason,
+                 stock_ledger_reversal_id: result.stock_ledger_reversal_id, journal_reversal_id: result.journal_reversal_id },
+      req, company_id: target.companyId,
     });
     res.json(result);
   } catch (e) { res.status(500).json({ error: 'reversal failed' }); }

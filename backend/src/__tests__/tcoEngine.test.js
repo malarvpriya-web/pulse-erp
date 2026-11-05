@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeTco, rankOptions, resolveParams, TCO_DEFAULTS } from '../modules/procurement/engines/tcoEngine.js';
+import { computeTco, rankOptions, resolveParams, parsePaymentTerms, TCO_DEFAULTS } from '../modules/procurement/engines/tcoEngine.js';
 
 // A deliberately inert parameter set: every rate zeroed so a test can switch ON
 // exactly one cost driver and assert its arithmetic in isolation. Using the real
@@ -240,10 +240,234 @@ describe('rankOptions — the decision', () => {
   });
 });
 
+// ── §214 — spec fixtures and the defects they exposed ───────────────────────
+// Expected values are worked by hand from the textbook formulas, not read back
+// from the engine. Lines are apportioned to the compared lot; the horizon
+// figure is lot amount x (horizon qty / lot qty).
+const horizonTotal = (r, l) => l.amount * (r.horizon_qty / r.quantity);
+
+describe('§214 spec fixtures — independently worked', () => {
+  it('Test A: purchase cost = annual demand x unit price = Rs 6,000,000', () => {
+    const r = computeTco({ unit_price: 500, quantity: 12000, annual_demand_qty: 12000, currency: 'INR' }, INERT);
+    expect(r.lines.find(l => l.label === 'Purchase price').amount).toBe(6000000);
+  });
+
+  it('Test B: ordering = (12,000 / 1,000) x Rs 125 = 12 orders, Rs 1,500', () => {
+    const r = computeTco({ unit_price: 500, quantity: 1000, annual_demand_qty: 12000 },
+      { ...INERT, ordering_cost_per_po: 125 });
+    expect(r.orders_in_horizon).toBe(12);
+    const l = r.lines.find(x => x.label.startsWith('Ordering'));
+    expect(horizonTotal(r, l)).toBe(1500);
+  });
+
+  it('Test C: cycle carrying = 1,000/2 x Rs 500 x 20% = Rs 50,000 a year', () => {
+    const r = computeTco({ unit_price: 500, quantity: 1000, annual_demand_qty: 12000 },
+      { ...INERT, inventory_carrying_pct: 20 });
+    const l = r.lines.find(x => x.label === 'Cycle stock carrying');
+    // Was 50,038.36: carrying ran on 12 x 30.44 = 365.28 days, credit on 365.
+    expect(horizonTotal(r, l)).toBeCloseTo(50000, 1);
+    expect(l.note).toMatch(/50000 over 12 months/);
+  });
+
+  it('the same Q/2 x v x h on a 360-day basis — the basis cancels out of carrying', () => {
+    const r = computeTco({ unit_price: 500, quantity: 1000, annual_demand_qty: 12000 },
+      { ...INERT, inventory_carrying_pct: 20, tco_day_count_basis: 360 });
+    expect(horizonTotal(r, r.lines.find(x => x.label === 'Cycle stock carrying'))).toBeCloseTo(50000, 1);
+  });
+});
+
+describe('§214 cycle stock', () => {
+  it('is charged when one lot covers the whole year — 12,000/2 x 500 x 20% = Rs 600,000', () => {
+    // The old guard (horizon > lot) dropped cycle stock entirely here.
+    const r = computeTco({ unit_price: 500, quantity: 12000, annual_demand_qty: 12000 },
+      { ...INERT, inventory_carrying_pct: 20 });
+    expect(r.lines.find(x => x.label === 'Cycle stock carrying').amount).toBe(600000);
+  });
+
+  it('carries the requirement, not the MOQ-rounded order — the over-buy has its own line', () => {
+    const p = { ...INERT, inventory_carrying_pct: 18 };
+    const r = computeTco({ unit_price: 10, quantity: 100, moq: 5000, annual_demand_qty: 1200 }, p);
+    // 100/2 x 10 x 18% x (100 / (1200/365)) / 365 = 50 x 10 x 0.18 x 30.4167/365 = 7.50
+    expect(r.lines.find(x => x.label === 'Cycle stock carrying').amount).toBeCloseTo(7.5, 2);
+    expect(r.lines.find(x => x.label.startsWith('MOQ'))).toBeDefined();
+  });
+
+  it('is not invented without a demand rate, and says so', () => {
+    const r = computeTco({ unit_price: 10, quantity: 100 }, { ...INERT, inventory_carrying_pct: 18 });
+    expect(r.lines.find(x => x.label === 'Cycle stock carrying')).toBeUndefined();
+    expect(r.assumptions.some(a => /Cycle stock carrying not costed/.test(a))).toBe(true);
+  });
+});
+
+describe('§214 currency', () => {
+  it('refuses to score a foreign price with no exchange rate', () => {
+    const r = computeTco({ unit_price: 10, currency: 'USD', quantity: 100 }, INERT);
+    expect(r.computable).toBe(false);
+    expect(r.reason).toBe('no_fx_rate');
+    expect(r.tco_total).toBeNull();
+  });
+
+  it('converts every quoted amount, not just the unit price', () => {
+    const r = computeTco({ unit_price: 10, freight_amount: 50, tooling_cost: 0, currency: 'usd', fx_rate: 84, quantity: 100 }, INERT);
+    expect(r.base_total).toBe(84000);
+    expect(r.lines.find(l => l.label.startsWith('Freight')).amount).toBe(4200);
+    expect(r.currency).toBe('INR');
+    expect(r.quoted_currency).toBe('USD');
+  });
+
+  it('never ranks USD 10 against INR 500 as raw numbers', () => {
+    const ranked = rankOptions([
+      { vendor_id: 1, unit_price: 10, currency: 'USD', quantity: 100 },
+      { vendor_id: 2, unit_price: 500, currency: 'INR', quantity: 100 },
+    ], INERT);
+    // §217: the USD quote is not ranked AND — because it is an eligible bid the
+    // comparison could not cost — no winner is crowned among the rest.
+    expect(ranked.best_tco_id).toBeNull();
+    expect(ranked.comparison_status).toBe('incomplete');
+    expect(ranked.recommendation).toMatchObject({ status: 'withheld_incomplete' });
+    expect(ranked.recommendation.incomplete).toEqual([expect.objectContaining({
+      vendor_id: 1, reason: 'fx',
+      missing: [expect.objectContaining({ input: 'fx', reason: 'no_approved_rate', currency: 'USD' })],
+    })]);
+    expect(ranked.recommendation.message).toMatch(/exchange rate missing/);
+    expect(ranked.options.every(o => o.is_lowest_tco === false)).toBe(true);
+  });
+
+  it('§217: a STALE rate is named as stale, with its date', () => {
+    const ranked = rankOptions([
+      { vendor_id: 1, unit_price: 10, currency: 'USD', quantity: 100,
+        fx_unavailable: { reason: 'stale', message: 'Latest approved USD rate is dated 2026-09-01', latest_rate_date: '2026-09-01' } },
+      { vendor_id: 2, unit_price: 500, currency: 'INR', quantity: 100 },
+    ], INERT);
+    expect(ranked.recommendation.incomplete[0].missing[0]).toMatchObject({ reason: 'stale', latest_rate_date: '2026-09-01' });
+  });
+
+  it('§217: every quote converted → normal recommendation', () => {
+    const ranked = rankOptions([
+      { vendor_id: 1, unit_price: 5, currency: 'USD', fx_rate: 84, quantity: 100 },
+      { vendor_id: 2, unit_price: 500, currency: 'INR', quantity: 100 },
+    ], INERT);
+    // 5 USD x 84 = Rs 420 per unit, cheaper than Rs 500 — converted and ranked.
+    expect(ranked.best_tco_id).toBe(1);
+    expect(ranked.comparison_status).not.toBe('incomplete');
+  });
+
+  it('§217: an UNPRICED quote (invited, no response) does not block a recommendation', () => {
+    const ranked = rankOptions([
+      { vendor_id: 1, unit_price: null, quantity: 100 },
+      { vendor_id: 2, unit_price: 500, currency: 'INR', quantity: 100 },
+    ], INERT);
+    expect(ranked.best_tco_id).toBe(2);
+    expect(ranked.comparison_status).not.toBe('incomplete');
+  });
+
+  it('carries the applied rate and its provenance into the breakdown (what an award freezes)', () => {
+    const meta = { method: 'approved_rate', rate_id: 7, rate_date: '2026-10-29', source: 'rbi', approved_by_user_id: 3 };
+    const r = computeTco({ unit_price: 10, currency: 'USD', fx_rate: 84.5, fx_meta: meta, quantity: 100 }, INERT);
+    expect(r.fx).toEqual({ rate: 84.5, from: 'USD', to: 'INR', ...meta });
+    expect(computeTco({ unit_price: 10, quantity: 1, currency: 'INR' }, INERT).fx).toBeNull();
+  });
+
+  it('says WHY a foreign price is not ranked', () => {
+    const why = { reason: 'stale', message: 'Latest approved USD rate is 45 days old', latest_rate_date: '2026-09-15' };
+    const r = computeTco({ unit_price: 10, currency: 'USD', quantity: 1, fx_unavailable: why }, INERT);
+    expect(r).toMatchObject({ computable: false, reason: 'no_fx_rate', currency: 'USD', fx_detail: why });
+  });
+
+  it('states the assumption when a price carries no currency', () => {
+    const r = computeTco({ unit_price: 100, quantity: 1 }, INERT);
+    expect(r.assumptions.some(a => /Currency not stated/.test(a))).toBe(true);
+  });
+});
+
+describe('§214 payment terms', () => {
+  it.each([
+    ['Net 30',                         { net_days: 30 }],
+    ['Net 45',                         { net_days: 45 }],
+    ['45 days from invoice',           { net_days: 45 }],
+    ['2/10, net 30',                   { net_days: 30, discount_pct: 2, discount_days: 10 }],
+    ['1/10 Net 30',                    { net_days: 30, discount_pct: 1, discount_days: 10 }],
+    ['2% 10, Net 45',                  { net_days: 45, discount_pct: 2, discount_days: 10 }],
+    ['COD',                            { net_days: 0 }],
+    ['100% advance',                   { net_days: -1 }],
+    ['Advance 15 days before dispatch', { net_days: -15 }],
+  ])('parses %j', (text, expected) => {
+    expect(parsePaymentTerms(text)).toEqual(expected);
+  });
+
+  it.each(['30% advance, balance 60 days', '', null, 'as agreed'])(
+    'returns null for %j rather than inventing a day count', (text) => {
+      expect(parsePaymentTerms(text)).toBeNull();
+    });
+
+  it('finances credit on what the vendor invoices — not customs duty or carrier freight', () => {
+    const p = { ...INERT, cost_of_capital_pct: 12 };
+    const r = computeTco({ unit_price: 100, quantity: 100, duty_amount: 3000, freight_pct_observed: 20,
+      payment_terms_days: 60 }, p);
+    // 10,000 goods only: 10,000 x 12% x 60/365 = 197.26 (was 295.89 on 15,000)
+    expect(r.lines.find(l => l.label === 'Credit terms benefit').amount).toBeCloseTo(-197.26, 2);
+  });
+
+  it('includes freight the vendor quoted, because the vendor bills it', () => {
+    const p = { ...INERT, cost_of_capital_pct: 12 };
+    const r = computeTco({ unit_price: 100, quantity: 100, freight_amount: 2000, payment_terms_days: 60 }, p);
+    // 12,000 x 12% x 60/365 = 236.71
+    expect(r.lines.find(l => l.label === 'Credit terms benefit').amount).toBeCloseTo(-236.71, 2);
+  });
+
+  it('uses the configured day-count basis: 10,000 x 12% x 60/360 = 200', () => {
+    const r = computeTco({ unit_price: 100, quantity: 100, payment_terms_days: 60 },
+      { ...INERT, cost_of_capital_pct: 12, tco_day_count_basis: 360 });
+    expect(r.lines.find(l => l.label === 'Credit terms benefit').amount).toBe(-200);
+  });
+
+  // 2/10 net 30 on Rs 100,000 at 12%, 365 days:
+  //   discount D            = 2,000
+  //   credit paying net     = 100,000 x 12% x 30/365 = 986.30
+  //   credit taking it      =  98,000 x 12% x 10/365 = 322.19
+  //   incremental financing = 986.30 - 322.19        = 664.11
+  //   net benefit of taking = 2,000 - 664.11         = 1,335.89
+  const terms = { unit_price: 1000, quantity: 100, payment_terms_days: 30, early_discount_pct: 2, early_discount_days: 10 };
+  const P12 = { ...INERT, cost_of_capital_pct: 12 };
+
+  it('takes a cash discount when it beats the credit given up, and carries ONE strategy', () => {
+    const r = computeTco(terms, P12);
+    expect(r.payment_terms.strategy).toBe('take_discount');
+    expect(r.payment_terms.strategy_source).toBe('optimal');
+    expect(r.payment_terms.discount_amount).toBe(2000);
+    expect(r.payment_terms.incremental_financing_cost).toBeCloseTo(664.11, 2);
+    expect(r.payment_terms.net_benefit_of_discount).toBeCloseTo(1335.89, 2);
+    expect(r.lines.find(l => l.label === 'Early-payment discount').amount).toBe(-2000);
+    expect(r.lines.find(l => l.label === 'Credit terms benefit').amount).toBeCloseTo(-322.19, 2);
+    // Never the full discount AND the full 30-day credit.
+    expect(r.tco_total).toBeCloseTo(100000 - 2000 - 322.19, 2);
+  });
+
+  it('reflects a selected pay-net strategy instead of the optimum', () => {
+    const r = computeTco({ ...terms, payment_strategy: 'pay_net' }, P12);
+    expect(r.payment_terms.strategy).toBe('pay_net');
+    expect(r.payment_terms.strategy_source).toBe('selected');
+    expect(r.lines.find(l => l.label === 'Early-payment discount')).toBeUndefined();
+    expect(r.lines.find(l => l.label === 'Credit terms benefit').amount).toBeCloseTo(-986.3, 2);
+  });
+
+  it('declines the discount when capital is dearer than the discount is worth', () => {
+    // 2/10 net 30 is worth ~37%/yr; at 50% cost of capital, paying net wins.
+    const r = computeTco(terms, { ...INERT, cost_of_capital_pct: 50 });
+    expect(r.payment_terms.strategy).toBe('pay_net');
+    expect(r.payment_terms.net_benefit_of_discount).toBeLessThan(0);
+  });
+});
+
 describe('resolveParams', () => {
   it('falls back to defaults for a company with no settings row', () => {
-    expect(resolveParams({})).toEqual(TCO_DEFAULTS);
-    expect(resolveParams(undefined)).toEqual(TCO_DEFAULTS);
+    expect(resolveParams({})).toEqual({ ...TCO_DEFAULTS, base_currency: 'INR', main_receiving_warehouse_id: null });
+    expect(resolveParams(undefined)).toEqual({ ...TCO_DEFAULTS, base_currency: 'INR', main_receiving_warehouse_id: null });
+  });
+
+  it('accepts only a 360 or 365 day-count basis', () => {
+    expect(resolveParams({ tco_day_count_basis: 360 }).tco_day_count_basis).toBe(360);
+    expect(resolveParams({ tco_day_count_basis: 364 }).tco_day_count_basis).toBe(365);
   });
 
   it('accepts pg NUMERIC strings from the settings row', () => {

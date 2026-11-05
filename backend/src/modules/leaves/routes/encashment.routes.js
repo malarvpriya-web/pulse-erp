@@ -1,9 +1,36 @@
 import express from 'express';
 import pool from '../../../config/db.js';
-import { requirePermission } from '../../../middlewares/auth.middleware.js';
+import { requirePermission, can } from '../../../middlewares/auth.middleware.js';
 import { logAudit } from '../../../services/AuditService.js';
 import { hasRole } from '../../../middlewares/auth.middleware.js';
-import { employeeOf } from '../../../shared/scope.js';
+import { employeeOf, companyOf } from '../../../shared/scope.js';
+
+// Ownership (PAYROLL_DATA_FLOW_AUDIT.md Part 10): a claim belongs to the company
+// of its EMPLOYEE. Every route needs a company context and acts only on claims
+// and employees of that company; anything else is "not found", with no detail.
+const requireCompanyCtx = (req, res) => {
+  const cid = companyOf(req);
+  if (cid == null) { res.status(400).json({ error: 'Company context required' }); return null; }
+  return cid;
+};
+const employeeInCompany = async (db, employeeId, cid) =>
+  (await db.query('SELECT 1 FROM employees WHERE id = $1 AND company_id = $2', [employeeId, cid])).rows.length > 0;
+
+// ── Money on a claim (PC-01 closure decision 3, 04 Nov 26) ──────────────────
+// rate_per_day is the employee's Basic / 26, so every amount on a claim is
+// salary data. It goes out only to payroll:view holders — and to the claimant
+// on their own claim, the same rule as the master Basic (salaryVisibility.js).
+// The amounts are computed here, never taken from the request.
+const MONEY_FIELDS = ['rate_per_day', 'gross_amount', 'tds_amount', 'net_amount'];
+async function withoutMoney(req, rows, me) {
+  if (await can(req, 'payroll', 'view')) return rows;
+  return rows.map(r => {
+    if (me != null && Number(r.employee_id) === Number(me)) return r;
+    const out = { ...r };
+    for (const k of MONEY_FIELDS) delete out[k];
+    return out;
+  });
+}
 
 const router = express.Router();
 
@@ -22,7 +49,8 @@ const router = express.Router();
  */
 router.get('/', requirePermission('leaves', 'view'), async (req, res) => {
   try {
-    const companyId = req.scope?.company_id ?? null;
+    const companyId = requireCompanyCtx(req, res);
+    if (companyId == null) return;
     const { status, year } = req.query;
 
     const isAdmin   = hasRole(req, 'super_admin', 'admin', 'hr', 'hr_manager', 'hr_exec', 'payroll_admin', 'finance_manager');
@@ -62,10 +90,10 @@ router.get('/', requirePermission('leaves', 'view'), async (req, res) => {
       JOIN employees e  ON le.employee_id = e.id
       JOIN leave_types lt ON le.leave_type_id = lt.id
       LEFT JOIN employees a ON le.approved_by = a.id
-      WHERE ($1::integer IS NULL OR le.company_id = $1)${filters}
+      WHERE e.company_id = $1${filters}
       ORDER BY le.created_at DESC
     `, params);
-    res.json(rows);
+    res.json(await withoutMoney(req, rows, me));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -79,7 +107,26 @@ router.post('/', requirePermission('leaves', 'add'), async (req, res) => {
       return res.status(400).json({ error: 'employee_id, leave_type_id, and days_encashed are required' });
     }
 
-    const companyId = req.scope?.company_id ?? null;
+    const companyId = requireCompanyCtx(req, res);
+    if (companyId == null) return;
+    // Amounts are derived from the salary here; a request that carries one is
+    // refused rather than having it silently ignored.
+    const sentMoney = MONEY_FIELDS.filter(k => k in (req.body || {}));
+    if (sentMoney.length) {
+      return res.status(400).json({ code: 'ENCASHMENT_AMOUNT_COMPUTED', error: `${sentMoney.join(', ')} cannot be supplied — the amounts are computed from the salary.` });
+    }
+    // An employee claims for themself. A claim for anyone else — or a chosen
+    // TDS rate — is payroll work: payroll:edit (PC-01 closure decision 3).
+    const me = await employeeOf(req, pool);
+    const forSelf = me != null && Number(employee_id) === Number(me);
+    const payroll = await can(req, 'payroll', 'edit');
+    if (!forSelf && !payroll) {
+      return res.status(403).json({ code: 'ENCASHMENT_FOR_OTHERS', error: 'You can create an encashment claim only for yourself. A claim for another employee needs payroll edit permission.' });
+    }
+    if (req.body.tds_rate !== undefined && !payroll) {
+      return res.status(403).json({ code: 'ENCASHMENT_TDS_RATE', error: 'The TDS rate is set by Payroll. Leave it out; the standard rate applies until Payroll reviews the claim.' });
+    }
+    if (!(await employeeInCompany(pool, employee_id, companyId))) return res.status(404).json({ error: 'Employee not found' });
     const resolvedYear = Number(year) || new Date().getFullYear();
 
     // Get employee's basic salary for rate calculation
@@ -127,7 +174,7 @@ router.post('/', requirePermission('leaves', 'add'), async (req, res) => {
         tdsAmount, netAmount, encashment_month || null, encashment_year || null, reason || null, companyId]);
 
     logAudit({ userId: req.user?.userId, module: 'leave_encashment', recordId: rows[0].id, recordType: 'leave_encashment', action: 'create', newData: rows[0], req });
-    res.status(201).json(rows[0]);
+    res.status(201).json((await withoutMoney(req, rows, me))[0]);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -135,11 +182,15 @@ router.post('/', requirePermission('leaves', 'add'), async (req, res) => {
 
 // ── POST /leave-encashment/approve/:id ───────────────────────────────────────
 router.post('/approve/:id', requirePermission('leaves', 'approve'), async (req, res) => {
+  const cid = requireCompanyCtx(req, res);
+  if (cid == null) return;
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
-    const { rows: enc } = await client.query(`SELECT * FROM leave_encashments WHERE id = $1 FOR UPDATE`, [req.params.id]);
+    const { rows: enc } = await client.query(
+      `SELECT le.* FROM leave_encashments le JOIN employees e ON e.id = le.employee_id
+        WHERE le.id = $1 AND e.company_id = $2 FOR UPDATE OF le`, [req.params.id, cid]);
     if (!enc.length) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Encashment record not found' }); }
     if (enc[0].status !== 'pending') { await client.query('ROLLBACK'); return res.status(409).json({ error: 'Already processed' }); }
 
@@ -169,7 +220,7 @@ router.post('/approve/:id', requirePermission('leaves', 'approve'), async (req, 
 
     const { rows: runRows } = await client.query(`
       SELECT id FROM payroll_runs
-      WHERE employee_id = $1 AND month = $2 AND year = $3 AND status NOT IN ('paid','cancelled')
+      WHERE employee_id = $1 AND month = $2 AND year = $3 AND status IN ('draft', 'pending')  -- drafts only: an approved run is posted to the GL and backs the payslip and payment (PAYROLL_DATA_FLOW_AUDIT.md Part 10)
       LIMIT 1
     `, [e.employee_id, encMonth, encYear]).catch(() => ({ rows: [] }));
 
@@ -212,17 +263,23 @@ router.post('/approve/:id', requirePermission('leaves', 'approve'), async (req, 
 
 // ── POST /leave-encashment/reject/:id ────────────────────────────────────────
 router.post('/reject/:id', requirePermission('leaves', 'approve'), async (req, res) => {
+  const cid = requireCompanyCtx(req, res);
+  if (cid == null) return;
   try {
     const { reason } = req.body;
     if (!reason?.trim()) return res.status(400).json({ error: 'Rejection reason is required' });
 
     const { rows } = await pool.query(`
+      -- 'cancelled', not 'rejected': the table's CHECK allows pending / approved /
+      -- paid / cancelled (and the Encashment page shows those). 'rejected' made
+      -- every rejection fail with a 500. The rejection reason is kept in the reason column.
       UPDATE leave_encashments
-      SET status = 'rejected', approved_by = $1, approved_at = NOW(),
+      SET status = 'cancelled', approved_by = $1, approved_at = NOW(),
           reason = $2, updated_at = NOW()
       WHERE id = $3 AND status = 'pending'
-      RETURNING id
-    `, [req.user?.employee_id, reason, req.params.id]);
+        AND employee_id IN (SELECT id FROM employees WHERE company_id = $4)
+      RETURNING id, employee_id
+    `, [req.user?.employee_id, reason, req.params.id, cid]);
     if (!rows.length) return res.status(409).json({ error: 'Not found or already processed' });
 
     logAudit({ userId: req.user?.userId, module: 'leave_encashment', recordId: req.params.id, recordType: 'leave_encashment', action: 'reject', newData: { status: 'rejected', reason }, req });
@@ -244,7 +301,10 @@ router.post('/reject/:id', requirePermission('leaves', 'approve'), async (req, r
 
 // ── GET /leave-encashment/eligible/:employee_id ───────────────────────────────
 router.get('/eligible/:employee_id', requirePermission('leaves', 'view'), async (req, res) => {
+  const cid = requireCompanyCtx(req, res);
+  if (cid == null) return;
   try {
+    if (!(await employeeInCompany(pool, req.params.employee_id, cid))) return res.status(404).json({ error: 'Employee not found' });
     const year = Number(req.query.year) || new Date().getFullYear();
     const { rows } = await pool.query(`
       SELECT

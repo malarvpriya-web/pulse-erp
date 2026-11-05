@@ -21,10 +21,24 @@
 
 /* ── Verified vocabularies ─────────────────────────────────────────────────── */
 
-// candidates_current_stage_check, read from pg_constraint (live DB).
+// candidates_current_stage_check / candidate_applications_stage_check, read from
+// pg_constraint (live DB).
+//
+// `shortlisted`, `assessment` and `selected` were added by migration
+// 20260927000001 for the brief's §7 pipeline. This list is THE request-validation
+// vocabulary for the whole module, so leaving it at the previous ten meant the
+// database accepted the new stages while the API rejected them with a 400 — the
+// workbench's stage dropdown and the bulk stage change both failed on the three
+// new values while the screening outcome, which writes through the repository and
+// skips this layer, succeeded. Caught by
+// integration.recruitmentWorkbench.test.js's own timeline test.
+//
+// It is exported and imported by candidateIntelligence.schemas.js rather than
+// copied there: two hand-maintained copies of a stage enum is precisely the drift
+// that produced this bug.
 export const CANDIDATE_STAGES = [
-  'applied', 'screening', '1st_level', '2nd_level', 'offer',
-  'hired', 'not_suitable', 'maybe', 'future_use', 'rejected',
+  'applied', 'screening', 'shortlisted', 'assessment', '1st_level', '2nd_level',
+  'offer', 'selected', 'hired', 'not_suitable', 'maybe', 'future_use', 'rejected',
 ];
 
 // interview_notes_recommendation_check. Covers both vocabularies in use: the
@@ -39,9 +53,19 @@ export const REQUISITION_STATUSES = ['draft', 'pending_approval', 'approved', 'o
 export const OPENING_STATUSES     = ['draft', 'pending_approval', 'open', 'on_hold', 'closed', 'cancelled'];
 export const OFFER_STATUSES       = ['draft', 'pending_approval', 'sent', 'accepted', 'declined', 'withdrawn'];
 export const CANDIDATE_STATUSES   = ['active', 'hired', 'rejected', 'withdrawn'];
+// candidates_qualification_check, read from pg_constraint.
+export const CANDIDATE_QUALIFICATIONS = [
+  'Diploma', 'BE/BTech', 'ME/MTech', 'MBA', 'MCA', 'BCA', 'BSc', 'MSc', 'BCom', 'PhD', 'Other',
+];
+
+// `careers` is set by the public careers portal, `naukri`/`indeed` by the
+// channel toggles in Recruitment Settings. All three were reachable from the UI
+// or the public endpoint before they were listed here, so a candidate arriving
+// through the careers page was rejected by this validator with a message naming
+// every source EXCEPT the one that had just been used.
 export const CANDIDATE_SOURCES    = [
-  'manual', 'website', 'linkedin', 'referral', 'job_portal',
-  'campus', 'agency', 'walk_in', 'resume_db',
+  'manual', 'website', 'careers', 'linkedin', 'naukri', 'indeed', 'referral',
+  'job_portal', 'campus', 'agency', 'walk_in', 'resume_db',
 ];
 export const INTERVIEW_MODES    = ['video', 'in_person', 'phone'];
 export const INTERVIEW_STATUSES = ['scheduled', 'completed', 'cancelled'];
@@ -103,6 +127,16 @@ export const candidateSchema = {
   notice_period_days:  { type: 'int', min: 0, max: 365 },
   expected_ctc:        { type: 'number', min: 0, label: 'Expected CTC' },
   skills:              { type: 'array' },
+  // The column has always existed; no endpoint wrote it, so "find candidates in
+  // Bengaluru" was unanswerable. Length mirrors the live varchar.
+  location:            { type: 'string', max: 200 },
+  // Education. Constrained vocabulary so "B.E.", "BE" and "B.Tech" cannot
+  // become three filter values for one degree — the CHECK constraint enforces
+  // the same list, this turns a violation into a readable 400.
+  qualification:       { type: 'enum', values: CANDIDATE_QUALIFICATIONS, label: 'Qualification' },
+  specialisation:      { type: 'string', max: 120 },
+  institution:         { type: 'string', max: 200 },
+  graduation_year:     { type: 'int', min: 1950, max: 2100, label: 'Graduation year' },
   notes:               { type: 'string' },
   current_stage:       { type: 'enum', values: CANDIDATE_STAGES, label: 'Stage' },
   overall_status:      { type: 'enum', values: CANDIDATE_STATUSES, label: 'Status' },
@@ -112,6 +146,22 @@ export const moveStageSchema = {
   new_stage: { type: 'enum', values: CANDIDATE_STAGES, required: true, label: 'Stage' },
   moved_by:  { type: 'int', min: 1 },
   notes:     { type: 'string' },
+};
+
+/* ── Applications (candidate × opening) ────────────────────────────────────── */
+
+// POST /candidates/:id/recommend. `job_opening_ids` is an array on purpose: the
+// requirement is "select one or more suitable job openings", and doing several
+// in one request is what makes them one atomic decision rather than three
+// separate ones that can half-fail.
+export const recommendSchema = {
+  job_opening_ids: { type: 'array', required: true, label: 'Job openings' },
+  notes:           { type: 'string', label: 'Recommendation comments' },
+};
+
+export const applicationStageSchema = {
+  stage: { type: 'enum', values: CANDIDATE_STAGES, required: true, label: 'Stage' },
+  notes: { type: 'string' },
 };
 
 /* ── Interviews ────────────────────────────────────────────────────────────── */

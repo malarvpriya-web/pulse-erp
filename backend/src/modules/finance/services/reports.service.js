@@ -6,8 +6,13 @@ import partiesRepo from '../repositories/parties.repository.js';
 import { hasChartAccountLink } from '../repositories/bankAccount.repository.js';
 
 class ReportsService {
-  async getProfitAndLoss(startDate, endDate) {
-    const trialBalance = await journalRepo.getTrialBalance(startDate, endDate);
+  /**
+   * @param {number|null} companyId  from companyOf(req). These reports had no
+   *   company parameter at all, so every tenant's postings were summed into one
+   *   P&L. Null still means a genuine global scope (super admin, no company).
+   */
+  async getProfitAndLoss(startDate, endDate, companyId = null) {
+    const trialBalance = await journalRepo.getTrialBalance(startDate, endDate, companyId);
     
     const revenue = trialBalance
       .filter(acc => acc.account_type === 'Revenue')
@@ -27,8 +32,8 @@ class ReportsService {
     };
   }
 
-  async getBalanceSheet(asOfDate) {
-    const trialBalance = await journalRepo.getTrialBalance('1900-01-01', asOfDate);
+  async getBalanceSheet(asOfDate, companyId = null) {
+    const trialBalance = await journalRepo.getTrialBalance('1900-01-01', asOfDate, companyId);
     
     const assets = trialBalance
       .filter(acc => acc.account_type === 'Asset')
@@ -53,7 +58,7 @@ class ReportsService {
     };
   }
 
-  async getCashFlow(startDate, endDate) {
+  async getCashFlow(startDate, endDate, companyId = null) {
     // Cash & bank accounts are classified under Asset type with sub_type 'bank' or 'cash',
     // or explicitly account_code starting with '1001' (Cash & Bank in seeded CoA).
     const result = await pool.query(
@@ -71,9 +76,10 @@ class ReportsService {
          AND je.entry_date BETWEEN $1 AND $2
          AND (je.is_posted = true OR je.status = 'posted')
          AND je.deleted_at IS NULL
+         AND ($3::int IS NULL OR je.company_id = $3::int)
        GROUP BY coa.code, coa.name
        ORDER BY coa.code`,
-      [startDate, endDate]
+      [startDate, endDate, companyId]
     );
 
     const cash_in  = result.rows.reduce((s, r) => s + parseFloat(r.cash_in  || 0), 0);
@@ -231,7 +237,9 @@ class ReportsService {
       const [arData, apData, cashRow, inflowRow, outflowRow] = await Promise.all([
         this.getCustomerOutstanding(null, today),
         this.getSupplierOutstanding(null, today),
-        pool.query(`SELECT COALESCE(SUM(current_balance), 0) AS total FROM bank_accounts WHERE is_active = true AND deleted_at IS NULL`),
+        // B-03 D4: company-scoped (null = a global caller, every company).
+        pool.query(`SELECT COALESCE(SUM(current_balance), 0) AS total FROM bank_accounts
+                     WHERE is_active = true AND deleted_at IS NULL AND ($1::int IS NULL OR company_id = $1::int)`, [opts.companyId ?? null]),
         pool.query(
           `SELECT COALESCE(SUM(amount), 0) AS total FROM receipts WHERE receipt_date >= $1 AND receipt_date <= $2`,
           [periodStart, periodEnd]
@@ -269,6 +277,10 @@ class ReportsService {
       // Balance Sheet. Scoped to the GL accounts linked to bank accounts.
       // current_balance is only a last resort when no GL mapping exists.
       if (await hasChartAccountLink()) {
+        // B-03 D4: activated by the uuid link (migration 20261104000004), so it
+        // is company-scoped — the linked accounts are the caller's company's bank
+        // accounts, and the movement is that company's postings only (a shared
+        // account such as 1002 carries every company's lines).
         const cashGL = await pool.query(
           `SELECT COALESCE(SUM(coa.opening_balance), 0)
                 + COALESCE(SUM(mv.debit - mv.credit), 0) AS total,
@@ -280,13 +292,15 @@ class ReportsService {
              FROM journal_lines jl
              JOIN journal_entries je ON je.id = jl.entry_id
              WHERE jl.account_id = coa.id
+               AND ($1::int IS NULL OR je.company_id = $1::int)
                AND je.status = 'posted'
                AND je.entry_date <= CURRENT_DATE
            ) mv ON true
            WHERE coa.id IN (
              SELECT DISTINCT chart_account_id FROM bank_accounts
              WHERE chart_account_id IS NOT NULL AND deleted_at IS NULL
-           )`
+               AND ($1::int IS NULL OR company_id = $1::int)
+           )`, [opts.companyId ?? null]
         );
         cashBalance = parseInt(cashGL.rows[0].mapped, 10) > 0
           ? parseFloat(cashGL.rows[0].total)

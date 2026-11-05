@@ -23,7 +23,11 @@ const CID = 1;
 const log = (...a) => console.log(...a);
 const daysAgo = (n) => new Date(Date.now() - n * 86400000).toISOString().slice(0, 10);
 
+// §220 — this writes a traceable sales order → GRN → batch → serial chain into a company. It runs ONLY against an isolated test database (scripts/test-db/README.md);
+// against anything else it exits before its first write.
 async function main() {
+  const { guardOrExit } = await import("../test-db/guard.mjs");
+  await guardOrExit(pool, "sca/seed-traceable-chain");
   const c = await pool.connect();
   try {
     await c.query('BEGIN');
@@ -233,6 +237,10 @@ async function main() {
       INSERT INTO package_lines (package_id, company_id, item_id, item_name, batch_id, quantity, uom)
       VALUES ($1,$2,$3,'Control Panel 400A',$4,5,'Nos')`,
       [pkg.id, CID, cpId, panel.batch_id]);
+    // The five shipped units are in this crate. Say so: a shipped unit must be
+    // accounted for by a package of its company, checked at COMMIT
+    // (trg_serial_shipped_accounted, migration 20261028000008).
+    await c.query(`UPDATE serial_numbers SET package_id = $1 WHERE id = ANY($2::int[])`, [pkg.id, serialIds]);
 
     const { rows: [ship] } = await c.query(`
       INSERT INTO shipments

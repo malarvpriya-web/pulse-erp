@@ -1,4 +1,5 @@
 import pool from "../config/db.js";
+import { normalizeLoginEmail, LOGIN_EMAIL_KEY, isLoginEmailConflict } from "../shared/loginEmail.js";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
@@ -70,16 +71,19 @@ function userPayload(user, prevLastLogin) {
   };
 }
 
-// Prefers the persisted users.employee_id link (set by addEmployee provisioning);
-// only falls back to matching on company_email for legacy accounts that predate
-// that link, since a user's login email doesn't always match employees.company_email.
-async function resolveEmployeeId(user) {
-  if (user.employee_id != null) return user.employee_id;
-  const { rows } = await pool.query(
-    `SELECT id FROM employees WHERE company_email = $1 AND deleted_at IS NULL LIMIT 1`,
-    [user.email]
-  );
-  return rows[0]?.id ?? null;
+// The login -> employee link is `users.employee_id` and nothing else.
+//
+// ⚠ This used to fall back to `employees.company_email = users.email` (no
+// company predicate, LIMIT 1) for accounts with no link. Company email is an HR
+// field that Edit Employee may change, so that fallback made an HR edit an
+// AUTHENTICATION change: set employee X's company email to an unlinked
+// account's login and that account's next token carried X's employee_id —
+// X's self-service, payslips and approvals — in any tenant. On 2026-10-12 no
+// account relied on the fallback (every linked login has employee_id set), so
+// it is removed rather than narrowed. An unlinked account is linked by setting
+// users.employee_id, deliberately, never inferred from an editable field.
+function resolveEmployeeId(user) {
+  return user.employee_id ?? null;
 }
 
 function lockedError(lockedUntil) {
@@ -98,14 +102,25 @@ export const registerUser = async (name, email, password, role = "employee", dep
     ? String(role).toLowerCase()
     : 'employee';
 
-  const existing = await pool.query("SELECT id FROM users WHERE email = $1", [email]);
-  if (existing.rows.length) throw new Error("User already exists");
+  // Login emails are case-insensitive (shared/loginEmail.js). The pre-check
+  // gives the friendly message; the unique index on LOWER(BTRIM(email)) is what
+  // actually stops two simultaneous registrations of 'A@x' and 'a@x'.
+  const login = normalizeLoginEmail(email);
+  if (!login) throw Object.assign(new Error("Email is required"), { statusCode: 400 });
+  const existing = await pool.query(`SELECT id FROM users WHERE ${LOGIN_EMAIL_KEY} = $1`, [login]);
+  if (existing.rows.length) throw Object.assign(new Error("User already exists"), { statusCode: 409 });
 
   const hash   = await bcrypt.hash(password, 10);
-  const result = await pool.query(
-    "INSERT INTO users (name, email, password_hash, role, department, is_active) VALUES ($1,$2,$3,$4,$5,true) RETURNING id,name,email,role,department",
-    [name, email, hash, safeRole, department]
-  );
+  let result;
+  try {
+    result = await pool.query(
+      "INSERT INTO users (name, email, password_hash, role, department, is_active) VALUES ($1,$2,$3,$4,$5,true) RETURNING id,name,email,role,department",
+      [name, login, hash, safeRole, department]
+    );
+  } catch (err) {
+    if (isLoginEmailConflict(err)) throw Object.assign(new Error("User already exists"), { statusCode: 409 });
+    throw err;
+  }
   // users.role is the primary-role mirror; user_roles is what actually grants
   // permissions, so a self-registered account needs its junction row too.
   await syncPrimaryRole(result.rows[0].id, safeRole, null, null);
@@ -120,7 +135,8 @@ const GENERIC_LOGIN_ERROR = "Invalid email or password";
 
 // ── Login (password) ──────────────────────────────────────────────────────────
 export const loginUser = async (email, password, rememberMe = false) => {
-  const { rows } = await pool.query("SELECT * FROM users WHERE email = $1", [email]);
+  const { rows } = await pool.query(
+    `SELECT * FROM users WHERE ${LOGIN_EMAIL_KEY} = $1`, [normalizeLoginEmail(email) ?? '']);
 
   // User enumeration guard: for an unknown email, still run a bcrypt comparison
   // (against a dummy hash) and return the same generic error as a wrong password.
@@ -212,8 +228,8 @@ export const getUserPermissions = async (userId) => {
 // ── Password reset OTP ────────────────────────────────────────────────────────
 export const requestPasswordReset = async (email) => {
   const { rows } = await pool.query(
-    "SELECT id FROM users WHERE email = $1 AND is_active = true",
-    [email]
+    `SELECT id, email FROM users WHERE ${LOGIN_EMAIL_KEY} = $1 AND is_active = true`,
+    [normalizeLoginEmail(email) ?? '']
   );
   // Always return success to prevent email enumeration
   if (!rows.length) return { sent: true };
@@ -234,7 +250,8 @@ export const requestPasswordReset = async (email) => {
 
   // Send OTP via email. In dev without SMTP, mailer logs to console and continues.
   // In production with SMTP unconfigured, this throws and the caller returns 500.
-  await sendPasswordResetOTP(email, otp);
+  // To the ACCOUNT's address, not the spelling that was typed.
+  await sendPasswordResetOTP(rows[0].email, otp);
 
   return {
     sent: true,
@@ -248,9 +265,9 @@ export const verifyResetOtp = async (email, otp) => {
     `SELECT o.id
        FROM password_reset_otps o
        JOIN users u ON u.id = o.user_id
-      WHERE u.email = $1 AND o.otp = $2 AND o.used = false AND o.expires_at > NOW()
+      WHERE LOWER(BTRIM(u.email)) = $1 AND o.otp = $2 AND o.used = false AND o.expires_at > NOW()
       ORDER BY o.created_at DESC LIMIT 1`,
-    [email, otp]
+    [normalizeLoginEmail(email) ?? '', otp]
   );
   if (!rows.length) throw new Error("Invalid or expired OTP.");
   return { valid: true };
@@ -261,9 +278,9 @@ export const resetPassword = async (email, otp, newPassword) => {
     `SELECT o.id AS otp_id, u.id AS user_id
        FROM password_reset_otps o
        JOIN users u ON u.id = o.user_id
-      WHERE u.email = $1 AND o.otp = $2 AND o.used = false AND o.expires_at > NOW()
+      WHERE LOWER(BTRIM(u.email)) = $1 AND o.otp = $2 AND o.used = false AND o.expires_at > NOW()
       ORDER BY o.created_at DESC LIMIT 1`,
-    [email, otp]
+    [normalizeLoginEmail(email) ?? '', otp]
   );
   if (!rows.length) throw new Error("Invalid or expired OTP.");
 
@@ -317,8 +334,10 @@ export const loginWithGoogle = async (code, codeVerifier, redirectUri) => {
   if (!payload.email_verified)  throw new Error("Google account email is not verified.");
 
   const { rows } = await pool.query(
-    "SELECT * FROM users WHERE google_id = $1 OR email = $2 LIMIT 1",
-    [payload.sub, payload.email]
+    // The linked Google id wins over an address match, deterministically.
+    `SELECT * FROM users WHERE google_id = $1 OR ${LOGIN_EMAIL_KEY} = $2
+      ORDER BY (google_id = $1) DESC NULLS LAST LIMIT 1`,
+    [payload.sub, normalizeLoginEmail(payload.email) ?? '']
   );
 
   if (!rows.length) {

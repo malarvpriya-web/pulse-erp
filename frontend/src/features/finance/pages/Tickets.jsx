@@ -4,6 +4,7 @@ import api from '@/services/api/client';
 import './Tickets.css';
 import { useToast } from '@/context/ToastContext';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import MasterSelect from '@/components/core/MasterSelect';
 
 export default function Tickets() {
   const toast = useToast();
@@ -166,10 +167,22 @@ export default function Tickets() {
               </div>
               <div className="form-group">
                 <label>Category *</label>
-                <select value={formData.category_id} onChange={(e) => setFormData({ ...formData, category_id: e.target.value })} required>
-                  <option value="">-- Select Category --</option>
-                  {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                </select>
+                {/* `ticket_categories` had a GET and nothing else until §173 —
+                    it could not be changed from here OR from Master Data Setup.
+                    optionValue="id" because support_tickets links by id (and,
+                    separately, stores the name as text: the repository used to
+                    bind the id INTO that text column). */}
+                <MasterSelect
+                  endpoint="/finance/ticket-categories"
+                  label="Ticket Category"
+                  optionValue="id"
+                  value={formData.category_id}
+                  placeholder="-- Select Category --"
+                  onChange={v => setFormData({ ...formData, category_id: v })}
+                  onListChange={setCategories}
+                  required
+                  addRoles={['super_admin', 'admin', 'finance_manager', 'accounts_exec', 'manager']}
+                />
               </div>
               <div className="form-group">
                 <label>Priority *</label>

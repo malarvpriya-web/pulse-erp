@@ -22,6 +22,7 @@ import cron from 'node-cron';
 import pool from '../modules/shared/db.js';
 import notificationsRepository from '../modules/notifications/repositories/notifications.repository.js';
 import { computeFnf } from '../modules/hr/fnf.service.js';
+import { fnfSettlementSuspended } from '../shared/hrContainment.js';
 
 const HR_ROLES = ['super_admin', 'admin', 'hr_manager', 'payroll_admin', 'hr'];
 
@@ -60,6 +61,15 @@ async function insertReminder(userId, exitRequestId, employeeName, netPayable) {
 async function runFnfAutoTrigger() {
   console.log(`[FnF Auto-Trigger Cron] Running at ${new Date().toISOString()}`);
 
+  // Containment C1 (HR_P0_REMEDIATION_DESIGN_2026-11-03.md): computeFnf writes
+  // net_payable from a calculation that is known to be wrong (leave encashment
+  // always 0, notice recovery measured against today). While contained, write
+  // nothing and send no "ready for approval" notices — approval is suspended too.
+  if (fnfSettlementSuspended()) {
+    console.warn('[FnF Auto-Trigger Cron] Skipped — F&F settlement is suspended (HR_CONTAINMENT_FNF).');
+    return { skipped: true, reason: 'FNF_SETTLEMENT_SUSPENDED', processed: 0 };
+  }
+
   const { rows: due } = await pool.query(`
     SELECT er.id, er.employee_id, e.company_id,
            COALESCE(e.name, e.first_name || ' ' || e.last_name) AS employee_name
@@ -73,7 +83,9 @@ async function runFnfAutoTrigger() {
 
   for (const row of due) {
     try {
-      const result = await computeFnf(pool, row.employee_id);
+      // The row's own company (computeFnf requires an explicit scope). A system
+      // job has no caller to scope to; the employee's company is the record's own.
+      const result = await computeFnf(pool, row.employee_id, { companyId: row.company_id ?? null });
       if (!result) continue;
 
       const recipients = await getHrRecipients(row.company_id ?? null);

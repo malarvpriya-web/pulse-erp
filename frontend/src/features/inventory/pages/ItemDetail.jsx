@@ -91,6 +91,7 @@ function Rating({ value }) {
 const BASIS_META = {
   quoted:    { label: 'Quoted',    bg: '#dcfce7', color: '#15803d', title: 'The vendor gave us this number' },
   observed:  { label: 'Observed',  bg: '#dbeafe', color: '#1d4ed8', title: 'Measured from our own receipt / purchase history with this vendor' },
+  modelled:  { label: 'Modelled',  bg: '#e0f2fe', color: '#0369a1', title: 'Weight × distance × an approved rate per tonne-km, each from a recorded source' },
   estimated: { label: 'Estimated', bg: '#fef3c7', color: '#a16207', title: 'Modelled from company rates and vendor master data' },
   assumed:   { label: 'Assumed',   bg: '#f3f4f6', color: '#6b7280', title: 'Nothing on record — the company default rate was applied' },
 };
@@ -344,8 +345,28 @@ export default function ItemDetail() {
             />
           </KPICardGrid>
 
+          {/* Settings unreadable is not the same as TCO switched off — say which. */}
+          {basis?.tco_available === false && (
+            <div role="alert" style={{ marginBottom: 16, padding: '12px 16px', borderRadius: 12, fontSize: 13,
+              background: '#fef2f2', border: '1px solid #fecaca', color: '#991b1b' }}>
+              Total cost of ownership is unavailable: {basis.tco_unavailable_reason} Prices below are shown without it.
+            </div>
+          )}
+
           {/* ── The headline: cheapest quote vs cheapest buy ──────────────── */}
-          {rec && (
+          {/* §216: missing freight for any vendor → no recommendation, and why. */}
+          {rec?.status === 'withheld_incomplete' && (
+            <div role="status" style={{ marginBottom: 16, padding: '14px 18px', borderRadius: 12, fontSize: 13.5, lineHeight: 1.55,
+              background: '#fef2f2', border: '1px solid #fecaca', color: '#991b1b' }}>
+              <strong>No recommendation — comparison incomplete.</strong> {rec.message}
+              <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>
+                {(rec.incomplete || []).map(i => (
+                  <li key={i.vendor_id}><strong>{i.label}</strong> — {i.reason === 'fx' ? 'Exchange rate' : 'Freight'}: {(i.missing || []).map(m => m.message).filter(Boolean).join(' ') || 'freight inputs missing'}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {rec && rec.status !== 'withheld_incomplete' && (
             <div style={{
               display: 'flex', alignItems: 'flex-start', gap: 12, marginBottom: 16, padding: '14px 18px',
               borderRadius: 12, fontSize: 13.5, lineHeight: 1.55,
@@ -355,6 +376,11 @@ export default function ItemDetail() {
             }}>
               <Lightbulb size={18} style={{ flexShrink: 0, marginTop: 1 }} />
               <div>
+                {rec.status === 'provisional' && (
+                  <div style={{ fontWeight: 700, marginBottom: 2 }}>
+                    Provisional — at least one vendor is costed on assumed freight; this is not a verified landed-cost comparison.
+                  </div>
+                )}
                 {rec.differs ? (
                   <>
                     <strong>The cheapest quote is not the cheapest buy.</strong>{' '}
@@ -493,6 +519,21 @@ export default function ItemDetail() {
                             </button>
                           )}
                           {v.is_lowest_tco && <div style={{ fontSize: 10, color: GREEN, fontWeight: 700 }}>lowest total cost</div>}
+                          {v.tco_completeness === 'incomplete' && (
+                            <div style={{ fontSize: 10, color: '#991b1b', fontWeight: 600 }}
+                                 title={(v.tco?.freight?.missing || []).map(m => m.message).join(' ')}>
+                              needs freight input
+                            </div>
+                          )}
+                          {v.tco?.freight?.source === 'assumed' && (
+                            <div style={{ fontSize: 10, color: '#b45309', fontWeight: 600 }}>assumed freight</div>
+                          )}
+                          {v.tco?.reason === 'no_fx_rate' && (
+                            <div style={{ fontSize: 10, color: '#b45309', fontWeight: 600 }}
+                                 title={v.tco.fx_detail?.message || `Priced in ${v.tco.currency}; not ranked without an approved exchange rate`}>
+                              {v.tco.currency} price — needs exchange rate
+                            </div>
+                          )}
                         </td>
                         <td style={{ ...td, textAlign: 'right', color: v.tco_premium_pct > 25 ? RED : '#6b7280' }}>
                           {v.tco_premium_pct == null ? '—' : `+${fmtNum(v.tco_premium_pct, 1)}%`}

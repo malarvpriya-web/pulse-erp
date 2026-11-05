@@ -218,13 +218,4 @@
   border-left-color: transparent;
 }
 
-.nav-section-label {
-  padding: 10px 14px 4px;
-  font-size: 10px;
-  font-weight: 700;
-  color: #9ca3af;
-  text-transform: uppercase;
-  letter-spacing: .07em;
-  user-select: none;
-  cursor: default;
-}
+

@@ -210,10 +210,19 @@ function selectMethod(series, seasonPeriod, holdout, drivers = null) {
     if (best === null || score < best.score) best = { name: m.name, score };
   }
   const full = eligibleMethods(series, seasonPeriod, drivers);
+  // The winning method's predictions for the held-out tail, kept alongside the
+  // actuals they were scored against. These are forecasts for periods that have
+  // CLOSED, which is the only thing forecast accuracy can be measured on — and
+  // without them the first measurable period is a month away, every time.
+  const winner = candidates.find(m => m.name === best?.name) || null;
+  const holdoutPreds = winner
+    ? Array.from({ length: test.length }, (_, k) => nonNeg(num(winner.predict(k + 1))))
+    : [];
   return {
     chosen: full.find(m => m.name === best?.name) || full[full.length - 1] || null,
     backtest: scores,
     candidates: full.map(m => m.name),
+    holdout: { periods: usableHoldout, predictions: holdoutPreds, actuals: test },
   };
 }
 
@@ -351,10 +360,11 @@ export async function runDemandForecast({
       if (observed < 2) { skipped++; out.push({ item: it, skipped: `only ${observed} period(s) with demand` }); continue; }
 
       const itemDrivers = driversByItem.get(it.id) || null;
-      let chosen, backtest = null, candidates = [];
+      let chosen, backtest = null, candidates = [], holdoutDetail = null;
       if (method === 'auto') {
         const sel = selectMethod(series, seasonPeriod, holdout, itemDrivers);
         chosen = sel.chosen; backtest = sel.backtest; candidates = sel.candidates;
+        holdoutDetail = sel.holdout || null;
       } else {
         chosen = eligibleMethods(series, seasonPeriod, itemDrivers).find(m => m.name === method) || null;
         candidates = [method];
@@ -364,6 +374,27 @@ export async function runDemandForecast({
       const best = backtest?.length
         ? backtest.reduce((a, b) => ((b.mape ?? Infinity) < (a.mape ?? Infinity) ? b : a))
         : null;
+
+      // Keep every candidate's score, not just the winner's.
+      //
+      // The run used to store only the method that won, which made the whole
+      // competition invisible: from the database you could not tell whether
+      // Holt had been evaluated and lost, or had never been eligible, or had
+      // quietly stopped being constructed at all. A method that silently drops
+      // out of the candidate set is the failure this table exists to catch —
+      // the forecast keeps working and keeps getting worse.
+      for (const name of candidates) {
+        const s = backtest?.find(b => b.method === name) || null;
+        await client.query(`
+          INSERT INTO demand_forecast_method_scores
+            (company_id, run_id, item_id, item_code, method, mape, mad, bias, observations,
+             is_selected, not_scored_reason)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+          [companyId, run.id, it.id, it.item_code, name,
+           s?.mape ?? null, s?.mad ?? null, s?.bias ?? null, s?.n ?? null,
+           name === chosen.name,
+           s ? null : (backtest ? 'not eligible on training window' : 'holdout too short to backtest')]);
+      }
       if (best?.mape != null) mapes.push(best.mape);
       if (best?.mad  != null) mads.push(best.mad);
       if (best?.bias != null) biases.push(best.bias);
@@ -387,6 +418,38 @@ export async function runDemandForecast({
            actor.id ?? null, actor.name ?? 'System',
            `${chosen.name} over ${series.length} monthly periods`]);
         rows.push({ id: saved.id, period_start: periodStart, qty });
+      }
+
+      // ── Persist the holdout backtest as scoreable history ──────────────────
+      //
+      // Forecasting is forward-only, so on the day a company starts using this
+      // there is nothing to measure accuracy on and there will not be for a
+      // month. Meanwhile the run has just predicted the last few months and
+      // compared them against what actually happened — the exact comparison
+      // "forecast accuracy" means — and threw the predictions away, keeping only
+      // the aggregate MAPE.
+      //
+      // Written as status 'backtest', in the past. MRP consumes only APPROVED
+      // future periods and the MPS generator only looks forward, so these can
+      // never be mistaken for demand.
+      if (holdoutDetail?.predictions?.length) {
+        const hp = holdoutDetail.predictions;
+        for (let k = 0; k < hp.length; k++) {
+          // The held-out months are the last `hp.length` of the history window.
+          const offset = -(hp.length - 1 - k);
+          const ps = monthKey(offset), pe = monthEndKey(offset);
+          await client.query(`
+            INSERT INTO demand_forecasts
+              (company_id, item_id, product_name, forecast_date, quantity, consumed_qty, uom, source,
+               run_id, method, forecast_qty, actual_qty, period_start, period_end, status, version,
+               is_manual_override, created_by, created_by_name, notes)
+            VALUES ($1,$2,$3,$4,$5,0,$6,'backtest',$7,$8,$9,$10,$11,$12,'backtest',1,false,$13,$14,$15)`,
+            [companyId, it.id, it.item_name, ps, r3(hp[k]),
+             it.unit_of_measure, run.id, chosen.name, r3(hp[k]),
+             r3(holdoutDetail.actuals[k]), ps, pe,
+             actor.id ?? null, actor.name ?? 'System',
+             `Held-out backtest: ${chosen.name} trained on data before this period`]);
+        }
       }
 
       // A causal fit is worth keeping: the coefficient is the statement "one

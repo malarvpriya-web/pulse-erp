@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
-import { Plus, X, Building, Users, MapPin, Phone, Mail, Power, Network } from 'lucide-react';
+import { Plus, X, Building, Users, MapPin, Phone, Mail, Power, Network, Search, RotateCcw } from 'lucide-react';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
 import { PageHero, PageShell } from '@/components/pulse-ui';
 
@@ -39,6 +39,7 @@ export default function BranchManagement() {
   const [saving, setSaving]     = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [pendingDeactivate, setPendingDeactivate] = useState(null);
+  const [query, setQuery] = useState('');
   const isMounted = useRef(true);
   const toast = useToast();
 
@@ -89,6 +90,24 @@ export default function BranchManagement() {
     setShowForm(true);
   };
 
+  /**
+   * Bring a deactivated branch back.
+   *
+   * There was no way back before: DELETE switched a branch off and nothing
+   * switched one on again, so a branch deactivated by mistake was gone —
+   * and Add Employee only offers ACTIVE branches, so its employees could not
+   * be re-filed either.
+   */
+  const handleReactivate = async (id, name) => {
+    try {
+      await api.post(`/branches/${id}/reactivate`);
+      await load();
+      toast.success(`Branch "${name}" reactivated`);
+    } catch (e) {
+      toast.error(e.response?.data?.error || e.message || 'Failed to reactivate');
+    }
+  };
+
   const handleDeactivate = async () => {
     if (!pendingDeactivate) return;
     const { id, name } = pendingDeactivate;
@@ -102,8 +121,15 @@ export default function BranchManagement() {
     }
   };
 
-  const active   = branches.filter(b => b.is_active !== false);
-  const inactive = branches.filter(b => b.is_active === false);
+  // Search across the fields someone would actually recall a branch by — its
+  // name, its code or its city. Normalised the same way the master-data search
+  // is, so "head office" finds "Head Office".
+  const needle = query.trim().toLowerCase();
+  const matches = (b) => !needle ||
+    [b.name, b.code, b.city, b.state].some(v => String(v ?? '').toLowerCase().includes(needle));
+
+  const active   = branches.filter(b => b.is_active !== false && matches(b));
+  const inactive = branches.filter(b => b.is_active === false && matches(b));
 
   const set = field => e => setForm(p => ({ ...p, [field]: e.target.value }));
 
@@ -121,7 +147,7 @@ export default function BranchManagement() {
     <PageShell dock={
       <PageHero
         icon={Network}
-        eyebrow="Administration"
+        eyebrow="Settings"
         title="Branch Management"
         actions={<button className="plh-cta"
           onClick={() => { setShowForm(true); setEditingId(null); setForm(EMPTY_FORM); }}>
@@ -138,6 +164,25 @@ export default function BranchManagement() {
         onConfirm={handleDeactivate}
         onCancel={() => setPendingDeactivate(null)}
       />
+
+      {/* Search — branches are the Location master, and a group with a dozen
+          sites is exactly where scanning a card grid stops working. */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
+        <div style={{ position: 'relative', flex: '1 1 260px', minWidth: 0 }}>
+          <Search size={14} style={{ position: 'absolute', left: 11, top: '50%', transform: 'translateY(-50%)', color: '#9ca3af', pointerEvents: 'none' }} />
+          <input
+            type="search"
+            aria-label="Search branches"
+            placeholder="Search by name, code or city…"
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            style={{ width: '100%', boxSizing: 'border-box', padding: '9px 12px 9px 32px', border: '1px solid #e5e7eb', borderRadius: 8, fontSize: 13, outline: 'none', font: 'inherit' }}
+          />
+        </div>
+        <span style={{ fontSize: 12, color: '#9ca3af', whiteSpace: 'nowrap' }}>
+          {active.length} active{inactive.length ? ` · ${inactive.length} inactive` : ''}
+        </span>
+      </div>
 
       {/* Summary cards */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 12, marginBottom: 24 }}>
@@ -216,10 +261,22 @@ export default function BranchManagement() {
                     style={{ flex: 1, padding: '7px 0', background: '#ede9fe', color: '#6B3FDB', border: 'none', borderRadius: 7, cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>
                     Edit
                   </button>
-                  {b.is_active !== false && (
+                  {b.is_active !== false ? (
                     <button onClick={() => setPendingDeactivate({ id: b.id, name: b.name })}
+                      title={`Deactivate "${b.name}" — it stops being selectable on new employee records`}
+                      aria-label={`Deactivate ${b.name}`}
                       style={{ padding: '7px 12px', background: '#f9fafb', color: '#9ca3af', border: '1px solid #e5e7eb', borderRadius: 7, cursor: 'pointer', fontSize: 12, display: 'flex', alignItems: 'center', gap: 4 }}>
                       <Power size={12} />
+                    </button>
+                  ) : (
+                    // The way back. Without it a branch switched off by mistake
+                    // stayed off, and Add Employee only offers ACTIVE branches —
+                    // so its employees could not be re-filed either.
+                    <button onClick={() => handleReactivate(b.id, b.name)}
+                      title={`Reactivate "${b.name}"`}
+                      aria-label={`Reactivate ${b.name}`}
+                      style={{ padding: '7px 12px', background: '#ede9fe', color: '#6B3FDB', border: '1px solid #c4b5fd', borderRadius: 7, cursor: 'pointer', fontSize: 12, display: 'flex', alignItems: 'center', gap: 4 }}>
+                      <RotateCcw size={12} />
                     </button>
                   )}
                 </div>

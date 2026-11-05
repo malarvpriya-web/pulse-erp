@@ -6,6 +6,7 @@ import {
 import api from '@/services/api/client';
 import { useAuth } from '@/context/AuthContext';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import { fmtDate } from '@/utils/dateFormatter';
 
 const P = '#6B3FDB';
 const CARD = { background: '#fff', borderRadius: 12, border: '1px solid #f0f0f4', padding: 20 };
@@ -65,7 +66,7 @@ function RequestCard({ req, onApprove, onReject }) {
             )}
           </div>
           <div style={{ fontSize: 12, color: '#6b7280' }}>
-            {[req.department, req.designation].filter(Boolean).join(' · ')} &nbsp;·&nbsp; {req.date}
+            {[req.department, req.designation].filter(Boolean).join(' · ')} &nbsp;·&nbsp; {fmtDate(req.date)}
           </div>
         </div>
 
@@ -153,7 +154,7 @@ function RequestCard({ req, onApprove, onReject }) {
               {showModal === 'approve' ? 'Approve Regularization' : 'Reject Regularization'}
             </div>
             <div style={{ fontSize: 13, color: '#6b7280', marginBottom: 16 }}>
-              <strong>{req.employee_name}</strong> &nbsp;·&nbsp; {req.date}
+              <strong>{req.employee_name}</strong> &nbsp;·&nbsp; {fmtDate(req.date)}
             </div>
 
             {/* Times summary */}

@@ -15,8 +15,10 @@ import employeeRoutes         from "./src/employees/employee.routes.js";
 import authRoutes             from "./src/auth/auth.routes.js";
 import homeRoutes             from "./src/home/home.routes.js";
 import noteRoutes             from "./src/notes/note.routes.js";
-import announcementRoutes     from "./src/announcements/announcement.routes.js";
+import announcementRoutes, { isAnnouncementReadReceipt } from "./src/announcements/announcement.routes.js";
 import probationRoutes        from "./src/probation/probation.routes.js";
+import departmentHeadsRoutes  from "./src/probation/departmentHeads.routes.js";
+import probationReviewRoutes  from "./src/probation/probationReviews.routes.js";
 
 // ── Finance ──────────────────────────────────────────────────────────────────
 import financeRoutes          from "./src/modules/finance/routes/finance.routes.js";
@@ -109,6 +111,9 @@ import employeeSkillsRoutes   from "./src/modules/hr/employee-skills.routes.js";
 import hrMasterDataRoutes     from "./src/modules/hr/master-data.routes.js";
 import hrWidgetsRoutes        from "./src/modules/hr/hr-widgets.routes.js";
 import onboardingRoutes       from "./src/modules/hr/onboarding.routes.js";
+import bgvRoutes              from "./src/modules/hr/bgv.routes.js";
+import internshipRoutes       from "./src/modules/hr/internships.routes.js";
+import internEvaluationRoutes from "./src/modules/hr/internEvaluations.routes.js";
 
 // ── CRM & Sales ──────────────────────────────────────────────────────────────
 import crmRoutes              from "./src/modules/crm/routes/index.js";
@@ -249,8 +254,9 @@ import { applyFieldPermissions } from "./src/middlewares/auth.middleware.js";
 import { responseCap } from "./src/middlewares/responseCap.js";
 import { denialLogger } from "./src/middlewares/denialLogger.js";
 import { errorHandler }  from "./src/middlewares/errorHandler.js";
-import { runMigrations, verifyApplied } from "./src/config/migrations.js";
+import { assertMigrationsApplied, verifyApplied } from "./src/config/migrations.js";
 import { startProbationCron }  from "./src/jobs/probation.cron.js";
+import { startAnnouncementPublishCron } from "./src/jobs/announcementPublish.cron.js";
 import { startCandidateRetentionCron } from "./src/jobs/candidateRetention.cron.js";
 import { startCandidateRecontactCron } from "./src/jobs/candidateRecontact.cron.js";
 import { startHealthMonitor }  from "./src/jobs/healthMonitor.cron.js";
@@ -598,7 +604,7 @@ v1Router.use(auditLogger);
 
 // Auth is public. Employees has verifyToken via app.use() above (lines 207-208).
 // home/notes/probation have verifyToken inside their route files.
-// announcements has one intentionally public route (/active) for the login screen.
+// announcements applies verifyToken to every route inside its router (/active is no longer public).
 v1Router.use("/auth",            authRoutes);
 v1Router.use("/home",            homeRoutes);
 // verifyToken for /employees is applied globally at the app level (see the
@@ -607,8 +613,15 @@ v1Router.use("/home",            homeRoutes);
 // most: aadhaar_number, pan_number, bank details and basic_salary.
 v1Router.use("/employees",       applyFieldPermissions('employees'), auditMutations('employees'), employeeRoutes);
 v1Router.use("/notes",           auditMutations('admin'), noteRoutes);
-v1Router.use("/announcements",   auditMutations('announcements'), announcementRoutes);
+// POST /:id/read is skipped: a read is recorded in announcement_reads (with read_at),
+// and the floor would otherwise log every employee's read as a "create" on the
+// announcement's id.
+v1Router.use("/announcements",   auditMutations('announcements', { skip: isAnnouncementReadReceipt }), announcementRoutes);
 v1Router.use("/probation",       auditMutations('hr'), probationRoutes);
+// Per-company department → head mapping (verifyToken + hr:view/edit inside).
+v1Router.use("/department-heads", auditMutations('hr'), departmentHeadsRoutes);
+// Probation review cycles: HR request (hr:view/add) + reviewer submission (identity-scoped).
+v1Router.use("/probation-reviews", auditMutations('hr'), probationReviewRoutes);
 v1Router.use("/leaves",          verifyToken, auditMutations('leaves'), leavesNewRoutes);
 v1Router.use("/comp-off",        verifyToken, auditMutations('leaves'), compOffRoutes);
 v1Router.use("/leave-encashment", verifyToken, auditMutations('leaves'), encashmentRoutes);
@@ -719,6 +732,13 @@ v1Router.use("/employee-skills", auditMutations('hr'), employeeSkillsRoutes);
 v1Router.use("/hr-master",       auditMutations('hr'), hrMasterDataRoutes);
 v1Router.use("/hr-widgets",      hrWidgetsRoutes);
 v1Router.use("/onboarding",      verifyToken, auditMutations('hr'), onboardingRoutes);
+v1Router.use("/bgv",             verifyToken, auditMutations('bgv'), bgvRoutes);
+// Interns: a separate workforce population (own table, INTxxx codes). Multipart
+// is parsed inside the router, so no app-level upload middleware is needed.
+v1Router.use("/interns",         verifyToken, auditMutations('internships'), internshipRoutes);
+// Mentor evaluation + HR review. Mentor routes are gated by identity (the intern's
+// current mentor), not by an internships permission — see the router header.
+v1Router.use("/intern-evaluations", verifyToken, auditMutations('internships'), internEvaluationRoutes);
 v1Router.use("/exit",            verifyToken, auditMutations('hr'), exitRoutes);
 
 // CRM & SALES
@@ -1117,13 +1137,14 @@ async function assertRequiredTables() {
 
 const PORT = process.env.PORT || 5000;
 async function startServer() {
-  await runMigrations();
+  await assertMigrationsApplied();
   await assertRequiredTables();
   app.listen(PORT, () => {
     console.log(`✅ Pulse ERP on port ${PORT}`);
     logFeatureFlags();
     registerEventReactions();
     startProbationCron();
+    startAnnouncementPublishCron();
 // Candidate retention — anonymises candidates whose retention has expired or
 // who have withdrawn consent. Destroys data, so it logs every run; see the
 // job header for what it deliberately will NOT touch.

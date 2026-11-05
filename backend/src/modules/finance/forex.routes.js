@@ -2,9 +2,15 @@ import express from 'express';
 import pool from '../../config/db.js';
 import { requirePermission } from '../../middlewares/auth.middleware.js';
 import { companyOf } from '../../shared/scope.js';
+import journalRepo from './repositories/journal.repository.js';
 import { captureBefore } from '../../middlewares/captureBefore.js';
+import { FX_SOURCES, normCurrency } from './services/fxRate.service.js';
 
 const router = express.Router();
+const userIdOf = (req) => req.user?.userId ?? req.user?.id ?? null;
+// The router-level requirePermission('finance','view') below is a floor, not a
+// gate on writes: every mutating route must name its own action. Without one, a
+// view-only finance role could overwrite exchange rates and run a revaluation. Audit logging records who did it; it does not authorise it.
 router.use(requirePermission('finance', 'view'));
 
 const CURRENCY_NAMES = {
@@ -56,7 +62,7 @@ router.get('/rates', async (req, res) => {
 });
 
 // ── POST /forex/rates/fetch ─ fetch live rates from frankfurter.app ───────────
-router.post('/rates/fetch', async (req, res) => {
+router.post('/rates/fetch', requirePermission('finance', 'edit'), async (req, res) => {
   const companyId = companyOf(req);
   try {
     const data = await fetchFromFrankfurter();
@@ -82,12 +88,16 @@ router.post('/rates/fetch', async (req, res) => {
           DO UPDATE SET rate_vs_inr=$4, rate_date=$5, source='api', fetched_at=$6, updated_at=$6
           WHERE EXCLUDED.rate_date >= forex_rates.rate_date
         `, [companyId, code, name, rateVsInr, rateDate, now]);
+        // A fetched rate is a DRAFT until Finance approves it (§215), and it
+        // never overwrites a rate Finance has already approved for that date.
         await client.query(`
-          INSERT INTO forex_rate_history (company_id, currency_code, rate_vs_inr, rate_date, source)
-          VALUES ($1,$2,$3,$4,'api')
+          INSERT INTO forex_rate_history (company_id, currency_code, rate_vs_inr, rate_date, source, status, entered_by_user_id)
+          VALUES ($1,$2,$3,$4,'api','draft',$5)
           ON CONFLICT (company_id, currency_code, rate_date)
-          DO UPDATE SET rate_vs_inr=$3, source=EXCLUDED.source
-        `, [companyId, code, rateVsInr, rateDate]);
+          DO UPDATE SET rate_vs_inr=$3, source=EXCLUDED.source, entered_by_user_id=$5, updated_at=NOW(),
+                        status='draft', approved_by_user_id=NULL, approved_at=NULL, review_note=NULL
+          WHERE forex_rate_history.status <> 'approved'
+        `, [companyId, code, rateVsInr, rateDate, userIdOf(req)]);
         // Count what actually moved, not what was attempted.
         if (rowCount > 0) count++;
         else held++;
@@ -110,14 +120,23 @@ router.post('/rates/fetch', async (req, res) => {
 });
 
 // ── POST /forex/rates ─ add / update manual rate ──────────────────────────────
-router.post('/rates', async (req, res) => {
+router.post('/rates', requirePermission('finance', 'edit'), async (req, res) => {
   const companyId = companyOf(req);
   const { from_currency, rate, rate_date } = req.body;
   if (!from_currency || !rate) return res.status(400).json({ error: 'from_currency and rate are required' });
-  const code = from_currency.toUpperCase();
+  const code = normCurrency(from_currency);
+  if (!code || code === 'INR') return res.status(400).json({ error: 'from_currency must be a 3-letter ISO code other than INR' });
   const name = CURRENCY_NAMES[code] || code;
   const rateVal = parseFloat(rate);
-  const dateVal = rate_date || new Date().toISOString().split('T')[0];
+  if (!Number.isFinite(rateVal) || rateVal <= 0) return res.status(400).json({ error: 'rate must be a positive number' });
+  // Where the number came from. 'api' is reserved for the fetch route.
+  const source = String(req.body.source || 'manual').toLowerCase();
+  if (!FX_SOURCES.includes(source) || source === 'api') {
+    return res.status(400).json({ error: `source must be one of ${FX_SOURCES.filter(s => s !== 'api').join(', ')}` });
+  }
+  // The DATABASE's date (IST), not toISOString()'s UTC one — between 00:00 and
+  // 05:30 IST the old default stamped the rate with yesterday's date.
+  const dateVal = rate_date || (await pool.query(`SELECT CURRENT_DATE::text AS d`)).rows[0].d;
   try {
     // forex_rates holds the CURRENT rate, one row per currency. The effective
     // date on the form is freely editable, so without the WHERE guard a
@@ -134,25 +153,111 @@ router.post('/rates', async (req, res) => {
       DO UPDATE SET rate_vs_inr=$4, rate_date=$5, source='manual', fetched_at=NOW(), updated_at=NOW()
       WHERE EXCLUDED.rate_date >= forex_rates.rate_date
     `, [companyId, code, name, rateVal, dateVal]);
-    await pool.query(`
-      INSERT INTO forex_rate_history (company_id, currency_code, rate_vs_inr, rate_date, source)
-      VALUES ($1,$2,$3,$4,'manual')
+    // Entered rates are DRAFTS. Re-entering a rate for a date that was already
+    // approved replaces it and sends it back for approval — a corrected number
+    // must not inherit the sign-off given to the old one.
+    const { rows: [hist] } = await pool.query(`
+      INSERT INTO forex_rate_history (company_id, currency_code, rate_vs_inr, rate_date, source, status, entered_by_user_id)
+      VALUES ($1,$2,$3,$4,$5,'draft',$6)
       ON CONFLICT (company_id, currency_code, rate_date)
-      DO UPDATE SET rate_vs_inr=$3, source=EXCLUDED.source
-    `, [companyId, code, rateVal, dateVal]);
+      DO UPDATE SET rate_vs_inr=$3, source=EXCLUDED.source, entered_by_user_id=$6, updated_at=NOW(),
+                    status='draft', approved_by_user_id=NULL, approved_at=NULL, review_note=NULL
+      RETURNING id, status
+    `, [companyId, code, rateVal, dateVal, source, userIdOf(req)]);
     // Say which of the two happened. Answering "Rate saved" to a backdated post
     // that deliberately did not move the current rate is how the caller comes to
     // believe the headline number changed when it did not.
     res.status(201).json({
-      message: rowCount > 0
+      message: (rowCount > 0
         ? 'Rate saved'
-        : `Recorded in rate history for ${dateVal}. The current ${code} rate is more recent and was left unchanged.`,
+        : `Recorded in rate history for ${dateVal}. The current ${code} rate is more recent and was left unchanged.`)
+        + ' It is a draft until another Finance approver approves it; comparisons do not use it until then.',
       current_rate_updated: rowCount > 0,
+      history_id: hist?.id ?? null,
+      status: hist?.status ?? 'draft',
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
+
+// ── Rate approval (§215) ──────────────────────────────────────────────────────
+// Comparisons (TCO, RFx cost scores, awards) use ONLY approved history rows.
+// Approval is finance:approve, and the approver must not be the person who
+// entered the rate. A rate whose enterer is unknown (rows that predate this
+// workflow) can be approved by any approver; the approver is recorded.
+
+// GET /forex/rate-history?status=draft|approved|rejected&currency=USD
+router.get('/rate-history', async (req, res) => {
+  const companyId = companyOf(req);
+  const status = req.query.status ? String(req.query.status) : null;
+  if (status && !['draft', 'approved', 'rejected'].includes(status)) {
+    return res.status(400).json({ error: 'status must be draft, approved or rejected' });
+  }
+  const currency = req.query.currency ? normCurrency(req.query.currency) : null;
+  try {
+    const { rows } = await pool.query(`
+      SELECT h.id, h.currency_code, h.rate_vs_inr, h.rate_date::text AS rate_date, h.source, h.status,
+             h.entered_by_user_id, eu.name AS entered_by_name,
+             h.approved_by_user_id, au.name AS approved_by_name, h.approved_at, h.review_note,
+             h.created_at, h.updated_at
+        FROM forex_rate_history h
+        LEFT JOIN users eu ON eu.id = h.entered_by_user_id
+        LEFT JOIN users au ON au.id = h.approved_by_user_id
+       WHERE h.company_id = $1
+         AND ($2::text IS NULL OR h.status = $2)
+         AND ($3::text IS NULL OR h.currency_code = $3)
+       ORDER BY h.rate_date DESC, h.currency_code
+       LIMIT 300`, [companyId, status, currency]);
+    res.json({ data: rows.map(r => ({ ...r, rate_vs_inr: parseFloat(r.rate_vs_inr) })) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+async function review(req, res, decision) {
+  const companyId = companyOf(req);
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'id must be an integer' });
+  const userId = userIdOf(req);
+  if (userId == null) return res.status(401).json({ error: 'No user identity on the request' });
+  const note = req.body?.note ? String(req.body.note).trim() : null;
+  if (decision === 'rejected' && !(note && note.length >= 5)) {
+    return res.status(422).json({ error: 'A note of at least 5 characters is required to reject a rate.' });
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows: [row] } = await client.query(
+      `SELECT * FROM forex_rate_history WHERE id = $1 AND company_id = $2 FOR UPDATE`, [id, companyId]);
+    if (!row) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Rate not found' }); }
+    if (row.status !== 'draft') {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: `This rate is already ${row.status}. Re-enter it to send a corrected rate for approval.`, code: 'NOT_DRAFT' });
+    }
+    if (row.entered_by_user_id != null && Number(row.entered_by_user_id) === Number(userId)) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'You entered this rate, so another Finance approver must review it.', code: 'SELF_APPROVAL' });
+    }
+    const { rows: [out] } = await client.query(
+      `UPDATE forex_rate_history
+          SET status = $2, approved_by_user_id = $3, approved_at = NOW(), review_note = $4, updated_at = NOW()
+        WHERE id = $1
+        RETURNING id, currency_code, rate_vs_inr, rate_date::text AS rate_date, source, status,
+                  entered_by_user_id, approved_by_user_id, approved_at, review_note`,
+      [id, decision, userId, note]);
+    await client.query('COMMIT');
+    res.json({ data: { ...out, rate_vs_inr: parseFloat(out.rate_vs_inr) } });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+}
+
+router.post('/rate-history/:id/approve', requirePermission('finance', 'approve'), (req, res) => review(req, res, 'approved'));
+router.post('/rate-history/:id/reject',  requirePermission('finance', 'approve'), (req, res) => review(req, res, 'rejected'));
 
 // ── GET /forex/rate-history/:currency ─ 30-day sparkline data ─────────────────
 router.get('/rate-history/:currency', async (req, res) => {
@@ -256,7 +361,7 @@ router.get('/revaluations', async (req, res) => {
 });
 
 // ── POST /forex/revalue ─ compute revaluation preview ─────────────────────────
-router.post('/revalue', async (req, res) => {
+router.post('/revalue', requirePermission('finance', 'add'), async (req, res) => {
   const companyId = companyOf(req);
   const { revaluation_date } = req.body;
   if (!revaluation_date) return res.status(400).json({ error: 'revaluation_date is required' });
@@ -282,7 +387,7 @@ router.post('/revalue', async (req, res) => {
           AND currency IS NOT NULL AND currency != 'INR'
           AND LOWER(status) NOT IN ('paid','cancelled')
       `, [companyId]);
-      rows.forEach(r => details.push(buildRevalLine(r, rateMap)));
+      rows.forEach(r => details.push(buildRevalLine(r, rateMap, 'receivable')));
     } catch (_) {}
 
     // Bills
@@ -296,11 +401,16 @@ router.post('/revalue', async (req, res) => {
           AND currency IS NOT NULL AND currency != 'INR'
           AND LOWER(status) NOT IN ('paid','cancelled')
       `, [companyId]);
-      rows.forEach(r => details.push(buildRevalLine(r, rateMap)));
+      rows.forEach(r => details.push(buildRevalLine(r, rateMap, 'payable')));
     } catch (_) {}
 
-    const totalGain = details.filter(d => d.gl === 'gain').reduce((s, d) => s + d.difference, 0);
-    const totalLoss = Math.abs(details.filter(d => d.gl === 'loss').reduce((s, d) => s + d.difference, 0));
+    // Sum MAGNITUDES per corrected label. Summing signed differences and then
+    // taking Math.abs() let a favourable and an unfavourable line inside the
+    // same bucket cancel each other before the total was taken.
+    const totalGain = details.filter(d => d.gl === 'gain')
+                             .reduce((s, d) => s + Math.abs(d.difference), 0);
+    const totalLoss = details.filter(d => d.gl === 'loss')
+                             .reduce((s, d) => s + Math.abs(d.difference), 0);
     const netPgl = totalGain - totalLoss;
 
     const { rows: [reval] } = await pool.query(`
@@ -320,42 +430,165 @@ router.post('/revalue', async (req, res) => {
   }
 });
 
-function buildRevalLine(r, rateMap) {
+/**
+ * @param {'receivable'|'payable'} source  which side of the book this line is.
+ *
+ * The gain/loss label USED TO BE `diff >= 0 ? 'gain' : 'loss'` for every line,
+ * which is only right for receivables. A payable is an obligation: when the
+ * rate moves so that it now costs MORE rupees to settle, that is a LOSS, not a
+ * gain. Every bill was therefore classified backwards, and because total_gain
+ * and total_loss are derived from this label, both totals and net_pgl were
+ * wrong for any company with foreign-currency payables.
+ */
+function buildRevalLine(r, rateMap, source) {
   const bookedRate = parseFloat(r.booked_rate) || 1;
   const currentRate = rateMap[r.currency] || bookedRate;
   const foreignAmt = parseFloat(r.foreign_amount);
   const bookedInr = foreignAmt * bookedRate;
   const currentInr = foreignAmt * currentRate;
   const diff = currentInr - bookedInr;
+  // Receivable: worth more rupees  -> gain.  Payable: costs more rupees -> loss.
+  const favourable = source === 'payable' ? diff <= 0 : diff >= 0;
   return {
     reference: r.reference,
     party: r.party,
     currency: r.currency,
+    source,
     foreign_amount: foreignAmt,
     booked_rate: bookedRate,
     current_rate: currentRate,
     booked_inr: bookedInr,
     current_inr: currentInr,
     difference: diff,
-    gl: diff >= 0 ? 'gain' : 'loss',
+    gl: favourable ? 'gain' : 'loss',
   };
 }
 
 // ── PUT /forex/revaluations/:id/post ─ post revaluation journal entries ────────
-router.put('/revaluations/:id/post', captureBefore('forex_revaluations'), async (req, res) => {
+// Unrealised exchange differences are POSTED, not just flagged.
+//
+// This handler used to run a single `UPDATE forex_revaluations SET status='posted'`
+// and nothing else — no journal entry of any kind. The gain or loss was
+// computed, shown on screen, marked posted, and never reached the ledger, so
+// the P&L and balance sheet carried none of it.
+//
+// The entry it writes, from the per-line details captured at revaluation time:
+//
+//   receivables worth more rupees  DR 1010 Accounts Receivable / CR 4010 FX Gain
+//   receivables worth fewer        DR 5055 FX Loss             / CR 1010
+//   payables costing more rupees   DR 5055 FX Loss             / CR 2001 Accounts Payable
+//   payables costing fewer         DR 2001                     / CR 4010 FX Gain
+//
+// Debits equal credits by construction. It goes through journalRepo, so the
+// posting guards (balanced, resolvable active accounts, unlocked and open
+// period) apply here exactly as they do to an invoice.
+const FX_GAIN = '4010';
+const FX_LOSS = '5055';
+const FX_AR   = '1010';
+const FX_AP   = '2001';
+
+router.put('/revaluations/:id/post', requirePermission('finance', 'approve'), captureBefore('forex_revaluations'), async (req, res) => {
   const companyId = companyOf(req);
+  const userId = req.user?.userId ?? req.user?.id ?? null;
   const { id } = req.params;
+  const client = await pool.connect();
   try {
-    const { rows } = await pool.query(
-      `UPDATE forex_revaluations SET status='posted'
-       WHERE id=$1 AND company_id=$2 AND status='draft'
-       RETURNING id, revaluation_date, status, total_gain, total_loss, net_pgl`,
+    await client.query('BEGIN');
+
+    // Lock the row so two approvers cannot both post the same revaluation.
+    const { rows: revRows } = await client.query(
+      `SELECT id, revaluation_date, status, details, journal_entry_id
+         FROM forex_revaluations
+        WHERE id = $1 AND company_id = $2
+        FOR UPDATE`,
       [id, companyId]
     );
-    if (!rows.length) return res.status(404).json({ error: 'Revaluation not found or already posted' });
-    res.json(rows[0]);
+    if (!revRows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Revaluation not found' });
+    }
+    const reval = revRows[0];
+    if (reval.status !== 'draft') {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        error: `Revaluation is already '${reval.status}'` +
+               (reval.journal_entry_id ? ` (journal ${reval.journal_entry_id})` : ''),
+        code: 'ALREADY_POSTED',
+      });
+    }
+
+    const details = Array.isArray(reval.details) ? reval.details : JSON.parse(reval.details || '[]');
+
+    // Net movement per side. A line's `difference` is currentInr - bookedInr.
+    let arDelta = 0, apDelta = 0;
+    for (const d of details) {
+      const diff = parseFloat(d.difference || 0);
+      if (!Number.isFinite(diff) || diff === 0) continue;
+      if (d.source === 'payable') apDelta += diff; else arDelta += diff;
+    }
+    const round2 = (v) => Math.round(v * 100) / 100;
+    arDelta = round2(arDelta);
+    apDelta = round2(apDelta);
+
+    if (arDelta === 0 && apDelta === 0) {
+      // Nothing to post. Recorded as posted so the workflow completes, with no
+      // journal — rather than writing a zero-value entry the guards reject.
+      const { rows: [updated] } = await client.query(
+        `UPDATE forex_revaluations
+            SET status='posted', posted_at=NOW(), posted_by=$2
+          WHERE id=$1 RETURNING id, revaluation_date, status, total_gain, total_loss, net_pgl, journal_entry_id`,
+        [id, userId]
+      );
+      await client.query('COMMIT');
+      return res.json({ ...updated, journal: null, note: 'No exchange difference to post.' });
+    }
+
+    const lines = [];
+    const push = (code, debit, credit, narration) =>
+      lines.push({ account_code: code, debit: round2(debit), credit: round2(credit), description: narration });
+
+    if (arDelta > 0)      { push(FX_AR, arDelta, 0, 'Unrealised FX gain on receivables');
+                            push(FX_GAIN, 0, arDelta, 'Unrealised FX gain on receivables'); }
+    else if (arDelta < 0) { push(FX_LOSS, -arDelta, 0, 'Unrealised FX loss on receivables');
+                            push(FX_AR, 0, -arDelta, 'Unrealised FX loss on receivables'); }
+
+    if (apDelta > 0)      { push(FX_LOSS, apDelta, 0, 'Unrealised FX loss on payables');
+                            push(FX_AP, 0, apDelta, 'Unrealised FX loss on payables'); }
+    else if (apDelta < 0) { push(FX_AP, -apDelta, 0, 'Unrealised FX gain on payables');
+                            push(FX_GAIN, 0, -apDelta, 'Unrealised FX gain on payables'); }
+
+    const entryNumber = await journalRepo.getNextEntryNumber(client);
+    const entry = await journalRepo.createEntry(client, {
+      entry_number:   entryNumber,
+      entry_date:     reval.revaluation_date,
+      entry_type:     'ForexRevaluation',
+      reference_type: 'forex_revaluation',
+      reference_id:   reval.id,
+      description:    `Foreign exchange revaluation ${String(reval.revaluation_date).slice(0, 10)}`,
+      created_by:     userId,
+      company_id:     companyId,
+    });
+
+    for (const l of lines) {
+      await journalRepo.createLine(client, { journal_entry_id: entry.id, ...l });
+    }
+    await journalRepo.postEntry(client, entry.id);
+
+    const { rows: [updated] } = await client.query(
+      `UPDATE forex_revaluations
+          SET status='posted', posted_at=NOW(), posted_by=$2, journal_entry_id=$3
+        WHERE id=$1 RETURNING id, revaluation_date, status, total_gain, total_loss, net_pgl, journal_entry_id`,
+      [id, userId, entry.id]
+    );
+
+    await client.query('COMMIT');
+    res.json({ ...updated, journal: { id: entry.id, entry_number: entryNumber, lines } });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    await client.query('ROLLBACK');
+    console.error('[PUT /forex/revaluations/:id/post]', err.message);
+    res.status(err.status || 500).json({ error: err.message, code: err.code });
+  } finally {
+    client.release();
   }
 });
 

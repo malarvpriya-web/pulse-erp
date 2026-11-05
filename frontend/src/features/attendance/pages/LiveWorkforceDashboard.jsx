@@ -8,6 +8,7 @@ import 'leaflet/dist/leaflet.css';
 import api from '@/services/api/client';
 import '@/components/dashboard/dashkit.css';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import { localDay } from '@/utils/dateFormatter';
 
 function parseGPS(loc) {
   if (!loc) return null;
@@ -115,7 +116,7 @@ export default function LiveWorkforceDashboard() {
 
   const load = useCallback(async () => {
     try {
-      const today = new Date().toISOString().split('T')[0];
+      const today = localDay();
       const [res, geoViolRes] = await Promise.all([
         api.get('/attendance/live-dashboard'),
         api.get(`/attendance/geo-violations?from_date=${today}&to_date=${today}`).catch(() => ({ data: { summary: { today_violations: 0 } } })),

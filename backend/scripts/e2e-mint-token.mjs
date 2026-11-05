@@ -35,6 +35,10 @@ dotenv.config({ path: path.resolve(__dirname, '../.env'), quiet: true });
 
 const jwt  = (await import('jsonwebtoken')).default;
 const pool = (await import('../src/config/db.js')).default;
+// The same normal form and indexed key the login route uses (src/shared/
+// loginEmail.js), so this finds the account the login form would — e.g. a
+// stored 'SuperAdmin@Manifest.in' for E2E_LOGIN_EMAIL=superadmin@manifest.in.
+const { normalizeLoginEmail, LOGIN_EMAIL_KEY } = await import('../src/shared/loginEmail.js');
 
 const EMAIL  = process.env.E2E_LOGIN_EMAIL || 'superadmin@manifest.in';
 const SECRET = process.env.JWT_SECRET;
@@ -44,8 +48,8 @@ async function main() {
 
   const { rows: [user] } = await pool.query(
     `SELECT id, email, role, employee_id, is_active
-       FROM users WHERE email = $1`,
-    [EMAIL]
+       FROM users WHERE ${LOGIN_EMAIL_KEY} = $1`,
+    [normalizeLoginEmail(EMAIL) ?? '']
   );
   if (!user)            throw new Error(`No user ${EMAIL}`);
   if (!user.is_active)  throw new Error(`User ${EMAIL} is inactive — pick an active account via E2E_LOGIN_EMAIL`);

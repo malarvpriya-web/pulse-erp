@@ -5,8 +5,15 @@ vi.mock('../features/hr/pages/Announcements.css', () => ({}));
 vi.mock('../features/hr/pages/Probation.css',     () => ({}));
 vi.mock('../features/hr/pages/Payroll.css',        () => ({}));
 
+// Grants the mocked user holds. Admin holds payroll view / add / approve in the
+// live matrix (Payroll Processing shows Generate and Approve on them, PC-01);
+// a test that needs a narrower user swaps the set and restores it.
+const authState = vi.hoisted(() => ({ grants: new Set(['hr:view', 'payroll:view', 'payroll:add', 'payroll:approve']) }));
 vi.mock('../context/AuthContext', () => ({
-  useAuth: () => ({ user: { name: 'Admin', role: 'admin', id: 1 }, role: 'admin' }),
+  useAuth: () => ({
+    user: { name: 'Admin', role: 'admin', id: 1 }, role: 'admin',
+    hasPermission: (module, action) => authState.grants.has(`${module}:${action}`),
+  }),
 }));
 
 vi.mock('recharts', () => ({
@@ -46,7 +53,7 @@ const mockEmployees = [
 ];
 
 const mockPayrollRows = [
-  { id: 1, name: 'Arun Kumar', employee_id: 'EMP001', department: 'Engineering', designation: 'Developer',
+  { id: 1, name: 'Arun Kumar', employee_id: 1, employee_code: 'EMP001', department: 'Engineering', designation: 'Developer',
     gross: 60000, pf: 7200, esi: 450, pt: 200, tds: 0, total_deductions: 7850, net_pay: 52150, status: 'pending' },
 ];
 
@@ -55,9 +62,15 @@ function stubApi(overrides = {}) {
     if (url === '/employees/analytics') return Promise.resolve({ data: overrides.analytics ?? EMPTY_ANALYTICS });
     if (url === '/employees')           return Promise.resolve({ data: overrides.employees ?? [] });
     if (url === '/leaves')              return Promise.resolve({ data: overrides.leaves ?? [] });
-    if (url === '/payroll')             return Promise.resolve({ data: overrides.payroll ?? [] });
-    if (url === '/payroll/summary')     return Promise.resolve({ data: overrides.summary ?? {} });
-    if (url === '/payroll/trend')       return Promise.resolve({ data: overrides.trend ?? [] });
+    // Payroll endpoints answer with the {success, data} envelope, exactly as
+    // the server does. This stub used to return the rows UNWRAPPED, so it kept
+    // passing while the real Run Payroll page read the envelope as the rows and
+    // showed 0 employees.
+    if (url === '/payroll')             return Promise.resolve({ data: { success: true, data: overrides.payroll ?? [] } });
+    if (url === '/payroll/summary')     return Promise.resolve({ data: { success: true, data: overrides.summary ?? {} } });
+    if (url === '/payroll/trend')       return Promise.resolve({ data: { success: true, data: overrides.trend ?? [] } });
+    if (url === '/payroll/eligibility') return Promise.resolve({ data: { success: true, data: overrides.eligibility ?? null } });
+    if (url === '/payroll/release-readiness') return Promise.resolve({ data: { success: true, data: overrides.readiness ?? null } });
     if (url === '/probation')           return Promise.resolve({ data: overrides.probation ?? [] });
     if (url === '/announcements')       return Promise.resolve({ data: overrides.announcements ?? [] });
     return Promise.resolve({ data: [] });
@@ -146,6 +159,41 @@ describe('HRDashboard — smoke', () => {
   });
 });
 
+// ── HRDashboard — salary bands need payroll:view ─────────────────────────────
+// /analytics/salary-bands is gated on payroll:view server-side. A viewer without
+// it must not request it, see an empty "Salary Distribution" card, or get a
+// "Salary bands" failure for what is an access decision.
+
+describe('HRDashboard — salary bands follow payroll:view', () => {
+  const salaryCalls = () => api.get.mock.calls.filter(([url]) => String(url).includes('salary-bands'));
+  const openAnalytics = () => fireEvent.click(screen.getByRole('tab', { name: /analytics/i }));
+
+  it('with payroll:view: requests salary bands and shows the chart', async () => {
+    stubApi();
+    render(<HRDashboard setPage={() => {}} />);
+    openAnalytics();
+    await waitFor(() => expect(screen.getByText('Salary Distribution')).toBeDefined());
+    expect(salaryCalls()).toHaveLength(1);
+  });
+
+  it('with hr:view only: never requests salary bands and shows no salary chart', async () => {
+    const saved = authState.grants;
+    authState.grants = new Set(['hr:view']);
+    try {
+      stubApi();
+      render(<HRDashboard setPage={() => {}} />);
+      openAnalytics();
+      await waitFor(() => expect(api.get.mock.calls.some(([url]) => String(url).includes('/analytics/headcount'))).toBe(true));
+      await waitFor(() => expect(screen.queryByText(/Loading/i)).toBeNull());
+      expect(salaryCalls()).toHaveLength(0);
+      expect(screen.queryByText('Salary Distribution')).toBeNull();
+      expect(screen.queryByText(/Salary bands/)).toBeNull();
+    } finally {
+      authState.grants = saved;
+    }
+  });
+});
+
 // ── Payroll ───────────────────────────────────────────────────────────────────
 
 describe('Payroll — smoke', () => {
@@ -164,7 +212,7 @@ describe('Payroll — smoke', () => {
   it('renders all four KPI labels', () => {
     api.get.mockReturnValue(new Promise(() => {}));
     render(<Payroll setPage={() => {}} />);
-    expect(screen.getByText('Total Employees')).toBeDefined();
+    expect(screen.getByText('Employees in Run')).toBeDefined();
     expect(screen.getByText('Total Gross')).toBeDefined();
     expect(screen.getByText('Total Deductions')).toBeDefined();
     expect(screen.getByText('Net Payable')).toBeDefined();
@@ -187,6 +235,42 @@ describe('Payroll — smoke', () => {
     render(<Payroll setPage={() => {}} />);
     await waitFor(() => expect(screen.getByText('Arun Kumar')).toBeDefined());
     expect(screen.getByText('Engineering')).toBeDefined();
+    // canonical employee code, never the numeric id
+    expect(screen.getByText(/EMP001/)).toBeDefined();
+  });
+
+  it('lists release blockers and disables Approve while any remain', async () => {
+    stubApi({ payroll: mockPayrollRows, summary: {}, trend: [],
+      readiness: { period: 'September 2026', ready: false, blockers: [{ code: 'RULE_MID_PERIOD', key: 'pf.wage_ceiling', message: 'pf.wage_ceiling changed on 2026-09-17' }] } });
+    render(<Payroll setPage={() => {}} />);
+    await waitFor(() => expect(screen.getByText(/Release prerequisites/)).toBeDefined());
+    expect(screen.getByText(/changed on 2026-09-17/)).toBeDefined();
+    expect(screen.getByRole('button', { name: /Approve & Release/ }).disabled).toBe(true);
+  });
+
+  // Eligibility counts today's master data; the table is the saved draft. When a
+  // revision lands after the draft (live Manifest Oct-2026: 6 eligible, 3 rows),
+  // the banner must name the employees the draft is missing.
+  it('names eligible employees missing from the saved draft', async () => {
+    stubApi({ payroll: mockPayrollRows, summary: { total_employees: 1 }, trend: [],
+      eligibility: { period: 'October 2026', summary: { active_headcount: 3, eligible: 2, not_eligible: 1 },
+        employees: [
+          { employee_id: 1, employee_code: 'EMP001', name: 'Arun Kumar', status: 'Active', eligible: true, reasons: [] },
+          { employee_id: 2, employee_code: 'EMP002', name: 'Bala', status: 'Active', eligible: true, reasons: [] },
+          { employee_id: 3, employee_code: 'EMP003', name: 'Chitra', status: 'Active', eligible: false, reasons: [{ message: 'No salary revision' }] },
+        ] } });
+    render(<Payroll setPage={() => {}} />);
+    await waitFor(() => expect(screen.getByText(/1 eligible employee\(s\) are not in it \(EMP002\)/)).toBeDefined());
+    expect(screen.getByText(/Generate Payroll again/)).toBeDefined();
+  });
+
+  it('shows no draft note when the draft matches the eligible set', async () => {
+    stubApi({ payroll: mockPayrollRows, summary: {}, trend: [],
+      eligibility: { period: 'October 2026', summary: { active_headcount: 1, eligible: 1, not_eligible: 0 },
+        employees: [{ employee_id: 1, employee_code: 'EMP001', name: 'Arun Kumar', status: 'Active', eligible: true, reasons: [] }] } });
+    render(<Payroll setPage={() => {}} />);
+    await waitFor(() => expect(screen.getByText('Arun Kumar')).toBeDefined());
+    expect(screen.queryByText(/The saved draft for/)).toBeNull();
   });
 
   it('renders status filter buttons', async () => {

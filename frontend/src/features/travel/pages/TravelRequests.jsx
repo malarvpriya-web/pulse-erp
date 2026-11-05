@@ -3,14 +3,13 @@ import api from '@/services/api/client';
 import { Plus, X, Search, ChevronDown, CheckCircle, Clock, AlertCircle, Plane } from 'lucide-react';
 import { STATUS_COLOR, fmt } from './travelUtils';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import VocabSelect from '@/components/core/VocabSelect';
 
 const fmtDate = (d) => { if (!d) return '—'; const s = String(d); if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s.split('-').reverse().join('/'); const dt = new Date(d); return isNaN(dt.getTime()) ? '—' : dt.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }); };
 
-const TRAVEL_TYPES = [
-  'Sales Visit', 'Customer Meeting', 'Tender Discussion', 'Site Survey',
-  'Application Engineering', 'Design Discussion', 'FAT Support', 'Installation',
-  'Commissioning', 'Service Visit', 'AMC Visit', 'Training', 'Internal Meeting',
-];
+// Was a thirteen-item array here, near-duplicated by VISIT_TYPES in
+// VisitReports (13, overlapping but not equal) and CustomerVisits (7, different
+// again). Now the travel-type master.
 
 const TRAVEL_MODES = ['Flight','Train','Bus','Car','Cab','Two-Wheeler','Other'];
 const EMPTY_FORM = {
@@ -275,9 +274,8 @@ export default function TravelRequests() {
             <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16 }}>
               <div>
                 <label style={labelStyle}>Travel Type *</label>
-                <select value={form.travel_type} onChange={e => fld('travel_type', e.target.value)} style={inputStyle}>
-                  {TRAVEL_TYPES.map(t => <option key={t}>{t}</option>)}
-                </select>
+                <VocabSelect vocab="travel-types" value={form.travel_type}
+                  onChange={v => fld('travel_type', v)} selectStyle={inputStyle} />
               </div>
               <div>
                 <label style={labelStyle}>Service Ticket ID</label>

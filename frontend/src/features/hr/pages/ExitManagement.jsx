@@ -4,6 +4,8 @@ import { Users } from 'lucide-react';
 import api from '@/services/api/client';
 import { PieChart, Pie, Cell, Tooltip, BarChart, Bar, XAxis, YAxis, CartesianGrid, ResponsiveContainer, Legend } from 'recharts';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { initiateHandOff } from '../exitHandOff';
 
 
 const REASON_LABELS = { better_opportunity: 'Better Opportunity', compensation: 'Compensation', work_environment: 'Work Environment', personal: 'Personal', relocation: 'Relocation', other: 'Other' };
@@ -16,7 +18,7 @@ const cardStyle = { background: '#fff', border: '1px solid #f0f0f4', borderRadiu
 const thStyle = { padding: '10px 16px', textAlign: 'left', fontWeight: 600, fontSize: 12, color: '#6b7280', background: '#fafafa', borderBottom: '1px solid #f0f0f4', whiteSpace: 'nowrap' };
 const tdStyle = { padding: '10px 16px', fontSize: 13, color: '#111827', borderBottom: '1px solid #f8f8fc' };
 
-export default function ExitManagement() {
+export default function ExitManagement({ embedded = false }) {
   const [tab, setTab] = useState(0);
   const [activeExits, setActiveExits] = useState([]);
   const [interviews, setInterviews] = useState([]);
@@ -25,13 +27,16 @@ export default function ExitManagement() {
   const [selectedEmployee, setSelectedEmployee] = useState(null);
   const [clearanceData, setClearanceData] = useState({});
   const [clearanceStatus, setClearanceStatus] = useState({});
-  const [showInitiate, setShowInitiate] = useState(false);
+  const [showInitiate, setShowInitiate] = useState(() => (typeof window !== 'undefined' && !!initiateHandOff(window.location.search)));
   const [showInterview, setShowInterview] = useState(null);
-  const [initiateForm, setInitiateForm] = useState({ employee_id: '', separation_type: 'resignation', last_working_date: '' });
+  // Read once, on mount: a hand-off from All Employees opens Initiate pre-filled.
+  const [handOff] = useState(() => (typeof window !== 'undefined' ? initiateHandOff(window.location.search) : null));
+  const [initiateForm, setInitiateForm] = useState(handOff?.form || { employee_id: '', separation_type: 'resignation', last_working_date: '', reason: '' });
   const [interviewForm, setInterviewForm] = useState({ reason_category: 'better_opportunity', reason_detail: '', would_rejoin: 'maybe', rating_management: 4, rating_culture: 4, rating_work: 4, rating_growth: 3, overall_rating: 4, interviewer_id: null });
   const [notice, setNotice] = useState(null);
   const [actioning, setActioning] = useState(false);
-  const [fnfEstimated, setFnfEstimated] = useState(false);
+  const [fnfError, setFnfError] = useState(null);
+  const [withdrawTarget, setWithdrawTarget] = useState(null);
 
   const showNotice = (msg, type = 'success') => {
     setNotice({ msg, type });
@@ -59,35 +64,29 @@ export default function ExitManagement() {
       showNotice('Exit process initiated successfully');
       setShowInitiate(false);
       load();
-    } catch (_) {
-      showNotice('Failed to initiate exit. Please try again.', 'error');
+    } catch (err) {
+      showNotice(err?.response?.data?.error || 'Failed to initiate exit. Please try again.', 'error');
     } finally { setActioning(false); }
   };
 
   const computeFnF = async (empId) => {
     setSelectedEmployee(empId);
     setFnfData(null);
-    setFnfEstimated(false);
+    setFnfError(null);
     loadClearanceStatus(empId);
     try {
       const res = await api.post(`/exit/fnf/compute/${empId}`);
       setFnfData(res.data);
-    } catch (_) {
-      setFnfEstimated(true);
-      setFnfData({
-        net_payable: 145200, status: 'draft',
-        computation_details: {
-          basic_salary: 45000, daily_basic: 1731, service_years: 4.8, service_years_complete: 4,
-          notice: { period_days: 60, served_days: 30, shortfall_days: 30, recovery: 51923 },
-          leave_encashment: { balance_days: 18, amount: 31154, formula: '18 days × (45000/26)' },
-          gratuity: { eligible: false, amount: 0, formula: 'Not eligible (<5 years service)', max_limit: 2000000 },
-          pf: { balance: 108000, withdrawal_eligible: true, tds_applicable: true, tds_amount: 10800 },
-          tds: { gross_fnf: 82231, annual_equivalent: 986772, income_tax: 0, tds_on_fnf: 10800 },
-          summary: { total_payable: 31154, total_recoverable: 51923, gross_fnf: 82231, tds_on_fnf: 10800, net_payable: 71431 }
-        }
-      });
+    } catch (err) {
+      // No figures when the computation fails. This used to show a made-up
+      // settlement (net ₹1,45,200) labelled "estimated" — a number with no
+      // source must never sit on a settlement screen (containment C1).
+      setFnfError(err?.response?.data?.error || 'The F&F settlement could not be computed.');
     }
   };
+
+  // The server's word on approve / pay, not a guess (containment C1/C3).
+  const actionError = (err, fallback) => err?.response?.data?.error || fallback;
 
   const approveSettlement = async (id) => {
     if (actioning) return;
@@ -96,8 +95,8 @@ export default function ExitManagement() {
       await api.put(`/exit/fnf/${id}/approve`);
       showNotice('Settlement approved successfully');
       load();
-    } catch (_) {
-      showNotice('Failed to approve settlement', 'error');
+    } catch (err) {
+      showNotice(actionError(err, 'Failed to approve settlement'), 'error');
     } finally { setActioning(false); }
   };
 
@@ -113,10 +112,26 @@ export default function ExitManagement() {
       showNotice(
         blockers?.length
           ? `Blocked — clearance incomplete: ${blockers.map(b => b.label).join(', ')}`
-          : 'Failed to mark settlement as paid',
+          : actionError(err, 'Failed to mark settlement as paid'),
         'error'
       );
       if (selectedEmployee) loadClearanceStatus(selectedEmployee);
+    } finally { setActioning(false); }
+  };
+
+  // Cancels the exit request, resets clearance, restores the employee's status
+  // and re-enables a login the exit had revoked — all server-side, one transaction.
+  const withdrawExit = async () => {
+    const target = withdrawTarget;
+    setWithdrawTarget(null);
+    if (!target || actioning) return;
+    setActioning(true);
+    try {
+      const { data } = await api.post(`/exit/requests/${target.id}/withdraw`, { reason: 'Resignation withdrawn' });
+      showNotice(`${target.employee_name} retained as ${data.employee_status}${data.login_reactivated ? ' — login re-enabled' : ''}`);
+      load();
+    } catch (err) {
+      showNotice(err?.response?.data?.error || 'Failed to withdraw exit', 'error');
     } finally { setActioning(false); }
   };
 
@@ -165,7 +180,8 @@ export default function ExitManagement() {
   const cd = fnfData?.computation_details;
 
   return (
-    <PageShell dock={
+    // Inside the Exit Management hub the hub's banner already names the page.
+    <PageShell embedded={embedded} dock={embedded ? null :
       <PageHero
         icon={Users}
         eyebrow="Human Resources"
@@ -198,11 +214,18 @@ export default function ExitManagement() {
           {showInitiate && (
             <div style={{ ...cardStyle, padding: 20, marginBottom: 16 }}>
               <h3 style={{ margin: '0 0 16px', fontSize: 15 }}>Initiate Employee Separation</h3>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
+              {handOff && String(initiateForm.employee_id) === handOff.form.employee_id && (
+                <div role="status" style={{ marginBottom: 12, padding: '10px 14px', borderRadius: 8, fontSize: 13, background: '#f5f3ff', color: '#4c1d95', border: '1px solid #e9e4ff' }}>
+                  Starting the exit of <strong>{handOff.name || `employee #${handOff.form.employee_id}`}</strong> from All Employees.
+                  {handOff.typeMapped ? ' Check the details, then Initiate.' : ' Choose the separation type, then Initiate.'}
+                </div>
+              )}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
                 {[
                   { label: 'Employee ID', key: 'employee_id', type: 'number' },
                   { label: 'Separation Type', key: 'separation_type', type: 'select', options: ['resignation', 'termination', 'retirement', 'death'] },
-                  { label: 'Last Working Date', key: 'last_working_date', type: 'date' }
+                  { label: 'Last Working Date', key: 'last_working_date', type: 'date' },
+                  { label: 'Reason', key: 'reason', type: 'text' }
                 ].map(f => (
                   <div key={f.key}>
                     <label style={{ fontSize: 12, color: '#6b7280', display: 'block', marginBottom: 4 }}>{f.label}</label>
@@ -258,7 +281,10 @@ export default function ExitManagement() {
                     <td style={{ ...tdStyle, fontWeight: 600, color: '#6B3FDB' }}>{e.net_payable ? fmt(e.net_payable) : '-'}</td>
                     <td style={tdStyle}>
                       <button onClick={() => { setTab(1); computeFnF(e.employee_id); }} style={{ padding: '4px 10px', background: '#f0ebff', color: '#6B3FDB', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12, marginRight: 4 }}>F&F</button>
-                      <button onClick={() => { setTab(2); setShowInterview(e.employee_id); }} style={{ padding: '4px 10px', background: '#f0ebff', color: '#6B3FDB', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12 }}>Interview</button>
+                      <button onClick={() => { setTab(2); setShowInterview(e.employee_id); }} style={{ padding: '4px 10px', background: '#f0ebff', color: '#6B3FDB', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12, marginRight: 4 }}>Interview</button>
+                      {e.fnf_status !== 'paid' && (
+                        <button onClick={() => setWithdrawTarget(e)} disabled={actioning} style={{ padding: '4px 10px', background: '#fee2e2', color: '#dc2626', border: 'none', borderRadius: 6, cursor: actioning ? 'not-allowed' : 'pointer', fontSize: 12 }}>Withdraw</button>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -281,13 +307,19 @@ export default function ExitManagement() {
             </div>
           </div>
 
-          {!fnfData && <div style={{ ...cardStyle, padding: 40, textAlign: 'center', color: '#6b7280' }}>Select an employee to compute F&F settlement</div>}
+          {!fnfData && fnfError && (
+            <div role="alert" style={{ ...cardStyle, padding: 24, color: '#991b1b', background: '#fef2f2', border: '1px solid #fecaca' }}>
+              <div style={{ fontWeight: 700, marginBottom: 4 }}>F&F settlement could not be computed</div>
+              <div style={{ fontSize: 13 }}>{fnfError}</div>
+            </div>
+          )}
+          {!fnfData && !fnfError && <div style={{ ...cardStyle, padding: 40, textAlign: 'center', color: '#6b7280' }}>Select an employee to compute F&F settlement</div>}
 
           {fnfData && cd && (
             <div>
-              {fnfEstimated && (
-                <div style={{ marginBottom: 12, padding: '10px 16px', borderRadius: 8, fontSize: 13, fontWeight: 600, background: '#ede9fe', color: '#5b21b6', border: '1px solid #ddd6fe' }}>
-                  ⚠ Unable to fetch live data — showing estimated figures. Do not approve without verifying.
+              {fnfData.settlement_actions_suspended && (
+                <div role="status" style={{ marginBottom: 12, padding: '10px 16px', borderRadius: 8, fontSize: 13, fontWeight: 600, background: '#fef3c7', color: '#92400e', border: '1px solid #fde68a' }}>
+                  ⚠ Provisional figures — {fnfData.containment_notice}
                 </div>
               )}
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
@@ -353,16 +385,15 @@ export default function ExitManagement() {
                     <div style={{ fontSize: 12, opacity: 0.7, marginTop: 4 }}>Total Payable {fmt(cd.summary.total_payable)} - Recoverable {fmt(cd.summary.total_recoverable)} - TDS {fmt(cd.summary.tds_on_fnf)}</div>
                   </div>
                   <div style={{ display: 'flex', gap: 8 }}>
-                    {fnfData.status === 'draft' && (
+                    {fnfData.status === 'draft' && !fnfData.settlement_actions_suspended && (
                       <button
                         onClick={() => approveSettlement(fnfFnfId)}
-                        disabled={actioning || fnfEstimated || !fnfFnfId}
-                        title={fnfEstimated ? 'Cannot approve estimated figures — live compute required' : ''}
-                        style={{ padding: '10px 20px', background: '#fff', color: '#6B3FDB', border: 'none', borderRadius: 8, cursor: (actioning || fnfEstimated || !fnfFnfId) ? 'not-allowed' : 'pointer', fontWeight: 700, fontSize: 13, opacity: (actioning || fnfEstimated || !fnfFnfId) ? 0.5 : 1 }}>
+                        disabled={actioning || !fnfFnfId}
+                        style={{ padding: '10px 20px', background: '#fff', color: '#6B3FDB', border: 'none', borderRadius: 8, cursor: (actioning || !fnfFnfId) ? 'not-allowed' : 'pointer', fontWeight: 700, fontSize: 13, opacity: (actioning || !fnfFnfId) ? 0.5 : 1 }}>
                         {actioning ? 'Approving…' : 'Approve Settlement'}
                       </button>
                     )}
-                    {fnfData.status === 'approved' && (() => {
+                    {fnfData.status === 'approved' && !fnfData.settlement_actions_suspended && (() => {
                       const status = clearanceStatus[selectedEmployee];
                       const blocked = status ? !status.can_settle : false;
                       return (
@@ -577,6 +608,15 @@ export default function ExitManagement() {
           </div>
         </div>
       )}
+
+      <ConfirmDialog
+        open={!!withdrawTarget}
+        title="Withdraw exit?"
+        message={withdrawTarget ? `${withdrawTarget.employee_name} (${withdrawTarget.employee_code}) will stay employed. The exit request is cancelled, clearance is reset, and a login revoked during this exit is re-enabled.` : ''}
+        confirmLabel="Withdraw exit"
+        onConfirm={withdrawExit}
+        onCancel={() => setWithdrawTarget(null)}
+      />
     </PageShell>
   );
 }

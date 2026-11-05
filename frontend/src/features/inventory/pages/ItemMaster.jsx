@@ -6,14 +6,22 @@ import { usePageAccess } from '@/hooks/usePageAccess';
 import ReadOnlyBanner from '@/components/ReadOnlyBanner';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
 import MasterSelect from '@/components/core/MasterSelect';
+import VocabSelect from '@/components/core/VocabSelect';
 import { PageLayout, PageHeader, TableContainer, EmptyState, PageHero, PageShell } from '@/components/pulse-ui';
 import {
-  getCategories, createCategory,
+  getCategories,
   getItemVendorPrices, createItemVendorPrice, updateItemVendorPrice, deleteItemVendorPrice,
 } from '../services/inventoryService';
 import './ItemMaster.css';
 
-const ITEM_TYPES = ['Raw Materials', 'Finished Goods', 'Packaging', 'Consumables', 'Spares', 'WIP'];
+// Item types as the DATA actually spells them — singular. The list used to be
+// plural ('Raw Materials', 'Finished Goods'…) and overlapped the stored values
+// in ZERO places, so every Type filter returned an empty table and the edit
+// drawer showed "Select…" for a typed item, blanking item_type on save.
+const ITEM_TYPES = [
+  'Raw Material', 'Component', 'Sub Assembly', 'Finished Good',
+  'Consumable', 'Packaging', 'Spare', 'Fixed Asset', 'IT Equipment', 'WIP',
+];
 // Units and HSN/SAC codes come from their masters (/master/uom, /master/hsn)
 // via <MasterSelect>. They used to be a hard-coded array here and a free-text
 // box respectively, so Master Setup's Units and HSN tabs wrote to tables no
@@ -58,6 +66,11 @@ const emptyForm = () => ({
   manufacturer:    '',
   description:     '',
   is_active:       true,
+  // §216 freight inputs. Blank = unknown — never 0.
+  shipping_weight_kg:    '',
+  shipping_weight_basis: '',
+  shipping_weight_uom:   '',
+  freight_category:      '',
 });
 
 const stockStatus = (current, reorder) => {
@@ -77,6 +90,10 @@ export default function ItemMaster({ setPage: _setPage }) {
   const [loading,    setLoading]    = useState(false);
   const [search,     setSearch]     = useState('');
   const [fType,      setFType]      = useState('');
+  // Every item_type seen since mount. The first load is unfiltered, so this
+  // holds the real vocabulary even where it has drifted from ITEM_TYPES —
+  // a value present on a row is never missing from the filter dropdown.
+  const [seenTypes,  setSeenTypes]  = useState([]);
   const [drawer,     setDrawer]     = useState(null);
   const [form,       setForm]       = useState(emptyForm());
   const [submitting, setSubmitting] = useState(false);
@@ -147,7 +164,13 @@ export default function ItemMaster({ setPage: _setPage }) {
       if (store)  params.warehouse_id  = store;
       const r = await api.get('/inventory/items', { params });
       const raw = r.data.items || r.data;
-      setItems(Array.isArray(raw) ? raw : []);
+      const list = Array.isArray(raw) ? raw : [];
+      setItems(list);
+      setSeenTypes(prev => {
+        const n = new Set(prev);
+        list.forEach(it => { if (it.item_type) n.add(it.item_type); });
+        return n.size === prev.length ? prev : [...n];
+      });
     } catch {
       setItems([]);
     } finally {
@@ -172,7 +195,10 @@ export default function ItemMaster({ setPage: _setPage }) {
       item_type:       item.item_type       ?? '',
       product_model:   item.product_model   ?? '',
       category_id:     item.category_id      ?? '',
-      abc_class:       item.abc_class        ?? '',
+      // Only a MANUAL class is shown as a choice. A calculated one stays on
+      // "Auto": pre-filling it would make every unrelated save pin the engine's
+      // current answer as a manual override (abc_class_source).
+      abc_class:       item.abc_class_source === 'manual' ? (item.abc_class ?? '') : '',
       unit_of_measure: item.unit_of_measure ?? 'NOS',
       reorder_level:   item.reorder_level   ?? '',
       safety_stock:    item.safety_stock    ?? '',
@@ -183,23 +209,14 @@ export default function ItemMaster({ setPage: _setPage }) {
       manufacturer:    item.manufacturer    ?? '',
       description:     item.description     ?? '',
       is_active:       item.is_active       ?? true,
+      shipping_weight_kg:    item.shipping_weight_kg    ?? '',
+      shipping_weight_basis: item.shipping_weight_basis ?? '',
+      shipping_weight_uom:   item.shipping_weight_uom   ?? '',
+      freight_category:      item.freight_category      ?? '',
     });
     setPriceForm(null);
     setDrawer(item);
     loadPrices(item.id);
-  };
-
-  const handleAddCategory = async () => {
-    const name = window.prompt('New category name');
-    if (!name || !name.trim()) return;
-    try {
-      const cat = await createCategory({ name: name.trim() });
-      await loadCategories();
-      setForm(f => ({ ...f, category_id: cat.id }));
-      showToast('Category added');
-    } catch (e) {
-      showToast(e.response?.data?.error || 'Failed to add category', 'error');
-    }
   };
 
   const emptyPrice = () => ({
@@ -245,7 +262,10 @@ export default function ItemMaster({ setPage: _setPage }) {
       setDrawer(null);
       load();
     } catch (e) {
-      showToast(e.response?.data?.error || 'Failed to save item', 'error');
+      // A 422 from the item API names each rejected field.
+      const fieldErrors = Array.isArray(e.response?.data?.errors)
+        ? e.response.data.errors.map(x => x.message).filter(Boolean) : [];
+      showToast(fieldErrors.length ? fieldErrors.join(' ') : (e.response?.data?.error || 'Failed to save item'), 'error');
     } finally {
       setSubmitting(false);
     }
@@ -396,6 +416,8 @@ export default function ItemMaster({ setPage: _setPage }) {
       : String(it[key] ?? '').toLowerCase();
   };
 
+  const typeOptions = [...new Set([...ITEM_TYPES, ...seenTypes])];
+
   const displayed = items.filter(it => {
     const q = search.toLowerCase();
     return (!q || it.item_name?.toLowerCase().includes(q) || it.item_code?.toLowerCase().includes(q))
@@ -458,7 +480,7 @@ export default function ItemMaster({ setPage: _setPage }) {
           {<div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             <select className="pl-icon-btn" value={fType} onChange={e => setFType(e.target.value)}>
               <option value="">All Types</option>
-              {ITEM_TYPES.map(c => <option key={c}>{c}</option>)}
+              {typeOptions.map(c => <option key={c}>{c}</option>)}
             </select>
             <select className="pl-icon-btn" value={fCat} onChange={e => setFCat(e.target.value)}>
               <option value="">All Categories</option>
@@ -559,9 +581,12 @@ export default function ItemMaster({ setPage: _setPage }) {
                 </div>
                 <div className="im-field">
                   <label>Item Type</label>
+                  {/* The item's own stored type is always an option, so opening
+                      and saving a row can never silently change its type. */}
                   <select value={form.item_type} onChange={e => setForm(f => ({ ...f, item_type: e.target.value }))}>
                     <option value="">Select…</option>
-                    {ITEM_TYPES.map(c => <option key={c}>{c}</option>)}
+                    {[...new Set([...ITEM_TYPES, ...(form.item_type ? [form.item_type] : [])])]
+                      .map(c => <option key={c}>{c}</option>)}
                   </select>
                 </div>
               </div>
@@ -576,18 +601,34 @@ export default function ItemMaster({ setPage: _setPage }) {
               <div className="im-row2">
                 <div className="im-field">
                   <label>Category</label>
-                  <div style={{ display: 'flex', gap: 6 }}>
-                    <select style={{ flex: 1 }} value={form.category_id} onChange={e => setForm(f => ({ ...f, category_id: e.target.value }))}>
-                      <option value="">Select…</option>
-                      {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                    </select>
-                    <button type="button" className="im-btn-outline" style={{ padding: '0 10px' }} onClick={handleAddCategory} title="Add category"><Plus size={14} /></button>
-                  </div>
+                  {/* Was a plain <select> plus a "+" that opened window.prompt:
+                      one unvalidated field, no duplicate message, no way to
+                      cancel with Escape, and the created row was selected only
+                      if the POST happened to echo an id. MasterSelect is the
+                      house pattern for this and already handles all four.
+                      optionValue="id" because items store category_id, an FK —
+                      not the category name. */}
+                  <MasterSelect
+                    endpoint="/inventory/catalog/categories"
+                    label="Category"
+                    optionValue="id"
+                    value={form.category_id}
+                    placeholder="Select…"
+                    onChange={v => setForm(f => ({ ...f, category_id: v }))}
+                    onListChange={setCategories}
+                    addRoles={['super_admin', 'admin', 'manager', 'store_keeper',
+                               'procurement_manager', 'production_manager']}
+                    selectStyle={{ flex: 1, width: '100%' }}
+                  />
                 </div>
                 <div className="im-field">
                   <label>ABC Class <span style={{ color: '#9ca3af', fontWeight: 400 }}>(blank = auto)</span></label>
                   <select value={form.abc_class} onChange={e => setForm(f => ({ ...f, abc_class: e.target.value }))}>
-                    <option value="">Auto (by consumption)</option>
+                    <option value="">
+                      {drawer && drawer !== 'add'
+                        ? `Auto (by consumption) — currently ${drawer.abc_class_calculated || 'unclassified'}`
+                        : 'Auto (by consumption)'}
+                    </option>
                     {ABC_CLASSES.map(c => <option key={c} value={c}>Class {c}</option>)}
                   </select>
                 </div>
@@ -661,6 +702,47 @@ export default function ItemMaster({ setPage: _setPage }) {
                   <label>Standard Cost (₹)</label>
                   <input type="number" min="0" step="0.01" value={form.standard_cost} onChange={e => setForm(f => ({ ...f, standard_cost: e.target.value }))} />
                 </div>
+              </div>
+
+              {/* Freight inputs (§216): kg per ONE unit, with where the number came
+                  from. Left blank the weight is unknown, and comparisons say
+                  "needs freight input" rather than assume one. */}
+              <div className="im-row2">
+                <div className="im-field">
+                  <label htmlFor="im-ship-wt">
+                    Shipping Weight (kg per {form.shipping_weight_uom || form.unit_of_measure || 'unit'})
+                  </label>
+                  <input id="im-ship-wt" type="number" min="0" step="any" placeholder="Not known"
+                    value={form.shipping_weight_kg}
+                    onChange={e => setForm(f => ({ ...f, shipping_weight_kg: e.target.value,
+                      // A fresh weight is per the item's current unit.
+                      shipping_weight_uom: f.shipping_weight_uom || f.unit_of_measure || '' }))} />
+                  {form.shipping_weight_uom && form.unit_of_measure && form.shipping_weight_uom !== form.unit_of_measure && (
+                    <small style={{ color: '#b45309' }}>
+                      Weight is per {form.shipping_weight_uom}, the item is now stocked in {form.unit_of_measure}: re-enter the weight per {form.unit_of_measure}.
+                    </small>
+                  )}
+                </div>
+                <div className="im-field">
+                  <label htmlFor="im-ship-basis">Weight Basis</label>
+                  <select id="im-ship-basis" value={form.shipping_weight_basis}
+                    onChange={e => setForm(f => ({ ...f, shipping_weight_basis: e.target.value }))}
+                    disabled={form.shipping_weight_kg === '' || form.shipping_weight_kg == null}>
+                    <option value="">{form.shipping_weight_kg === '' ? '— enter a weight first —' : '-- Where is it from? --'}</option>
+                    <option value="observed">Observed — weighed by us</option>
+                    <option value="quoted">Quoted — supplier datasheet / packing list</option>
+                    <option value="estimated">Estimated — engineering estimate</option>
+                    <option value="assumed">Assumed — placeholder</option>
+                  </select>
+                </div>
+              </div>
+              <div className="im-row2">
+                <div className="im-field">
+                  <label>Freight Category</label>
+                  <VocabSelect vocab="freight-categories" value={form.freight_category}
+                    onChange={v => setForm(f => ({ ...f, freight_category: v || '' }))} />
+                </div>
+                <div className="im-field" />
               </div>
 
               {/* Row 4: Reorder + Safety Stock */}

@@ -1,7 +1,50 @@
 import pool from '../../shared/db.js';
 import { createEmployeeLogin } from '../../../employees/employee.service.js';
+import { nextEmployeeCode, assertCodeAvailable } from '../../../shared/employeeCode.js';
 import { pickUpdatable } from '../../../shared/safeUpdate.js';
 import { initOnboardingChecklist } from '../../hr/onboarding.service.js';
+// The activity timeline. Imported here rather than called from the route layer so
+// that a stage move and its timeline entry are one transaction: a move recorded
+// in candidates but missing from the timeline is an unaccountable change, and
+// candidates.last_activity_at (which the work queue measures staleness from) is
+// written by the same call. candidateIntelligence imports only shared/db.js, so
+// there is no cycle.
+import candidateIntelligence from './candidateIntelligence.repository.js';
+
+/**
+ * Stage keys → the words a recruiter reads on the timeline.
+ *
+ * A deliberate duplicate of the frontend's STAGE_LABELS
+ * (features/recruitment/shared/constants.js) and the only place the server needs
+ * them: activity summaries are composed at WRITE time and stored, so a summary
+ * written today must still read correctly after the frontend relabels a stage.
+ * That is the point of storing the sentence rather than rebuilding it on read.
+ */
+const STAGE_DISPLAY = {
+  applied: 'Applied',
+  screening: 'Screening',
+  shortlisted: 'Shortlisted',
+  assessment: 'Technical Assessment',
+  '1st_level': 'Interview',
+  '2nd_level': 'Final Interview',
+  offer: 'Offer',
+  selected: 'Selected',
+  hired: 'Joined',
+  not_suitable: 'Not Suitable for Current Role',
+  maybe: 'Hold / Review',
+  future_use: 'Future Opportunity',
+  rejected: 'Rejected from Manifest',
+};
+
+/**
+ * hireCandidate()'s `loginStatus` → the note on the auto-creation checklist's
+ * "Login account created" item. 'created' needs no note; `done` says it.
+ */
+const LOGIN_STATUS_NOTES = {
+  existing_account: 'Not created: an account already exists for this e-mail address. It was left unchanged.',
+  no_email:         'Not created: the candidate has no e-mail address to sign in with.',
+  failed:           'Not created: login provisioning failed. See the server log.',
+};
 
 const recruitmentRepository = {
   // ==================== JOB REQUISITIONS ====================
@@ -186,7 +229,15 @@ const recruitmentRepository = {
              jr.job_title AS req_job_title, jr.department AS req_department,
              jr.number_of_positions, jr.employment_type AS req_employment_type,
              jr.location AS req_location, jr.salary_range,
-             (SELECT COUNT(*)::int FROM candidates c WHERE c.applied_job_id = jo.id AND c.deleted_at IS NULL) AS applicants_count
+             -- Counts APPLICATIONS, not candidates-whose-primary-job-is-this-one.
+             -- candidates.applied_job_id holds only the primary application, so a
+             -- candidate recommended onto this opening was invisible in its own
+             -- applicant count — the number on the board disagreed with the list
+             -- underneath it.
+             (SELECT COUNT(*)::int
+                FROM candidate_applications ca
+                JOIN candidates c ON c.id = ca.candidate_id
+               WHERE ca.job_opening_id = jo.id AND c.deleted_at IS NULL) AS applicants_count
       FROM job_openings jo
       LEFT JOIN job_requisitions jr ON jo.requisition_id = jr.id
       WHERE jo.deleted_at IS NULL`;
@@ -209,7 +260,15 @@ const recruitmentRepository = {
               jr.number_of_positions, jr.employment_type AS req_employment_type,
               jr.location AS req_location, jr.salary_range,
               jr.job_description, jr.skills_required, jr.experience_required,
-              (SELECT COUNT(*)::int FROM candidates c WHERE c.applied_job_id = jo.id AND c.deleted_at IS NULL) AS applicants_count
+              -- Counts APPLICATIONS, not candidates-whose-primary-job-is-this-one.
+             -- candidates.applied_job_id holds only the primary application, so a
+             -- candidate recommended onto this opening was invisible in its own
+             -- applicant count — the number on the board disagreed with the list
+             -- underneath it.
+             (SELECT COUNT(*)::int
+                FROM candidate_applications ca
+                JOIN candidates c ON c.id = ca.candidate_id
+               WHERE ca.job_opening_id = jo.id AND c.deleted_at IS NULL) AS applicants_count
        FROM job_openings jo
        LEFT JOIN job_requisitions jr ON jo.requisition_id = jr.id
        WHERE jo.id = $1 AND jo.deleted_at IS NULL${extra}`,
@@ -252,11 +311,41 @@ const recruitmentRepository = {
   // handled by /talent/resumes' own separate INSERT — accepting them here too
   // means a resume-sourced candidate keeps that data once routed through this
   // one method, and the two job-application callers simply leave them null.
+  // `skills` must reach the INSERT as a real array. On the multipart path
+  // (POST /recruitment/candidates) multer hands every field over as a string, so
+  // JSON.stringify() below was stringifying an already-JSON string and storing a
+  // jsonb STRING SCALAR rather than an array. One such row was enough to 500
+  // GET /talent/resumes/skills for the whole company — jsonb_array_elements_text
+  // raises "cannot extract elements from a scalar" and the skill-filter chips die
+  // for every user until someone repairs the row by hand. Normalising here covers
+  // every caller instead of each one remembering.
+  _normaliseSkills(skills) {
+    if (skills == null || skills === '') return [];
+    if (Array.isArray(skills)) return skills.filter(x => x != null && String(x).trim() !== '');
+    if (typeof skills === 'string') {
+      const t = skills.trim();
+      if (!t) return [];
+      try {
+        const parsed = JSON.parse(t);
+        return Array.isArray(parsed) ? parsed.filter(x => x != null && String(x).trim() !== '')
+                                     : [String(parsed)].filter(x => x.trim() !== '');
+      } catch {
+        // Not JSON — accept the comma-separated form a human would type.
+        return t.split(',').map(x => x.trim()).filter(Boolean);
+      }
+    }
+    return [];
+  },
+
   async createCandidate(data) {
     const {
       full_name, email, phone, resume_file_url, source, applied_job_id, company_id, source_agency_id,
-      current_company, current_designation, experience_years, notice_period_days, expected_ctc, skills, notes,
+      current_company, current_designation, experience_years, notice_period_days, expected_ctc, notes,
+      location, qualification, specialisation, institution, graduation_year,
+      resume_text, parse_source,
+      consent_basis, consent_text, consent_source, retention_months,
     } = data;
+    const skills = this._normaliseSkills(data.skills);
 
     // Duplicate-candidate guard. `candidates_company_email_uniq` (migration
     // 20260812000004) is the real backstop; this check exists so the common case
@@ -297,22 +386,61 @@ const recruitmentRepository = {
     }
 
     const result = await pool.query(
+      // `location` is added here because the column has always existed and NO
+      // endpoint ever wrote it — which is why filtering candidates by city was
+      // impossible despite the field being present in the schema.
       `INSERT INTO candidates
          (full_name, email, phone, resume_file_url, source, applied_job_id,
           company_id, source_agency_id, current_company, current_designation,
           experience_years, notice_period_days, expected_ctc, skills, notes,
+          location, qualification, specialisation, institution, graduation_year,
+          resume_text, parsed_at, parse_source,
+          consent_basis, consent_at, consent_text, consent_source, retain_until,
           current_stage, overall_status)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,'applied','active') RETURNING *`,
+       -- Every parameter that appears BOTH as an inserted value and inside a
+       -- CASE carries the same explicit cast in both places. Mixing a bare $n
+       -- with a cast $n::type in one statement is what Postgres rejects as
+       -- "inconsistent types deduced for parameter $n" — at parse time, so the
+       -- whole insert fails rather than degrading.
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$16,
+               $17,$18,$19,$20,$21::text,
+               CASE WHEN $21::text IS NULL THEN NULL ELSE NOW() END, $22,
+               $23::varchar,
+               -- consent_at and retain_until are DERIVED, never taken from the
+               -- caller: a consent timestamp supplied by the client is not
+               -- evidence of anything.
+               CASE WHEN $23::varchar IS NULL THEN NULL ELSE NOW() END,
+               $24, $25,
+               CASE WHEN $26::int IS NULL THEN NULL
+                    ELSE (CURRENT_DATE + ($26::int * INTERVAL '1 month'))::date END,
+               'applied','active') RETURNING *`,
       [full_name, email, phone, resume_file_url, source, applied_job_id || null, company_id, source_agency_id || null,
        current_company || null, current_designation || null,
        experience_years ?? null, notice_period_days ?? null, expected_ctc ?? null,
-       skills ? JSON.stringify(skills) : '[]', notes || null]
+       JSON.stringify(skills), notes || null, location || null,
+       qualification || null, specialisation || null, institution || null, graduation_year ?? null,
+       resume_text || null, parse_source || null,
+       consent_basis || null, consent_text || null, consent_source || null,
+       consent_basis ? (retention_months ?? null) : null]
     );
     await pool.query(
       `INSERT INTO candidate_stage_history (candidate_id, stage, notes)
        VALUES ($1, 'applied', 'Application received')`,
       [result.rows[0].id]
     );
+    // Mirror the primary application into candidate_applications so the two
+    // representations cannot diverge. A speculative candidate (no opening) gets
+    // no row -- they have not applied to anything, which is what the talent
+    // pool is for.
+    if (applied_job_id) {
+      await pool.query(
+        `INSERT INTO candidate_applications
+           (company_id, candidate_id, job_opening_id, stage, status, origin, is_primary, applied_at)
+         VALUES ($1,$2,$3,'applied','active','applied',true, NOW())
+         ON CONFLICT (candidate_id, job_opening_id) DO NOTHING`,
+        [company_id, result.rows[0].id, applied_job_id]
+      );
+    }
     return result.rows[0];
   },
 
@@ -386,28 +514,436 @@ const recruitmentRepository = {
     return Object.assign(inserted.rows, { skipped });
   },
 
+  /**
+   * Candidate search.
+   *
+   * This accepted four predicates — job, stage, status, and a name/email ILIKE —
+   * and returned every matching row with no LIMIT. Recruiter questions of the
+   * ordinary kind ("BE Electrical, 2+ years, power electronics, Bengaluru,
+   * notice under 60 days") could not be expressed at all, even where the column
+   * existed, so the Candidates page filtered client-side over whatever the
+   * unbounded query happened to return.
+   *
+   * Every filter below reads a column that already exists. Education is still
+   * absent — `candidates` has no qualification or specialisation column, and
+   * adding one is schema work, not a query change — so that part of the search
+   * remains genuinely unavailable rather than quietly approximated.
+   *
+   * Returns `{ rows, total, limit, offset }`. Callers that want the bare array
+   * (the legacy shape) pass `raw: true`.
+   */
   async findCandidates(filters = {}) {
-    let query = `
-      SELECT c.*, jo.id AS job_opening_id,
-             COALESCE(jo.job_title, jr.job_title) AS job_title
-      FROM candidates c
-      LEFT JOIN job_openings jo ON c.applied_job_id = jo.id
-      LEFT JOIN job_requisitions jr ON jo.requisition_id = jr.id
-      WHERE c.deleted_at IS NULL`;
+    const where = ['c.deleted_at IS NULL'];
     const params = [];
     let n = 1;
-    if (filters.company_id)    { query += ` AND c.company_id = $${n++}`;    params.push(filters.company_id); }
-    if (filters.applied_job_id){ query += ` AND c.applied_job_id = $${n++}`; params.push(filters.applied_job_id); }
-    if (filters.current_stage) { query += ` AND c.current_stage = $${n++}`; params.push(filters.current_stage); }
-    if (filters.overall_status){ query += ` AND c.overall_status = $${n++}`; params.push(filters.overall_status); }
+    const add = (clause, ...values) => { where.push(clause); params.push(...values); };
+
+    if (filters.company_id)     { add(`c.company_id = $${n++}`, filters.company_id); }
+    if (filters.applied_job_id) { add(`c.applied_job_id = $${n++}`, filters.applied_job_id); }
+    if (filters.current_stage)  { add(`c.current_stage = $${n++}`, filters.current_stage); }
+    if (filters.overall_status) { add(`c.overall_status = $${n++}`, filters.overall_status); }
+    if (filters.source)         { add(`c.source = $${n++}`, filters.source); }
+
+    // Free text now reaches the fields a recruiter actually searches by —
+    // employer and job title included, not just name and email.
     if (filters.search) {
-      query += ` AND (c.full_name ILIKE $${n} OR c.email ILIKE $${n})`;
-      params.push(`%${filters.search}%`);
-      n++;
+      // §6 requires searching by phone and by candidate ID as well. Both were
+      // missing: a recruiter with a phone number in front of them — the most
+      // common way a candidate is identified on a call — could not find them at
+      // all, and the candidate code did not exist until migration
+      // 20260927000001 added it.
+      //
+      // Two bindings, not one. $like carries the ILIKE wildcards; $raw is the
+      // term as typed, because the phone comparison strips it to digits and
+      // stripping '%' characters back out inside SQL would be worse. Built with
+      // both placeholders from the start rather than rewriting the clause
+      // afterwards: a String.replace() over SQL containing '$' has already eaten
+      // a '$$' in this codebase once.
+      const like = n++;
+      const raw  = n++;
+      add(
+        `(c.full_name ILIKE $${like} OR c.email ILIKE $${like}
+          OR c.current_company ILIKE $${like} OR c.current_designation ILIKE $${like}
+          OR c.location ILIKE $${like} OR c.current_city ILIKE $${like}
+          OR c.candidate_code ILIKE $${like}
+          -- Phone matched on DIGITS ONLY on both sides, so "+91 98765 43210",
+          -- "919876543210" and "9876543210" all find each other. The 4-digit
+          -- floor stops a search for "a" from digit-matching every row.
+          --
+          -- '[^0-9]', not '\D': this SQL is inside a JS template literal, where a
+          -- lone backslash before an unrecognised escape character is silently
+          -- DROPPED. '\D' reached Postgres as 'D' and the clause quietly matched
+          -- the letter D instead of every non-digit, so phone search returned
+          -- nothing while looking correct in the source. A character class has no
+          -- backslash to lose. (regexp_replace's own docs use the same form, and
+          -- so does generateOfficeId lower down this file.)
+          OR (LENGTH(REGEXP_REPLACE($${raw}, '[^0-9]', '', 'g')) >= 4
+              AND REGEXP_REPLACE(COALESCE(c.phone, ''), '[^0-9]', '', 'g')
+                  LIKE '%' || REGEXP_REPLACE($${raw}, '[^0-9]', '', 'g') || '%'))`,
+        `%${filters.search}%`,
+        String(filters.search),
+      );
     }
-    query += ` ORDER BY c.created_at DESC`;
-    const result = await pool.query(query, params);
-    return result.rows;
+
+    // §6's remaining filters. Each one was listed in the brief and none of them
+    // reached the database before.
+    if (filters.department) {
+      add(`EXISTS (SELECT 1 FROM job_openings d
+                   WHERE d.id = c.applied_job_id AND LOWER(d.department) = LOWER($${n++}))`,
+          filters.department);
+    }
+    if (filters.recruiter_id === 'unassigned') {
+      add(`c.recruiter_id IS NULL`);
+    } else if (filters.recruiter_id) {
+      add(`c.recruiter_id = $${n++}`, parseInt(filters.recruiter_id, 10));
+    }
+    if (filters.disposition) { add(`c.disposition = $${n++}`, filters.disposition); }
+    if (filters.classification) { add(`c.classification = $${n++}`, filters.classification); }
+    if (filters.willing_to_relocate === 'true') {
+      // "Willing to relocate" is a question about three of the seven stored
+      // values, not one. Asking for = 'willing' would hide everybody who said
+      // "yes, with support" — most of them, for a Srivilliputtur site.
+      add(`c.willing_to_relocate IN ('already_local','willing','willing_with_support')`);
+    } else if (filters.willing_to_relocate) {
+      add(`c.willing_to_relocate = $${n++}`, filters.willing_to_relocate);
+    }
+    if (filters.pool_id) {
+      add(`EXISTS (SELECT 1 FROM talent_pool_members m
+                   WHERE m.candidate_id = c.id AND m.pool_id = $${n++})`,
+          parseInt(filters.pool_id, 10));
+    }
+    const tagList = this._normaliseSkills(filters.tags);
+    if (tagList.length) {
+      add(`EXISTS (SELECT 1 FROM jsonb_array_elements_text(COALESCE(c.tags,'[]'::jsonb)) AS t(v)
+                   WHERE LOWER(t.v) = ANY($${n++}::text[]))`,
+          tagList.map(t => String(t).toLowerCase()));
+    }
+    // Applied-date window. ::date on both sides so a same-day `applied_to` includes
+    // that whole day — comparing a DATE against a TIMESTAMPTZ would silently mean
+    // "up to midnight" and drop everything applied during the day asked for.
+    if (filters.applied_from) { add(`c.created_at::date >= $${n++}::date`, filters.applied_from); }
+    if (filters.applied_to)   { add(`c.created_at::date <= $${n++}::date`, filters.applied_to); }
+    // §6's "waiting more than N days" column, measured from last_activity_at for
+    // the reason the work queue is: age is not the same question as staleness.
+    if (filters.stale_days != null && filters.stale_days !== '') {
+      add(`COALESCE(c.last_activity_at, c.created_at) < NOW() - ($${n++} || ' days')::interval`,
+          String(parseInt(filters.stale_days, 10) || 0));
+    }
+
+    // Location is a partial match: "Bengaluru" should find "Bengaluru, KA".
+    if (filters.location) { add(`c.location ILIKE $${n++}`, `%${filters.location}%`); }
+
+    // Education — the audit's worked example ("BE Electrical") needed both.
+    // `qualification` is an exact match against a constrained vocabulary;
+    // `specialisation` is partial, because "Electronics" should find
+    // "Electronics and Communication".
+    if (filters.qualification) {
+      const quals = Array.isArray(filters.qualification) ? filters.qualification : [filters.qualification];
+      add(`c.qualification = ANY($${n++}::text[])`, quals);
+    }
+    if (filters.specialisation) { add(`c.specialisation ILIKE $${n++}`, `%${filters.specialisation}%`); }
+    if (filters.graduation_year_min != null && filters.graduation_year_min !== '') {
+      add(`c.graduation_year >= $${n++}`, Number(filters.graduation_year_min));
+    }
+
+    // Full-text over the résumé body, backed by the GIN index. plainto_tsquery
+    // (not to_tsquery) because the input is a recruiter's phrase, not tsquery
+    // syntax — an unescaped "&" or ":" would otherwise raise a syntax error.
+    if (filters.resume_text) {
+      add(`to_tsvector('english', COALESCE(c.resume_text, '')) @@ plainto_tsquery('english', $${n++})`,
+          filters.resume_text);
+    }
+
+    // Experience as a band. Both ends optional so "2+ years" and "under 5" work.
+    if (filters.experience_min != null && filters.experience_min !== '') {
+      add(`c.experience_years >= $${n++}`, Number(filters.experience_min));
+    }
+    if (filters.experience_max != null && filters.experience_max !== '') {
+      add(`c.experience_years <= $${n++}`, Number(filters.experience_max));
+    }
+
+    // "Available within N days". A candidate with no notice period recorded is
+    // INCLUDED rather than filtered out — an unknown notice period is not
+    // evidence of a long one, and excluding them hides real candidates.
+    if (filters.notice_period_max != null && filters.notice_period_max !== '') {
+      add(`(c.notice_period_days IS NULL OR c.notice_period_days <= $${n++})`,
+          Number(filters.notice_period_max));
+    }
+
+    if (filters.expected_ctc_max != null && filters.expected_ctc_max !== '') {
+      add(`(c.expected_ctc IS NULL OR c.expected_ctc <= $${n++})`, Number(filters.expected_ctc_max));
+    }
+
+    if (filters.min_rating != null && filters.min_rating !== '') {
+      add(`c.overall_rating >= $${n++}`, Number(filters.min_rating));
+    }
+
+    // Skills: every named skill must be present (AND, not OR) — a search for
+    // "Power Electronics, MATLAB" means both, which is the whole point of
+    // naming two. Case-insensitive, so the stored casing does not matter.
+    const skills = this._normaliseSkills(filters.skills);
+    if (skills.length) {
+      add(
+        `EXISTS (
+           SELECT 1 FROM jsonb_array_elements_text(COALESCE(c.skills, '[]'::jsonb)) AS s(v)
+            WHERE LOWER(s.v) = ANY($${n++}::text[])
+           HAVING COUNT(DISTINCT LOWER(s.v)) = $${n++}
+         )`,
+        skills.map(x => String(x).toLowerCase()),
+        skills.length
+      );
+    }
+
+    const whereSql = where.join(' AND ');
+
+    // §6's sort list. Every key here is an allowlisted COLUMN NAME, never
+    // interpolated from the request — the value below is concatenated into the
+    // SQL, so an unknown sort_by must fall back rather than pass through.
+    const SORTABLE = {
+      created_at: 'c.created_at', full_name: 'c.full_name',
+      experience_years: 'c.experience_years', overall_rating: 'c.overall_rating',
+      expected_ctc: 'c.expected_ctc', notice_period_days: 'c.notice_period_days',
+      last_activity_at: 'COALESCE(c.last_activity_at, c.created_at)',
+      current_stage: 'c.current_stage', overall_status: 'c.overall_status',
+      disposition: 'c.disposition', location: 'c.location', source: 'c.source',
+    };
+    // Allowlisted, never interpolated from the request — this string is
+    // concatenated into the SQL.
+    const sortCol = SORTABLE[filters.sort_by] || 'c.created_at';
+    const sortDir = String(filters.sort_dir).toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+
+    // Unbounded reads are how a candidate list becomes a slow page and an
+    // accidental full-database export. The default is deliberately generous
+    // (200) so existing screens that render the whole list are unaffected at
+    // realistic data volumes, with a hard ceiling that cannot be raised from
+    // the query string.
+    const limit  = Math.min(Math.max(parseInt(filters.limit, 10) || 200, 1), 500);
+    const offset = Math.max(parseInt(filters.offset, 10) || 0, 0);
+
+    const countRes = await pool.query(
+      `SELECT COUNT(*)::int AS total FROM candidates c WHERE ${whereSql}`, params
+    );
+
+    const rowsRes = await pool.query(
+      // The extra columns are §6's list columns: Recruiter, Last Activity and
+      // Screening Status. All three are computed here rather than fetched
+      // per-row by the browser — a list of 200 candidates each asking for its own
+      // screening state is 200 requests, which is what §31 is about.
+      `SELECT c.*, jo.id AS job_opening_id,
+              COALESCE(jo.job_title, jr.job_title) AS job_title,
+              jo.department AS job_department,
+              COALESCE(re.name, ru.email) AS recruiter_name,
+              COALESCE(c.last_activity_at, c.created_at) AS last_activity,
+              DATE_PART('day', NOW() - COALESCE(c.last_activity_at, c.created_at))::int AS days_since_activity,
+              sc.status      AS screening_status,
+              sc.total_score AS screening_score,
+              sc.decision    AS screening_decision,
+              (SELECT COUNT(*)::int FROM candidate_applications a WHERE a.candidate_id = c.id) AS application_count,
+              (SELECT COUNT(*)::int FROM candidate_notes nt
+                WHERE nt.candidate_id = c.id AND nt.deleted_at IS NULL AND nt.visibility <> 'private') AS note_count
+         FROM candidates c
+         LEFT JOIN job_openings jo ON c.applied_job_id = jo.id
+         LEFT JOIN job_requisitions jr ON jo.requisition_id = jr.id
+         LEFT JOIN users ru     ON ru.id = c.recruiter_id
+         LEFT JOIN employees re ON re.id = ru.employee_id
+         -- LATERAL, not a plain LEFT JOIN: a candidate can hold several screenings
+         -- (one per application), and joining the table directly would multiply
+         -- every candidate row by their screening count and silently inflate the
+         -- list. This is the multi-child fan-out that has bitten this codebase
+         -- before. Most recent screening only.
+         LEFT JOIN LATERAL (
+           SELECT s.status, s.total_score, s.decision
+             FROM candidate_screenings s
+            WHERE s.candidate_id = c.id
+            ORDER BY s.updated_at DESC
+            LIMIT 1
+         ) sc ON TRUE
+        WHERE ${whereSql}
+        ORDER BY ${sortCol} ${sortDir} NULLS LAST, c.id DESC
+        LIMIT $${n++} OFFSET $${n++}`,
+      [...params, limit, offset]
+    );
+
+    if (filters.raw) return rowsRes.rows;
+    return { rows: rowsRes.rows, total: countRes.rows[0].total, limit, offset };
+  },
+
+  // ==================== APPLICATIONS (candidate x opening) ====================
+  // See migration 20260917000034 for why this table exists. In short:
+  // candidates.applied_job_id is a scalar, so "recommend this candidate for
+  // another opening" had nowhere to record the second consideration without
+  // destroying the first.
+
+  /** Every opening this candidate is being considered for. Primary first. */
+  async findCandidateApplications(candidate_id, company_id = null) {
+    const { rows } = await pool.query(
+      `SELECT ca.*,
+              jo.job_title, jo.department, jo.location, jo.status AS opening_status,
+              src.job_title AS recommended_from_title,
+              u.email       AS recommended_by_email
+         FROM candidate_applications ca
+         JOIN job_openings jo       ON jo.id  = ca.job_opening_id
+         LEFT JOIN job_openings src ON src.id = ca.recommended_from_job_id
+         LEFT JOIN users u          ON u.id   = ca.recommended_by
+        WHERE ca.candidate_id = $1
+          AND ($2::int IS NULL OR ca.company_id = $2)
+        ORDER BY ca.is_primary DESC, ca.applied_at DESC`,
+      [candidate_id, company_id]
+    );
+    return rows;
+  },
+
+  /**
+   * Recommend a candidate for one or more other openings.
+   *
+   * The requirement this satisfies, in the brief's own words: HR assesses
+   * someone for Electrical Engineer, decides they suit Service Engineer better,
+   * and puts them forward in one action -- without a duplicate profile, without
+   * losing the original application, and with the two tracked separately.
+   *
+   * Every target is validated and inserted in ONE transaction, so a request
+   * naming three openings where the second is closed records all three or none.
+   * ON CONFLICT DO NOTHING makes a repeated recommendation a no-op rather than
+   * an error, and the skipped ones come back so the caller can say which were
+   * already there.
+   */
+  async recommendCandidateForJobs(candidate_id, job_opening_ids, {
+    company_id = null, recommended_by = null, notes = null,
+  } = {}) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const { rows: cand } = await client.query(
+        `SELECT id, full_name, applied_job_id, company_id
+           FROM candidates
+          WHERE id = $1 AND deleted_at IS NULL AND ($2::int IS NULL OR company_id = $2)`,
+        [candidate_id, company_id]
+      );
+      if (!cand.length) throw Object.assign(new Error('Candidate not found'), { statusCode: 404 });
+      const candidate = cand[0];
+
+      // Openings must exist, belong to this company, and still be taking people.
+      // Validated as a set so the error names every bad id at once instead of
+      // making the recruiter discover them one failed request at a time.
+      const { rows: openings } = await client.query(
+        `SELECT id, job_title, status
+           FROM job_openings
+          WHERE id = ANY($1::int[]) AND deleted_at IS NULL
+            AND ($2::int IS NULL OR company_id = $2)`,
+        [job_opening_ids, company_id]
+      );
+      const found   = new Set(openings.map(o => o.id));
+      const missing = job_opening_ids.filter(id => !found.has(id));
+      if (missing.length) {
+        throw Object.assign(
+          new Error(`These job openings do not exist or belong to another company: ${missing.join(', ')}`),
+          { statusCode: 404 }
+        );
+      }
+      const shut = openings.filter(o => ['closed', 'cancelled', 'on_hold'].includes((o.status || '').toLowerCase()));
+      if (shut.length) {
+        throw Object.assign(
+          new Error(`Not accepting candidates: ${shut.map(o => `${o.job_title} (${o.status})`).join(', ')}`),
+          { statusCode: 409 }
+        );
+      }
+
+      const created = [];
+      const alreadyThere = [];
+      for (const opening of openings) {
+        const { rows } = await client.query(
+          `INSERT INTO candidate_applications
+             (company_id, candidate_id, job_opening_id, stage, status, origin,
+              is_primary, recommended_by, recommended_from_job_id, notes)
+           VALUES ($1,$2,$3,'applied','active','recommended',false,$4,$5,$6)
+           ON CONFLICT (candidate_id, job_opening_id) DO NOTHING
+           RETURNING *`,
+          [candidate.company_id, candidate_id, opening.id, recommended_by,
+           candidate.applied_job_id || null, notes]
+        );
+        if (rows.length) created.push({ ...rows[0], job_title: opening.job_title });
+        else alreadyThere.push({ id: opening.id, job_title: opening.job_title });
+      }
+
+      await client.query('COMMIT');
+      return { candidate, created, alreadyThere };
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  },
+
+  /**
+   * Move ONE application through its own pipeline.
+   *
+   * A secondary application's stage is its own -- "rejected for Electrical
+   * Engineer, shortlisted for Service Engineer" is the ordinary case this table
+   * exists to express. The PRIMARY application additionally writes through to
+   * candidates.current_stage, because that column is what the pipeline board,
+   * the dashboard counts and the offer flow all read; letting the two disagree
+   * would show a candidate at two different stages depending on the screen.
+   */
+  async moveApplicationStage(application_id, new_stage, {
+    company_id = null, moved_by = null, moved_by_user_id = null, notes = null,
+    actor_name = null,
+  } = {}) {
+    const { rows } = await pool.query(
+      `UPDATE candidate_applications
+          -- $1 is cast explicitly: it appears as an assignment target AND inside
+          -- the CASE comparisons, and without the cast Postgres reports
+          -- "inconsistent types deduced for parameter $1" and the whole
+          -- statement fails at parse time.
+          SET stage = $1::varchar,
+              -- Status is DERIVED from the stage, in both directions. Falling
+              -- through to the old value left an application reading
+              -- "stage=screening, status=rejected" the moment someone moved a
+              -- rejected candidate back into the pipeline — two fields
+              -- contradicting each other on the same row.
+              status = CASE
+                         WHEN $1::varchar = 'hired' THEN 'hired'
+                         WHEN $1::varchar IN ('rejected', 'not_suitable') THEN 'rejected'
+                         ELSE 'active'
+                       END,
+              updated_at = NOW()
+        WHERE id = $2 AND ($3::int IS NULL OR company_id = $3)
+        RETURNING *`,
+      [new_stage, application_id, company_id]
+    );
+    if (!rows.length) throw Object.assign(new Error('Application not found'), { statusCode: 404 });
+    const app = rows[0];
+
+    if (app.is_primary) {
+      await this.moveCandidateStage(app.candidate_id, new_stage, moved_by, notes, company_id, null, moved_by_user_id, { actor_name });
+    } else {
+      // Secondary applications still deserve a trail. candidate_stage_history
+      // has no application_id column, so the job is named in the note instead
+      // of silently attributing the move to the primary pipeline.
+      await pool.query(
+        `INSERT INTO candidate_stage_history (candidate_id, stage, moved_by, notes, moved_by_user_id, company_id)
+         VALUES ($1, $2, $3, $4, $5,
+                 COALESCE($6::int, (SELECT company_id FROM candidates WHERE id = $1)))`,
+        [app.candidate_id, new_stage, moved_by,
+         notes || `Application for job opening #${app.job_opening_id} moved to ${new_stage}`,
+         moved_by_user_id, company_id]
+      );
+      // candidate_activity DOES have application_id, which is why a secondary
+      // move finally gets a timeline entry that names the role rather than a
+      // history note that has to encode the job id into free text.
+      await candidateIntelligence.recordActivity({
+        company_id,
+        candidate_id: app.candidate_id,
+        application_id: app.id,
+        event_type: 'stage_change',
+        summary: `Application stage set to ${STAGE_DISPLAY[new_stage] || String(new_stage).replace(/_/g, ' ')}`,
+        detail: { stage: new_stage, job_opening_id: app.job_opening_id, primary: false, notes: notes || null },
+        actor_user_id: moved_by_user_id,
+        actor_name,
+      });
+    }
+    return app;
   },
 
   async findCandidateById(id, company_id) {
@@ -429,6 +965,11 @@ const recruitmentRepository = {
   // Same key-interpolation mass-assignment/injection issue as updateRequisition
   // above — see that comment.
   async updateCandidate(id, data, company_id = null) {
+    // Normalise before pickUpdatable for the same reason createCandidate() does —
+    // this path is reachable with a multipart body, where skills is a string.
+    if (data && data.skills !== undefined) {
+      data = { ...data, skills: JSON.stringify(this._normaliseSkills(data.skills)) };
+    }
     const safe = await pickUpdatable('candidates', data);
     const fields = [];
     const values = [];
@@ -457,7 +998,20 @@ const recruitmentRepository = {
   // Skips the history insert if the scoped UPDATE didn't match a row.
   // Optional dbClient lets callers (e.g. acceptOffer()) fold this into their
   // own transaction instead of running as a standalone pool query.
-  async moveCandidateStage(candidate_id, new_stage, moved_by, notes, company_id = null, dbClient = null) {
+  // `moved_by_user_id` is the acting LOGIN and is always available; `moved_by` is
+  // the employee FK and is NULL for accounts with no employee record — which on
+  // this database is both administrators, so every admin stage move used to land
+  // in the history with no actor at all. Callers pass the user id through
+  // `moved_by_user_id`; the signature keeps its existing positional arguments so
+  // no call site breaks.
+  /**
+   * @param {object} opts  Optional extras added by the 2026-09-27 redesign:
+   *   - actor_name: a display name for the activity timeline. Positional
+   *     parameters were already at seven, so new inputs go in a bag rather than
+   *     as an eighth positional that every existing call site would have to
+   *     count past.
+   */
+  async moveCandidateStage(candidate_id, new_stage, moved_by, notes, company_id = null, dbClient = null, moved_by_user_id = null, opts = {}) {
     const client = dbClient || pool;
     const extra = new_stage === 'hired'
       ? ', overall_status = \'hired\', hired_at = NOW()'
@@ -471,11 +1025,55 @@ const recruitmentRepository = {
       [new_stage, candidate_id, company_id]
     );
     if (result.rowCount === 0) throw new Error('Candidate not found');
+    // company_id on the history row: the column was added by migration
+    // 20260927000001 so this table can be scoped without a join through
+    // candidates. COALESCE with the candidate's own value covers the global-scope
+    // (super admin) case, where company_id arrives null.
     await client.query(
-      `INSERT INTO candidate_stage_history (candidate_id, stage, moved_by, notes)
-       VALUES ($1, $2, $3, $4)`,
-      [candidate_id, new_stage, moved_by, notes]
+      `INSERT INTO candidate_stage_history (candidate_id, stage, moved_by, notes, moved_by_user_id, company_id)
+       VALUES ($1, $2, $3, $4, $5,
+               COALESCE($6::int, (SELECT company_id FROM candidates WHERE id = $1)))`,
+      [candidate_id, new_stage, moved_by, notes, moved_by_user_id, company_id]
     );
+    // The primary application mirrors candidates.current_stage. Moving someone
+    // through the pipeline board must not leave the two disagreeing.
+    await client.query(
+      `UPDATE candidate_applications
+          -- $1 is cast explicitly: it appears as an assignment target AND inside
+          -- the CASE comparisons, and without the cast Postgres reports
+          -- "inconsistent types deduced for parameter $1" and the whole
+          -- statement fails at parse time.
+          SET stage = $1::varchar,
+              -- Status is DERIVED from the stage, in both directions. Falling
+              -- through to the old value left an application reading
+              -- "stage=screening, status=rejected" the moment someone moved a
+              -- rejected candidate back into the pipeline — two fields
+              -- contradicting each other on the same row.
+              status = CASE
+                         WHEN $1::varchar = 'hired' THEN 'hired'
+                         WHEN $1::varchar IN ('rejected', 'not_suitable') THEN 'rejected'
+                         ELSE 'active'
+                       END,
+              updated_at = NOW()
+        WHERE candidate_id = $2 AND is_primary`,
+      [new_stage, candidate_id]
+    );
+
+    // The activity timeline (§21) and candidates.last_activity_at, which the
+    // recruiter work queue measures "waiting more than 3 days" from. Both are
+    // written by recordActivity, inside this transaction when there is one, so a
+    // stage move can never succeed while leaving the timeline or the staleness
+    // clock behind. Awaited, not fire-and-forget: a swallowed history write that
+    // still answers HTTP 200 is how this codebase lost ledger rows once already.
+    await candidateIntelligence.recordActivity({
+      company_id,
+      candidate_id,
+      event_type: 'stage_change',
+      summary: `Stage set to ${STAGE_DISPLAY[new_stage] || String(new_stage).replace(/_/g, ' ')}`,
+      detail: { stage: new_stage, notes: notes || null },
+      actor_user_id: moved_by_user_id,
+      actor_name: opts.actor_name || null,
+    }, client);
   },
 
   // candidate_stage_history has no company_id of its own, so scoping goes through
@@ -488,10 +1086,19 @@ const recruitmentRepository = {
     let extra = '';
     if (company_id) { extra = ` AND c.company_id = $2`; params.push(company_id); }
     const result = await pool.query(
-      `SELECT csh.*, TRIM(CONCAT(e.first_name, ' ', COALESCE(e.last_name, ''))) AS moved_by_name
+      // Fall back to the acting login's own name when there is no employee behind
+      // the move, so the history names somebody instead of rendering blank.
+      `SELECT csh.*,
+              COALESCE(
+                NULLIF(TRIM(CONCAT(e.first_name, ' ', COALESCE(e.last_name, ''))), ''),
+                NULLIF(TRIM(CONCAT(ue.first_name, ' ', COALESCE(ue.last_name, ''))), ''),
+                u.email
+              ) AS moved_by_name
        FROM candidate_stage_history csh
        JOIN candidates c ON c.id = csh.candidate_id
        LEFT JOIN employees e ON csh.moved_by = e.id
+       LEFT JOIN users     u  ON u.id = csh.moved_by_user_id
+       LEFT JOIN employees ue ON ue.id = u.employee_id
        WHERE csh.candidate_id = $1${extra}
        ORDER BY csh.moved_date DESC`,
       params
@@ -499,14 +1106,35 @@ const recruitmentRepository = {
     return result.rows;
   },
 
+  /**
+   * One Kanban column: everyone at `stage` for this opening.
+   *
+   * Reads candidate_applications, not candidates.applied_job_id. The old query
+   * asked "whose PRIMARY job is this, and what is their HEADLINE stage" — two
+   * wrong questions for a per-job board. A candidate recommended onto this
+   * opening never appeared on it at all, and one who was at Screening here but
+   * Offer on their original role showed up in the Offer column of both.
+   *
+   * `application_id` and `application_stage` are returned alongside the
+   * candidate's own fields so the board can move THIS application without
+   * touching the other one.
+   */
   async getCandidatesByStage(job_opening_id, stage, company_id = null) {
     const params = [job_opening_id, stage];
     let extra = '';
-    if (company_id) { extra = ` AND c.company_id = $3`; params.push(company_id); }
+    if (company_id) { extra = ` AND ca.company_id = $3`; params.push(company_id); }
     const result = await pool.query(
-      `SELECT c.* FROM candidates c
-       WHERE c.applied_job_id = $1 AND c.current_stage = $2 AND c.deleted_at IS NULL${extra}
-       ORDER BY c.created_at DESC`,
+      `SELECT c.*,
+              ca.id       AS application_id,
+              ca.stage    AS application_stage,
+              ca.status   AS application_status,
+              ca.origin   AS application_origin,
+              ca.is_primary,
+              ca.applied_at
+         FROM candidate_applications ca
+         JOIN candidates c ON c.id = ca.candidate_id
+        WHERE ca.job_opening_id = $1 AND ca.stage = $2 AND c.deleted_at IS NULL${extra}
+        ORDER BY ca.applied_at DESC`,
       params
     );
     return result.rows;
@@ -532,7 +1160,26 @@ const recruitmentRepository = {
        VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
       [candidate_id, interviewer_id, interview_round, rating, comments, recommendation]
     );
+    await this.refreshOverallRating(candidate_id);
     return result.rows[0];
+  },
+
+  // candidates.overall_rating existed but nothing ever wrote it, so "show me
+  // candidates rated 4+" was unanswerable without a correlated subquery no
+  // caller wrote. Recomputed from the notes rather than incremented, so an
+  // edited or deleted note cannot leave the average wrong.
+  async refreshOverallRating(candidate_id, dbClient = null) {
+    const client = dbClient || pool;
+    await client.query(
+      `UPDATE candidates c
+          SET overall_rating = (
+                SELECT ROUND(AVG(n.rating)::numeric, 2)
+                  FROM interview_notes n
+                 WHERE n.candidate_id = c.id AND n.rating IS NOT NULL
+              )
+        WHERE c.id = $1`,
+      [candidate_id]
+    );
   },
 
   async findInterviewNotes(candidate_id, company_id = null) {
@@ -1101,6 +1748,34 @@ const recruitmentRepository = {
       future_use: '#6366f1',
       rejected:   '#dc2626',
     };
+    // Company-wide, this counts CANDIDATES by their headline stage — the right
+    // question for "how many people are in our pipeline". Scoped to one opening
+    // it counts APPLICATIONS instead, because per-job the question is "how many
+    // are at each stage FOR THIS ROLE", and a candidate can legitimately sit at
+    // different stages on two different roles. Same endpoint, two populations,
+    // on purpose.
+    if (job_opening_id) {
+      const params = [job_opening_id];
+      let extra = '';
+      if (company_id) { extra = ` AND ca.company_id = $2`; params.push(company_id); }
+      const { rows } = await pool.query(
+        `SELECT ca.stage, COUNT(*) AS count
+           FROM candidate_applications ca
+           JOIN candidates c ON c.id = ca.candidate_id
+          WHERE ca.job_opening_id = $1 AND c.deleted_at IS NULL${extra}
+          GROUP BY ca.stage`,
+        params
+      );
+      return rows
+        .map(r => ({
+          stage: r.stage,
+          count: parseInt(r.count),
+          color: STAGE_COLORS[r.stage] || '#94a3b8',
+          order: STAGE_ORDER[r.stage] || 99,
+        }))
+        .sort((a, b) => a.order - b.order);
+    }
+
     let query = `
       SELECT current_stage AS stage, COUNT(*) AS count
       FROM candidates
@@ -1223,14 +1898,35 @@ const recruitmentRepository = {
       params.push(company_id);
       n++;
     }
+    // `hired` used to be every hired candidate in the company, while
+    // `interviewed` only counted candidates with an interview_schedules row.
+    // Those are different populations, so a company that hires anyone without a
+    // scheduled interview — a direct hire, a pre-migration record — reported a
+    // "ratio" above 100%. This database showed 150%. A conversion rate whose
+    // numerator is not a subset of its denominator is not a rate.
+    //
+    // Both halves now count the SAME population: candidates who were actually
+    // interviewed. `hired_total` is kept alongside so the gap stays visible
+    // rather than being quietly folded away.
     const query = `
       SELECT COUNT(DISTINCT s.candidate_id) AS interviewed,
-             (SELECT COUNT(*) FROM candidates WHERE ${candFilter}) AS hired
-      FROM interview_schedules s WHERE ${schedFilter}`;
+             COUNT(DISTINCT s.candidate_id) FILTER (
+               WHERE c.overall_status = 'hired' AND c.deleted_at IS NULL
+             ) AS hired,
+             (SELECT COUNT(*) FROM candidates WHERE ${candFilter}) AS hired_total
+      FROM interview_schedules s
+      JOIN candidates c ON c.id = s.candidate_id
+      WHERE ${schedFilter}`;
     const result = await pool.query(query, params);
     const row = result.rows[0];
     const ratio = row.interviewed > 0 ? (row.hired / row.interviewed * 100).toFixed(2) : 0;
-    return { interviewed: parseInt(row.interviewed), hired: parseInt(row.hired), ratio: parseFloat(ratio) };
+    return {
+      interviewed:  parseInt(row.interviewed),
+      hired:        parseInt(row.hired),
+      hired_total:  parseInt(row.hired_total),
+      hired_without_interview: parseInt(row.hired_total) - parseInt(row.hired),
+      ratio: parseFloat(ratio),
+    };
   },
 
   // ==================== HIRE CANDIDATE (full transaction) ====================
@@ -1283,24 +1979,24 @@ const recruitmentRepository = {
       );
     }
 
-    // 2. Generate sequential Employee ID for this company.
-    // The MAX()+1 read and the INSERT below are a check-then-act pair: without
-    // serialisation two concurrent hires in the same company both read the same
-    // max and mint the same EMP-#### code (employees.office_id has no unique
-    // constraint to catch it). The advisory lock is company-scoped and released
-    // automatically at COMMIT/ROLLBACK, so it only serialises the ID-minting
-    // window and only between hires for the same company.
-    await client.query(
-      `SELECT pg_advisory_xact_lock(hashtext('recruitment_employee_id')::int, $1::int)`,
-      [companyId ?? 0]
-    );
-    const idResult = await client.query(
-      `SELECT COALESCE(MAX(CAST(REGEXP_REPLACE(office_id,'[^0-9]','','g') AS INT)), 0) AS max_num
-       FROM employees WHERE company_id = $1 AND office_id ~ '^EMP-[0-9]+'`,
-      [companyId]
-    );
-    const nextNum = (idResult.rows[0].max_num || 0) + 1;
-    const employeeId = `EMP-${String(nextNum).padStart(4, '0')}`;
+    // 2. Employee ID, from the ONE shared generator — shared/employeeCode.js.
+    //
+    // This used to hold its own copy of the mint, and it was the origin of a
+    // deeper mistake: it produced the hyphenated `EMP-0001`, and because two
+    // other (dead) helpers did too, a later pass concluded that was the canonical
+    // format and backfilled 35 employees as `EMP-00xx`. The real convention is
+    // `EMP001` — company 1's oldest rows, EMP001…EMP012, predate all of it.
+    //
+    // Its MAX() also read only `^EMP-[0-9]+`, which EMP001…EMP012 do not match,
+    // so it saw a max of 2 and would have reissued numbers already in use.
+    // nextEmployeeCode() reads the numeric suffix of every EMP-prefixed code in
+    // the company, so a candidate hired now gets the next number in that
+    // company's own series — EMP039 where the highest is EMP038.
+    //
+    // assertCodeAvailable is the check-then-act backstop under the advisory
+    // lock, for the same reason the direct Add Employee path has it.
+    const minted = await nextEmployeeCode(client, companyId ?? null);
+    const employeeId = await assertCodeAvailable(client, minted, companyId ?? null);
 
     // 3. Split full_name
     const nameParts = (cand.full_name || '').trim().split(/\s+/);
@@ -1308,6 +2004,28 @@ const recruitmentRepository = {
     const lastName  = nameParts.slice(1).join(' ') || '';
 
     // 4. Create employee record (column names match actual employees table schema)
+    // Department and designation are mandatory on an employee master record
+    // (see REQUIRED_ON_CREATE in employee.service.js). This path bypasses that
+    // service entirely, and both values come from the JOINed job opening /
+    // requisition — which are nullable. Live proof: employee 45, hired through
+    // here, sits on the All Employees register with Department AND Role blank.
+    // Refuse the hire with a message that names what to fix, rather than
+    // minting an incomplete master record that HR then has to find.
+    const hireDept = String(cand.department ?? '').trim();
+    const hireRole = String(cand.job_title  ?? '').trim();
+    const gaps = [];
+    if (!hireDept) gaps.push('department');
+    if (!hireRole) gaps.push('job title');
+    if (gaps.length) {
+      throw Object.assign(
+        new Error(
+          `Cannot create an employee record: the job opening has no ${gaps.join(' or ')}. ` +
+          `Set ${gaps.length === 1 ? 'it' : 'them'} on the job opening or requisition, then hire.`,
+        ),
+        { statusCode: 400 },
+      );
+    }
+
     const empResult = await client.query(
       `INSERT INTO employees
          (company_id, office_id, first_name, last_name, company_email, phone,
@@ -1315,43 +2033,25 @@ const recruitmentRepository = {
           source_candidate_id)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'Active', CURRENT_DATE, $10) RETURNING *`,
       [companyId, employeeId, firstName, lastName, cand.email, cand.phone,
-       cand.department, cand.job_title, employmentType, sourceCandidateId]
+       hireDept, hireRole, employmentType, sourceCandidateId]
     );
     const employee = empResult.rows[0];
 
-    // 4b. Auto-enroll into payroll — same pattern as employee.service.js's
-    // addEmployee (direct HR "Add Employee" flow already does this). This is
-    // the recruitment→hire flow, the more common path new hires actually
-    // come through; without this, payroll.service.js's LEFT JOIN LATERAL
-    // returns NULL basic_salary/structure_id for every recruitment-sourced
-    // hire until someone manually adds a salary assignment.
-    let payrollEnrolled = false;
-    try {
-      const { rows: defStruct } = await client.query(
-        `SELECT id FROM salary_structures WHERE is_default = true ORDER BY id LIMIT 1`
-      );
-      const effectiveFrom = employee.joining_date || new Date().toISOString().slice(0, 10);
-      // offeredSalary (from the accepted offer letter, when the caller has
-      // one — see auto-creation/:candidateId/trigger) seeds a real
-      // basic_salary instead of the column default.
-      const validSalary = Number.isFinite(offeredSalary) && offeredSalary > 0 ? offeredSalary : null;
-      if (validSalary != null) {
-        await client.query(
-          `INSERT INTO employee_salary_assignments (employee_id, structure_id, effective_from, basic_salary)
-           VALUES ($1, $2, $3, $4)`,
-          [employee.id, defStruct[0]?.id ?? null, effectiveFrom, validSalary]
-        );
-      } else {
-        await client.query(
-          `INSERT INTO employee_salary_assignments (employee_id, structure_id, effective_from)
-           VALUES ($1, $2, $3)`,
-          [employee.id, defStruct[0]?.id ?? null, effectiveFrom]
-        );
-      }
-      payrollEnrolled = true;
-    } catch (e) {
-      console.error('[hireCandidate] payroll auto-enrollment failed:', e.message);
-    }
+    // 4b. Payroll enrolment. A hire does NOT get a salary revision from here.
+    //
+    // The accepted offer's `offered_salary` is an ANNUAL CTC — both offer
+    // forms label it "Annual CTC" and every stored offer is ₹7.5–9 L. It used
+    // to be written as the MONTHLY Basic of the first salary revision: EMP038
+    // was hired on a ₹7,50,000 annual offer and was then computed at ₹7,50,000
+    // Basic a month (₹18.75 L gross). Turning an annual CTC into a monthly
+    // Basic depends on the company's CTC definition and the salary structure
+    // (PAYROLL_DATA_FLOW_AUDIT.md Part 3), so it is left to HR: payroll lists
+    // the hire as "not eligible — no salary revision" with the offer's annual
+    // CTC in the reason, and HR records the monthly Basic via Salary
+    // Structure → Assign. (Without an offer, the old bare INSERT took the
+    // column DEFAULT of 30000; that default is gone, migration 20261020000001.)
+    const payrollEnrolled = false;
+    void offeredSalary;
 
     // 4c. Provision a login — this is the more common real-world hire path
     // (per the comment above) but was the one employee-creation path that
@@ -1360,10 +2060,28 @@ const recruitmentRepository = {
     // an employee record but no way to actually sign in. Reuses the same
     // helper the direct "Add Employee" flow uses (email fallback,
     // existing-account skip, role sync, primary scope).
+    //
+    // ⚠ `loginProvisioned` was set to true whenever the call did not throw —
+    // but createEmployeeLogin() returns null WITHOUT throwing when it skips:
+    // no e-mail on the record, or an account already exists for the address
+    // (that account is deliberately left untouched). Those hires were reported,
+    // and logged on the auto-creation checklist, as "Login account created"
+    // when no login had been created. Now it is true only when the helper says
+    // it created one, and `loginStatus` says which of the other cases applied.
     let loginProvisioned = false;
+    let loginStatus = 'failed';
     try {
-      await createEmployeeLogin(client, employee);
-      loginProvisioned = true;
+      const login = await createEmployeeLogin(client, employee);
+      loginProvisioned = login?.created === true;
+      if (loginProvisioned) {
+        loginStatus = 'created';
+      } else {
+        // The helper's own two skip reasons: no address to key a login on, or
+        // an account already holds that address (including the race its
+        // ON CONFLICT DO NOTHING absorbs).
+        const hasEmail = String(employee.personal_email || employee.company_email || '').trim() !== '';
+        loginStatus = hasEmail ? 'existing_account' : 'no_email';
+      }
     } catch (e) {
       console.error('[hireCandidate] login provisioning failed:', e.message);
     }
@@ -1420,7 +2138,7 @@ const recruitmentRepository = {
       );
     }
 
-    return { employee, employeeId, payrollEnrolled, loginProvisioned, onboardingInitialized };
+    return { employee, employeeId, payrollEnrolled, loginProvisioned, loginStatus, onboardingInitialized };
   },
 
   // ==================== AUTO-CREATE EMPLOYEE FROM HIRED CANDIDATE ====================
@@ -1475,7 +2193,7 @@ const recruitmentRepository = {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      const { employee, employeeId, payrollEnrolled, loginProvisioned, onboardingInitialized } =
+      const { employee, employeeId, payrollEnrolled, loginProvisioned, loginStatus, onboardingInitialized } =
         await this.hireCandidate(candidateId, companyId, client, {
           employmentType: c.employment_type,
           offeredSalary: parseFloat(c.offered_salary),
@@ -1484,7 +2202,9 @@ const recruitmentRepository = {
 
       const checklist_items = [
         { task: 'Employee record created', done: true, note: `Code: ${employeeId}` },
-        { task: 'Login account created', done: loginProvisioned },
+        { task: 'Login account created', done: loginProvisioned,
+          // Says why when no login was created, so HR is not left to guess.
+          ...(LOGIN_STATUS_NOTES[loginStatus] ? { note: LOGIN_STATUS_NOTES[loginStatus] } : {}) },
         { task: 'Official email request pending', done: false },
         { task: 'Onboarding checklist to be created', done: onboardingInitialized },
         { task: 'Attendance profile to be configured', done: false },

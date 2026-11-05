@@ -133,8 +133,13 @@ function CreateModal({ employees, leaveTypes, year, onSave, onClose }) {
 }
 
 export default function LeaveEncashmentPage() {
-  const { user } = useAuth();
+  const { user, hasPermission } = useAuth();
   const toast    = useToast();
+  // PC-01 closure decision 3: a claim for someone else is payroll:edit; anyone
+  // else claims only for themself. Amounts the server withholds (no
+  // payroll:view, not your own claim) arrive without the money fields.
+  const claimsForOthers = typeof hasPermission === 'function' && hasPermission('payroll', 'edit');
+  const ownEmployeeId = user?.employee_id ?? null;
 
   const [records,   setRecords]   = useState([]);
   const [employees, setEmployees] = useState([]);
@@ -182,6 +187,7 @@ export default function LeaveEncashmentPage() {
     } finally { if (mounted.current) setActing(null); }
   };
 
+  const amountsWithheld = records.some(r => !('rate_per_day' in r));
   const totals = records.reduce((acc, r) => {
     if (r.status === 'approved' || r.status === 'paid') {
       acc.days += Number(r.days_encashed||0);
@@ -210,7 +216,8 @@ export default function LeaveEncashmentPage() {
       />
     }>
       {showModal && (
-        <CreateModal employees={employees} leaveTypes={leaveTypes} year={fYear}
+        <CreateModal employees={claimsForOthers ? employees : employees.filter(e => ownEmployeeId != null && String(e.id) === String(ownEmployeeId))}
+          leaveTypes={leaveTypes} year={fYear}
           onSave={createEncashment} onClose={() => setShowModal(false)} />
       )}
 
@@ -221,9 +228,12 @@ export default function LeaveEncashmentPage() {
         <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(180px,1fr))', gap:14, marginBottom:20 }}>
           {[
             { label:`${fYear} Total Days`, value:`${totals.days.toFixed(1)} days`, color:'#6366f1' },
-            { label:'Gross Encashment', value:cur(totals.gross), color:'#10b981' },
-            { label:'TDS Deducted', value:cur(totals.tds), color:'#ef4444' },
-            { label:'Net Payable', value:cur(totals.net), color:'#1d4ed8' },
+            // Totals over withheld amounts would read as ₹0 — show them only when complete.
+            ...(amountsWithheld ? [] : [
+              { label:'Gross Encashment', value:cur(totals.gross), color:'#10b981' },
+              { label:'TDS Deducted', value:cur(totals.tds), color:'#ef4444' },
+              { label:'Net Payable', value:cur(totals.net), color:'#1d4ed8' },
+            ]),
           ].map(({ label, value, color }) => (
             <div key={label} style={{ background:'#fff', borderRadius:12, border:'1px solid #e5e7eb', padding:'16px 18px' }}>
               <div style={{ fontSize:11, color:'#6b7280', fontWeight:600, marginBottom:6, textTransform:'uppercase', letterSpacing:0.5 }}>{label}</div>

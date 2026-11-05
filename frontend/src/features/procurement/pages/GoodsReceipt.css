@@ -332,6 +332,23 @@
 }
 .grn-field textarea { resize: vertical; min-height: 80px; line-height: 1.5; }
 
+/* ── Inbound charges (step 2) ──
+   Grouped and framed rather than left loose among the required fields: these
+   are optional, and a blank box here is a meaningful value ("not costed"), so
+   the group carries its own hint explaining that blank and 0 differ. */
+.grn-charges-group {
+  border: 1px solid #e9ecf3; border-radius: 10px;
+  padding: 12px 14px 14px; background: #fcfcfe;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.grn-charges-head { display: flex; flex-direction: column; gap: 3px; }
+.grn-charges-title {
+  font-size: 11px; font-weight: 700; color: #6b7280;
+  text-transform: uppercase; letter-spacing: .05em;
+}
+.grn-charges-hint { font-size: 11px; color: #9ca3af; line-height: 1.45; }
+.grn-form-row--3 { grid-template-columns: repeat(3, 1fr); }
+
 /* ── Summary (step 3) ── */
 .grn-summary {
   background: #f8f9fb; border: 1px solid #e9ecf3;

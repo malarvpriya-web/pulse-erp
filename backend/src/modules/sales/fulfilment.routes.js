@@ -27,6 +27,7 @@ import { requirePermission } from '../../middlewares/auth.middleware.js';
 import { companyOf } from '../../shared/scope.js';
 import { respondError } from '../../shared/pgErrors.js';
 import { logAudit } from '../../services/AuditService.js';
+import { nextCreditNoteNumber } from '../finance/services/creditNoteNumber.service.js';
 
 const router = express.Router();
 
@@ -35,6 +36,10 @@ const router = express.Router();
  * not free text — the previous route passed whatever the caller typed, which
  * would have failed the constraint even once the column names were right. Any
  * narrative explanation belongs in `notes`.
+ *
+ * 'quantity_correction' (migration 20261028000007) is deliberately absent:
+ * it must name the invoice lines and quantities it corrects, and this route
+ * raises amount-only notes. It is raised from the Credit Notes screen.
  */
 const CREDIT_NOTE_REASONS = [
   'sales_return', 'price_revision', 'deficiency_of_service', 'post_sale_discount', 'other',
@@ -69,7 +74,6 @@ router.post('/deliveries', requirePermission('sales', 'add'), async (req, res) =
     }
 
     await client.query('BEGIN');
-    await client.query(`CREATE SEQUENCE IF NOT EXISTS delivery_note_number_seq`);
     const { rows: seq } = await client.query(`SELECT nextval('delivery_note_number_seq')::bigint AS n`);
     const dnNumber = `DN-${new Date().getFullYear()}-${String(seq[0].n).padStart(4, '0')}`;
 
@@ -195,9 +199,10 @@ router.post('/credit', requirePermission('sales', 'add'), async (req, res) => {
     const igst         = +(num(inv.igst) * ratio).toFixed(2);
     const cess         = +(num(inv.cess) * ratio).toFixed(2);
 
-    await client.query(`CREATE SEQUENCE IF NOT EXISTS credit_note_number_seq`);
-    const { rows: seq } = await client.query(`SELECT nextval('credit_note_number_seq')::bigint AS n`);
-    const cnNumber = `CN-${new Date().getFullYear()}-${String(seq[0].n).padStart(4, '0')}`;
+    // The one generator (creditNoteNumber.service.js), in this transaction —
+    // it used to CREATE a sequence here, numbering independently of the
+    // Credit Notes screen, so the two collided.
+    const cnNumber = await nextCreditNoteNumber(client, cid);
 
     const { rows } = await client.query(
       `INSERT INTO credit_notes

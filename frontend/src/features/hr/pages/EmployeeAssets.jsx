@@ -4,6 +4,7 @@ import { Users } from 'lucide-react';
 import api from '@/services/api/client';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import { localDay } from '@/utils/dateFormatter';
 
 const P = '#6B3FDB';
 
@@ -21,7 +22,7 @@ function Badge({ status }) {
 }
 
 const ASSET_TYPES = ['Laptop', 'Desktop', 'Mobile', 'Tablet', 'Monitor', 'Keyboard', 'Mouse', 'Headset', 'Vehicle', 'Tools', 'Other'];
-const EMPTY_FORM  = { employee_id: '', asset_type: 'Laptop', asset_name: '', asset_tag: '', serial_number: '', brand: '', model: '', allocated_date: new Date().toISOString().split('T')[0], condition_in: 'good', notes: '' };
+const EMPTY_FORM  = { employee_id: '', asset_type: 'Laptop', asset_name: '', asset_tag: '', serial_number: '', brand: '', model: '', allocated_date: localDay(), condition_in: 'good', notes: '' };
 
 export default function EmployeeAssets() {
   const [assets,      setAssets]      = useState([]);
@@ -36,7 +37,7 @@ export default function EmployeeAssets() {
   const [filterStatus,setFilterStatus]= useState('');
   const [filterType,  setFilterType]  = useState('');
   const [returnModal, setReturnModal] = useState(null);
-  const [returnForm,  setReturnForm]  = useState({ return_date: new Date().toISOString().split('T')[0], condition_out: 'good', notes: '' });
+  const [returnForm,  setReturnForm]  = useState({ return_date: localDay(), condition_out: 'good', notes: '' });
   const [transferModal, setTransferModal] = useState(null);
   const [transferForm,  setTransferForm]  = useState({ to_employee_id: '', notes: '' });
   const [maintModal,    setMaintModal]    = useState(null);
@@ -298,7 +299,7 @@ export default function EmployeeAssets() {
                   <tbody>
                     {filtered.map(a => (
                       <tr key={a.id} style={{ borderBottom: '1px solid #f3f4f6' }}>
-                        <td style={{ padding: '10px 14px', fontWeight: 600, color: '#374151' }}>{a.employee_name || `EMP-${a.employee_id}`}</td>
+                        <td style={{ padding: '10px 14px', fontWeight: 600, color: '#374151' }}>{a.employee_name || `Employee #${a.employee_id}`}</td>
                         <td style={{ padding: '10px 14px', color: '#374151' }}>{a.asset_name}</td>
                         <td style={{ padding: '10px 14px', color: '#6b7280' }}>{a.asset_type}</td>
                         <td style={{ padding: '10px 14px', color: '#6b7280', fontFamily: 'monospace', fontSize: 12 }}>

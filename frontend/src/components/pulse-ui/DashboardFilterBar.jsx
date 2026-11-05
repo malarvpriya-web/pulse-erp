@@ -48,8 +48,14 @@ export default function DashboardFilterBar({
     period, setPeriod,
     from, setFrom, to, setTo,
     dimensions: values, setDimension,
-    activeCount, reset,
+    activeCount, activeFilters = [], reset,
   } = filters;
+
+  // A bare "Reset 1" does not say what the 1 IS. Naming it turns the badge
+  // from a puzzle into a description of what the button will undo.
+  const resetTitle = activeFilters.length
+    ? `Reset ${activeFilters.map(f => f.label).join(', ')} to the default`
+    : 'Nothing to reset';
 
   return (
     <div className="pl-filterbar" role="group" aria-label="Dashboard filters">
@@ -113,7 +119,10 @@ export default function DashboardFilterBar({
       ))}
 
       {activeCount > 0 && (
-        <button type="button" className="pl-filterbar-reset" onClick={reset}>
+        <button
+          type="button" className="pl-filterbar-reset" onClick={reset}
+          title={resetTitle} aria-label={resetTitle}
+        >
           <X size={12} aria-hidden="true" />
           Reset
           <span className="pl-filterbar-badge">{activeCount}</span>

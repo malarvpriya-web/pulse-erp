@@ -4,6 +4,7 @@ import { Filter } from 'lucide-react';
 import api from '@/services/api/client';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import { fmtScore } from '@/utils/format';
 
 /* ─── style tokens ──────────────────────────────────────────── */
 const INP = { width: '100%', boxSizing: 'border-box', padding: '7px 10px',
@@ -362,7 +363,7 @@ export default function LeadershipPipeline() {
                                 <span style={{ padding: '2px 8px', borderRadius: 10, fontSize: 11,
                                                fontWeight: 600, background: readyColor + '20', color: readyColor,
                                                height: 'fit-content' }}>
-                                  {READY_LABELS[entry.readiness] || entry.readiness}
+                                  {READY_LABELS[entry.readiness] || 'Unclassified'}
                                 </span>
                               </div>
 
@@ -378,7 +379,7 @@ export default function LeadershipPipeline() {
                               {(entry.performance_score || entry.potential_score) && (
                                 <div style={{ display: 'flex', gap: 10, fontSize: 11, color: '#6b7280', marginBottom: 8 }}>
                                   {entry.performance_score && (
-                                    <span>Perf: <strong style={{ color: '#16a34a' }}>{entry.performance_score}/5</strong></span>
+                                    <span>Perf: <strong style={{ color: '#16a34a' }}>{fmtScore(entry.performance_score, 5)}</strong></span>
                                   )}
                                   {entry.potential_score && (
                                     <span>Pot: <strong style={{ color: '#6B3FDB' }}>{entry.potential_score}/5</strong></span>

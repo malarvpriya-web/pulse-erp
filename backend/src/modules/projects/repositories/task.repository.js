@@ -102,7 +102,18 @@ const taskRepository = {
     return result.rows;
   },
 
-  async findById(id) {
+  /**
+   * `tasks` has no company_id of its own — a task's tenant is its project's.
+   * Every read/write below therefore scopes through `projects.company_id`, the
+   * same predicate findAll() and getKanbanBoard() already use. Callers MUST
+   * pass the caller's company (companyOf(req)); the null default is a genuinely
+   * global super-admin scope, not "unknown".
+   *
+   * A task with no project_id is invisible to a scoped caller here, exactly as
+   * it already is in findAll() — deliberately consistent rather than quietly
+   * more permissive on the single-record path.
+   */
+  async findById(id, company_id = null) {
     const result = await pool.query(
       `SELECT t.*, 
         CONCAT(e.first_name, ' ', e.last_name) as assigned_to_name,
@@ -110,13 +121,14 @@ const taskRepository = {
        FROM tasks t
        LEFT JOIN employees e ON t.assigned_to = e.id
        LEFT JOIN projects p ON t.project_id = p.id
-       WHERE t.id = $1 AND t.deleted_at IS NULL`,
-      [id]
+       WHERE t.id = $1 AND t.deleted_at IS NULL
+         AND ($2::int IS NULL OR p.company_id = $2)`,
+      [id, company_id ?? null]
     );
     return result.rows[0];
   },
 
-  async update(id, data) {
+  async update(id, data, company_id = null) {
     const fields = [];
     const values = [];
     let paramCount = 1;
@@ -136,20 +148,43 @@ const taskRepository = {
 
     // Every key was rejected — don't emit `SET updated_at=…` alone, which would
     // report success for a write that changed nothing.
-    if (!fields.length) return this.findById(id);
+    if (!fields.length) return this.findById(id, company_id);
 
     fields.push(`updated_at = CURRENT_TIMESTAMP`);
     values.push(id);
+    values.push(company_id ?? null);
+    const idParam = paramCount;
+    const cidParam = paramCount + 1;
 
+    // Scoped by project ownership, not just id — the route used to pass a raw
+    // path param straight through, so any authenticated user with projects.edit
+    // could update ANY tenant's task by guessing its id.
     const result = await pool.query(
-      `UPDATE tasks SET ${fields.join(', ')} WHERE id = $${paramCount} RETURNING *`,
+      `UPDATE tasks SET ${fields.join(', ')}
+        WHERE id = $${idParam} AND deleted_at IS NULL
+          AND ($${cidParam}::int IS NULL OR EXISTS (
+                SELECT 1 FROM projects p
+                 WHERE p.id = tasks.project_id AND p.company_id = $${cidParam}))
+        RETURNING *`,
       values
     );
     return result.rows[0];
   },
 
-  async delete(id) {
-    await pool.query(`UPDATE tasks SET deleted_at = CURRENT_TIMESTAMP WHERE id = $1`, [id]);
+  /** Returns true when a row was actually soft-deleted, false when the id is
+   *  absent, already deleted, or belongs to another tenant — the route needs to
+   *  tell those apart to answer 404 instead of a false "deleted". */
+  async delete(id, company_id = null) {
+    const result = await pool.query(
+      `UPDATE tasks SET deleted_at = CURRENT_TIMESTAMP
+        WHERE id = $1 AND deleted_at IS NULL
+          AND ($2::int IS NULL OR EXISTS (
+                SELECT 1 FROM projects p
+                 WHERE p.id = tasks.project_id AND p.company_id = $2))
+        RETURNING id`,
+      [id, company_id ?? null]
+    );
+    return result.rowCount > 0;
   },
 
   async getKanbanBoard(project_id, company_id = null) {

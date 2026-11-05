@@ -7,6 +7,7 @@ import {
 import api from "@/services/api/client";
 import "./Announcements.css";
 import ConfirmDialog from "@/components/core/ConfirmDialog";
+import { useAuth } from "@/context/AuthContext";
 import { PageHero, PageShell } from '@/components/pulse-ui';
 
 /* ── constants ───────────────────────────────────────────────────────────────── */
@@ -49,7 +50,16 @@ const toDatetimeLocal = (val) => {
 };
 
 const isExpired  = (ann) => ann.to_date ? toDateStr(ann.to_date) < todayStr() : false;
-const isScheduled = (ann) => ann.publish_at && new Date(ann.publish_at) > new Date();
+// Scheduled = a Scheduled Publish time ahead, OR a From date that has not
+// arrived — employees see neither yet (server: announcement.visibility.js), so
+// neither belongs under Active.
+const isScheduled = (ann) =>
+  (ann.publish_at && new Date(ann.publish_at) > new Date()) ||
+  (ann.from_date ? toDateStr(ann.from_date) > todayStr() : false);
+
+// requirePermission answers 403 with { error }, the controller with { message }.
+const apiError = (err, fallback) =>
+  err.response?.data?.message || err.response?.data?.error || err.message || fallback;
 
 const daysLeft = (ann) => {
   if (!ann.to_date) return null;
@@ -230,6 +240,11 @@ export default function Announcements() {
   const [isDirty,      setIsDirty]      = useState(false);
   const [pendingDiscardChanges, setPendingDiscardChanges] = useState(false);
   const { toasts, add: addToast, remove: removeToast } = useToast();
+  // DELETE /announcements/:id (archive) needs announcements:delete — admin and
+  // super_admin only in the matrix. HR roles would only ever get a 403, so the
+  // button is not offered to them.
+  const { hasPermission } = useAuth();
+  const canArchive = typeof hasPermission === 'function' && hasPermission('announcements', 'delete');
   const abortRef = useRef(null);
 
   const set = (k, v) => {
@@ -259,7 +274,7 @@ export default function Announcements() {
       setItems(list);
     } catch (err) {
       if (isStale() || err.name === "CanceledError" || err.code === "ERR_CANCELED") return;
-      setError(err.response?.data?.message || err.message || "Failed to load");
+      setError(apiError(err, "Failed to load"));
     } finally { if (!isStale()) setLoading(false); }
   }, []);
 
@@ -351,7 +366,7 @@ export default function Announcements() {
       await fetchAnnouncements();
       addToast(editingId ? "Announcement updated successfully" : "Announcement posted successfully");
     } catch (err) {
-      setFormErr(err.response?.data?.message || err.message || "Error saving");
+      setFormErr(apiError(err, "Error saving"));
     } finally { setSubmitting(false); }
   };
 
@@ -368,7 +383,7 @@ export default function Announcements() {
       addToast(ann.is_active ? "Announcement hidden" : "Announcement made active");
     } catch (err) {
       setItems(prev => prev.map(a => a.id === ann.id ? { ...a, is_active: ann.is_active } : a));
-      addToast(err.response?.data?.message || "Error updating", "error");
+      addToast(apiError(err, "Error updating"), "error");
     }
   };
 
@@ -380,7 +395,7 @@ export default function Announcements() {
       addToast(ann.is_pinned ? "Unpinned" : "Pinned to top");
     } catch (err) {
       setItems(prev => prev.map(a => a.id === ann.id ? { ...a, is_pinned: ann.is_pinned } : a));
-      addToast(err.response?.data?.message || "Error updating", "error");
+      addToast(apiError(err, "Error updating"), "error");
     }
   };
 
@@ -389,9 +404,9 @@ export default function Announcements() {
     try {
       await api.delete(`/announcements/${pendingDeleteId}`);
       await fetchAnnouncements();
-      addToast("Announcement deleted");
+      addToast("Announcement archived");
     } catch (err) {
-      addToast(err.response?.data?.message || "Error deleting", "error");
+      addToast(apiError(err, "Error deleting"), "error");
     } finally { setPendingDeleteId(null); }
   };
 
@@ -530,7 +545,7 @@ export default function Announcements() {
                       ) : sched ? (
                         <span className="ann-badge ann-badge-scheduled">
                           <CalendarClock size={9} style={{ marginRight: 3, verticalAlign: "middle" }} />
-                          Goes live {fmtScheduledAt(ann.publish_at)}
+                          Goes live {ann.publish_at && new Date(ann.publish_at) > new Date() ? fmtScheduledAt(ann.publish_at) : fmtDate(ann.from_date)}
                         </span>
                       ) : ann.is_active ? (
                         <span className="ann-badge ann-badge-active">Active</span>
@@ -603,9 +618,11 @@ export default function Announcements() {
                     <button className="ann-action-btn edit" onClick={() => openEdit(ann)}>
                       <Pencil size={11} style={{ marginRight: 3 }} />Edit
                     </button>
-                    <button className="ann-action-btn del" onClick={() => setPendingDeleteId(ann.id)}>
-                      <Trash2 size={11} style={{ marginRight: 3 }} />Delete
-                    </button>
+                    {canArchive && (
+                      <button className="ann-action-btn del" onClick={() => setPendingDeleteId(ann.id)}>
+                        <Trash2 size={11} style={{ marginRight: 3 }} />Delete
+                      </button>
+                    )}
                   </div>
                 </div>
 
@@ -626,7 +643,7 @@ export default function Announcements() {
           <div className="ann-modal-box" onClick={e => e.stopPropagation()}>
             <h3 style={{ margin: "0 0 8px", fontSize: 16, fontWeight: 700 }}>Delete Announcement</h3>
             <p style={{ margin: "0 0 20px", color: "#6b7280", fontSize: 13 }}>
-              This announcement will be permanently deleted and cannot be recovered.
+              Employees will no longer see this announcement. It is archived, not erased: the record, its read receipts and its audit history are kept.
             </p>
             <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
               <button className="ann-btn-ghost" onClick={() => setPendingDeleteId(null)}>Cancel</button>

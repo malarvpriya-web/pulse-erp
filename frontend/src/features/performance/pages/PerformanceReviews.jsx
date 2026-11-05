@@ -12,6 +12,7 @@ import {
 import { useAuth } from '@/context/AuthContext';
 import { useToast } from '@/context/ToastContext';
 import api from '@/services/api/client';
+import { submitErrorMessage } from '../submitErrorMessage';
 import './PerformanceReviews.css';
 import { PageHero, PageShell } from '@/components/pulse-ui';
 
@@ -89,7 +90,13 @@ function SelfAssessmentDrawer({ review, onClose, onSubmit }) {
     setSaving(true);
     try {
       await api.post(`/performance/reviews/${review.id}/self-review`, form);
-    } catch (_) {}
+    } catch (err) {
+      // A refused submit (not the owner, no linked employee, invalid rating)
+      // used to be swallowed and reported as submitted.
+      toast.error(submitErrorMessage(err, 'Failed to submit self assessment'));
+      setSaving(false);
+      return;
+    }
     onSubmit({ ...form });
     setSaving(false);
   };
@@ -300,7 +307,7 @@ export default function PerformanceReviews() {
       setReview(r => ({ ...r, manager_rating: Number(mgr.manager_rating), final_rating: Number(mgr.final_rating), status: 'completed', manager_comments: mgr.manager_comments }));
       setShowManagerForm(false);
       showToast('Manager review submitted');
-    } catch { showToast('Failed to submit manager review', 'error'); }
+    } catch (err) { showToast(submitErrorMessage(err, 'Failed to submit manager review'), 'error'); }
     finally { setMgrSaving(false); }
   };
 

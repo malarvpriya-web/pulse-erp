@@ -7,10 +7,30 @@
  *  Carry-fwd expiry    : 1st of every month  @ 01:30 IST
  *  Comp-off expiry     : Daily               @ 00:30 IST
  *  Escalation check    : Daily (weekdays)    @ 09:00 IST
+ *
+ * ⚠ THE ACCRUAL AND CARRY-FORWARD BODIES ARE NO LONGER HERE. They were
+ * copy-paste twins of `modules/leaves/routes/accrual.routes.js`, and the two
+ * copies shared a defect neither could detect from inside itself: the
+ * `ON CONFLICT (employee_id, leave_type_id, year) DO UPDATE SET allocated_days =
+ * allocated_days + $4` statement is idempotent about the balance ROW and purely
+ * ADDITIVE about the days. This cron firing and then an HR user running the same
+ * month by hand credited that month TWICE, and neither side could see the other's
+ * work — this job wrote NO `leave_accrual_log` row at all, and the route wrote one
+ * un-awaited inside `.catch(() => {})`.
+ *
+ * `modules/leaves/services/leaveAccrual.service.js` is now the one owner. Both
+ * schedules below call it; it takes `leave_accrual_log` as a LOCK (unique index
+ * `uq_accrual_log_period`, migration 20260926000012) so a period can be credited
+ * at most once however many writers attempt it — including two app instances both
+ * running this file's crons.
  */
 import cron from 'node-cron';
 import pool from '../config/db.js';
 import { logAudit } from '../services/AuditService.js';
+import {
+  runMonthlyAccrual,
+  runCarryForward,
+} from '../modules/leaves/services/leaveAccrual.service.js';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -28,51 +48,11 @@ async function getAllCompanies() {
 // ── 1. Monthly Accrual ────────────────────────────────────────────────────────
 // Runs on 1st of every month at 01:00. Credits accrual_days_per_month to every
 // active employee for each leave type with accrual_type = 'monthly'.
-
-async function runMonthlyAccrual(companyId, month, year) {
-  const { rows: leaveTypes } = await pool.query(`
-    SELECT id, leave_name, accrual_days_per_month
-    FROM leave_types
-    WHERE accrual_type = 'monthly'
-      AND is_active = true AND deleted_at IS NULL
-      AND accrual_days_per_month > 0
-      AND (company_id IS NULL OR company_id = $1)
-  `, [companyId]);
-
-  if (!leaveTypes.length) return 0;
-
-  const { rows: employees } = await pool.query(`
-    SELECT id, joining_date FROM employees
-    WHERE status IS DISTINCT FROM 'Left'
-      AND ($1::integer IS NULL OR company_id = $1)
-  `, [companyId]);
-
-  let accrued = 0;
-  for (const emp of employees) {
-    let factor = 1;
-    if (emp.joining_date) {
-      const jd = new Date(emp.joining_date);
-      if (jd.getFullYear() === year && jd.getMonth() + 1 === month) {
-        const daysInMonth = new Date(year, month, 0).getDate();
-        factor = (daysInMonth - jd.getDate() + 1) / daysInMonth;
-      } else if (jd > new Date(year, month - 1, 1)) {
-        continue;
-      }
-    }
-    for (const lt of leaveTypes) {
-      const days = Number((lt.accrual_days_per_month * factor).toFixed(2));
-      if (days <= 0) continue;
-      await pool.query(`
-        INSERT INTO leave_balances (employee_id, leave_type_id, year, allocated_days, used_days)
-        VALUES ($1, $2, $3, $4, 0)
-        ON CONFLICT (employee_id, leave_type_id, year)
-        DO UPDATE SET allocated_days = leave_balances.allocated_days + $4, updated_at = NOW()
-      `, [emp.id, lt.id, year, days]);
-      accrued++;
-    }
-  }
-  return accrued;
-}
+//
+// `runMode: 'cron'` and `runBy: null` are recorded in leave_accrual_log but are
+// deliberately NOT part of its uniqueness key — if they were, a cron run and a
+// manual run of the same month would be distinct keys and the double-credit would
+// be back. See the service header.
 
 cron.schedule('0 1 1 * *', async () => {
   log('monthly-accrual', 'Starting');
@@ -80,82 +60,47 @@ cron.schedule('0 1 1 * *', async () => {
   const month = now.getMonth() + 1;
   const year  = now.getFullYear();
   const companies = await getAllCompanies();
-  let total = 0;
+  const totals = { credited: 0, skipped: 0, failed: 0 };
   for (const c of companies) {
     try {
-      const count = await runMonthlyAccrual(c.id, month, year);
-      total += count;
+      const r = await runMonthlyAccrual({ companyId: c.id, month, year, runMode: 'cron', runBy: null });
+      totals.credited += r.credited;
+      totals.skipped  += r.skipped;
+      totals.failed   += r.failed;
     } catch (err) {
       log('monthly-accrual', `Company ${c.id} error: ${err.message}`);
     }
   }
-  log('monthly-accrual', `Done — ${total} balance rows updated`);
-  logAudit({ userId: null, module: 'leave_accrual', recordId: null, recordType: 'leave_accrual', action: 'cron_run', newData: { month, year, records: total } }).catch(() => {});
+  // `skipped` is the number that used to be a silent second credit. A non-zero
+  // value here is normal and healthy — it means HR had already run this month, or
+  // this job already had — not a fault.
+  log('monthly-accrual',
+      `Done — ${totals.credited} credited, ${totals.skipped} already accrued, ${totals.failed} failed`);
+  logAudit({ userId: null, module: 'leave_accrual', recordId: null, recordType: 'leave_accrual', action: 'cron_run', newData: { month, year, records: totals.credited, skipped: totals.skipped, failed: totals.failed } }).catch(() => {});
 }, { timezone: 'Asia/Kolkata' });
 
 // ── 2. Year-End Carry-Forward ─────────────────────────────────────────────────
 // Runs on 1 Jan at 02:00. Carries forward eligible balance (capped by policy)
 // from the previous year into the new year.
 
-async function runCarryForward(companyId, fromYear) {
-  const toYear = fromYear + 1;
-
-  const { rows: leaveTypes } = await pool.query(`
-    SELECT id, leave_name, max_carry_forward_days, carry_forward_expiry_months
-    FROM leave_types
-    WHERE carry_forward_allowed = true AND is_active = true AND deleted_at IS NULL
-      AND (company_id IS NULL OR company_id = $1)
-  `, [companyId]);
-
-  if (!leaveTypes.length) return 0;
-
-  let carried = 0;
-  for (const lt of leaveTypes) {
-    const { rows: balances } = await pool.query(`
-      SELECT lb.employee_id,
-             GREATEST(COALESCE(lb.allocated_days,0) - COALESCE(lb.used_days,0) - COALESCE(lb.encashed_days,0), 0) AS remaining
-      FROM leave_balances lb
-      JOIN employees e ON lb.employee_id = e.id
-      WHERE lb.leave_type_id = $1 AND lb.year = $2
-        AND e.status IS DISTINCT FROM 'Left'
-        AND ($3::integer IS NULL OR e.company_id = $3)
-        AND GREATEST(COALESCE(lb.allocated_days,0) - COALESCE(lb.used_days,0) - COALESCE(lb.encashed_days,0), 0) > 0
-    `, [lt.id, fromYear, companyId]);
-
-    for (const bal of balances) {
-      const carryDays = Math.min(Number(bal.remaining), lt.max_carry_forward_days || 0);
-      if (carryDays <= 0) continue;
-      await pool.query(`
-        INSERT INTO leave_balances (employee_id, leave_type_id, year, allocated_days, carried_forward_days, opening_balance, used_days)
-        VALUES ($1, $2, $3, $4, $4, $4, 0)
-        ON CONFLICT (employee_id, leave_type_id, year)
-        DO UPDATE SET
-          allocated_days       = leave_balances.allocated_days + $4,
-          carried_forward_days = COALESCE(leave_balances.carried_forward_days, 0) + $4,
-          opening_balance      = COALESCE(leave_balances.opening_balance, 0) + $4,
-          updated_at           = NOW()
-      `, [bal.employee_id, lt.id, toYear, carryDays]);
-      carried++;
-    }
-  }
-  return carried;
-}
-
 cron.schedule('0 2 1 1 *', async () => {
   log('carry-forward', 'Starting year-end carry-forward');
   const fromYear = new Date().getFullYear() - 1;
   const companies = await getAllCompanies();
-  let total = 0;
+  const totals = { credited: 0, skipped: 0, failed: 0 };
   for (const c of companies) {
     try {
-      const count = await runCarryForward(c.id, fromYear);
-      total += count;
+      const r = await runCarryForward({ companyId: c.id, fromYear, runMode: 'cron', runBy: null });
+      totals.credited += r.credited;
+      totals.skipped  += r.skipped;
+      totals.failed   += r.failed;
     } catch (err) {
       log('carry-forward', `Company ${c.id} error: ${err.message}`);
     }
   }
-  log('carry-forward', `Done — ${total} carry-forward records created`);
-  logAudit({ userId: null, module: 'leave_accrual', recordId: null, recordType: 'leave_carry_forward', action: 'cron_run', newData: { from_year: fromYear, to_year: fromYear + 1, records: total } }).catch(() => {});
+  log('carry-forward',
+      `Done — ${totals.credited} carried, ${totals.skipped} already carried, ${totals.failed} failed`);
+  logAudit({ userId: null, module: 'leave_accrual', recordId: null, recordType: 'leave_carry_forward', action: 'cron_run', newData: { from_year: fromYear, to_year: fromYear + 1, records: totals.credited, skipped: totals.skipped, failed: totals.failed } }).catch(() => {});
 }, { timezone: 'Asia/Kolkata' });
 
 // ── 3. Carry-Forward Expiry ───────────────────────────────────────────────────
@@ -290,7 +235,11 @@ cron.schedule('0 9 * * 1-5', async () => {
     const { notifyWorkflowEvent } = await import('../services/WorkflowNotificationService.js').catch(() => ({ notifyWorkflowEvent: null }));
     for (const app of stale) {
       if (notifyWorkflowEvent) {
-        await notifyWorkflowEvent('escalated', {
+        // notifyWorkflowEvent is fire-and-forget and returns undefined (phase3
+        // test pins that). The `await …(…).catch()` that was here threw a
+        // TypeError on `undefined.catch`, aborting this loop after the FIRST
+        // stale application — every later one was never escalated.
+        notifyWorkflowEvent('escalated', {
           module: 'Leave',
           recordId: app.id,
           actorId: null,
@@ -301,7 +250,7 @@ cron.schedule('0 9 * * 1-5', async () => {
             pending_days: app.pending_days,
           },
           recipientIds: [app.manager_id].filter(Boolean),
-        }).catch(() => {});
+        });
       }
     }
 

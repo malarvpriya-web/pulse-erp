@@ -5,6 +5,7 @@ import { useAuth } from "@/context/AuthContext";
 import ResultDialog from "@/components/ResultDialog";
 import "./HolidayCalendar.css";
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import { fmtDate } from '@/utils/dateFormatter';
 
 // Mirrors the backend guard on POST/PATCH/DELETE /holidays — everyone else is view-only.
 const HOLIDAY_EDITOR_ROLES = new Set(["super_admin", "admin", "hr", "hr_manager", "hr_exec"]);
@@ -190,7 +191,7 @@ export default function HolidayCalendar() {
       return;
     }
     if (isDuplicate(form.name, form.date)) {
-      setDialog({ type: "warning", title: "Duplicate", message: `"${form.name}" already exists on ${form.date}.` });
+      setDialog({ type: "warning", title: "Duplicate", message: `"${form.name}" already exists on ${fmtDate(form.date)}.` });
       return;
     }
     setSaving(true);

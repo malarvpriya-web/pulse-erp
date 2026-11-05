@@ -96,7 +96,9 @@ const salesOrdersRepository = {
     return result.rows[0];
   },
 
-  async update(id, data) {
+  // companyId scopes the write to the caller's company (null = unscoped, for
+  // trusted internal callers only — every route passes companyOf(req)).
+  async update(id, data, companyId = null) {
     const fields = [];
     const values = [];
     let paramCount = 1;
@@ -110,15 +112,18 @@ const salesOrdersRepository = {
     });
 
     if (fields.length === 0) {
-      const result = await pool.query('SELECT * FROM sales_orders WHERE id = $1 AND deleted_at IS NULL', [id]);
+      const result = await pool.query(
+        'SELECT * FROM sales_orders WHERE id = $1 AND deleted_at IS NULL AND ($2::int IS NULL OR company_id = $2)', [id, companyId]);
       return result.rows[0];
     }
 
     fields.push(`updated_at = CURRENT_TIMESTAMP`);
-    values.push(id);
+    values.push(id, companyId);
 
     const result = await pool.query(
-      `UPDATE sales_orders SET ${fields.join(', ')} WHERE id = $${paramCount} AND deleted_at IS NULL RETURNING *`,
+      `UPDATE sales_orders SET ${fields.join(', ')}
+        WHERE id = $${paramCount} AND deleted_at IS NULL AND ($${paramCount + 1}::int IS NULL OR company_id = $${paramCount + 1})
+        RETURNING *`,
       values
     );
     return result.rows[0];

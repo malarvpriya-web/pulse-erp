@@ -22,7 +22,14 @@ const EMPTY_FORM = {
 };
 
 export default function CommissioningWorkflow() {
-  const { showToast } = useToast();
+  // useToast() returns the toast FUNCTION itself (with .success/.error/…
+  // attached), not an object — `const { showToast } = useToast()` bound
+  // undefined, so the first toast this page tried to raise threw
+  // "showToast is not a function" and the ErrorBoundary took the page.
+  // Shimmed rather than rewritten so every call site below keeps its
+  // existing (message, type) signature.
+  const toast = useToast();
+  const showToast = (message, type = 'success') => toast({ message, type });
   const [workflows, setWorkflows] = useState([]);
   const [selected, setSelected] = useState(null);
   const [detail, setDetail] = useState(null);

@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import api from '@/services/api/client';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import { localDay } from '@/utils/dateFormatter';
 
 const P = '#6B3FDB';
 const CARD = { background: '#fff', borderRadius: 12, border: '1px solid #f0f0f4', padding: 20 };
@@ -74,8 +75,8 @@ function ViolationRow({ row, expanded, onToggle }) {
 }
 
 export default function GeoViolationsReport() {
-  const today = new Date().toISOString().slice(0, 10);
-  const thirtyDaysAgo = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+  const today = localDay();
+  const thirtyDaysAgo = localDay(-30);
 
   const [fromDate, setFromDate] = useState(thirtyDaysAgo);
   const [toDate, setToDate] = useState(today);

@@ -2,6 +2,7 @@ import express from 'express';
 import orgChartRepository from '../repositories/orgchart.repository.js';
 import { verifyToken, allowRoles } from '../../../middlewares/auth.middleware.js';
 import { logAudit } from '../../../services/AuditService.js';
+import { assertValidManager } from '../../../shared/employeeHierarchy.js';
 
 const router = express.Router();
 
@@ -190,8 +191,30 @@ router.put('/reporting-manager', allowRoles(...HR_ROLES), async (req, res) => {
     if (!employee_id) return res.status(400).json({ error: 'employee_id is required' });
     const cid = req.scope?.company_id ?? null;
     const pool = (await import('../../../config/db.js')).default;
+
+    // The SINGLE-employee path had no cycle check while the BULK path
+    // (PUT /hierarchy, below) and the org_relationships upsert both had one — so
+    // the assignment the Org Chart screen makes one drag at a time was the one
+    // that could close a loop. Same shared validator as Add/Edit Employee, so
+    // there is one implementation rather than three.
+    await assertValidManager(pool, {
+      employeeId: Number(employee_id),
+      managerId: manager_id,
+      companyId: cid,
+    });
+
     await pool.query(
-      'UPDATE employees SET reporting_manager_id = $1 WHERE id = $2 AND ($3::int IS NULL OR company_id = $3)',
+      `UPDATE employees
+          SET reporting_manager_id = $1,
+              -- Keep the denormalised NAME in step with the FK. Leaving it stale
+              -- is what produced rows whose Manager column named someone who was
+              -- no longer their manager, and rows holding the string 'null'.
+              reporting_manager = (
+                SELECT COALESCE(NULLIF(TRIM(m.name), ''),
+                                NULLIF(TRIM(COALESCE(m.first_name,'') || ' ' || COALESCE(m.last_name,'')), ''))
+                  FROM employees m WHERE m.id = $1
+              )
+        WHERE id = $2 AND ($3::int IS NULL OR company_id = $3)`,
       [manager_id ?? null, employee_id, cid]
     );
     logAudit({

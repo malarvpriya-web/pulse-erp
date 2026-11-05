@@ -3,6 +3,17 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { BarChart3 } from 'lucide-react';
 import api from '@/services/api/client';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import { fmtScore } from '@/utils/format';
+import { useAuth } from '@/context/AuthContext';
+import { downloadSuccessionCsv } from '../utils/successionCsv';
+
+// Bench Strength coverage, the same three states as the Critical Roles tab.
+const COVERAGE_STYLE = {
+  'Ready Now':    { background: '#d1fae5', color: '#16a34a' },
+  'Developing':   { background: '#ede9fe', color: '#6d28d9' },
+  'No Successor': { background: '#fee2e2', color: '#dc2626' },
+};
+const RISK_RANK = { low: 1, medium: 2, high: 3 };
 
 const BTN = (v = 'primary', sm = false) => ({
   border: 'none', borderRadius: 7, cursor: 'pointer', fontWeight: 600,
@@ -41,7 +52,7 @@ function ReadyBadge({ level }) {
   return (
     <span style={{ padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 600,
                    background: c + '20', color: c }}>
-      {READY_LABELS[level] || level}
+      {READY_LABELS[level] || 'Unclassified'}
     </span>
   );
 }
@@ -68,7 +79,18 @@ const REPORTS = [
 ];
 
 export default function SuccessionReports() {
+  const { hasPermission } = useAuth();
+  const canExport = hasPermission('succession', 'export');
   const [activeReport, setActiveReport] = useState('bench-strength');
+  // Settings → Flight Risk Threshold: "highlight employees at or above this
+  // risk level in reports". Talent Risk highlighted 'high' only, whatever was saved.
+  const [riskThreshold, setRiskThreshold] = useState('high');
+  useEffect(() => {
+    api.get('/succession/settings')
+      .then(r => { if (RISK_RANK[r.data?.flight_risk_threshold]) setRiskThreshold(r.data.flight_risk_threshold); })
+      .catch(() => {});
+  }, []);
+  const flagged = (risk) => (RISK_RANK[risk] || 0) >= RISK_RANK[riskThreshold];
   const [data,         setData]         = useState([]);
   const [loading,      setLoading]      = useState(false);
   const [msg,          setMsg]          = useState({ text: '', type: '' });
@@ -91,27 +113,12 @@ export default function SuccessionReports() {
 
   useEffect(() => { loadReport(activeReport); }, [activeReport, loadReport]);
 
+  // Server only. The old fallback rebuilt the file in the browser whenever the
+  // server refused, so a user without succession:export still got the CSV
+  // (and without the formula guard). A refusal is now shown, not worked around.
   const exportCSV = async () => {
-    try {
-      const response = await api.get(`/succession/reports/${activeReport}?format=csv`, { responseType: 'blob' });
-      const url = URL.createObjectURL(response.data);
-      const a   = document.createElement('a');
-      a.href = url;
-      a.download = `${activeReport}.csv`;
-      a.click();
-      URL.revokeObjectURL(url);
-    } catch {
-      // Fallback: client-side CSV from loaded data
-      if (!data.length) return;
-      const headers = Object.keys(data[0]);
-      const escape  = v => { const s = String(v ?? ''); return s.includes(',') || s.includes('"') ? `"${s.replace(/"/g,'""')}"` : s; };
-      const csv = [headers.map(escape).join(','), ...data.map(r => headers.map(h => escape(r[h])).join(','))].join('\n');
-      const blob = new Blob([csv], { type: 'text/csv' });
-      const url  = URL.createObjectURL(blob);
-      const a    = document.createElement('a');
-      a.href = url; a.download = `${activeReport}.csv`;
-      a.click(); URL.revokeObjectURL(url);
-    }
+    try { await downloadSuccessionCsv(activeReport); }
+    catch (err) { flash(err.message, 'error'); }
   };
 
   const tabStyle = (id) => ({
@@ -179,9 +186,11 @@ export default function SuccessionReports() {
               <button onClick={() => loadReport(activeReport)} style={BTN('secondary', true)}>
                 Refresh
               </button>
-              <button onClick={exportCSV} disabled={!data.length} style={BTN('success', true)}>
-                Export CSV
-              </button>
+              {canExport && (
+                <button onClick={exportCSV} disabled={!data.length} style={BTN('success', true)}>
+                  Export CSV
+                </button>
+              )}
             </div>
           </div>
 
@@ -198,7 +207,7 @@ export default function SuccessionReports() {
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
                   <thead>
                     <tr style={{ background: '#f5f3ff' }}>
-                      {['Role', 'Dept', 'Current Holder', 'Risk', 'Successors', 'Ready Now', '1-2 Yrs', '3-5 Yrs', 'Status', 'Expected Vacancy'].map(h => (
+                      {['Role', 'Dept', 'Current Holder', 'Risk', 'Successors', 'Ready Now', '1-2 Yrs', '3-5 Yrs', 'Not Ready', 'Unclassified', 'Status', 'Expected Vacancy'].map(h => (
                         <th key={h} style={{ padding: '9px 12px', textAlign: 'left', borderBottom: '1px solid #e9e4ff',
                                              color: '#4c1d95', fontWeight: 600, whiteSpace: 'nowrap', fontSize: 12 }}>{h}</th>
                       ))}
@@ -222,10 +231,14 @@ export default function SuccessionReports() {
                         <td style={{ padding: '9px 12px', textAlign: 'center', fontWeight: 700, color: '#16a34a' }}>{row.ready_now}</td>
                         <td style={{ padding: '9px 12px', textAlign: 'center', color: '#6d28d9' }}>{row.ready_1_2yr}</td>
                         <td style={{ padding: '9px 12px', textAlign: 'center', color: '#6b7280' }}>{row.ready_3_5yr}</td>
+                        <td style={{ padding: '9px 12px', textAlign: 'center', color: '#ef4444' }}>{row.not_ready ?? 0}</td>
+                        {/* Successors whose stored readiness is missing or not a real level
+                            (§211): counted in Successors, in no readiness column. */}
+                        <td style={{ padding: '9px 12px', textAlign: 'center', color: '#9ca3af' }}
+                            title="Readiness missing or not a recognised level">{row.ready_unclassified ?? 0}</td>
                         <td style={{ padding: '9px 12px' }}>
                           <span style={{ padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 600,
-                                         background: row.coverage_status === 'NO SUCCESSOR' ? '#fee2e2' : '#d1fae5',
-                                         color: row.coverage_status === 'NO SUCCESSOR' ? '#dc2626' : '#16a34a' }}>
+                                         ...(COVERAGE_STYLE[row.coverage_status] || COVERAGE_STYLE['No Successor']) }}>
                             {row.coverage_status}
                           </span>
                         </td>
@@ -252,11 +265,11 @@ export default function SuccessionReports() {
                   <tbody>
                     {data.map((row, i) => (
                       <tr key={i} style={{ borderBottom: '1px solid #f0ebff',
-                                           background: row.flight_risk === 'high' ? '#fff5f5' : 'transparent' }}>
+                                           background: flagged(row.flight_risk) ? '#fff5f5' : 'transparent' }}>
                         <td style={{ padding: '9px 12px', fontWeight: 700, color: '#1f2937' }}>{row.employee_name}</td>
                         <td style={{ padding: '9px 12px', color: '#6b7280' }}>{row.department}</td>
                         <td style={{ padding: '9px 12px', color: '#6b7280' }}>{row.designation}</td>
-                        <td style={{ padding: '9px 12px', fontWeight: 700, color: '#16a34a' }}>{row.performance_score}/5</td>
+                        <td style={{ padding: '9px 12px', fontWeight: 700, color: '#16a34a' }}>{fmtScore(row.performance_score, 5)}</td>
                         <td style={{ padding: '9px 12px', fontWeight: 700, color: '#6B3FDB' }}>{row.potential_score}/5</td>
                         <td style={{ padding: '9px 12px' }}><RiskBadge level={row.flight_risk} /></td>
                         <td style={{ padding: '9px 12px' }}><ReadyBadge level={row.readiness} /></td>
@@ -304,7 +317,7 @@ export default function SuccessionReports() {
                             {row.quadrant}
                           </span>
                         </td>
-                        <td style={{ padding: '9px 12px', fontWeight: 700, color: '#16a34a' }}>{row.performance_score}/5</td>
+                        <td style={{ padding: '9px 12px', fontWeight: 700, color: '#16a34a' }}>{fmtScore(row.performance_score, 5)}</td>
                         <td style={{ padding: '9px 12px', fontWeight: 700, color: '#6B3FDB' }}>{row.potential_score}/5</td>
                         <td style={{ padding: '9px 12px' }}><RiskBadge level={row.flight_risk} /></td>
                         <td style={{ padding: '9px 12px' }}><ReadyBadge level={row.readiness} /></td>
@@ -379,7 +392,7 @@ export default function SuccessionReports() {
                         <td style={{ padding: '9px 12px', fontWeight: 700 }}>{row.name}</td>
                         <td style={{ padding: '9px 12px', color: '#6b7280' }}>{row.department}</td>
                         <td style={{ padding: '9px 12px', color: '#6b7280' }}>{row.designation}</td>
-                        <td style={{ padding: '9px 12px', fontWeight: 700, color: '#16a34a' }}>{row.performance_score}/5</td>
+                        <td style={{ padding: '9px 12px', fontWeight: 700, color: '#16a34a' }}>{fmtScore(row.performance_score, 5)}</td>
                         <td style={{ padding: '9px 12px', fontWeight: 700, color: '#6B3FDB' }}>{row.potential_score}/5</td>
                         <td style={{ padding: '9px 12px', color: '#0891b2' }}>{row.leadership_score ? `${row.leadership_score}/5` : '—'}</td>
                         <td style={{ padding: '9px 12px' }}><ReadyBadge level={row.readiness} /></td>
@@ -431,7 +444,7 @@ export default function SuccessionReports() {
                         </td>
                         <td style={{ padding: '9px 12px' }}><ReadyBadge level={row.readiness} /></td>
                         <td style={{ padding: '9px 12px', fontWeight: 700, color: '#16a34a' }}>
-                          {row.performance_score ? `${row.performance_score}/5` : '—'}
+                          {fmtScore(row.performance_score, 5)}
                         </td>
                         <td style={{ padding: '9px 12px', fontWeight: 700, color: '#6B3FDB' }}>
                           {row.potential_score ? `${row.potential_score}/5` : '—'}

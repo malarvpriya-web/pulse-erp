@@ -35,6 +35,9 @@ export const PERIOD_OPTIONS = [
 
 export const DEFAULT_PERIOD = 'fytd';
 
+/** value → label, for naming an active period in the Reset affordance. */
+const PERIOD_LABELS = Object.fromEntries(PERIOD_OPTIONS.map(o => [o.value, o.label]));
+
 const isIso = (v) => /^\d{4}-\d{2}-\d{2}$/.test(String(v || ''));
 
 const pad = (n) => String(n).padStart(2, '0');
@@ -119,10 +122,27 @@ export default function useDashboardFilters(options = {}) {
   const [period, setPeriodState] = useState(stored?.period || defaultPeriod);
   const [from, setFrom] = useState(stored?.from || '');
   const [to, setTo] = useState(stored?.to || '');
-  const [dimensions, setDimensions] = useState(() => ({
-    ...initialDimensions,
-    ...(stored?.dimensions || {}),
-  }));
+  /**
+   * Restore only the dimensions this page still declares.
+   *
+   * ⚠ A persisted dimension the page no longer renders is invisible and
+   * un-clearable: nothing on the bar shows it, but it counts toward the Reset
+   * badge and — because `params` forwards any value that is not 'all'/'' — it
+   * is still sent to the API. So "Reset 1" appears beside two dropdowns that
+   * are both at their defaults, and the user cannot see what the 1 is.
+   *
+   * That happens whenever a page's `dimensions` config changes while someone
+   * has a live session: rename or drop a dimension and every existing tab
+   * carries the orphan until sessionStorage is cleared.
+   */
+  const [dimensions, setDimensions] = useState(() => {
+    const known = Object.keys(initialDimensions);
+    const restored = {};
+    for (const k of known) {
+      if (stored?.dimensions && k in stored.dimensions) restored[k] = stored.dimensions[k];
+    }
+    return { ...initialDimensions, ...restored };
+  });
 
   useEffect(() => {
     writeStored(storageKey, { period, from, to, dimensions });
@@ -167,16 +187,33 @@ export default function useDashboardFilters(options = {}) {
     return out;
   }, [period, from, to, dimensionsKey]);
 
-  /** Count of filters differing from their defaults — drives the bar's badge. */
-  const activeCount = useMemo(() => {
-    let n = period !== defaultPeriod ? 1 : 0;
+  /**
+   * Which filters differ from this page's defaults, by name.
+   *
+   * The Reset badge is a count, and a bare "1" next to two dropdowns that
+   * both look untouched is a puzzle — the reader cannot tell whether it means
+   * the period they can see or something they cannot. Naming them lets the
+   * button say exactly what it would undo.
+   *
+   * Note `period` counts whenever it differs from the page default, even when
+   * that value is 'all': Reset genuinely changes it back, so the badge is not
+   * lying. "All Time" is a chosen window, not the absence of one.
+   */
+  const activeFilters = useMemo(() => {
+    const out = [];
+    if (period !== defaultPeriod) {
+      out.push({ key: 'period', value: period, label: PERIOD_LABELS[period] || period });
+    }
     for (const [k, v] of Object.entries(JSON.parse(dimensionsKey))) {
       const base = initialDimensions[k] ?? 'all';
-      if (v !== base) n += 1;
+      if (v !== base) out.push({ key: k, value: v, label: v });
     }
-    return n;
+    return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [period, defaultPeriod, dimensionsKey, JSON.stringify(initialDimensions)]);
+
+  /** Count of filters differing from their defaults — drives the bar's badge. */
+  const activeCount = activeFilters.length;
 
   // Concrete dates for the selected period. Only needed by endpoints that can't
   // take a preset — prefer sending `params` and letting the backend resolve.
@@ -186,6 +223,7 @@ export default function useDashboardFilters(options = {}) {
   );
 
   return {
+    activeFilters,
     period, setPeriod,
     from, setFrom,
     to, setTo,

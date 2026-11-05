@@ -17,7 +17,15 @@ function probationDaysLeft(probEnd) {
 }
 
 export default function OnboardingWidget({ data = {}, loading }) {
-  const { total = 0, confirmingSoon = 0, joined30d = 0, joined7d = 0, recentHires = [] } = data;
+  const { total = 0, confirmingSoon = 0, joined30d = 0, joined7d = 0, recentHires = [], confirmingSoonWindowDays } = data;
+  // "Confirming soon" = current probationers whose saved end date falls from
+  // today through the company's reminder lead time — the same window as the
+  // home alert and the reminder job. It is not limited to the 90-day joiners
+  // above, so it is shown even when there are none.
+  const confirmLabel = confirmingSoonWindowDays != null ? `Confirming ≤ ${confirmingSoonWindowDays}d` : 'Confirming soon';
+  const confirmTitle = confirmingSoonWindowDays != null
+    ? `Probations whose end date is today or within the next ${confirmingSoonWindowDays} days (company reminder window)`
+    : 'Probations ending soon';
 
   return (
     <div style={{ background:'#fff', border:`1px solid ${BORDER}`, borderRadius:12, padding:'18px 20px' }}>
@@ -41,6 +49,11 @@ export default function OnboardingWidget({ data = {}, loading }) {
         <div style={{ textAlign:'center', padding:'24px 0', color:'#9ca3af' }}>
           <UserCheck size={28} color="#d1d5db" style={{ margin:'0 auto 8px', display:'block' }} />
           <div style={{ fontSize:13 }}>No new hires in the last 90 days</div>
+          {confirmingSoon > 0 && (
+            <div style={{ fontSize:12, color:'#6d28d9', marginTop:6 }} title={confirmTitle}>
+              {confirmingSoon} probation{confirmingSoon === 1 ? '' : 's'} ending within {confirmingSoonWindowDays ?? 14} days
+            </div>
+          )}
         </div>
       ) : (
         <>
@@ -49,9 +62,9 @@ export default function OnboardingWidget({ data = {}, loading }) {
             {[
               { label:'This week',  value: joined7d,        color:'#10b981', bg:'#f0fdf4' },
               { label:'This month', value: joined30d,       color:'#6366f1', bg:'#eef2ff' },
-              { label:'Confirming soon', value: confirmingSoon, color:'#6d28d9', bg:'#f5f3ff' },
+              { label: confirmLabel, value: confirmingSoon, color:'#6d28d9', bg:'#f5f3ff', title: confirmTitle },
             ].map(c => (
-              <div key={c.label} style={{ display:'flex', flexDirection:'column', alignItems:'center', padding:'6px 12px', background:c.bg, borderRadius:8, minWidth:70 }}>
+              <div key={c.label} title={c.title} style={{ display:'flex', flexDirection:'column', alignItems:'center', padding:'6px 12px', background:c.bg, borderRadius:8, minWidth:70 }}>
                 <span style={{ fontSize:18, fontWeight:800, color:c.color, lineHeight:1 }}>{c.value}</span>
                 <span style={{ fontSize:10, color:'#6b7280', marginTop:2, whiteSpace:'nowrap' }}>{c.label}</span>
               </div>

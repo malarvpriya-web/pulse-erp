@@ -18,7 +18,8 @@ router.get('/', async (req, res) => {
   const companyId = req.scope?.company_id ?? null;
 
   try {
-    const [employees, boms, prodOrders, customers, projects, complaints, inventory] =
+    const [employees, boms, prodOrders, customers, projects, complaints, inventory,
+           serials, batches, grns] =
       await Promise.allSettled([
 
         // Employees
@@ -85,13 +86,53 @@ router.get('/', async (req, res) => {
           [wild, limit, companyId]
         ),
 
-        // Inventory items
+        // Inventory items — also by manufacturer part number, the identifier a
+        // defect notice or a datasheet actually quotes.
         pool.query(
           `SELECT id, item_name AS label, item_code AS meta, category AS group_label
            FROM inventory_items
-           WHERE (item_name ILIKE $1 OR item_code ILIKE $1)
+           WHERE (item_name ILIKE $1 OR item_code ILIKE $1 OR manufacturer_part_no ILIKE $1)
              AND ($3::int IS NULL OR company_id = $3)
            ORDER BY item_name LIMIT $2`,
+          [wild, limit, companyId]
+        ),
+
+        // ── Traceability anchors ──────────────────────────────────────────
+        // Serials, lots and GRNs were reachable ONLY from inside the genealogy
+        // screen, so anyone holding a physical panel or a defect notice had to
+        // already know which screen to open before they could look it up. These
+        // are the identifiers people search with when something goes wrong.
+        pool.query(
+          `SELECT sn.id, sn.serial_number AS label,
+                  COALESCE(ii.item_name, '') AS meta
+             FROM serial_numbers sn
+             LEFT JOIN inventory_items ii ON ii.id = sn.item_id
+            WHERE sn.serial_number ILIKE $1 AND sn.deleted_at IS NULL
+              AND ($3::int IS NULL OR sn.company_id = $3)
+            ORDER BY sn.id DESC LIMIT $2`,
+          [wild, limit, companyId]
+        ),
+        pool.query(
+          `SELECT b.id, b.batch_number AS label,
+                  TRIM(BOTH ' · ' FROM CONCAT_WS(' · ', ii.item_name,
+                    CASE WHEN b.supplier_batch_no IS NOT NULL
+                         THEN 'supplier lot ' || b.supplier_batch_no END)) AS meta
+             FROM inventory_batches b
+             LEFT JOIN inventory_items ii ON ii.id = b.item_id
+            WHERE (b.batch_number ILIKE $1 OR b.supplier_batch_no ILIKE $1
+                   OR b.manufacturer_part_no ILIKE $1)
+              AND b.deleted_at IS NULL
+              AND ($3::int IS NULL OR b.company_id = $3)
+            ORDER BY b.id DESC LIMIT $2`,
+          [wild, limit, companyId]
+        ),
+        pool.query(
+          `SELECT id, grn_number AS label,
+                  COALESCE(quality_status, status, '') AS meta
+             FROM goods_receipt_notes
+            WHERE grn_number ILIKE $1 AND deleted_at IS NULL
+              AND ($3::int IS NULL OR company_id = $3)
+            ORDER BY id DESC LIMIT $2`,
           [wild, limit, companyId]
         ),
       ]);
@@ -104,6 +145,9 @@ router.get('/', async (req, res) => {
       { type: 'project',    label: 'Projects',           page: 'ProjectsDashboard',  data: projects },
       { type: 'complaint',  label: 'Complaints',         page: 'AllComplaints',      data: complaints },
       { type: 'inventory',  label: 'Inventory Items',    page: 'ItemMaster',         data: inventory },
+      { type: 'serial',     label: 'Serial Numbers',     page: 'GenealogyTrace',     data: serials },
+      { type: 'batch',      label: 'Batches / Lots',     page: 'GenealogyTrace',     data: batches },
+      { type: 'grn',        label: 'Goods Receipts',     page: 'GRNList',            data: grns },
     ]
       .map(g => ({
         type:  g.type,

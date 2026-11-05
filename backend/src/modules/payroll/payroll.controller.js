@@ -1,821 +1,557 @@
 import * as service from './payroll.service.js';
+import { PayrollHttpError, FINAL_STATUSES } from './payroll.service.js';
 import pool from '../shared/db.js';
-import { computePayroll, getMonthName } from './payrollEngine.js';
+import { getMonthName } from './payrollEngine.js';
 import { logAudit } from '../../services/AuditService.js';
 import { sendPayslipEmail, isEmailConfigured } from '../../utils/mailer.js';
 import { companyOf } from '../../shared/scope.js';
+import { rolesOf } from '../../middlewares/auth.middleware.js';
+import { RULE_KEYS } from './statutoryRules.js';
+import { POLICY_KEY, resolvePolicy } from './ctcService.js';
+import { ownEmployeeId } from './payrollAccess.js';
+
+// A company CTC definition must spell out every choice — nothing defaults.
+function ctcPolicyProblems(v) {
+  const p = [];
+  if (!v || typeof v !== 'object') return ['value must be an object'];
+  if (!String(v.version || '').trim()) p.push('version is required');
+  for (const k of ['employer_pf', 'employer_esi', 'employer_lwf', 'gratuity']) {
+    if (typeof v.include?.[k] !== 'boolean') p.push(`include.${k} must be true or false`);
+  }
+  if (v.include?.gratuity) {
+    if (!['code_wages', 'basic'].includes(v.gratuity?.base)) p.push("gratuity.base must be 'code_wages' or 'basic'");
+    if (!(Number(v.gratuity?.days_per_year) > 0) || !(Number(v.gratuity?.divisor) > 0)) p.push('gratuity.days_per_year and gratuity.divisor are required');
+  }
+  if (v.rules_basis !== 'effective_date') p.push("rules_basis must be 'effective_date' (the only basis implemented)");
+  if (v.residual !== 'report') p.push("residual must be 'report' (the only residual handling implemented)");
+  if (typeof v.maker_checker !== 'boolean') p.push('maker_checker must be true or false');
+  return p;
+}
 import PDFDocument from 'pdfkit';
 
-export const listPayroll = async (req, res) => {
-  try {
-    const result = await service.listPayroll({ ...req.query, company_id: req.scope?.company_id ?? null });
-    res.json({ success: true, data: result.data, pagination: result.pagination, message: 'Payroll list retrieved' });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
-  }
-};
+const uid = (req) => req.user?.userId ?? req.user?.id ?? null;
 
-export const getPayrollSummary = async (req, res) => {
-  try {
-    const data = await service.getSummary({ ...req.query, company_id: req.scope?.company_id ?? null });
-    res.json({ success: true, data, message: 'Summary retrieved' });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+function fail(res, err) {
+  if (err instanceof PayrollHttpError) {
+    return res.status(err.status).json({ success: false, message: err.message, error: err.message, ...(err.details || {}) });
   }
-};
+  console.error('[payroll]', err);
+  return res.status(500).json({ success: false, message: err.message, error: err.message });
+}
+const wrap = (fn) => async (req, res) => { try { await fn(req, res); } catch (e) { fail(res, e); } };
 
-export const getEmployeePayslip = async (req, res) => {
-  try {
-    const data = await service.getEmployeePayslip(req.params.id, req.query);
-    if (!data) return res.status(404).json({ success: false, message: 'Employee not found' });
-    res.json({ success: true, data, message: 'Payslip retrieved' });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
-  }
+/**
+ * One payslip shape for every screen and the PDF.
+ *   earnings                — what the employee earned
+ *   deductions              — EMPLOYEE deductions only; these sum to total_deductions
+ *   employer_contributions  — employer PF / ESI / LWF: shown for transparency,
+ *                             never deducted. Employer PF used to be listed under
+ *                             "Deductions" on the viewer, the generator, the
+ *                             Run Payroll modal and the PDF, so the deductions
+ *                             column did not add up to total deductions.
+ */
+const EARNING_LABEL = {
+  Basic: 'Basic Salary', Conveyance: 'Conveyance Allowance', Medical: 'Medical Allowance',
 };
-
-// Reshape a flat computePayroll object into the {earnings, deductions, employee} shape
-// that PayslipViewer.jsx expects.
-function shapePayslip(slip, emp = {}) {
+export function shapePayslip(slip, emp = {}) {
   if (!slip) return null;
-  const earnings = [
-    { label: 'Basic Salary',         amount: slip.basic                || 0 },
-    { label: 'HRA',                   amount: slip.hra                  || 0 },
-    { label: 'Conveyance Allowance',  amount: slip.conveyance_allowance || 0 },
-    { label: 'Medical Allowance',     amount: slip.medical_allowance    || 0 },
-    { label: 'Special Allowance',     amount: slip.special_allowance    || 0 },
-  ];
-  if ((slip.overtime_pay || 0) > 0) earnings.push({ label: 'Overtime Pay',  amount: slip.overtime_pay });
-  if ((slip.bonus        || 0) > 0) earnings.push({ label: 'Bonus',         amount: slip.bonus });
-
+  const n = (v) => Number(v || 0);
+  // Regular earnings: every structure component as computed for the month
+  // (earning_lines, stored since 2026-10-21). Before that only five fixed
+  // columns were listed, so a component such as LTA was inside gross but on no
+  // line. For a run saved before earning_lines existed, whatever gross the
+  // fixed lines do not explain is shown as one "not itemised" line so the
+  // earnings column still adds up to gross.
+  const lines = Array.isArray(slip.earning_lines) && slip.earning_lines.length ? slip.earning_lines : null;
+  const regular = lines
+    ? lines.map(l => [EARNING_LABEL[l.name] || l.name, l.amount])
+    : [['Basic Salary', slip.basic], ['HRA', slip.hra],
+       ['Conveyance Allowance', slip.conveyance_allowance], ['Medical Allowance', slip.medical_allowance],
+       ['Special Allowance', slip.special_allowance]];
+  const oneTime = [['Overtime Pay', slip.overtime_pay], ['Night Shift Allowance', slip.night_shift_allowance],
+    ['Bonus', slip.bonus], ['Arrears', slip.arrears ?? slip.arrears_amount]];
+  const earnings = [...regular, ...oneTime]
+    .map(([label, amount]) => ({ label, amount: n(amount) })).filter(e => e.amount > 0);
+  const unexplained = Math.round(n(slip.gross) - earnings.reduce((t, e) => t + e.amount, 0));
+  if (!lines && unexplained >= 1) earnings.push({ label: 'Other earnings (not itemised on this run)', amount: unexplained });
   const deductions = [
-    { label: 'Provident Fund (Employee)', amount: slip.employee_pf       || 0 },
-    { label: 'Provident Fund (Employer)', amount: slip.employer_pf       || 0 },
-  ];
-  if ((slip.employee_esi    || 0) > 0) deductions.push({ label: 'ESI (Employee)',      amount: slip.employee_esi });
-  if ((slip.employer_esi    || 0) > 0) deductions.push({ label: 'ESI (Employer)',      amount: slip.employer_esi });
-  if ((slip.professional_tax || 0) > 0) deductions.push({ label: 'Professional Tax',   amount: slip.professional_tax });
-  if ((slip.tds              || 0) > 0) deductions.push({ label: 'TDS (Income Tax)',   amount: slip.tds });
-  if ((slip.loan_deduction   || 0) > 0) deductions.push({ label: 'Loan Deduction',     amount: slip.loan_deduction });
-  if ((slip.advance_deduction || 0) > 0) deductions.push({ label: 'Advance Recovery',  amount: slip.advance_deduction });
-
+    ['Provident Fund (Employee)', slip.employee_pf], ['ESI (Employee)', slip.employee_esi],
+    ['Professional Tax', slip.professional_tax], ['Labour Welfare Fund (Employee)', slip.lwf_employee],
+    ['TDS (Income Tax)', slip.tds], ['Loan EMI', slip.loan_deduction], ['Advance Recovery', slip.advance_deduction],
+  ].map(([label, amount]) => ({ label, amount: n(amount) })).filter(d => d.amount > 0);
+  const employer = [
+    ['Provident Fund (Employer) — EPS', slip.eps], ['Provident Fund (Employer) — EPF', slip.epf_employer],
+    ['ESI (Employer)', slip.employer_esi], ['Labour Welfare Fund (Employer)', slip.lwf_employer],
+  ].map(([label, amount]) => ({ label, amount: n(amount) })).filter(c => c.amount > 0);
+  const code = slip.employee_code || emp.office_id || null;
+  const acct = emp.account_number ?? emp.bank_account ?? slip.bank_account;
   return {
     ...slip,
-    earnings:   earnings.filter(e => e.amount > 0),
-    deductions: deductions.filter(d => d.amount > 0),
+    employee_code: code,
+    earnings,
+    deductions,
+    employer_contributions_list: employer,
+    employer_contributions_total: employer.reduce((s, c) => s + c.amount, 0),
     employee: {
-      id:          slip.employee_id || emp.id,
-      name:        slip.name        || emp.name || `${emp.first_name || ''} ${emp.last_name || ''}`.trim(),
+      id: slip.employee_id || emp.id,
+      code,
+      name: slip.name || `${emp.first_name || ''} ${emp.last_name || ''}`.trim(),
       designation: slip.designation || emp.designation,
-      department:  slip.department  || emp.department,
-      pan:         emp.pan_number   || slip.pan || null,
-      bank:        emp.bank_account ? `****${String(emp.bank_account).slice(-4)}` : null,
-      dob:         emp.date_of_birth || emp.dob || null,
-      email:       emp.work_email   || emp.email || null,
-      phone:       emp.phone        || emp.mobile || null,
+      department: slip.department || emp.department,
+      pan: emp.pan_number || slip.pan_number || null,
+      uan: emp.uan_number || slip.uan_number || null,
+      bank: acct ? `****${String(acct).slice(-4)}` : null,
     },
   };
 }
 
-// GET /payroll/payslips?employee_id=X&month=M&year=Y  (called by PayslipViewer)
-export const getPayslipByQuery = async (req, res) => {
-  try {
-    const { employee_id, month, year } = req.query;
-    if (!employee_id) return res.status(400).json({ success: false, message: 'employee_id is required' });
+// ── Reads ───────────────────────────────────────────────────────────────────
 
-    const m = parseInt(month) || new Date().getMonth() + 1;
-    const y = parseInt(year)  || new Date().getFullYear();
-    const cid = req.scope?.company_id ?? null;
-    const empCidFilter = cid != null ? `AND company_id = $2` : '';
+export const listPayroll = wrap(async (req, res) => {
+  const r = await service.listPayroll({ ...req.query, company_id: companyOf(req) });
+  res.json({ success: true, data: r.data, pagination: r.pagination, message: 'Payroll list retrieved' });
+});
 
-    // Fetch employee record for personal details (pan, bank, dob, email, phone)
-    const { rows: empRows } = await pool.query(
-      `SELECT id, first_name, last_name, name, department, designation,
-              pan_number, account_number AS bank_account, dob AS date_of_birth,
-              company_email AS email, personal_email AS work_email, phone, phone AS mobile
-       FROM employees WHERE id = $1 ${empCidFilter} LIMIT 1`,
-      cid != null ? [employee_id, cid] : [employee_id]
-    ).catch(() => ({ rows: [] }));
-    const emp = empRows[0] || {};
+export const getPayrollSummary = wrap(async (req, res) => {
+  res.json({ success: true, data: await service.getSummary({ ...req.query, company_id: companyOf(req) }) });
+});
 
-    // Try saved per-employee payroll_runs row first
-    const { rows: runRows } = await pool.query(
-      `SELECT * FROM payroll_runs
-        WHERE employee_id = $1 AND month = $2 AND year = $3
-        LIMIT 1`,
-      [employee_id, m, y]
-    ).catch(() => ({ rows: [] }));
+export const getEligibility = wrap(async (req, res) => {
+  res.json({ success: true, data: await service.getEligibility({ ...req.query, company_id: companyOf(req) }) });
+});
 
-    if (runRows.length) {
-      // Reconstruct slip from saved run columns
-      const run = runRows[0];
+export const getReleaseReadiness = wrap(async (req, res) => {
+  const { releaseReadiness } = await import('./payrollReleaseGate.js');
+  const cid = companyOf(req);
+  if (cid == null) return res.status(400).json({ success: false, message: 'Payroll is per company — sign in to (or select) a company first' });
+  const m = parseInt(req.query.month) || new Date().getMonth() + 1, y = parseInt(req.query.year) || new Date().getFullYear();
+  res.json({ success: true, data: await releaseReadiness({ company_id: cid, month: m, year: y }) });
+});
 
-      // breakdown columns (basic/hra/special_allowance) were added after the initial
-      // payroll schema migration — older saved runs will have NULL/0 for these.
-      // When that happens, fetch the full employee record and re-derive the breakdown
-      // from the payroll engine so payslip line items display correctly.
-      let basicAmt    = parseFloat(run.basic            || 0);
-      let hraAmt      = parseFloat(run.hra              || 0);
-      let convAmt     = parseFloat(run.conveyance_allowance || 0);
-      let medAmt      = parseFloat(run.medical_allowance || 0);
-      let specialAmt  = parseFloat(run.special_allowance || 0);
+export const getPayrollCycle = wrap(async (req, res) => {
+  res.json({ success: true, data: await service.getPayrollCycle({ ...req.query, company_id: companyOf(req) }) });
+});
 
-      if (basicAmt === 0 && parseFloat(run.gross || 0) > 0) {
-        const { rows: empFull } = await pool.query(
-          'SELECT * FROM employees WHERE id = $1', [employee_id]
-        ).catch(() => ({ rows: [] }));
-        if (empFull.length) {
-          const computed = computePayroll(empFull[0], { month: m, year: y });
-          basicAmt   = computed.basic;
-          hraAmt     = computed.hra;
-          convAmt    = computed.conveyance_allowance;
-          medAmt     = computed.medical_allowance;
-          specialAmt = computed.special_allowance;
-        }
-      }
+export const getEmployeePayslip = wrap(async (req, res) => {
+  const data = await service.getEmployeePayslip(req.params.id, { ...req.query, company_id: companyOf(req) });
+  res.json({ success: true, data: data.preview && !data.eligible && data.reasons ? data : shapePayslip(data) });
+});
 
-      const savedSlip = {
-        employee_id:          run.employee_id,
-        month: m, year: y,
-        payroll_period:       run.period_label,
-        name:                 emp.name || `${emp.first_name || ''} ${emp.last_name || ''}`.trim(),
-        department:           emp.department,
-        designation:          emp.designation,
-        basic:                basicAmt,
-        hra:                  hraAmt,
-        conveyance_allowance: convAmt  || 1600,
-        medical_allowance:    medAmt   || 1250,
-        special_allowance:    specialAmt,
-        overtime_pay:         parseFloat(run.overtime_pay  || 0),
-        overtime_hours:       parseFloat(run.overtime_hours || 0),
-        bonus:                0,
-        gross:                parseFloat(run.gross        || 0),
-        employee_pf:          parseFloat(run.employee_pf  || 0),
-        employer_pf:          parseFloat(run.employer_pf  || 0),
-        employee_esi:         parseFloat(run.employee_esi || 0),
-        employer_esi:         parseFloat(run.employer_esi || 0),
-        professional_tax:     parseFloat(run.professional_tax || 0),
-        tds:                  parseFloat(run.tds           || 0),
-        total_deductions:     parseFloat(run.total_deductions || 0),
-        net_pay:              parseFloat(run.net_pay       || 0),
-        status:               run.status,
-      };
-      return res.json({ success: true, data: shapePayslip(savedSlip, emp), message: 'Payslip retrieved' });
+// GET /payroll/payslips?employee_id&month&year — Payslip Viewer.
+// Self-service callers (ownPayslipOrForbidden set req.payslipSelfService) see
+// only FINALISED payslips; HR also sees drafts and previews, labelled as such.
+export const getPayslipByQuery = wrap(async (req, res) => {
+  const { employee_id, month, year } = req.query;
+  if (!employee_id) return res.status(400).json({ success: false, message: 'employee_id is required' });
+  const cid = companyOf(req);
+  const saved = await service.getSavedRun({ employee_id, month, year, company_id: cid });
+  if (req.payslipSelfService) {
+    if (!saved || !FINAL_STATUSES.includes(saved.status)) {
+      return res.status(404).json({ success: false, message: 'The payslip for this month has not been released yet' });
     }
-
-    // Fall back to on-the-fly computation
-    const { rows: empFull } = await pool.query('SELECT * FROM employees WHERE id = $1', [employee_id]);
-    if (!empFull.length) return res.status(404).json({ success: false, message: 'Employee not found' });
-
-    const slip = computePayroll(empFull[0], { month: m, year: y });
-    res.json({ success: true, data: shapePayslip(slip, empFull[0]), message: 'Payslip retrieved (computed)' });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    return res.json({ success: true, data: shapePayslip(saved) });
   }
-};
+  if (saved) return res.json({ success: true, data: shapePayslip(saved), message: `Payslip (${saved.status})` });
+  const pv = await service.previewEmployeePayslip({ employee_id, month, year, company_id: cid });
+  if (!pv.slip) return res.status(422).json({ success: false, message: 'Employee is not payable for this period', reasons: pv.reasons });
+  res.json({ success: true, data: { ...shapePayslip(pv.slip, pv.emp), preview: true, status: 'not_generated' }, message: 'Preview — payroll not generated for this period' });
+});
 
-export const generatePayroll = async (req, res) => {
-  try {
-    const data = await service.generatePayroll({ ...req.body, company_id: req.scope?.company_id ?? null });
-    logAudit({
-      userId: req.user?.userId ?? req.user?.id,
-      module: 'payroll',
-      recordId: null,
-      recordType: 'payroll_run',
-      action: 'create',
-      newData: { month: req.body.month, year: req.body.year, count: data.count, department: req.body.department ?? 'All' },
-      req,
-    });
-    res.json({ success: true, data, message: data.message || 'Payroll generated' });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+export const getPayrollTrend = wrap(async (req, res) => {
+  res.json({ success: true, data: await service.getPayrollTrend({ company_id: companyOf(req) }) });
+});
+
+export const getForm16 = wrap(async (req, res) => {
+  const data = await service.getForm16(req.params.employeeId, { company_id: companyOf(req), financial_year: req.query.financial_year });
+  if (!data) return res.status(404).json({ success: false, message: 'No finalised payroll for this employee in the financial year' });
+  res.json({ success: true, data });
+});
+
+export const getForm16Status = wrap(async (req, res) => {
+  res.json({ success: true, data: await service.getForm16Status({ company_id: companyOf(req), financial_year: req.query.financial_year }) });
+});
+
+// GET /payroll/form16/:employeeId/pdf — Part B only, and only when the
+// lifecycle says the certificate can be final.
+export const streamForm16Pdf = wrap(async (req, res) => {
+  const cid = companyOf(req);
+  const f16 = await service.getForm16(req.params.employeeId, { company_id: cid, financial_year: req.query.financial_year });
+  if (!f16) return res.status(404).json({ success: false, message: 'No finalised payroll for this employee in the financial year' });
+  if (!f16.lifecycle.can_generate) {
+    return res.status(409).json({ success: false, message: 'Form 16 is not ready', status: f16.lifecycle.status, blockers: f16.lifecycle.blockers });
   }
-};
+  const { rows: [co] } = await pool.query(`SELECT name, address, pan, tan FROM companies WHERE id = $1`, [cid]);
+  // Income-tax Rules 2026 (G.S.R. 198(E)) renumbered Form 16 as Form No. 130
+  // from tax year 2026-27; earlier years remain Form 16 under the 1962 Rules.
+  const isNewForms = parseInt(f16.financial_year, 10) >= 2026;
+  const fmt = (v) => `Rs. ${Number(v || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}`;
+  const doc = new PDFDocument({ size: 'A4', margin: 50 });
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="${isNewForms ? 'Form130' : 'Form16'}_PartB_${f16.employee_code || req.params.employeeId}_${f16.financial_year}.pdf"`);
+  doc.pipe(res);
+  doc.fontSize(15).text(isNewForms ? 'FORM No. 130 (formerly Form 16) — PART B (computed summary)' : 'FORM 16 — PART B (computed summary)', { align: 'center' });
+  // Tax years from 2026-27: salary TDS is deducted under s.392 of the Income-tax
+  // Act 2025 and the year is a "Tax Year"; earlier years keep s.192 / FY (§200).
+  doc.fontSize(9).fillColor('#555').text(`Details of salary paid and tax deducted (${isNewForms ? 's.392, Income-tax Act 2025' : 's.192'}). Part A must be downloaded from TRACES` + (isNewForms ? '; Part C is not produced here.' : '.'), { align: 'center' });
+  doc.moveDown().fillColor('#111').fontSize(10);
+  [['Employer', co?.name], ['Employer TAN', co?.tan || process.env.EMPLOYER_TAN], ['Employer PAN', co?.pan],
+   ['Employee', f16.employee_name], ['Employee code', f16.employee_code], ['Employee PAN', f16.employee_pan],
+   [isNewForms ? 'Tax year' : 'Financial year', f16.financial_year], ['Tax regime', f16.tax_regime]].forEach(([k, v]) => doc.text(`${k}: ${v || '—'}`));
+  doc.moveDown();
+  [['Gross salary', f16.gross_salary], ['Standard deduction', f16.standard_deduction], ['Professional tax', f16.professional_tax],
+   ['Employee PF', f16.pf_deduction], ['Taxable income (as computed at last payroll)', f16.taxable_income],
+   ['Tax payable', f16.tax_payable], ['Tax deducted at source', f16.tds_deducted]].forEach(([k, v]) => doc.text(`${k}: ${fmt(v)}`));
+  doc.moveDown().fontSize(9).fillColor('#555').text(`Months included: ${f16.months_included}`);
+  doc.end();
+});
 
-// Alias: POST /payroll/run → same as /payroll/generate
+export const getCompliance = wrap(async (req, res) => {
+  res.json({ success: true, data: await service.getCompliance({ ...req.query, company_id: companyOf(req) }) });
+});
+
+// ── Official run ────────────────────────────────────────────────────────────
+
+export const generatePayroll = wrap(async (req, res) => {
+  // userId last: the preparer is the authenticated user, never a body field.
+  const data = await service.generatePayroll({ ...req.body, company_id: companyOf(req), userId: uid(req) });
+  logAudit({ userId: uid(req), module: 'payroll', recordId: null, recordType: 'payroll_run', action: 'create',
+    newData: { month: req.body.month, year: req.body.year, count: data.count, skipped: data.skipped.length, errors: data.errors.length, department: req.body.department ?? 'All', employee_id: req.body.employee_id ?? null }, req });
+  res.json({ success: true, data, message: data.message });
+});
 export const runPayroll = generatePayroll;
 
-export const markPaid = async (req, res) => {
-  try {
-    const data = await service.markPaid(req.params.id, req.body);
-    logAudit({
-      userId: req.user?.userId ?? req.user?.id,
-      module: 'payroll',
-      recordId: req.params.id,
-      recordType: 'payroll_run',
-      action: 'update',
-      oldData: { status: 'pending' },
-      newData: { status: 'paid', month: req.body.month, year: req.body.year, payment_mode: req.body.payment_mode ?? 'bank_transfer' },
-      req,
-    });
-    res.json({ success: true, data, message: 'Marked as paid' });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
-  }
-};
+export const approvePayroll = wrap(async (req, res) => {
+  const { month, year } = req.body;
+  if (!month || !year) return res.status(400).json({ success: false, message: 'month and year are required' });
+  const cid = companyOf(req);
+  const result = await service.approvePayroll({ month, year, company_id: cid, userId: uid(req) });
+  const rows = result.approvedRows;
+  logAudit({ userId: uid(req), module: 'Payroll', recordId: null, recordType: 'payroll_run', action: 'approve',
+    newData: { month: parseInt(month), year: parseInt(year), approved_count: rows.length, loan_repayments: result.loan_repayments,
+      accrual_journal_entry_id: result.gl_posting?.journal_entry?.id ?? null }, req });
+  import('../../services/WorkflowNotificationService.js').then(({ notifyWorkflowEvent }) => {
+    notifyWorkflowEvent('approved', { module: 'Payroll', recordId: null, submitterId: uid(req), recipientIds: [],
+      comments: `Payroll for ${month}/${year} approved (${rows.length} record(s))` }).catch(() => {});
+  }).catch(() => {});
+  // The accrual journal is posted inside the approval transaction (F-03): a
+  // response here means it is in the GL; a refusal never reaches this line.
+  res.json({ success: true, message: `${rows.length} payroll record(s) approved for ${month}/${year}`, approved_count: rows.length, loan_repayments: result.loan_repayments, gl_posting: result.gl_posting });
+});
 
-export const getPayrollTrend = async (req, res) => {
-  try {
-    const data = await service.getPayrollTrend();
-    res.json({ success: true, data, message: 'Trend retrieved' });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
-  }
-};
-
-export const getForm16 = async (req, res) => {
-  try {
-    const data = await service.getForm16(req.params.employeeId);
-    if (!data) return res.status(404).json({ success: false, message: 'Employee not found' });
-    res.json({ success: true, data, message: 'Form 16 retrieved' });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
-  }
-};
-
-export const getCompliance = async (req, res) => {
-  try {
-    const data = await service.getCompliance(req.query);
-    res.json({ success: true, data, message: 'Compliance data retrieved' });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
-  }
-};
-
-export const computeSlip = async (req, res) => {
-  try {
-    const { employee_id, month, year, lop_days = 0, bonus = 0, loan_deduction = 0, advance_deduction = 0 } = req.body;
-    if (!employee_id) return res.status(400).json({ error: 'employee_id required' });
-    const cid = req.scope?.company_id ?? null;
-    const empCidFilter = cid != null ? `AND company_id = $2` : '';
-    const { rows } = await pool.query(
-      `SELECT * FROM employees WHERE id = $1 ${empCidFilter}`,
-      cid != null ? [employee_id, cid] : [employee_id]
-    );
-    if (!rows.length) return res.status(404).json({ error: 'Employee not found' });
-    const empStatus = (rows[0].status || '').toLowerCase();
-    if (!['active', 'probation', 'notice'].includes(empStatus)) {
-      return res.status(422).json({ error: `Cannot generate payslip — employee status is "${rows[0].status || 'unknown'}"` });
+export const markPaid = wrap(async (req, res) => {
+  const { month, year, payment_mode, reference, value_date } = req.body;
+  // Only the fields of a payment — the company and the payer come from the session.
+  const data = await service.markPaid(req.params.id, {
+    month, year, payment_mode, reference, value_date, company_id: companyOf(req), userId: uid(req),
+  });
+  // An administrator recording a payment uses the PD-3 authority, not the
+  // Finance role: it is audited as such, every time (maker-checker and the bank
+  // reference still applied above).
+  const roles = rolesOf(req);
+  const authority = roles.includes('finance_manager') ? 'finance_manager'
+    : roles.some(r => r === 'admin' || r === 'super_admin') ? 'administrator' : 'granted';
+  if (data.already_paid) {
+    logAudit({ userId: uid(req), module: 'payroll', recordId: data.run_id, recordType: 'payroll_run', action: 'payment_replay',
+      newData: { employee_id: Number(req.params.id), month, year, reference: data.reference, authority }, req });
+  } else {
+    logAudit({ userId: uid(req), module: 'payroll', recordId: data.run_id, recordType: 'payroll_run', action: 'payment_recorded',
+      oldData: { status: 'approved' },
+      newData: { status: 'paid', employee_id: Number(req.params.id), month, year, payment_mode: payment_mode ?? 'bank_transfer',
+        reference: data.reference, value_date: data.value_date, amount: data.amount, journal_entry_id: data.journal_entry_id,
+        reconciled: false, authority }, req });
+    if (authority === 'administrator') {
+      logAudit({ userId: uid(req), module: 'payroll', recordId: data.run_id, recordType: 'payroll_run', action: 'payment_admin_authority',
+        newData: { employee_id: Number(req.params.id), month, year, reference: data.reference, roles }, req });
     }
-    const m = parseInt(month) || new Date().getMonth() + 1;
-    const y = parseInt(year) || new Date().getFullYear();
-    const slip = computePayroll(rows[0], {
-      month: m, year: y,
-      lop_days: parseFloat(lop_days) || 0,
-      bonus: parseFloat(bonus) || 0,
-    });
-    const loan = parseFloat(loan_deduction) || 0;
-    const adv  = parseFloat(advance_deduction) || 0;
-    res.json({
-      ...slip,
-      loan_deduction: loan,
-      advance_deduction: adv,
-      total_deductions: slip.total_deductions + loan + adv,
-      net_pay: slip.net_pay - loan - adv,
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
   }
-};
+  res.json({ success: true, data, message: data.message });
+});
 
-export const generatePdfData = async (req, res) => {
+// ── Payslip Generator: PREVIEW only ─────────────────────────────────────────
+// Uses exactly the official inputs (salary revision, structure, settings,
+// attendance, loans); the what-if fields only change this preview. Nothing here
+// writes payroll_runs — the official record is created by Run Payroll and
+// becomes a payslip only on approval.
+
+function previewOverrides(body) {
+  const o = {};
+  for (const k of ['lop_days', 'bonus', 'loan_deduction', 'advance_deduction']) {
+    if (body[k] !== undefined && body[k] !== '' && body[k] !== null) o[k] = body[k];
+  }
+  return o;
+}
+
+/**
+ * A FINALISED month has one payslip: the approved run. With no what-if inputs
+ * the generator shows that stored run; it used to recompute the month from
+ * today's data — after approval had reduced a loan balance (or a later revision
+ * or rule version existed) the recomputed EMI / net differed from what was
+ * approved, and the PDF of it carried no watermark. What-if inputs on a
+ * finalised month still give a preview, watermarked as such.
+ */
+async function finalisedRun(req, employee_id, month, year) {
+  if (Object.keys(previewOverrides(req.body)).length) return null;
+  const saved = await service.getSavedRun({ employee_id, month, year, company_id: companyOf(req) });
+  return saved && FINAL_STATUSES.includes(saved.status) ? saved : null;
+}
+
+export const computeSlip = wrap(async (req, res) => {
+  const { employee_id, month, year } = req.body;
+  if (!employee_id) return res.status(400).json({ error: 'employee_id required' });
+  const saved = await finalisedRun(req, employee_id, month, year);
+  if (saved) return res.json({ ...shapePayslip(saved), preview: false, source: 'approved_run', run_status: saved.status, validation_issues: [] });
+  const pv = await service.previewEmployeePayslip({ employee_id, month, year, company_id: companyOf(req), overrides: previewOverrides(req.body) });
+  if (!pv.slip) return res.status(422).json({ error: 'Employee is not payable for this period', reasons: pv.reasons, preview: true });
+  res.json({ ...shapePayslip(pv.slip, pv.emp), preview: true, run_status: pv.run_status, validation_issues: pv.validation, settings_conflicts: pv.settings_conflicts, rules_applied: pv.rules_applied });
+});
+
+export const generatePdfData = wrap(async (req, res) => {
+  const saved = await finalisedRun(req, req.params.id, req.body.month, req.body.year);
+  const pv = saved ? null : await service.previewEmployeePayslip({ employee_id: req.params.id, month: req.body.month, year: req.body.year, company_id: companyOf(req), overrides: previewOverrides(req.body) });
+  if (pv && !pv.slip) return res.status(422).json({ error: 'Employee is not payable for this period', reasons: pv.reasons });
+  const slip = saved || pv.slip;
+  const { rows: [co] } = await pool.query(`SELECT name, address, gstin FROM companies WHERE id = $1`, [companyOf(req)]);
+  const shaped = saved ? shapePayslip(saved) : shapePayslip(pv.slip, pv.emp);
+  res.json({
+    preview: !saved,
+    source: saved ? 'approved_run' : 'preview',
+    watermark: saved ? null
+      : (pv.run_status === 'approved' || pv.run_status === 'paid' ? 'WHAT-IF PREVIEW — NOT THE ISSUED PAYSLIP' : 'PREVIEW — NOT AN ISSUED PAYSLIP'),
+    company: { name: co?.name || '—', address: co?.address || '', gstin: co?.gstin || null },
+    employee: {
+      name: shaped.employee.name, code: shaped.employee_code || '—',
+      designation: shaped.employee.designation || '—', department: shaped.employee.department || '—',
+      pan: (saved ? saved.pan_number : pv.emp.pan_number) || '—', bank_account: shaped.employee.bank || '—',
+    },
+    period: saved
+      ? { period_label: saved.period_label, working_days: '—', lop_days: saved.lop_days, paid_days: '—' }
+      : { period_label: pv.slip.payroll_period, working_days: pv.slip.working_days, lop_days: pv.slip.lop_days, paid_days: pv.slip.paid_days },
+    earnings: shaped.earnings.map(e => ({ name: e.label, monthly: e.amount })),
+    deductions: shaped.deductions.map(d => ({ name: d.label, monthly: d.amount })),
+    employer_contributions: shaped.employer_contributions_list.map(c => ({ name: c.label, monthly: c.amount })),
+    gross: slip.gross,
+    total_deductions: slip.total_deductions,
+    net_pay: slip.net_pay,
+    form16_summary: { tax_regime: slip.tax_regime, annual_taxable_income: slip.annual_taxable_income, annual_tax: slip.annual_tax },
+  });
+});
+
+// POST /payroll/save-slip — kept for API compatibility. It used to write a
+// payroll_runs row from the Payslip Generator's inputs (employee master basic,
+// no settings, manual overrides), overwriting even APPROVED rows. It now runs
+// the official generator for this one employee; what-if overrides are ignored.
+export const saveSlip = wrap(async (req, res) => {
+  const { employee_id, month, year } = req.body;
+  if (!employee_id) return res.status(400).json({ error: 'employee_id required' });
+  const data = await service.generatePayroll({ employee_id, month, year, company_id: companyOf(req), userId: uid(req) });
+  const ignored = Object.keys(previewOverrides(req.body));
+  res.json({ success: data.count > 0, ...data,
+    message: data.message + (ignored.length ? ` (preview-only inputs ignored: ${ignored.join(', ')})` : '') });
+});
+
+export const bulkGenerateSlips = wrap(async (req, res) => {
+  const cid = companyOf(req);
+  const ctx = await service.buildPeriodContext({ company_id: cid, month: req.body.month, year: req.body.year });
+  const results = ctx.items.filter(i => !i.emp.deleted_at).map(i => {
+    const base = { employee_id: i.emp.id, employee_code: i.emp.office_id, name: `${i.emp.first_name || ''} ${i.emp.last_name || ''}`.trim(), department: i.emp.department };
+    if (!i.eligibility.eligible) return { ...base, status: 'not_eligible', reasons: i.eligibility.reasons };
+    return { ...base, status: 'eligible' };
+  });
+  res.json({ preview: true, processed: results.filter(r => r.status === 'eligible').length, total: results.length, results });
+});
+
+// ── Email: finalised payslips only ──────────────────────────────────────────
+
+export const emailPayslip = wrap(async (req, res) => {
+  const cid = companyOf(req);
+  const { employee_id, month, year } = req.body;
+  if (!employee_id) return res.status(400).json({ error: 'employee_id required' });
+  const run = await service.getSavedRun({ employee_id, month, year, company_id: cid });
+  if (!run || !FINAL_STATUSES.includes(run.status)) {
+    return res.status(409).json({ success: false, error: `Only approved payslips can be emailed — this one is ${run ? `"${run.status}"` : 'not generated'}` });
+  }
+  if (!(await isEmailConfigured(cid))) {
+    return res.status(503).json({ success: false, error: 'Email service is not configured. Set SMTP_HOST, SMTP_USER, and SMTP_PASS environment variables.' });
+  }
+  const { rows: [emp] } = await pool.query(
+    `SELECT first_name, last_name, company_email, personal_email FROM employees WHERE id = $1 AND company_id = $2`, [employee_id, cid]);
+  // The old code read emp.work_email || emp.email — neither column exists on
+  // employees, so every send failed "no email address on file".
+  const recipient = emp?.company_email || emp?.personal_email;
+  if (!recipient) return res.status(422).json({ error: 'Employee has no email address on file' });
+  const empName = `${emp.first_name || ''} ${emp.last_name || ''}`.trim();
+  const periodLabel = `${getMonthName(run.month)} ${run.year}`;
+  const log = (status, error = null) => pool.query(
+    `INSERT INTO payslip_email_log (employee_id, month, year, sent_to, sent_at, status, error)
+     VALUES ($1,$2,$3,$4,NOW(),$5,$6)
+     ON CONFLICT (employee_id, month, year) DO UPDATE SET sent_to=$4, sent_at=NOW(), status=$5, error=$6`,
+    [employee_id, run.month, run.year, recipient, status, error]).catch(() => null);
   try {
-    const { id } = req.params;
-    const { month, year, lop_days = 0, bonus = 0, loan_deduction = 0, advance_deduction = 0 } = req.body;
-    const cid = req.scope?.company_id ?? null;
-    const empCidFilter = cid != null ? `AND company_id = $2` : '';
-    const { rows } = await pool.query(
-      `SELECT * FROM employees WHERE id = $1 ${empCidFilter}`,
-      cid != null ? [id, cid] : [id]
-    );
-    if (!rows.length) return res.status(404).json({ error: 'Employee not found' });
-    const empStatus = (rows[0].status || '').toLowerCase();
-    if (!['active', 'probation', 'notice'].includes(empStatus)) {
-      return res.status(422).json({ error: `Cannot generate payslip — employee status is "${rows[0].status || 'unknown'}"` });
-    }
-    const emp = rows[0];
-    const m = parseInt(month) || new Date().getMonth() + 1;
-    const y = parseInt(year) || new Date().getFullYear();
-    const slip = computePayroll(emp, {
-      month: m, year: y,
-      lop_days: parseFloat(lop_days) || 0,
-      bonus: parseFloat(bonus) || 0,
-    });
-    const loan = parseFloat(loan_deduction) || 0;
-    const adv  = parseFloat(advance_deduction) || 0;
-
-    const earnings = [
-      { name: 'Basic Salary',           monthly: slip.basic,                ytd: slip.basic * m },
-      { name: 'HRA',                    monthly: slip.hra,                  ytd: slip.hra * m },
-      { name: 'Conveyance Allowance',   monthly: slip.conveyance_allowance, ytd: slip.conveyance_allowance * m },
-      { name: 'Medical Allowance',      monthly: slip.medical_allowance,    ytd: slip.medical_allowance * m },
-      { name: 'Special Allowance',      monthly: slip.special_allowance,    ytd: slip.special_allowance * m },
-    ];
-    if (slip.bonus > 0)        earnings.push({ name: 'Bonus',    monthly: slip.bonus,        ytd: slip.bonus });
-    if (slip.overtime_pay > 0) earnings.push({ name: 'Overtime', monthly: slip.overtime_pay, ytd: slip.overtime_pay });
-
-    const deductions = [
-      { name: 'PF (Employee)', monthly: slip.employee_pf, ytd: slip.employee_pf * m },
-    ];
-    if ((slip.employer_pf    || 0) > 0) deductions.push({ name: 'PF (Employer)',      monthly: slip.employer_pf,      ytd: slip.employer_pf * m });
-    if ((slip.employee_esi   || 0) > 0) deductions.push({ name: 'ESI (Employee)',      monthly: slip.employee_esi,     ytd: slip.employee_esi * m });
-    if ((slip.employer_esi   || 0) > 0) deductions.push({ name: 'ESI (Employer)',      monthly: slip.employer_esi,     ytd: slip.employer_esi * m });
-    if ((slip.professional_tax||0) > 0) deductions.push({ name: 'Professional Tax',    monthly: slip.professional_tax, ytd: slip.professional_tax * m });
-    if ((slip.tds            || 0) > 0) deductions.push({ name: 'TDS (Income Tax)',    monthly: slip.tds,              ytd: slip.tds * m });
-    if (loan > 0)                       deductions.push({ name: 'Loan Deduction',      monthly: loan,                  ytd: loan });
-    if (adv  > 0)                       deductions.push({ name: 'Advance Recovery',    monthly: adv,                   ytd: adv });
-
-    res.json({
-      company: {
-        name:    process.env.COMPANY_NAME    || 'Manifest Technologies Pvt. Ltd.',
-        address: process.env.COMPANY_ADDRESS || 'Chennai, Tamil Nadu',
-        gstin:   process.env.COMPANY_GSTIN   || 'PENDING',
-      },
-      employee: {
-        name:        emp.name || `${emp.first_name || ''} ${emp.last_name || ''}`.trim(),
-        code:        emp.office_id || `EMP${String(emp.id).padStart(4, '0')}`,
-        designation: slip.designation || emp.designation || '—',
-        department:  slip.department  || emp.department  || '—',
-        pan:         emp.pan_number   || '—',
-        bank_account: emp.bank_account || '—',
-      },
-      period: {
-        period_label: slip.payroll_period,
-        working_days: slip.working_days,
-        lop_days:     slip.lop_days,
-      },
-      earnings,
-      deductions,
-      gross:            slip.gross,
-      total_deductions: slip.total_deductions + loan + adv,
-      net_pay:          slip.net_pay - loan - adv,
-      ytd:              { gross: slip.gross * m, tds: slip.tds * m },
-      form16_summary: {
-        tax_regime:             slip.tax_regime,
-        annual_taxable_income:  slip.annual_taxable_income,
-        annual_tax:             slip.annual_tax,
-      },
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+    await sendPayslipEmail(recipient, { empName, month: run.month, year: run.year, periodLabel, gross: run.gross, netPay: run.net_pay, totalDeductions: run.total_deductions, companyId: cid });
+  } catch (mailErr) {
+    await log('failed', mailErr.message);
+    return res.status(502).json({ success: false, error: `Failed to send email: ${mailErr.message}` });
   }
-};
+  await log('sent');
+  res.json({ success: true, sent_to: recipient, message: `Payslip for ${periodLabel} sent to ${empName} (${recipient})` });
+});
 
-export const emailPayslip = async (req, res) => {
-  try {
-    if (!(await isEmailConfigured(companyOf(req)))) {
-      return res.status(503).json({
-        success: false,
-        error: 'Email service is not configured. Set SMTP_HOST, SMTP_USER, and SMTP_PASS environment variables.',
-      });
-    }
+export const getMyPayslips = wrap(async (req, res) => {
+  // Each slip carries the SAME earnings / deductions / employer lists as the
+  // Payslip Viewer and the PDF (shapePayslip), so the Home widget prints the
+  // official payslip instead of rebuilding one from a few fixed columns.
+  // The employee is the signed-in account's own (token, else users.employee_id).
+  const list = await service.getMyPayslipList(req.user?.email, await ownEmployeeId(req));
+  res.json({ success: true, data: list.map(p => ({ ...p, slip: shapePayslip(p.slip) })) });
+});
 
-    const { employee_id, month, year } = req.body;
-    if (!employee_id) return res.status(400).json({ error: 'employee_id required' });
-    const m = parseInt(month) || new Date().getMonth() + 1;
-    const y = parseInt(year)  || new Date().getFullYear();
-    const cid = req.scope?.company_id ?? null;
-    const empCidFilter = cid != null ? 'AND company_id = $2' : '';
-
-    const { rows } = await pool.query(
-      `SELECT * FROM employees WHERE id = $1 ${empCidFilter}`,
-      cid != null ? [employee_id, cid] : [employee_id]
-    );
-    if (!rows.length) return res.status(404).json({ error: 'Employee not found' });
-    const emp = rows[0];
-    const empStatus = (emp.status || '').toLowerCase();
-    if (!['active', 'probation', 'notice'].includes(empStatus)) {
-      return res.status(422).json({ error: 'Cannot send payslip to an inactive or terminated employee' });
-    }
-    const recipient = emp.work_email || emp.email;
-    if (!recipient) return res.status(422).json({ error: 'Employee has no email address on file' });
-
-    const empName = emp.name || `${emp.first_name || ''} ${emp.last_name || ''}`.trim();
-
-    // Prefer saved payroll run; fall back to on-the-fly computation
-    const { rows: runRows } = await pool.query(
-      `SELECT gross, net_pay, total_deductions FROM payroll_runs
-       WHERE employee_id = $1 AND month = $2 AND year = $3 LIMIT 1`,
-      [employee_id, m, y]
-    ).catch(() => ({ rows: [] }));
-
-    let gross, netPay, totalDeductions;
-    if (runRows.length) {
-      ({ gross, net_pay: netPay, total_deductions: totalDeductions } = runRows[0]);
-    } else {
-      const slip = computePayroll(emp, { month: m, year: y });
-      gross = slip.gross; netPay = slip.net_pay; totalDeductions = slip.total_deductions;
-    }
-
-    const periodLabel = `${getMonthName(m)} ${y}`;
-
-    try {
-      await sendPayslipEmail(recipient, { empName, month: m, year: y, periodLabel, gross, netPay, totalDeductions });
-    } catch (mailErr) {
-      await pool.query(
-        `INSERT INTO payslip_email_log (employee_id, month, year, sent_to, sent_at, status, error)
-         VALUES ($1,$2,$3,$4,NOW(),'failed',$5)
-         ON CONFLICT (employee_id, month, year) DO UPDATE
-           SET sent_to=$4, sent_at=NOW(), status='failed', error=$5`,
-        [employee_id, m, y, recipient, mailErr.message]
-      ).catch(() => null);
-      return res.status(502).json({ success: false, error: `Failed to send email: ${mailErr.message}` });
-    }
-
-    await pool.query(
-      `INSERT INTO payslip_email_log (employee_id, month, year, sent_to, sent_at, status)
-       VALUES ($1,$2,$3,$4,NOW(),'sent')
-       ON CONFLICT (employee_id, month, year) DO UPDATE
-         SET sent_to=$4, sent_at=NOW(), status='sent', error=NULL`,
-      [employee_id, m, y, recipient]
-    ).catch(() => null);
-
-    res.json({
-      success: true,
-      sent_to: recipient,
-      message: `Payslip for ${periodLabel} sent to ${empName} (${recipient})`,
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+// GET /payroll/payslip-pdf/:id?month&year — saved run; a draft or a preview is
+// watermarked so it cannot pass for an issued payslip.
+export const streamPayslipPdf = wrap(async (req, res) => {
+  const cid = companyOf(req);
+  const { id } = req.params;
+  let slip = await service.getSavedRun({ employee_id: id, month: req.query.month, year: req.query.year, company_id: cid });
+  let watermark = null;
+  if (!slip) {
+    const pv = await service.previewEmployeePayslip({ employee_id: id, month: req.query.month, year: req.query.year, company_id: cid });
+    if (!pv.slip) return res.status(422).json({ error: 'Employee is not payable for this period', reasons: pv.reasons });
+    slip = { ...pv.slip, ...{ name: `${pv.emp.first_name || ''} ${pv.emp.last_name || ''}`.trim(), pan_number: pv.emp.pan_number, department: pv.emp.department, designation: pv.emp.designation } };
+    watermark = 'PREVIEW — PAYROLL NOT GENERATED';
+  } else if (!FINAL_STATUSES.includes(slip.status)) {
+    watermark = 'DRAFT — AWAITING APPROVAL';
   }
-};
+  const shaped = shapePayslip(slip);
+  const { rows: [co] } = await pool.query(`SELECT name, address FROM companies WHERE id = $1`, [cid]);
+  const periodLabel = `${getMonthName(slip.month)} ${slip.year}`;
+  const fmt = (n) => `Rs.${Number(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
-export const getMyPayslips = async (req, res) => {
-  try {
-    const { email, employee_id } = req.user;
-    const data = await service.getMyPayslipList(email, employee_id);
-    res.json({ success: true, data });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+  const doc = new PDFDocument({ size: 'A4', margin: 50 });
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="payslip_${shaped.employee_code || id}_${slip.month}_${slip.year}.pdf"`);
+  doc.pipe(res);
+  doc.fontSize(18).fillColor('#6B3FDB').text(co?.name || '—', { align: 'center' });
+  doc.fontSize(10).fillColor('#555').text(co?.address || '', { align: 'center' });
+  doc.moveDown(0.5);
+  doc.fontSize(13).fillColor('#111').text(`Pay Slip — ${periodLabel}`, { align: 'center' });
+  if (watermark) doc.fontSize(11).fillColor('#dc2626').text(watermark, { align: 'center' });
+  doc.moveDown(1);
+
+  const detailY = doc.y;
+  doc.fontSize(10).fillColor('#111');
+  const left = [['Employee Name', shaped.employee.name], ['Designation', shaped.employee.designation || '—'], ['Department', shaped.employee.department || '—']];
+  const right = [['Employee Code', shaped.employee_code || '—'], ['PAN', shaped.employee.pan || '—'], ['UAN', shaped.employee.uan || '—']];
+  left.forEach(([k, v], i) => doc.text(`${k}: ${v}`, 50, detailY + i * 18));
+  right.forEach(([k, v], i) => doc.text(`${k}: ${v}`, 310, detailY + i * 18));
+  doc.y = detailY + left.length * 18 + 12;
+
+  const tableTop = doc.y;
+  const col = { e_label: 50, e_amt: 230, d_label: 295, d_amt: 475 };
+  doc.rect(50, tableTop, 495, 18).fill('#6B3FDB');
+  doc.fontSize(10).fillColor('#fff');
+  doc.text('Earnings', col.e_label, tableTop + 4, { width: 170 });
+  doc.text('Amount', col.e_amt, tableTop + 4, { width: 60, align: 'right' });
+  doc.text('Deductions', col.d_label, tableTop + 4, { width: 170 });
+  doc.text('Amount', col.d_amt, tableTop + 4, { width: 60, align: 'right' });
+  const rowsN = Math.max(shaped.earnings.length, shaped.deductions.length);
+  for (let i = 0; i < rowsN; i++) {
+    const y = tableTop + 18 + i * 18;
+    if (i % 2 === 1) doc.rect(50, y, 495, 18).fill('#f5f3ff');
+    doc.fillColor('#111').fontSize(10);
+    const e = shaped.earnings[i], d = shaped.deductions[i];
+    if (e) { doc.text(e.label, col.e_label, y + 4, { width: 170 }); doc.text(fmt(e.amount), col.e_amt, y + 4, { width: 60, align: 'right' }); }
+    if (d) { doc.text(d.label, col.d_label, y + 4, { width: 170 }); doc.text(fmt(d.amount), col.d_amt, y + 4, { width: 60, align: 'right' }); }
   }
-};
-
-// GET /payroll/payslip-pdf/:id?month=M&year=Y
-// Streams a PDF payslip directly to the client using pdfkit.
-export const streamPayslipPdf = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const m = parseInt(req.query.month) || new Date().getMonth() + 1;
-    const y = parseInt(req.query.year)  || new Date().getFullYear();
-    const cid = req.scope?.company_id ?? null;
-    const empCidFilter = cid != null ? `AND company_id = $2` : '';
-
-    const { rows } = await pool.query(
-      `SELECT * FROM employees WHERE id = $1 ${empCidFilter}`,
-      cid != null ? [id, cid] : [id]
-    );
-    if (!rows.length) return res.status(404).json({ error: 'Employee not found' });
-    const emp = rows[0];
-
-    // Prefer saved payroll run for official figures
-    const { rows: runRows } = await pool.query(
-      `SELECT * FROM payroll_runs WHERE employee_id = $1 AND month = $2 AND year = $3 LIMIT 1`,
-      [id, m, y]
-    ).catch(() => ({ rows: [] }));
-
-    let slip;
-    if (runRows.length) {
-      const run = runRows[0];
-      slip = {
-        ...computePayroll(emp, { month: m, year: y }),
-        gross:            parseFloat(run.gross),
-        net_pay:          parseFloat(run.net_pay),
-        total_deductions: parseFloat(run.total_deductions),
-        employee_pf:      parseFloat(run.employee_pf),
-        employer_pf:      parseFloat(run.employer_pf),
-        employee_esi:     parseFloat(run.employee_esi || 0),
-        employer_esi:     parseFloat(run.employer_esi || 0),
-        professional_tax: parseFloat(run.professional_tax || 0),
-        tds:              parseFloat(run.tds || 0),
-        loan_deduction:   parseFloat(run.loan_deduction || 0),
-        advance_deduction: parseFloat(run.advance_deduction || 0),
-        bonus:            parseFloat(run.bonus || 0),
-        overtime_pay:     parseFloat(run.overtime_pay || 0),
-      };
-    } else {
-      slip = computePayroll(emp, { month: m, year: y });
-      // Allow query-param overrides for live-preview PDF
-      const qLoan    = parseFloat(req.query.loan_deduction    || 0);
-      const qAdvance = parseFloat(req.query.advance_deduction || 0);
-      if (qLoan    > 0) slip.loan_deduction    = qLoan;
-      if (qAdvance > 0) slip.advance_deduction = qAdvance;
-    }
-
-    const empName    = emp.name || `${emp.first_name || ''} ${emp.last_name || ''}`.trim();
-    const periodLabel = `${getMonthName(m)} ${y}`;
-    const companyName = process.env.COMPANY_NAME    || 'Manifest Technologies Pvt. Ltd.';
-    const companyAddr = process.env.COMPANY_ADDRESS || 'Chennai, Tamil Nadu';
-    const fmt = (n) => `Rs.${Number(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-
-    const doc = new PDFDocument({ size: 'A4', margin: 50 });
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename="payslip_${empName.replace(/\s+/g, '_')}_${m}_${y}.pdf"`);
-    doc.pipe(res);
-
-    // ── Header ────────────────────────────────────────────────────────────────
-    doc.fontSize(18).fillColor('#7c3aed').text(companyName, { align: 'center' });
-    doc.fontSize(10).fillColor('#555').text(companyAddr, { align: 'center' });
-    doc.moveDown(0.5);
-    doc.fontSize(13).fillColor('#111').text(`Pay Slip — ${periodLabel}`, { align: 'center' });
-    doc.moveTo(50, doc.y + 6).lineTo(545, doc.y + 6).strokeColor('#7c3aed').stroke();
-    doc.moveDown(1);
-
-    // ── Employee Details ──────────────────────────────────────────────────────
-    const detailY = doc.y;
-    doc.fontSize(10).fillColor('#111');
-    const left = [
-      ['Employee Name', empName],
-      ['Designation',   slip.designation || emp.designation || '—'],
-      ['Department',    slip.department  || emp.department  || '—'],
-    ];
-    const right = [
-      ['Employee Code', emp.office_id || `EMP${String(emp.id).padStart(4, '0')}`],
-      ['PAN',           emp.pan_number || '—'],
-      ['Working Days',  String(slip.working_days || 26)],
-    ];
-    left.forEach(([k, v], i) => {
-      doc.text(`${k}: `, 50, detailY + i * 18, { continued: true }).fillColor('#555').text(v).fillColor('#111');
-    });
-    right.forEach(([k, v], i) => {
-      doc.text(`${k}: `, 310, detailY + i * 18, { continued: true }).fillColor('#555').text(v).fillColor('#111');
-    });
-    doc.y = detailY + left.length * 18 + 12;
-
-    // ── Earnings & Deductions Table ───────────────────────────────────────────
-    const tableTop = doc.y;
-    const col = { e_label: 50, e_amt: 230, d_label: 295, d_amt: 475 };
-
-    // Table header
-    doc.rect(50, tableTop, 495, 18).fill('#7c3aed');
-    doc.fontSize(10).fillColor('#fff');
-    doc.text('Earnings',   col.e_label, tableTop + 4, { width: 170 });
-    doc.text('Amount',     col.e_amt,   tableTop + 4, { width: 60, align: 'right' });
-    doc.text('Deductions', col.d_label, tableTop + 4, { width: 170 });
-    doc.text('Amount',     col.d_amt,   tableTop + 4, { width: 60, align: 'right' });
-
-    const earnings = [
-      ['Basic Salary',          slip.basic],
-      ['HRA',                   slip.hra],
-      ['Conveyance Allowance',  slip.conveyance_allowance || 1600],
-      ['Medical Allowance',     slip.medical_allowance   || 1250],
-      ['Special Allowance',     slip.special_allowance],
-    ].filter(([, v]) => v > 0);
-    if ((slip.bonus        || 0) > 0) earnings.push(['Bonus',        slip.bonus]);
-    if ((slip.overtime_pay || 0) > 0) earnings.push(['Overtime Pay', slip.overtime_pay]);
-
-    const deductions = [
-      ['Provident Fund (Emp)', slip.employee_pf],
-      ['Provident Fund (Emr)', slip.employer_pf],
-    ].filter(([, v]) => v > 0);
-    if ((slip.employee_esi    || 0) > 0) deductions.push(['ESI (Employee)',  slip.employee_esi]);
-    if ((slip.employer_esi    || 0) > 0) deductions.push(['ESI (Employer)',  slip.employer_esi]);
-    if ((slip.professional_tax|| 0) > 0) deductions.push(['Professional Tax',slip.professional_tax]);
-    if ((slip.tds             || 0) > 0) deductions.push(['TDS (Income Tax)',slip.tds]);
-    if ((slip.loan_deduction  || 0) > 0) deductions.push(['Loan Deduction',  slip.loan_deduction]);
-    if ((slip.advance_deduction||0) > 0) deductions.push(['Advance Recovery', slip.advance_deduction]);
-
-    const rows2 = Math.max(earnings.length, deductions.length);
-    for (let i = 0; i < rows2; i++) {
-      const rowY = tableTop + 18 + i * 18;
-      if (i % 2 === 1) doc.rect(50, rowY, 495, 18).fill('#f5f3ff');
-      doc.fillColor('#111').fontSize(10);
-      if (earnings[i]) {
-        doc.text(earnings[i][0],   col.e_label, rowY + 4, { width: 170 });
-        doc.text(fmt(earnings[i][1]), col.e_amt, rowY + 4, { width: 60, align: 'right' });
-      }
-      if (deductions[i]) {
-        doc.text(deductions[i][0],   col.d_label, rowY + 4, { width: 170 });
-        doc.text(fmt(deductions[i][1]), col.d_amt, rowY + 4, { width: 60, align: 'right' });
-      }
-    }
-
-    // Totals row
-    const totY = tableTop + 18 + rows2 * 18;
-    doc.rect(50, totY, 495, 20).fill('#e9d5ff');
-    doc.fillColor('#5b21b6').fontSize(10).font('Helvetica-Bold');
-    doc.text('Gross Pay', col.e_label, totY + 5, { width: 170 });
-    doc.text(fmt(slip.gross), col.e_amt, totY + 5, { width: 60, align: 'right' });
-    doc.text('Total Deductions', col.d_label, totY + 5, { width: 170 });
-    doc.text(fmt(slip.total_deductions), col.d_amt, totY + 5, { width: 60, align: 'right' });
-
-    // Net pay
-    const netY = totY + 24;
-    doc.rect(50, netY, 495, 24).fill('#166534');
-    doc.fillColor('#fff').fontSize(12).font('Helvetica-Bold');
-    doc.text('Net Pay', col.e_label, netY + 6, { width: 250 });
-    doc.text(fmt(slip.net_pay), 310, netY + 6, { width: 235, align: 'right' });
-
-    // ── Footer ────────────────────────────────────────────────────────────────
-    doc.font('Helvetica').fontSize(9).fillColor('#9ca3af');
-    doc.text(
-      'This is a computer-generated document and does not require a signature.',
-      50, netY + 36, { align: 'center', width: 495 }
-    );
-
-    doc.end();
-  } catch (err) {
-    if (!res.headersSent) res.status(500).json({ error: err.message });
+  const totY = tableTop + 18 + rowsN * 18;
+  doc.rect(50, totY, 495, 20).fill('#e9d5ff');
+  doc.fillColor('#5b21b6').fontSize(10).font('Helvetica-Bold');
+  doc.text('Gross Pay', col.e_label, totY + 5, { width: 170 });
+  doc.text(fmt(slip.gross), col.e_amt, totY + 5, { width: 60, align: 'right' });
+  doc.text('Total Deductions', col.d_label, totY + 5, { width: 170 });
+  doc.text(fmt(slip.total_deductions), col.d_amt, totY + 5, { width: 60, align: 'right' });
+  const netY = totY + 24;
+  doc.rect(50, netY, 495, 24).fill('#166534');
+  doc.fillColor('#fff').fontSize(12);
+  doc.text('Net Pay', col.e_label, netY + 6, { width: 250 });
+  doc.text(fmt(slip.net_pay), 310, netY + 6, { width: 235, align: 'right' });
+  doc.font('Helvetica').fontSize(10).fillColor('#111');
+  let y = netY + 36;
+  if (shaped.employer_contributions_list.length) {
+    doc.text('Employer contributions (not deducted from your pay)', 50, y); y += 16;
+    for (const c of shaped.employer_contributions_list) { doc.fillColor('#555').text(`${c.label}: ${fmt(c.amount)}`, 60, y); y += 14; }
   }
-};
+  doc.fontSize(9).fillColor('#9ca3af').text('This is a computer-generated document and does not require a signature.', 50, y + 10, { align: 'center', width: 495 });
+  doc.end();
+});
 
-export const bulkGenerateSlips = async (req, res) => {
-  try {
-    const { month, year } = req.body;
-    const m = parseInt(month) || new Date().getMonth() + 1;
-    const y = parseInt(year)  || new Date().getFullYear();
-    const cid = req.scope?.company_id ?? null;
-    const cidFilter = cid != null ? `AND company_id = $1` : '';
-    const cidParams = cid != null ? [cid] : [];
-    const { rows: emps } = await pool.query(`
-      SELECT id, office_id, first_name, last_name, name, department, designation,
-             basic_salary, email, work_email,
-             EXTRACT(YEAR FROM AGE(NOW(), joining_date)) AS years_of_service
-      FROM employees
-      WHERE LOWER(status) IN ('active','probation','notice') AND deleted_at IS NULL ${cidFilter}
-      ORDER BY first_name
-    `, cidParams);
-    if (!emps.length) return res.json({ processed: 0, total: 0, results: [] });
-    const results = emps.map(emp => {
-      try {
-        const slip = computePayroll(emp, { month: m, year: y });
-        return {
-          employee_id: emp.id,
-          name: emp.name || `${emp.first_name} ${emp.last_name}`,
-          department: emp.department,
-          net_pay: slip.net_pay,
-          gross: slip.gross,
-          status: 'ok',
-        };
-      } catch (e) {
-        return {
-          employee_id: emp.id,
-          name: emp.name || `${emp.first_name} ${emp.last_name}`,
-          department: emp.department,
-          net_pay: 0, gross: 0,
-          status: 'error', error: e.message,
-        };
-      }
-    });
-    const processed = results.filter(r => r.status === 'ok').length;
-    res.json({ processed, total: results.length, results });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+// GET /payroll/history/:employeeId — last 12 months: saved runs only; a month
+// with no run says so instead of showing a computed figure.
+export const getPayrollHistory = wrap(async (req, res) => {
+  const cid = companyOf(req);
+  const { rows: [emp] } = await pool.query(`SELECT id FROM employees WHERE id = $1 AND company_id = $2`, [req.params.employeeId, cid]);
+  if (!emp) return res.status(404).json({ error: 'Employee not found' });
+  const { rows } = await pool.query(
+    `SELECT month, year, period_label, gross, net_pay, total_deductions, lop_days, bonus, loan_deduction, advance_deduction, status, generated_at
+       FROM payroll_runs WHERE employee_id = $1 AND is_test = false ORDER BY year DESC, month DESC LIMIT 24`, [emp.id]);
+  const map = new Map(rows.map(r => [`${r.year}-${r.month}`, r]));
+  const now = new Date();
+  const data = Array.from({ length: 12 }, (_, i) => {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const month = d.getMonth() + 1, year = d.getFullYear();
+    const r = map.get(`${year}-${month}`);
+    if (!r) return { month, year, period_label: `${getMonthName(month)} ${year}`, status: 'not_generated', saved: false, gross: null, net_pay: null, total_deductions: null };
+    return { ...r, gross: Number(r.gross), net_pay: Number(r.net_pay), total_deductions: Number(r.total_deductions), saved: true };
+  });
+  res.json({ success: true, data });
+});
+
+// ── Statutory rules (effective-dated) ──────────────────────────────────────
+
+export const getStatutoryRules = wrap(async (req, res) => {
+  const cid = companyOf(req);
+  const { loadRules, BUILT_IN_RULES } = await import('./statutoryRules.js');
+  const onDate = req.query.date || new Date().toISOString().slice(0, 10);
+  const resolved = await loadRules(pool, cid, onDate);
+  const { rows } = await pool.query(
+    `SELECT id, company_id, rule_key, effective_from, value, source_reference, created_at
+       FROM payroll_statutory_rules WHERE company_id IS NULL OR company_id = $1 ORDER BY rule_key, effective_from`, [cid]).catch(() => ({ rows: [] }));
+  res.json({ success: true, data: { on_date: onDate, resolved: resolved.values, applied: resolved.applied, built_in: BUILT_IN_RULES, custom_versions: rows } });
+});
+
+export const addStatutoryRule = wrap(async (req, res) => {
+  const cid = companyOf(req);
+  const { rule_key, effective_from, value, source_reference, scope = 'company' } = req.body || {};
+  if (!RULE_KEYS.includes(rule_key) && rule_key !== POLICY_KEY) return res.status(400).json({ success: false, message: `rule_key must be one of: ${[...RULE_KEYS, POLICY_KEY].join(', ')}` });
+  if (rule_key === POLICY_KEY) {
+    const problems = ctcPolicyProblems(value);
+    if (problems.length) return res.status(400).json({ success: false, message: `Invalid CTC definition: ${problems.join('; ')}` });
   }
-};
-
-// POST /payroll/save-slip — persist a single computed payslip (with overrides) to payroll_runs
-export const saveSlip = async (req, res) => {
-  try {
-    const { employee_id, month, year, lop_days = 0, bonus = 0, loan_deduction = 0, advance_deduction = 0 } = req.body;
-    if (!employee_id) return res.status(400).json({ error: 'employee_id required' });
-    const cid = req.scope?.company_id ?? null;
-    const empCidFilter = cid != null ? `AND company_id = $2` : '';
-    const { rows } = await pool.query(
-      `SELECT * FROM employees WHERE id = $1 ${empCidFilter} AND LOWER(status) IN ('active','probation','notice')`,
-      cid != null ? [employee_id, cid] : [employee_id]
-    );
-    if (!rows.length) return res.status(404).json({ error: 'Employee not found or not active' });
-    const emp = rows[0];
-    const m = parseInt(month) || new Date().getMonth() + 1;
-    const y = parseInt(year)  || new Date().getFullYear();
-    const lopF  = parseFloat(lop_days) || 0;
-    const bonF  = parseFloat(bonus) || 0;
-    const loanF = parseFloat(loan_deduction) || 0;
-    const advF  = parseFloat(advance_deduction) || 0;
-
-    const slip = computePayroll(emp, { month: m, year: y, lop_days: lopF, bonus: bonF });
-    const periodLabel = `${getMonthName(m)} ${y}`;
-    const periodStart = new Date(y, m - 1, 1).toISOString().split('T')[0];
-    const periodEnd   = new Date(y, m, 0).toISOString().split('T')[0];
-    const netPay      = slip.net_pay - loanF - advF;
-    const totalDed    = slip.total_deductions + loanF + advF;
-
-    await pool.query(
-      `INSERT INTO payroll_runs
-         (period_label, period_start, period_end, status,
-          employee_id, month, year,
-          gross, net_pay, total_deductions,
-          employee_pf, employer_pf, employee_esi, employer_esi,
-          tds, professional_tax, ctc_monthly,
-          tax_regime, annual_taxable_income, annual_tax,
-          basic, hra, conveyance_allowance, medical_allowance, special_allowance,
-          lop_days, bonus, loan_deduction, advance_deduction,
-          generated_at)
-       VALUES ($1,$2,$3,'pending',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,NOW())
-       ON CONFLICT (employee_id, month, year)
-       WHERE employee_id IS NOT NULL AND month IS NOT NULL AND year IS NOT NULL
-       DO UPDATE SET
-         period_label=EXCLUDED.period_label, period_start=EXCLUDED.period_start, period_end=EXCLUDED.period_end,
-         gross=EXCLUDED.gross, net_pay=EXCLUDED.net_pay, total_deductions=EXCLUDED.total_deductions,
-         employee_pf=EXCLUDED.employee_pf, employer_pf=EXCLUDED.employer_pf,
-         employee_esi=EXCLUDED.employee_esi, employer_esi=EXCLUDED.employer_esi,
-         tds=EXCLUDED.tds, professional_tax=EXCLUDED.professional_tax, ctc_monthly=EXCLUDED.ctc_monthly,
-         tax_regime=EXCLUDED.tax_regime, annual_taxable_income=EXCLUDED.annual_taxable_income, annual_tax=EXCLUDED.annual_tax,
-         basic=EXCLUDED.basic, hra=EXCLUDED.hra,
-         conveyance_allowance=EXCLUDED.conveyance_allowance, medical_allowance=EXCLUDED.medical_allowance,
-         special_allowance=EXCLUDED.special_allowance,
-         lop_days=EXCLUDED.lop_days, bonus=EXCLUDED.bonus,
-         loan_deduction=EXCLUDED.loan_deduction, advance_deduction=EXCLUDED.advance_deduction,
-         generated_at=NOW()
-       WHERE payroll_runs.status != 'paid'`,
-      [
-        periodLabel, periodStart, periodEnd,
-        emp.id, m, y,
-        slip.gross, netPay, totalDed,
-        slip.employee_pf, slip.employer_pf, slip.employee_esi, slip.employer_esi,
-        slip.tds, slip.professional_tax, slip.ctc_monthly,
-        slip.tax_regime, slip.annual_taxable_income, slip.annual_tax,
-        slip.basic, slip.hra, slip.conveyance_allowance, slip.medical_allowance, slip.special_allowance,
-        lopF, bonF, loanF, advF,
-      ]
-    );
-
-    logAudit({
-      userId: req.user?.userId ?? req.user?.id,
-      module: 'payroll',
-      recordId: emp.id,
-      recordType: 'payslip',
-      action: 'create',
-      newData: { employee_id: emp.id, month: m, year: y, net_pay: netPay, period_label: periodLabel },
-      req,
-    });
-
-    res.json({ success: true, message: `Payslip for ${periodLabel} saved`, period_label: periodLabel, net_pay: netPay });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+  if (rule_key === 'pt.slabs') {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return res.status(400).json({ success: false, message: 'pt.slabs must be an object keyed by state code' });
+    const { halfYearPtProblems } = await import('./statutoryRules.js');
+    const bad = Object.entries(value).filter(([, e]) => e && !Array.isArray(e)).map(([k, e]) => [k, halfYearPtProblems(e)]).filter(([, p]) => p.length);
+    if (bad.length) return res.status(400).json({ success: false, message: `Invalid half-yearly PT table: ${bad.map(([k, p]) => `${k}: ${p.join('; ')}`).join(' | ')}` });
   }
-};
-
-// GET /payroll/history/:employeeId — last 12 months of payslips for an employee
-export const getPayrollHistory = async (req, res) => {
-  try {
-    const { employeeId } = req.params;
-    const cid = req.scope?.company_id ?? null;
-    const empCidFilter = cid != null ? `AND company_id = $2` : '';
-    const { rows: empRows } = await pool.query(
-      `SELECT * FROM employees WHERE id = $1 ${empCidFilter} LIMIT 1`,
-      cid != null ? [employeeId, cid] : [employeeId]
-    );
-    if (!empRows.length) return res.status(404).json({ error: 'Employee not found' });
-    const emp = empRows[0];
-
-    const now  = new Date();
-    const periods = Array.from({ length: 12 }, (_, i) => {
-      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-      return { month: d.getMonth() + 1, year: d.getFullYear() };
-    });
-    const years = [...new Set(periods.map(p => p.year))];
-
-    const { rows: runs } = await pool.query(
-      `SELECT month, year, gross, net_pay, total_deductions,
-              basic, hra, employee_pf, tds, professional_tax,
-              lop_days, bonus, loan_deduction, advance_deduction,
-              status, period_label, generated_at
-       FROM payroll_runs
-       WHERE employee_id = $1 AND year = ANY($2)
-       ORDER BY year DESC, month DESC`,
-      [emp.id, years]
-    ).catch(() => ({ rows: [] }));
-
-    const runMap = Object.fromEntries(runs.map(r => [`${r.year}-${r.month}`, r]));
-
-    const history = periods.map(({ month, year }) => {
-      const run = runMap[`${year}-${month}`];
-      const label = `${getMonthName(month)} ${year}`;
-      if (run) {
-        return {
-          month, year, period_label: run.period_label || label,
-          gross:            Math.round(parseFloat(run.gross    || 0)),
-          net_pay:          Math.round(parseFloat(run.net_pay  || 0)),
-          total_deductions: Math.round(parseFloat(run.total_deductions || 0)),
-          lop_days:         parseFloat(run.lop_days || 0),
-          bonus:            parseFloat(run.bonus || 0),
-          loan_deduction:   parseFloat(run.loan_deduction || 0),
-          advance_deduction: parseFloat(run.advance_deduction || 0),
-          status:           run.status || 'pending',
-          generated_at:     run.generated_at,
-          saved:            true,
-        };
-      }
-      try {
-        const slip = computePayroll(emp, { month, year });
-        return {
-          month, year, period_label: label,
-          gross:    Math.round(slip.gross),
-          net_pay:  Math.round(slip.net_pay),
-          total_deductions: Math.round(slip.total_deductions),
-          lop_days: 0, bonus: 0, loan_deduction: 0, advance_deduction: 0,
-          status: 'not_generated',
-          generated_at: null,
-          saved: false,
-        };
-      } catch {
-        return { month, year, period_label: label, gross: 0, net_pay: 0, total_deductions: 0, status: 'error', saved: false };
-      }
-    });
-
-    res.json({ success: true, data: history });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-};
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(effective_from || ''))) return res.status(400).json({ success: false, message: 'effective_from must be YYYY-MM-DD' });
+  if (value === undefined) return res.status(400).json({ success: false, message: 'value is required' });
+  const roles = (req.user?.roles || [req.user?.role]).map(r => String(r || '').toLowerCase());
+  if (scope === 'global' && !roles.includes('super_admin')) return res.status(403).json({ success: false, message: 'Only a super admin can add a rule version for all companies' });
+  if (!String(source_reference || '').trim()) return res.status(400).json({ success: false, message: 'source_reference (notification / circular) is required' });
+  // A version for a period that is already approved would rewrite history.
+  const { rows: [locked] } = await pool.query(
+    `SELECT 1 FROM payroll_runs pr JOIN employees e ON e.id = pr.employee_id
+      WHERE e.company_id = $1 AND pr.status = ANY($2::text[]) AND pr.period_end >= $3::date LIMIT 1`,
+    [cid, FINAL_STATUSES, effective_from]);
+  // Recording the value already in force on that date changes no figure — it
+  // is a confirmation, so it is allowed even when later payroll is approved.
+  const { resolveRule, loadRuleRows } = await import('./statutoryRules.js');
+  const ruleRows = await loadRuleRows(pool, cid);
+  const inForce = rule_key === POLICY_KEY ? resolvePolicy(effective_from, ruleRows).value : resolveRule(rule_key, effective_from, ruleRows);
+  const unchanged = JSON.stringify(inForce) === JSON.stringify(value);
+  if (locked && !unchanged) return res.status(409).json({ success: false, message: 'Payroll on or after this date is already approved — a new version cannot apply to it. Use arrears for the difference.' });
+  const { rows: [row] } = await pool.query(
+    `INSERT INTO payroll_statutory_rules (company_id, rule_key, effective_from, value, source_reference, created_by)
+     VALUES ($1,$2,$3,$4::jsonb,$5,$6) RETURNING *`,
+    [scope === 'global' ? null : cid, rule_key, effective_from, JSON.stringify(value), source_reference.trim(), uid(req)]);
+  logAudit({ userId: uid(req), module: 'payroll', recordId: row.id, recordType: 'payroll_statutory_rule', action: 'create', newData: row, req });
+  res.status(201).json({ success: true, data: row });
+});

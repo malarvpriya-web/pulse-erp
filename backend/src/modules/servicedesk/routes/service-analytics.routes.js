@@ -14,10 +14,15 @@ const cid = req => companyOf(req);
 // GET /service-analytics/engineers — engineer performance table
 router.get('/engineers', verifyToken, async (req, res) => {
   try {
+    // Dates are bound, never interpolated. They arrived here straight from the
+    // query string and went into the SQL text unquoted, which is an injection
+    // regardless of who is authenticated.
     const { from_date, to_date } = req.query;
-    const dateFilter = from_date && to_date
-      ? `AND t.created_at BETWEEN '${from_date}' AND '${to_date}'`
+    const bounded   = !!(from_date && to_date);
+    const dateFilter = bounded
+      ? `AND t.created_at BETWEEN $2::timestamptz AND $3::timestamptz`
       : `AND t.created_at >= NOW() - INTERVAL '90 days'`;
+    const params = bounded ? [cid(req), from_date, to_date] : [cid(req)];
 
     const { rows } = await pool.query(`
       SELECT
@@ -34,15 +39,19 @@ router.get('/engineers', verifyToken, async (req, res) => {
                THEN EXTRACT(EPOCH FROM (t.resolved_at - t.created_at)) / 3600.0
           END
         )::NUMERIC, 2)    AS avg_closure_hrs,
-        NULL::numeric AS avg_rating,
+        ROUND(AVG(t.csat_rating)::NUMERIC, 2) AS avg_rating,
         COUNT(DISTINCT fv.id) AS field_visits
       FROM service_engineers se
-      LEFT JOIN tickets t ON t.assigned_to = se.employee_id ${dateFilter}
+      LEFT JOIN support_tickets t
+             ON t.assigned_to = se.employee_id
+            AND t.company_id  = se.company_id
+            AND t.deleted_at IS NULL
+            ${dateFilter}
       LEFT JOIN field_visits fv ON fv.engineer_name = se.name AND fv.company_id = $1
       WHERE se.company_id = $1
       GROUP BY se.id, se.name, se.zone, se.email, se.phone
       ORDER BY total_tickets DESC
-    `, [cid(req)]);
+    `, params);
 
     // Enrich with commissioning data
     const commData = await pool.query(`
@@ -70,6 +79,14 @@ router.get('/engineers', verifyToken, async (req, res) => {
 router.get('/engineers/:name', verifyToken, async (req, res) => {
   try {
     const name = decodeURIComponent(req.params.name);
+    // support_tickets.assigned_to is an employee id, not a name. Passing the
+    // name straight in made every deep-dive 500 with "invalid input syntax for
+    // type integer" — resolve the engineer first and bind the id.
+    const eng = await pool.query(
+      `SELECT employee_id FROM service_engineers WHERE name = $1 AND company_id = $2 LIMIT 1`,
+      [name, cid(req)]);
+    const employeeId = eng.rows[0]?.employee_id ?? null;
+
     const [ticketStats, commStats, recentTickets, visitHistory] = await Promise.all([
       pool.query(`
         SELECT
@@ -80,8 +97,8 @@ router.get('/engineers/:name', verifyToken, async (req, res) => {
           ROUND(AVG(csat_rating)::NUMERIC,2) AS avg_rating,
           MIN(created_at) AS oldest_ticket,
           MAX(created_at) AS latest_ticket
-        FROM support_tickets WHERE assigned_to = $1 AND company_id = $2
-      `, [name, cid(req)]),
+        FROM support_tickets WHERE assigned_to = $1 AND company_id = $2 AND deleted_at IS NULL
+      `, [employeeId, cid(req)]),
       pool.query(`
         SELECT COUNT(*) AS total,
                SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS completed,
@@ -90,9 +107,9 @@ router.get('/engineers/:name', verifyToken, async (req, res) => {
       `, [name, cid(req)]),
       pool.query(`
         SELECT id, ticket_number, COALESCE(title, '') AS subject, status, priority, csat_rating, created_at, resolved_at
-          FROM support_tickets WHERE assigned_to = $1 AND company_id = $2
+          FROM support_tickets WHERE assigned_to = $1 AND company_id = $2 AND deleted_at IS NULL
          ORDER BY created_at DESC LIMIT 20
-      `, [name, cid(req)]),
+      `, [employeeId, cid(req)]),
       pool.query(`
         SELECT id, customer_name, visit_date, status, purpose
           FROM field_visits WHERE engineer_name = $1 AND company_id = $2

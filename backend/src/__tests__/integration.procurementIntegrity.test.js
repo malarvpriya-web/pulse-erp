@@ -81,7 +81,6 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await sweepDebris();
-  await pool.end();
 });
 
 describe('purchase requests', () => {

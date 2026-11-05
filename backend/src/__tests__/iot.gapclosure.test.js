@@ -33,6 +33,7 @@ if (!process.env.DATABASE_URL) {
 
 const { default: pool } = await import('../config/db.js');
 const { issuePart, reverseIssue, equipmentGenealogy, resolveCover } = await import('../modules/iot/serviceParts.js');
+const { demandQtySql } = await import('../modules/inventory/services/ledgerSemantics.js');
 const { notifyAlert, resolveRecipients, channelAvailability, eventKeyFor, IOT_EVENTS } = await import('../modules/iot/notify.js');
 
 const TAG = `IOTGAP_${Date.now()}`;
@@ -67,11 +68,31 @@ beforeAll(async () => {
      VALUES ($1,$2,'opening',100,0,100,'fixture',CURRENT_DATE,$3)`,
     [ctx.itemId, ctx.companyId, `${TAG} opening stock`]);
 
-  const { rows: sn } = await pool.query(
-    `INSERT INTO serial_numbers (serial_number, item_id, company_id, status)
-     VALUES ($1,$2,$3,'Delivered') RETURNING id`,
-    [`${TAG}-SN`, ctx.itemId, ctx.companyId]);
-  ctx.serialId = sn[0].id;
+  // A delivered unit is one a package accounts for — the rule
+  // trg_serial_shipped_requires_package enforces on status changes and the
+  // traceability worklist v_shipped_serials_unlinked reports across ALL
+  // companies. This fixture used to insert a bare 'Delivered' serial (an
+  // INSERT the trigger does not see), which sat in that worklist for this
+  // suite's lifetime: whenever the traceability suite asserted the worklist
+  // empty at that moment, it failed on this fixture, not on its own code (2 of
+  // 4 full runs on 2026-10-28). The serial and the package line that account
+  // for it are now written in one transaction, so it is never in that state.
+  const fx = await pool.connect();
+  try {
+    await fx.query('BEGIN');
+    const { rows: sn } = await fx.query(
+      `INSERT INTO serial_numbers (serial_number, item_id, company_id, status)
+       VALUES ($1,$2,$3,'Delivered') RETURNING id`,
+      [`${TAG}-SN`, ctx.itemId, ctx.companyId]);
+    ctx.serialId = sn[0].id;
+    const { rows: [pkg] } = await fx.query(
+      `INSERT INTO packages (company_id, package_no, status) VALUES ($1, $2, 'shipped') RETURNING id`,
+      [ctx.companyId, `${TAG}-PKG`]);
+    await fx.query(
+      `INSERT INTO package_lines (package_id, company_id, item_id, serial_id, quantity) VALUES ($1, $2, $3, $4, 1)`,
+      [pkg.id, ctx.companyId, ctx.itemId, ctx.serialId]);
+    await fx.query('COMMIT');
+  } catch (e) { await fx.query('ROLLBACK'); throw e; } finally { fx.release(); }
 
   const { rows: eq } = await pool.query(
     `INSERT INTO customer_equipment
@@ -90,9 +111,17 @@ beforeAll(async () => {
   ctx.part = part[0];
 
   const { rows: ticket } = await pool.query(
+    // Shaped like a real IoT alert ticket (modules/iot/alertActions.js): filed
+    // under 'Breakdown' AND linked to that ticket-category master row, so it
+    // does not read as an unlinked ticket to integration.ticketCategories
+    // when the two suites run in parallel.
     `INSERT INTO support_tickets
-       (ticket_number, title, description, category, priority, status, ticket_kind, company_id, parts_cost)
-     VALUES ($1,'IoT test ticket','x','Breakdown','High','Open','service',$2,0) RETURNING *`,
+       (ticket_number, title, description, category, priority, status, ticket_kind, company_id, parts_cost,
+        category_id)
+     VALUES ($1,'IoT test ticket','x','Breakdown','High','Open','service',$2,0,
+             (SELECT id FROM ticket_categories
+               WHERE LOWER(BTRIM(name)) = 'breakdown' AND is_active = true
+               ORDER BY id LIMIT 1)) RETURNING *`,
     // ticket_number is VARCHAR(20); TAG alone is longer than that.
     [`T${String(Date.now()).slice(-10)}`, ctx.companyId]);
   ctx.ticket = ticket[0];
@@ -106,7 +135,26 @@ beforeAll(async () => {
 
 afterAll(async () => {
   const cid = ctx.companyId;
+  // The login this run created (2026-10-20). It was never removed: the company
+  // DELETE below then SET NULL its company_id (users_company_id_fkey ON DELETE SET
+  // NULL), so every run left one unscoped `iotgap_<ts>@t.local` account behind,
+  // plus the in-app notifications delivered to it. Removed FIRST — by the id this
+  // run recorded, or by this run's own TAG (Date.now() of THIS run, so it can
+  // match nothing else) if the test failed before recording the id. Accounts
+  // left by earlier runs are deliberately not touched here.
+  const runUsers = `SELECT id FROM users WHERE id = $1::int OR email = $2`;
+  const runArgs = [ctx.userId ?? null, `${TAG}@t.local`];
+  await pool.query(`DELETE FROM notifications WHERE user_id IN (${runUsers})`, runArgs).catch(() => {});
+  await pool.query(`DELETE FROM user_roles WHERE user_id IN (${runUsers})`, runArgs);
+  await pool.query(`DELETE FROM user_scope WHERE user_id IN (${runUsers})`, runArgs);
+  await pool.query(`DELETE FROM users WHERE id IN (${runUsers})`, runArgs);
+  // The fixture unit is 'Delivered', so the package line that accounts for it
+  // cannot simply be deleted (trg_package_line_serial_accounted, 20261028000008).
+  // Unwind it first: back in stock, its package may go.
+  await pool.query(`UPDATE serial_numbers SET status = 'in_stock' WHERE id = $1`, [ctx.serialId]).catch(() => {});
   for (const sql of [
+    `DELETE FROM package_lines WHERE company_id = $1`,
+    `DELETE FROM packages WHERE company_id = $1`,
     `DELETE FROM journal_lines WHERE company_id = $1`,
     `DELETE FROM journal_entries WHERE company_id = $1`,
     `DELETE FROM iot_service_parts WHERE company_id = $1`,
@@ -126,6 +174,17 @@ afterAll(async () => {
   await pool.query(`DELETE FROM serial_events WHERE serial_id = $1`, [ctx.serialId]).catch(() => {});
   await pool.query(`DELETE FROM serial_numbers WHERE id = $1`, [ctx.serialId]).catch(() => {});
   await pool.query(`DELETE FROM inventory_items WHERE id = $1`, [ctx.itemId]).catch(() => {});
+  // The company DELETE above runs before inventory_items / serial_numbers are
+  // gone, so it can be refused by their FKs; retry it now that they are.
+  await pool.query(`DELETE FROM companies WHERE id = $1`, [cid]).catch(() => {});
+
+  // Repeat-run guard: nothing carrying THIS run's TAG may outlive the run.
+  const { rows: [left] } = await pool.query(
+    `SELECT (SELECT COUNT(*)::int FROM users WHERE email = $1) AS users,
+            (SELECT COUNT(*)::int FROM companies WHERE id = $2::int) AS companies,
+            (SELECT COUNT(*)::int FROM inventory_items WHERE item_code = $3) AS items`,
+    [`${TAG}@t.local`, cid ?? null, `${TAG}-ITEM`]);
+  expect(left, 'fixtures left behind by this run').toEqual({ users: 0, companies: 0, items: 0 });
 }, 60000);
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -161,17 +220,23 @@ describe('gap 8/9 — legacy rows archived, constraints validated', () => {
   });
 
   it('the archived rows are preserved, not destroyed', async () => {
-    const { rows } = await pool.query(
-      `SELECT source_table, COUNT(*)::int AS n FROM iot_legacy_quarantine
-        WHERE migration = '20260915000001_iot_gap_closure' GROUP BY 1`);
-    const by = Object.fromEntries(rows.map((r) => [r.source_table, r.n]));
-    expect(by.device_alerts).toBeGreaterThan(0);
-    expect(by.device_alert_rules).toBeGreaterThan(0);
-    // and the full row is recoverable, not just an id
-    const { rows: sample } = await pool.query(
-      `SELECT row_data FROM iot_legacy_quarantine WHERE source_table='device_alerts' LIMIT 1`);
-    expect(sample[0].row_data).toHaveProperty('state');
-    expect(sample[0].row_data).toHaveProperty('equipment_id');
+    // §226: this counted one database's quarantined history (a fresh database
+    // had nothing to quarantine). That 20260915000001 archives exactly the
+    // out-of-vocabulary and SEED rows, whole, with the right reason, keeps the
+    // valid ones, validates all seven constraints and skips no step is proven in
+    // migrationFixture.iotQuarantine. What holds everywhere: the archive keeps
+    // the whole row, and every archived row is whole and explained.
+    const { rows: [col] } = await pool.query(
+      `SELECT data_type, is_nullable FROM information_schema.columns
+        WHERE table_name = 'iot_legacy_quarantine' AND column_name = 'row_data'`);
+    expect(col).toEqual({ data_type: 'jsonb', is_nullable: 'NO' });
+    const { rows: incomplete } = await pool.query(
+      `SELECT id, source_table FROM iot_legacy_quarantine
+        WHERE migration = '20260915000001_iot_gap_closure'
+          AND (reason IS NULL OR NOT (row_data ? 'company_id')
+               OR (source_table IN ('device_alerts','device_alert_rules','device_telemetry') AND NOT (row_data ? 'id'))
+               OR (source_table = 'device_alerts' AND NOT (row_data ?& ARRAY['state','severity','equipment_id'])))`);
+    expect(incomplete).toEqual([]);
   });
 
   it('the default telemetry partition is empty', async () => {
@@ -331,12 +396,128 @@ describe('gap 7 — part replacement reaches inventory, genealogy, finance and h
     expect(orig.length).toBe(1);
     expect(orig[0].reversed_at).toBeTruthy();
     expect(r.row.reversal_of_id).toBe(ctx.servicePartId);
+
+    // Phase 3D: the item ledger is reversed too — against the recorded original
+    // line, under the same type with quantity_in, so ledger stock comes back and
+    // the issue stops counting as demand.
+    const { rows: [sl] } = await pool.query(
+      `SELECT * FROM stock_ledger WHERE reference_type = 'iot_service_reversal' AND reference_id = $1`, [ctx.servicePartId]);
+    expect(sl).toBeTruthy();
+    expect(r.stock_ledger_reversal_id).toBe(sl.id);
+    expect([Number(sl.quantity_in), Number(sl.quantity_out), sl.transaction_type, sl.item_id])
+      .toEqual([2, 0, 'issue', orig[0].stock_ledger_id ? (await pool.query(
+        `SELECT item_id FROM stock_ledger WHERE id = $1`, [orig[0].stock_ledger_id])).rows[0].item_id : null]);
+    const { rows: [net] } = await pool.query(
+      `SELECT SUM(${demandQtySql()})::float AS demand, SUM(quantity_out - quantity_in)::float AS out
+         FROM stock_ledger WHERE id IN ($1, $2)`, [orig[0].stock_ledger_id, sl.id]);
+    expect(net).toEqual({ demand: 0, out: 0 });
+
+    // Phase 3F: the issue's journal gets a mirror entry linked to it, each
+    // line's debit and credit swapped, balanced, a draft like the original.
+    // Phase 3G: a draft is not a completed reversal, and is not reported as one.
+    expect(r.journal_reversed).toBe(false);
+    expect(r.journal_reversal).toMatchObject({ id: r.journal_reversal_id, status: 'draft', posting_required: true });
+    const { rows: [rev] } = await pool.query(`SELECT * FROM journal_entries WHERE id = $1`, [r.journal_reversal_id]);
+    expect(rev).toMatchObject({ reversal_of_id: orig[0].journal_entry_id, status: 'draft',
+                                reference_type: 'iot_service_reversal', company_id: ctx.companyId });
+    const lines = async (id) => (await pool.query(
+      `SELECT account_code, debit::float d, credit::float c FROM journal_lines WHERE entry_id = $1 ORDER BY account_code`, [id])).rows;
+    const origLines = await lines(orig[0].journal_entry_id);
+    expect(origLines.length).toBeGreaterThan(0);
+    expect(await lines(rev.id)).toEqual(origLines.map(l => ({ account_code: l.account_code, d: l.c, c: l.d })));
+    expect(Number(rev.total_debit)).toBe(Number(rev.total_credit));
+    expect(r.row.journal_entry_id).toBe(rev.id);
   });
 
-  it('a second reversal of the same issue is refused', async () => {
+  it('a second reversal of the same issue is refused, and posts no second ledger line', async () => {
     const r = await reverseIssue({ servicePartId: ctx.servicePartId, companyId: ctx.companyId });
     expect(r.ok).toBe(false);
     expect(r.code).toBe('ALREADY_REVERSED');
+    const { rows: [n] } = await pool.query(
+      `SELECT COUNT(*)::int AS n FROM stock_ledger WHERE reference_type = 'iot_service_reversal' AND reference_id = $1`,
+      [ctx.servicePartId]);
+    expect(n.n).toBe(1);
+    // And the database itself refuses a second line for the same issue.
+    await expect(pool.query(
+      `INSERT INTO stock_ledger (item_id, transaction_type, quantity_in, quantity_out, reference_type, reference_id,
+                                 transaction_date, company_id)
+       SELECT item_id, transaction_type, 1, 0, 'iot_service_reversal', $1, CURRENT_DATE, company_id
+         FROM stock_ledger WHERE reference_type = 'iot_service_reversal' AND reference_id = $1`, [ctx.servicePartId]))
+      .rejects.toThrow(/ux_stock_ledger_iot_service_reversal/);
+  });
+
+  it('refuses to reverse when the recorded ledger line cannot be verified, and changes nothing', async () => {
+    const issued = await issuePart({
+      companyId: ctx.companyId, equipmentId: ctx.equipment.id, partId: ctx.part.id, quantity: 1,
+      ticketId: ctx.ticket.id, reason: 'verification fixture',
+    });
+    expect(issued.ok).toBe(true);
+    // Point the record at a ledger line that does not match it.
+    await pool.query(`UPDATE iot_service_parts SET stock_ledger_id = -1 WHERE id = $1`, [issued.row.id]);
+    const before = (await pool.query(`SELECT stock_qty::float AS q FROM spare_parts WHERE id = $1`, [ctx.part.id])).rows[0].q;
+    const r = await reverseIssue({ servicePartId: issued.row.id, companyId: ctx.companyId });
+    expect([r.ok, r.code]).toEqual([false, 'LEDGER_ORIGINAL_UNVERIFIED']);
+    expect((await pool.query(`SELECT stock_qty::float AS q FROM spare_parts WHERE id = $1`, [ctx.part.id])).rows[0].q).toBe(before);
+    expect((await pool.query(`SELECT reversed_at FROM iot_service_parts WHERE id = $1`, [issued.row.id])).rows[0].reversed_at).toBeNull();
+    expect((await pool.query(
+      `SELECT COUNT(*)::int n FROM stock_ledger WHERE reference_type = 'iot_service_reversal' AND reference_id = $1`,
+      [issued.row.id])).rows[0].n).toBe(0);
+  });
+
+  it('refuses to reverse when the recorded journal cannot be verified, and changes nothing', async () => {
+    const issued = await issuePart({
+      companyId: ctx.companyId, equipmentId: ctx.equipment.id, partId: ctx.part.id, quantity: 1,
+      ticketId: ctx.ticket.id, reason: 'journal verification fixture',
+    });
+    expect(issued.ok).toBe(true);
+    expect(issued.row.journal_entry_id).toBeTruthy();
+    // The journal no longer matches the issue's cost (edited after the fact).
+    await pool.query(`UPDATE journal_entries SET total_debit = total_debit + 1 WHERE id = $1`, [issued.row.journal_entry_id]);
+    const snap = async () => ({
+      stock: (await pool.query(`SELECT stock_qty::float AS q FROM spare_parts WHERE id = $1`, [ctx.part.id])).rows[0].q,
+      reversed: (await pool.query(`SELECT reversed_at FROM iot_service_parts WHERE id = $1`, [issued.row.id])).rows[0].reversed_at,
+      ledger: (await pool.query(`SELECT COUNT(*)::int n FROM stock_ledger WHERE reference_type = 'iot_service_reversal' AND reference_id = $1`, [issued.row.id])).rows[0].n,
+      journals: (await pool.query(`SELECT COUNT(*)::int n FROM journal_entries WHERE reversal_of_id = $1`, [issued.row.journal_entry_id])).rows[0].n,
+    });
+    const before = await snap();
+    const r = await reverseIssue({ servicePartId: issued.row.id, companyId: ctx.companyId });
+    expect([r.ok, r.code]).toEqual([false, 'JOURNAL_ORIGINAL_UNVERIFIED']);
+    expect(await snap()).toEqual(before);
+    expect(before).toMatchObject({ reversed: null, ledger: 0, journals: 0 });
+  });
+
+  it('refuses when the journal was already reversed elsewhere, and the database refuses a second reversing entry', async () => {
+    const issued = await issuePart({
+      companyId: ctx.companyId, equipmentId: ctx.equipment.id, partId: ctx.part.id, quantity: 1,
+      ticketId: ctx.ticket.id, reason: 'already reversed fixture',
+    });
+    const je = issued.row.journal_entry_id;
+    await pool.query(
+      `INSERT INTO journal_entries (entry_number, entry_date, entry_type, reference_type, status, reversal_of_id,
+                                    total_debit, total_credit, company_id)
+       SELECT entry_number || '-R', CURRENT_DATE, 'reversal', reference_type, 'draft', id, total_credit, total_debit, company_id
+         FROM journal_entries WHERE id = $1`, [je]);
+    const r = await reverseIssue({ servicePartId: issued.row.id, companyId: ctx.companyId });
+    expect([r.ok, r.code]).toEqual([false, 'JOURNAL_ALREADY_REVERSED']);
+    expect((await pool.query(`SELECT reversed_at FROM iot_service_parts WHERE id = $1`, [issued.row.id])).rows[0].reversed_at).toBeNull();
+    await expect(pool.query(
+      `INSERT INTO journal_entries (entry_number, entry_date, entry_type, status, reversal_of_id, total_debit, total_credit, company_id)
+       SELECT entry_number || '-R2', CURRENT_DATE, 'reversal', 'draft', id, 0, 0, company_id FROM journal_entries WHERE id = $1`, [je]))
+      .rejects.toThrow(/ux_journal_entries_single_reversal/);
+  });
+
+  it('two simultaneous reversals of one issue: one reversal, one ledger line, one journal', async () => {
+    const issued = await issuePart({
+      companyId: ctx.companyId, equipmentId: ctx.equipment.id, partId: ctx.part.id, quantity: 1,
+      ticketId: ctx.ticket.id, reason: 'concurrency fixture',
+    });
+    const stockBefore = (await pool.query(`SELECT stock_qty::float AS q FROM spare_parts WHERE id = $1`, [ctx.part.id])).rows[0].q;
+    const results = await Promise.all([1, 2, 3].map(() => reverseIssue({ servicePartId: issued.row.id, companyId: ctx.companyId })));
+    expect(results.filter(r => r.ok).length).toBe(1);
+    expect(results.filter(r => !r.ok).map(r => r.code)).toEqual(['ALREADY_REVERSED', 'ALREADY_REVERSED']);
+    expect((await pool.query(`SELECT stock_qty::float AS q FROM spare_parts WHERE id = $1`, [ctx.part.id])).rows[0].q).toBe(stockBefore + 1);
+    expect((await pool.query(`SELECT COUNT(*)::int n FROM stock_ledger WHERE reference_type = 'iot_service_reversal' AND reference_id = $1`, [issued.row.id])).rows[0].n).toBe(1);
+    expect((await pool.query(`SELECT COUNT(*)::int n FROM journal_entries WHERE reversal_of_id = $1`, [issued.row.journal_entry_id])).rows[0].n).toBe(1);
   });
 
   it('genealogy reports the whole picture, and says so when a link is absent', async () => {
@@ -347,8 +528,11 @@ describe('gap 7 — part replacement reaches inventory, genealogy, finance and h
     expect(g.production_events.length).toBeGreaterThan(0);
     expect(g.service_parts.length).toBeGreaterThan(0);
     expect(g.totals.lifetime_parts_cost).toBeGreaterThan(0);
-    // the reversal is excluded from lifetime spend
-    expect(g.totals.reversals).toBe(1);
+    // the reversals (one per reversed issue above) are excluded from lifetime spend
+    const { rows: [rv] } = await pool.query(
+      `SELECT COUNT(*)::int n FROM iot_service_parts WHERE equipment_id = $1 AND reversal_of_id IS NOT NULL`, [ctx.equipment.id]);
+    expect(rv.n).toBeGreaterThanOrEqual(1);
+    expect(g.totals.reversals).toBe(rv.n);
   });
 
   it('an unregistered serial yields a STATED gap, not a silent empty section', async () => {

@@ -87,4 +87,34 @@ pool.on("error", (err) => {
   console.error("Unexpected DB pool error:", err.message);
 });
 
+/**
+ * Under vitest, `pool.end()` is a no-op.
+ *
+ * THE FAULT
+ * ---------
+ * Nineteen suites call `pool.end()` in afterAll — reasonable-looking hygiene,
+ * and wrong here. Vitest runs several FILES per worker thread, and a thread has
+ * one module registry, so all of them share THIS pool object. The first suite
+ * to finish closes the pool that every later suite in the same worker is still
+ * using, and those suites fail with
+ *
+ *     Error: Connection terminated due to connection timeout
+ *
+ * naming a query in innocent code. Which suites are hit depends on scheduling
+ * order, so it moves around between runs and disappears when a file is run on
+ * its own — the signature of a shared-state defect, and the reason this was
+ * repeatedly written off as "the DB being slow".
+ *
+ * Ending the pool is not needed: vitest tears the worker down, and the process
+ * exits with it. Rather than edit nineteen afterAll hooks — and rely on the
+ * twentieth author knowing — the capability is removed where the pool is built.
+ * Outside tests `end()` behaves exactly as before, because the server's shutdown
+ * path genuinely needs it.
+ */
+if (isTest) {
+  const realEnd = pool.end.bind(pool);
+  pool.end = async () => { /* no-op: see the note above */ };
+  pool.endForReal = realEnd;
+}
+
 export default pool;

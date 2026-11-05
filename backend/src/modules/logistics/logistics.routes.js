@@ -139,6 +139,11 @@ router.post('/shipments/:id/pod', requirePermission('logistics', 'add'), async (
   try {
     const { pod_image_base64, delivery_date } = req.body;
     if (!pod_image_base64) return res.status(400).json({ error: 'pod_image_base64 is required' });
+    // The caller's own shipment — checked BEFORE the image is stored. This
+    // marked any company's shipment delivered by id.
+    const own = await pool.query(
+      `SELECT 1 FROM shipments WHERE id = $1 AND ($2::int IS NULL OR company_id = $2)`, [req.params.id, cid(req)]);
+    if (!own.rows.length) return res.status(404).json({ error: 'Shipment not found' });
 
     const base64Data = pod_image_base64.replace(/^data:image\/\w+;base64,/, '');
     const buffer = Buffer.from(base64Data, 'base64');
@@ -147,8 +152,8 @@ router.post('/shipments/:id/pod', requirePermission('logistics', 'add'), async (
 
     const { rows } = await pool.query(
       `UPDATE shipments SET pod_image_url=$1, actual_delivery=$2, status='delivered', updated_at=NOW()
-       WHERE id=$3 RETURNING *`,
-      [podUrl, delivery_date || new Date().toISOString().split('T')[0], req.params.id]
+       WHERE id=$3 AND ($4::int IS NULL OR company_id = $4) RETURNING *`,
+      [podUrl, delivery_date || new Date().toISOString().split('T')[0], req.params.id, cid(req)]
     );
     res.json({ success: true, data: { ...rows[0], message: 'POD recorded' } });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -303,6 +308,87 @@ router.get('/dashboard', requirePermission('logistics', 'view'), async (req, res
       on_time_pct: ot.total > 0 ? Math.round((ot.on_time / ot.total) * 100) : 0,
       freight_cost_mtd: parseFloat(freightCost.status === 'fulfilled' ? freightCost.value.rows[0].total : 0),
     });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CARRIERS
+// ─────────────────────────────────────────────────────────────────────────────
+/*
+ * `shipments.carrier_id` and `delivery_routes.carrier_id` both existed, and the
+ * `carriers` table they point at had no CRUD and no rows. Every shipment
+ * therefore carried a free-text courier name instead, which is why the same
+ * carrier appears under three spellings and no on-time figure can be computed
+ * per carrier. Managing them is the missing half of a foreign key that was
+ * already there.
+ */
+
+/* GET /logistics/carriers */
+router.get('/carriers', requirePermission('logistics', 'view'), async (req, res) => {
+  try {
+    const { rows } = await pool.query(`
+      SELECT c.*,
+             (SELECT COUNT(*)::int FROM shipments s
+               WHERE s.carrier_id = c.id AND ($1::int IS NULL OR s.company_id = $1)) AS shipment_count,
+             (SELECT COUNT(*)::int FROM shipments s
+               WHERE s.carrier_id = c.id AND s.actual_delivery IS NOT NULL
+                 AND s.promised_date IS NOT NULL
+                 AND s.actual_delivery::date <= s.promised_date::date
+                 AND ($1::int IS NULL OR s.company_id = $1)) AS on_time_count,
+             (SELECT COUNT(*)::int FROM shipments s
+               WHERE s.carrier_id = c.id AND s.actual_delivery IS NOT NULL
+                 AND s.promised_date IS NOT NULL
+                 AND ($1::int IS NULL OR s.company_id = $1)) AS measurable_count
+        FROM carriers c
+       WHERE ($1::int IS NULL OR c.company_id = $1)
+       ORDER BY c.carrier_name`, [cid(req)]);
+    res.json(rows.map(r => ({
+      ...r,
+      // Never a percentage computed from nothing: a carrier with no delivered,
+      // promised shipment has no on-time rate, and saying 0% or 100% would both
+      // be inventions.
+      on_time_pct: r.measurable_count > 0
+        ? Math.round((r.on_time_count / r.measurable_count) * 1000) / 10 : null,
+    })));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+/* POST /logistics/carriers */
+router.post('/carriers', requirePermission('logistics', 'edit'), async (req, res) => {
+  try {
+    const { carrier_code, carrier_name, mode, contact_person, phone, email,
+            tracking_url_template, standard_lead_days, status = 'active' } = req.body || {};
+    if (!carrier_name) return res.status(400).json({ error: 'carrier_name required' });
+    const { rows: [row] } = await pool.query(`
+      INSERT INTO carriers
+        (company_id, carrier_code, carrier_name, mode, contact_person, phone, email,
+         tracking_url_template, standard_lead_days, status)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+      [cid(req), carrier_code || null, carrier_name, mode || 'road', contact_person || null,
+       phone || null, email || null, tracking_url_template || null,
+       standard_lead_days ?? null, status]);
+    res.status(201).json(row);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+/* PUT /logistics/carriers/:id */
+router.put('/carriers/:id', requirePermission('logistics', 'edit'), captureBefore('carriers'), async (req, res) => {
+  try {
+    const { carrier_code, carrier_name, mode, contact_person, phone, email,
+            tracking_url_template, standard_lead_days, status } = req.body || {};
+    const { rows: [row] } = await pool.query(`
+      UPDATE carriers SET
+        carrier_code = COALESCE($2, carrier_code), carrier_name = COALESCE($3, carrier_name),
+        mode = COALESCE($4, mode), contact_person = COALESCE($5, contact_person),
+        phone = COALESCE($6, phone), email = COALESCE($7, email),
+        tracking_url_template = COALESCE($8, tracking_url_template),
+        standard_lead_days = COALESCE($9, standard_lead_days),
+        status = COALESCE($10, status), updated_at = NOW()
+      WHERE id = $1 AND ($11::int IS NULL OR company_id = $11) RETURNING *`,
+      [req.params.id, carrier_code, carrier_name, mode, contact_person, phone, email,
+       tracking_url_template, standard_lead_days, status, cid(req)]);
+    if (!row) return res.status(404).json({ error: 'Carrier not found' });
+    res.json(row);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

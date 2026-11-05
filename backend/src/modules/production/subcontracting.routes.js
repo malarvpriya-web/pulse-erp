@@ -40,8 +40,30 @@ async function resolveDefaultWarehouseId(companyId) {
   return rows[0]?.id ?? null;
 }
 
-/** Post a stock movement to the ledger and keep inventory_items.current_stock in sync. */
-export async function postStock(client, { itemId, warehouseId = null, inQty = 0, outQty = 0, txnType, refType, refId, remarks, rate = 0, createdBy, companyId, transactionDate = null, batchId = null }) {
+/**
+ * Post a stock movement to the ledger and keep inventory_items.current_stock in sync.
+ *
+ * ── Traceability fields (audit findings 6 and 19) ─────────────────────────────
+ * The ledger used to record only "item X, warehouse W, +/- qty". Eight of the
+ * fifteen fields a traceable movement needs were absent, so no query could
+ * recover the lot, the unit, the route or the demand a movement belonged to —
+ * which is why location history had to be reconstructed from four other tables.
+ *
+ * `batchId` was already a parameter, but only ever reached inventory_fifo_layers;
+ * the ledger row itself did not carry it, which is why both stock_ledger.batch_id
+ * and inventory_fifo_layers.batch_id read 100% NULL live. It is now written to
+ * both, from the same argument, so costing and material meet.
+ *
+ * Every one of these is optional and defaults to null. A caller that does not
+ * know the lot writes NULL, which honestly reads as "not recorded" — it must
+ * never be inferred, because an inferred lot is indistinguishable from an
+ * observed one afterwards.
+ *
+ * `fromWarehouseId` / `toWarehouseId` exist because a transfer was previously two
+ * single-warehouse rows with nothing joining them: the ledger could say stock
+ * left and stock arrived but not that it was the same movement.
+ */
+export async function postStock(client, { itemId, warehouseId = null, inQty = 0, outQty = 0, txnType, refType, refId, remarks, rate = 0, createdBy, companyId, transactionDate = null, batchId = null, serialId = null, fromWarehouseId = null, toWarehouseId = null, fromBinId = null, toBinId = null, projectId = null, productionOrderId = null, reasonCode = null }) {
   if (!itemId) return;
   const resolvedWarehouseId = warehouseId ?? await resolveDefaultWarehouseId(companyId).catch(() => null);
   let layerId = null, ledgerId = null;
@@ -50,13 +72,22 @@ export async function postStock(client, { itemId, warehouseId = null, inQty = 0,
        FROM stock_ledger WHERE item_id = $1 AND ($2::int IS NULL OR warehouse_id = $2)`,
     [itemId, resolvedWarehouseId]);
   const newBalance = num(bal.balance) + inQty - outQty;
+  // An issue leaves the resolved warehouse; a receipt arrives at it. Where the
+  // caller names both ends explicitly (a transfer) its values win.
+  const fromWh = fromWarehouseId ?? (outQty > 0 ? resolvedWarehouseId : null);
+  const toWh   = toWarehouseId   ?? (inQty  > 0 ? resolvedWarehouseId : null);
   const { rows: [ledgerRow] } = await client.query(
     `INSERT INTO stock_ledger
        (item_id, warehouse_id, transaction_type, quantity_in, quantity_out, balance_qty,
-        rate, value, reference_type, reference_id, transaction_date, remarks, created_by, company_id)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,COALESCE($14::date, CURRENT_DATE),$11,$12,$13) RETURNING id`,
+        rate, value, reference_type, reference_id, transaction_date, remarks, created_by, company_id,
+        batch_id, serial_id, from_warehouse_id, to_warehouse_id, from_bin_id, to_bin_id,
+        project_id, production_order_id, reason_code)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,COALESCE($14::date, CURRENT_DATE),$11,$12,$13,
+             $15,$16,$17,$18,$19,$20,$21,$22,$23) RETURNING id`,
     [itemId, resolvedWarehouseId, txnType, inQty, outQty, newBalance, rate,
-     Math.round((inQty + outQty) * rate * 100) / 100, refType, refId, remarks, createdBy, companyId, transactionDate]);
+     Math.round((inQty + outQty) * rate * 100) / 100, refType, refId, remarks, createdBy, companyId, transactionDate,
+     batchId ?? null, serialId ?? null, fromWh, toWh, fromBinId ?? null, toBinId ?? null,
+     projectId ?? null, productionOrderId ?? null, reasonCode ?? null]);
   ledgerId = ledgerRow?.id ?? null;
   // ── FIFO / FEFO layers ────────────────────────────────────────────────────
   // A receipt opens a cost layer; an issue depletes layers in order. Without
@@ -80,12 +111,20 @@ export async function postStock(client, { itemId, warehouseId = null, inQty = 0,
          inQty, rate || 0, refType, refId]);
       layerId = layer.id;
     } else if (outQty > 0) {
+      // When the caller names the lot it physically issued, that lot's layers are
+      // depleted FIRST. Without this, an issue explicitly drawn from batch B
+      // depleted whichever layer happened to sort first under FEFO/FIFO — so the
+      // cost booked against the work order came from a lot that never left the
+      // shelf, and inventory_fifo_consumption recorded a consumption that did not
+      // happen. The FEFO/FIFO ordering still governs everything else, and still
+      // governs the remainder if the named lot cannot cover the quantity.
       const { rows: layers } = await client.query(`
         SELECT id, qty_remaining, unit_cost FROM inventory_fifo_layers
          WHERE item_id = $1 AND qty_remaining > 0
            AND ($2::int IS NULL OR warehouse_id = $2 OR warehouse_id IS NULL)
-         ORDER BY (expiry_date IS NULL), expiry_date ASC, received_date ASC, id ASC
-         FOR UPDATE`, [itemId, resolvedWarehouseId]);
+         ORDER BY ($3::int IS NOT NULL AND batch_id = $3) DESC,
+                  (expiry_date IS NULL), expiry_date ASC, received_date ASC, id ASC
+         FOR UPDATE`, [itemId, resolvedWarehouseId, batchId ?? null]);
       let left = outQty;
       for (const l of layers) {
         if (left <= 0.000001) break;

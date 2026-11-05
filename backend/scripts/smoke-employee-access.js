@@ -25,7 +25,8 @@
  * Requires Node 18+ (global fetch). Exit code is non-zero if any check fails.
  */
 
-const BASE = process.env.BASE_URL || 'http://localhost:5000/api/v1';
+// No default: it used to be http://localhost:5000/api/v1 (the developer server).
+const BASE = process.env.BASE_URL || '';
 
 const EMP = { email: process.env.EMP_EMAIL, password: process.env.EMP_PASSWORD, token: process.env.EMP_TOKEN };
 const ADMIN = { email: process.env.ADMIN_EMAIL, password: process.env.ADMIN_PASSWORD, token: process.env.ADMIN_TOKEN };
@@ -84,6 +85,13 @@ async function expectStatus(name, expected, method, path, token, body) {
 }
 
 (async () => {
+  // §220 — this creates service-desk tickets (seq_tkt) over HTTP. It runs ONLY against an isolated test database (scripts/test-db/README.md);
+  // against anything else it exits before its first write.
+  const { default: pool } = await import('../src/config/db.js');
+  const { guardOrExit, assertTestServer, mintTestToken } = await import('./test-db/guard.mjs');
+  await guardOrExit(pool, 'smoke-employee-access');
+  if (!BASE) { console.error('\n❌ [smoke-employee-access] BASE_URL (the TEST backend, e.g. http://localhost:5100/api/v1) is required.\n'); process.exit(1); }
+  await assertTestServer(pool, new URL(BASE).origin, await mintTestToken(pool), 'smoke-employee-access');
   console.log(`\nSmoke test against ${BASE}\n`);
 
   // ── Employee ───────────────────────────────────────────────────────────────

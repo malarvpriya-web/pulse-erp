@@ -36,6 +36,29 @@ const api = axios.create({
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem('token');
   if (token) config.headers.Authorization = `Bearer ${token}`;
+
+  // A FormData body must NOT be sent as application/json.
+  //
+  // The instance default above applies to every request, and axios honours it:
+  // handed FormData with an explicit JSON content type it runs formDataToJSON
+  // and posts an object instead of a multipart body. The fields survive that
+  // conversion — a File does not. It serialises to `{}`.
+  //
+  // So `api.post('/employees', formData)` reached the server with every text
+  // field intact and NO req.files at all: the photo, PAN, Aadhaar, cancelled
+  // cheque, bank statement, résumé and offer letter chosen on Add Employee were
+  // dropped in the browser, silently, and the save still returned 200. The
+  // call sites that DID work are the ones that pass
+  // `{ headers: { 'Content-Type': 'multipart/form-data' } }` by hand — which is
+  // a workaround for this line, repeated fourteen times across the app.
+  //
+  // Clearing the header lets the browser set `multipart/form-data` with the
+  // boundary multer needs. Callers that still pass the header explicitly are
+  // unaffected: axios treats that value as "let the browser decide" too.
+  if (typeof FormData !== 'undefined' && config.data instanceof FormData) {
+    delete config.headers['Content-Type'];
+    delete config.headers['content-type'];
+  }
   return config;
 });
 

@@ -5,8 +5,9 @@ import { useAuth } from '@/context/AuthContext';
 import { Users, CheckCircle, Clock, XCircle, Search, Download, X, Calendar, FileEdit } from 'lucide-react';
 import { useToast } from '@/context/ToastContext';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import { localDay, localDayOf } from '@/utils/dateFormatter';
 
-function getToday() { return new Date().toISOString().split('T')[0]; }
+function getToday() { return localDay(); }
 const TODAY = getToday();
 
 const STATUS_CONFIG = {
@@ -34,7 +35,7 @@ function getWeekDates(dateStr) {
   return Array.from({ length: 5 }, (_, i) => {
     const dt = new Date(mon);
     dt.setDate(mon.getDate() + i);
-    return dt.toISOString().split('T')[0];
+    return localDayOf(dt);
   });
 }
 

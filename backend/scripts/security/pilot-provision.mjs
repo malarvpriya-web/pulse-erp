@@ -16,9 +16,22 @@
  * Edit ROSTER below with the real people before running with --apply. The
  * placeholder addresses exist so a dry run is meaningful, not so they can be
  * created as-is.
+ *
+ * ⚠ THIS HAS ALREADY HAPPENED ONCE. 24 `Pilot *` employees with
+ * `pilot.*@manifest.in` addresses are live in company 1 because someone ran
+ * `--apply` against the unedited roster. They are placeholders, not people, but
+ * they are now real login accounts that RBAC verification depends on (see
+ * procurement.authz.js, which cites `pilot.hr@manifest.in`), so they cannot
+ * simply be deleted. Decide per row: complete it into a real employee, or retire
+ * it through the normal offboarding flow.
+ *
+ * `designation` is part of each roster entry because it is mandatory on an
+ * employee record. Falling back to the role code keeps a re-run complete rather
+ * than reintroducing the blank-Role rows this script originally produced.
  */
 import bcrypt from 'bcryptjs';
 import pool from '../../src/config/db.js';
+import { nextEmployeeCode } from '../../src/shared/employeeCode.js';
 
 const APPLY = process.argv.includes('--apply');
 
@@ -83,10 +96,25 @@ async function main() {
       await client.query('BEGIN');
       // Employee first — the user row links to it, and half the app keys off
       // employee_id rather than user id.
+      // office_id and designation are MANDATORY on an employee master record.
+      //
+      // This INSERT supplied neither, and it is the origin of the whole Employee
+      // ID defect: every row it created reached the All Employees register with
+      // Employee ID and Role rendering as em-dashes — 24 of company 1's 34 rows.
+      // `employees.office_id` is now NOT NULL, so an unpatched version of this
+      // script would simply fail at the INSERT; minting the code properly is the
+      // fix, not catching that error.
+      //
+      // The code comes from the same shared generator the API uses, under the
+      // same company-scoped advisory lock, so a provisioning run continues the
+      // company's numbering instead of opening a third scheme.
+      const office_id = await nextEmployeeCode(client, COMPANY_ID);
       const { rows: [emp] } = await client.query(
-        `INSERT INTO employees (first_name, last_name, company_email, department, status, company_id, joining_date)
-         VALUES ($1, $2, $3, $4, 'Active', $5, CURRENT_DATE) RETURNING id`,
-        [p.first, p.last, p.email, p.dept, COMPANY_ID]
+        `INSERT INTO employees
+           (office_id, first_name, last_name, company_email, department, designation,
+            status, company_id, joining_date)
+         VALUES ($1, $2, $3, $4, $5, $6, 'Active', $7, CURRENT_DATE) RETURNING id, office_id`,
+        [office_id, p.first, p.last, p.email, p.dept, p.designation ?? p.role, COMPANY_ID]
       );
       // users.role is a legacy mirror of the user_roles primary row (see
       // userRoles.js's syncPrimaryRole doc comment: "users.role == the code of

@@ -11,6 +11,7 @@ import api from '@/services/api/client';
 import { ChartExpandButton } from '@/components/dashboard/DashCard';
 import useDashboardFilters from '@/hooks/useDashboardFilters';
 import { DashboardFilterBar, PageHero, PageShell } from '@/components/pulse-ui';
+import MasterSelect from '@/components/core/MasterSelect';
 import './SupportDashboard.css';
 
 const COLORS = ['#6366f1','#10b981','#7c5cf0','#ef4444','#3b82f6','#8b5cf6','#ec4899'];
@@ -351,11 +352,25 @@ export default function SupportDashboard({ setPage }) {
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
                 <div>
                   <label style={{ fontSize: 13, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 4 }}>Category</label>
-                  <select value={ticketForm.category} onChange={e => setTicketForm(f => ({ ...f, category: e.target.value }))}
-                    style={{ width: '100%', padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: 7, fontSize: 13, boxSizing: 'border-box' }}>
-                    <option value="">-- Select Category --</option>
-                    {['Hardware','Software','Network','IT Support','HR','Finance','Facilities','Security','Other'].map(c => <option key={c} value={c}>{c}</option>)}
-                  </select>
+                  {/* Was a nine-item array inline in this JSX — the FOURTH
+                      ticket-category vocabulary in the codebase, and the only
+                      one users could actually reach. Three of its nine
+                      (IT Support, Facilities, Security) appeared in no other
+                      list, and none of the eleven values live tickets already
+                      carried appeared in it. All four are now ticket_categories.
+
+                      optionValue="name": support_tickets.category is TEXT and is
+                      what this module groups, filters and reports by. The
+                      finance ticket path additionally sets category_id. */}
+                  <MasterSelect
+                    endpoint="/finance/ticket-categories"
+                    label="Ticket Category"
+                    value={ticketForm.category}
+                    placeholder="-- Select Category --"
+                    onChange={v => setTicketForm(f => ({ ...f, category: v }))}
+                    addRoles={['super_admin', 'admin', 'service_manager', 'manager', 'finance_manager']}
+                    selectStyle={{ width: '100%', padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: 7, fontSize: 13, boxSizing: 'border-box' }}
+                  />
                 </div>
                 <div>
                   <label style={{ fontSize: 13, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 4 }}>Priority</label>

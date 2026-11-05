@@ -8,6 +8,7 @@ import ErrorBoundary from "./components/ErrorBoundary";
 
 const SetupWizardPage        = lazy(() => import('@/features/settings/pages/SetupWizard'));
 const PublicSigning          = lazy(() => import('@/features/documents/pages/PublicSigning'));
+const CareersPortal          = lazy(() => import('@/features/recruitment/pages/CareersPortal'));
 const VendorRegistration     = lazy(() => import('@/features/procurement/pages/VendorRegistration'));
 const CustomerPortalDashboard = lazy(() => import('@/features/servicedesk/pages/CustomerPortalDashboard'));
 
@@ -46,6 +47,19 @@ function App() {
               : mustChangePassword
                 ? <ForcePasswordChange />
                 : <Navigate to="/" replace />
+          }
+        />
+        {/* Public careers page — an applicant is not a user of this system, so this
+            renders fullscreen with no sidebar, no topbar and no auth context. The
+            portal key in the path is the revocable credential; everything it can
+            reach is the anonymous /public/careers API. Without a route here the
+            catch-all below would bounce every visitor to /login. */}
+        <Route
+          path="/careers/:portalKey"
+          element={
+            <Suspense fallback={<div style={{ padding: '50px', textAlign: 'center' }}>Loading…</div>}>
+              <CareersPortal />
+            </Suspense>
           }
         />
         {/* Public no-login signing surface — token-gated, renders fullscreen */}
@@ -124,8 +138,15 @@ function App() {
         <Route path="/GeoFencing"         element={<Navigate to="/AttendanceSettings?tab=geo-fencing" replace />} />
         <Route path="/DeviceManagement"   element={<Navigate to="/AttendanceSettings?tab=devices"     replace />} />
         <Route path="/FaceAttendance"     element={<Navigate to="/AttendanceSettings?tab=face"        replace />} />
-        {/* HR module duplicates redirect to Attendance Settings */}
-        <Route path="/BiometricAccess"    element={<Navigate to="/AttendanceSettings?tab=devices"     replace />} />
+        {/* BiometricAccess is NOT a duplicate of the devices tab, and this
+            redirect used to be one — same mistake as the ChartOfAccounts /
+            PeriodClosing / CostCenters redirects removed above (§24). Its three
+            tabs are Attendance Import, Gate Passes and Visitor Management;
+            AttendanceSettings?tab=devices renders DeviceManagement, which covers
+            /biometric/devices* only. So /gate-passes and /visitors — both with
+            live tables and routes (hr/biometric.routes.js) — had no reachable
+            screen anywhere in the app. The page is now routed normally and
+            carries an HR menu row. */}
 
         <Route
           path="/:page?"

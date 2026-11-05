@@ -1,5 +1,11 @@
 import pool from '../db.js';
 import { nextJournalEntryNumber } from '../../../shared/docNumber.js';
+import {
+  assertBalanced,
+  assertAccountsUsable,
+  assertNotLocked,
+  assertPeriodOpen,
+} from '../services/postingGuards.js';
 
 // NOTE: There were historically two child ledger tables under journal_entries —
 // `journal_entry_lines` (minimal columns, written by the auto-posting services)
@@ -82,28 +88,66 @@ class JournalRepository {
     }
   }
 
+  /**
+   * Create a journal line.
+   *
+   * COMPANY ATTRIBUTION
+   * -------------------
+   * A line used to store whatever `company_id` the caller happened to pass, and
+   * invoice/COGS services set it on the header but not the line — so the line
+   * landed NULL under a correctly attributed entry. That split matters because
+   * the reports disagree about which column to filter: statements.routes.js and
+   * funds-flow filter `jl.company_id`, while accounting.routes.js filters
+   * `je.company_id`. The same valid posting therefore appeared in one report and
+   * vanished from the other.
+   *
+   * A line belongs to whatever company its entry belongs to — there is no case
+   * where they legitimately differ — so an unsupplied company is inherited from
+   * the header rather than stored as NULL.
+   */
   async createLine(client, data) {
     const {
       journal_entry_id, account_id, account_code, description,
-      debit, credit, cost_centre, project_id, company_id,
+      debit, credit, cost_centre, project_id,
     } = data;
+
+    let companyId = data.company_id ?? null;
+    if (companyId == null && journal_entry_id != null) {
+      const { rows } = await client.query(
+        'SELECT company_id FROM journal_entries WHERE id = $1',
+        [journal_entry_id]
+      );
+      companyId = rows[0]?.company_id ?? null;
+    }
 
     // Resolve account_id (and the canonical code/name) from the chart-of-accounts
     // code when only the code is provided. chart_of_accounts stores the code in
     // `code`, not `account_code` — resolve both here so callers never need to know.
+    //
+    // Both lookups are company-qualified. Account codes are not globally unique:
+    // an unqualified `WHERE code = $1 LIMIT 1` could resolve to another tenant's
+    // account of the same code and post this line against it. NULL-company rows
+    // are the shared chart and stay eligible; a company's own row wins ordering.
     let resolvedAccountId = account_id || null;
     let resolvedCode = account_code || null;
     let resolvedName = null;
     if (resolvedAccountId) {
       const { rows } = await client.query(
-        'SELECT code, name FROM chart_of_accounts WHERE id = $1 LIMIT 1',
-        [resolvedAccountId]
+        `SELECT code, name FROM chart_of_accounts
+          WHERE id = $1
+            AND ($2::int IS NULL OR company_id = $2::int OR company_id IS NULL)
+          LIMIT 1`,
+        [resolvedAccountId, companyId]
       );
       if (rows[0]) { resolvedCode = rows[0].code; resolvedName = rows[0].name; }
     } else if (account_code) {
       const { rows } = await client.query(
-        'SELECT id, code, name FROM chart_of_accounts WHERE code = $1 LIMIT 1',
-        [account_code]
+        `SELECT id, code, name FROM chart_of_accounts
+          WHERE code = $1
+            AND ($2::int IS NULL OR company_id = $2::int OR company_id IS NULL)
+          ORDER BY company_id NULLS LAST
+          LIMIT 1`,
+        [account_code, companyId]
       );
       if (rows[0]) { resolvedAccountId = rows[0].id; resolvedCode = rows[0].code; resolvedName = rows[0].name; }
     }
@@ -113,24 +157,75 @@ class JournalRepository {
          (entry_id, account_id, account_code, account_name, narration, debit, credit, cost_centre, project_id, company_id)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
       [journal_entry_id, resolvedAccountId, resolvedCode, resolvedName, description || null,
-       debit || 0, credit || 0, cost_centre || null, project_id || null, company_id || null]
+       debit || 0, credit || 0, cost_centre || null, project_id || null, companyId]
     );
     return result.rows[0];
   }
 
+  /**
+   * Post an entry to the general ledger.
+   *
+   * This is the chokepoint: the invoice, bill, receipt, payment-batch, COGS,
+   * depreciation, invoice-payment and payroll services all post through here,
+   * and it used to set status='posted' and sum the totals without validating
+   * anything. Every control the manual route advertised — balanced lines, a
+   * resolvable active account, an unlocked period, an open period — was
+   * therefore bypassed by every automatic posting in the system.
+   *
+   * The guards live in postingGuards.js so the manual route and this path
+   * enforce one definition rather than two that drift. They run on the caller's
+   * transaction client, so a rejected posting rolls back with the rest of the
+   * work rather than leaving a half-written document behind.
+   */
   async postEntry(client, entryId) {
+    const { rows: entries } = await client.query(
+      'SELECT id, company_id, entry_date, status FROM journal_entries WHERE id = $1',
+      [entryId]
+    );
+    const entry = entries[0];
+    if (!entry) {
+      const e = new Error(`Journal entry ${entryId} not found.`);
+      e.status = 404;
+      throw e;
+    }
+    // Idempotency: posting is not repeatable. Without this a retried caller
+    // re-stamped posted_at and re-summed totals on a live ledger entry.
+    if (entry.status !== 'draft') {
+      const e = new Error(`Cannot post entry with status '${entry.status}'.`);
+      e.status = 400;
+      e.code = 'NOT_DRAFT';
+      throw e;
+    }
+
+    const { rows: lines } = await client.query(
+      'SELECT account_id, debit, credit FROM journal_lines WHERE entry_id = $1',
+      [entryId]
+    );
+
+    assertBalanced(lines);
+    await assertAccountsUsable(client, lines, entry.company_id);
+    await assertNotLocked(client, entry.company_id, entry.entry_date);
+    await assertPeriodOpen(client, entry.company_id, entry.entry_date);
+
     const result = await client.query(
       `UPDATE journal_entries
        SET is_posted = true, status = 'posted', posted_at = CURRENT_TIMESTAMP,
            total_debit  = (SELECT COALESCE(SUM(debit),  0) FROM journal_lines WHERE entry_id = $1),
            total_credit = (SELECT COALESCE(SUM(credit), 0) FROM journal_lines WHERE entry_id = $1)
-       WHERE id = $1 RETURNING *`,
+       WHERE id = $1 AND status = 'draft' RETURNING *`,
       [entryId]
     );
     return result.rows[0];
   }
 
-  async getGeneralLedger(accountId, startDate, endDate) {
+  /**
+   * General ledger for one account.
+   *
+   * `companyId` is required for tenant safety and optional only in the sense
+   * that null means a genuine global scope (a super admin with no company).
+   * Callers must pass companyOf(req); omitting it reads every tenant's postings.
+   */
+  async getGeneralLedger(accountId, startDate, endDate, companyId = null) {
     const result = await pool.query(
       `SELECT
         je.entry_date,
@@ -147,30 +242,54 @@ class JournalRepository {
        AND je.entry_date BETWEEN $2 AND $3
        AND (je.is_posted = true OR je.status = 'posted')
        AND je.deleted_at IS NULL
+       AND ($4::int IS NULL OR je.company_id = $4::int)
        ORDER BY je.entry_date, je.entry_number`,
-      [accountId, startDate, endDate]
+      [accountId, startDate, endDate, companyId]
     );
     return result.rows;
   }
 
-  async getTrialBalance(startDate, endDate) {
+  /**
+   * Trial balance totals per account.
+   *
+   * Movement is aggregated in a derived table BEFORE it meets the chart of
+   * accounts — the same shape accounting.routes.js's /profit-loss uses. The
+   * previous two-LEFT-JOIN form could not express this filter safely:
+   *
+   *  - putting the entry predicates in WHERE drops accounts with no movement,
+   *    silently turning the LEFT JOIN into an inner one;
+   *  - putting them in the ON clause keeps the account, but a line whose entry
+   *    failed the predicate still contributes its debit/credit to the SUM,
+   *    because the line joined even though the entry did not.
+   *
+   * Aggregating first sidesteps both, and removes the multi-child-join fan-out
+   * risk that has bitten period-close totals in this codebase before.
+   */
+  async getTrialBalance(startDate, endDate, companyId = null) {
     const result = await pool.query(
       `SELECT
         coa.code,
         coa.name,
         coa.account_type,
-        COALESCE(SUM(jl.debit), 0) as total_debit,
-        COALESCE(SUM(jl.credit), 0) as total_credit
+        COALESCE(m.total_debit, 0)  AS total_debit,
+        COALESCE(m.total_credit, 0) AS total_credit
        FROM chart_of_accounts coa
-       LEFT JOIN journal_lines jl ON coa.id = jl.account_id
-       LEFT JOIN journal_entries je ON jl.entry_id = je.id
-       WHERE (je.entry_date BETWEEN $1 AND $2 OR je.entry_date IS NULL)
-       AND (je.is_posted = true OR je.status = 'posted' OR je.id IS NULL)
-       AND je.deleted_at IS NULL
-       GROUP BY coa.id, coa.code, coa.name, coa.account_type
-       HAVING COALESCE(SUM(jl.debit), 0) != 0 OR COALESCE(SUM(jl.credit), 0) != 0
+       LEFT JOIN (
+         SELECT jl.account_id,
+                SUM(jl.debit)  AS total_debit,
+                SUM(jl.credit) AS total_credit
+         FROM journal_lines jl
+         JOIN journal_entries je ON je.id = jl.entry_id
+         WHERE je.entry_date BETWEEN $1 AND $2
+           AND (je.is_posted = true OR je.status = 'posted')
+           AND je.deleted_at IS NULL
+           AND ($3::int IS NULL OR je.company_id = $3::int)
+         GROUP BY jl.account_id
+       ) m ON m.account_id = coa.id
+       WHERE ($3::int IS NULL OR coa.company_id = $3::int OR coa.company_id IS NULL)
+         AND (COALESCE(m.total_debit, 0) != 0 OR COALESCE(m.total_credit, 0) != 0)
        ORDER BY coa.code`,
-      [startDate, endDate]
+      [startDate, endDate, companyId]
     );
     return result.rows;
   }

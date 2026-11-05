@@ -1,4 +1,5 @@
 import pool from "../../config/db.js";
+import { reminderDaysFor, probationEndingSoonSql } from "../../shared/probationDates.js";
 import { resolveRange, assertDateParams, PERIOD_PRESETS as SHARED_PERIOD_PRESETS, FY_START_SQL as FY_START } from "../../shared/dashboardFilters.js";
 import { analyticsQuery } from "../../shared/analyticsQuery.js";
 
@@ -20,7 +21,7 @@ const safeFloat = (v, fallback = 0) => parseFloat(v ?? fallback) || fallback;
 import {
   EMPLOYEE_ACTIVE, EMPLOYEE_EXITED, TICKET_CLOSED, PROJECT_CLOSED,
   INVOICE_PAID, BILL_PAID, TIMESHEET_PENDING, LEAVE_APPROVED, LEAVE_PENDING, OPENING_OPEN,
-  isIn, notIn, sqlInvoiceOutstanding, sqlBillOutstanding,
+  isIn, notIn, sqlInvoiceOutstanding, sqlBillOutstanding, sqlAttendancePresent,
 } from '../../shared/statusSets.js';
 
 const cidClause = (cid, idx) =>
@@ -29,21 +30,52 @@ const cidParams = (cid, base = []) =>
   cid != null ? [...base, cid] : base;
 
 /**
+ * ATTENDANCE: the live table is `attendance_records`, not `attendance`.
+ *
+ * Same shape of mistake as the leave ledger documented below, found the same
+ * way. `attendance` holds 210 rows and has ZERO writers anywhere in the repo;
+ * its newest row is dated 2026-03-29. `attendance_records` has 17 INSERT sites
+ * and is what every punch, biometric sync and offline-queue drain writes to.
+ *
+ * Eight queries on this controller asked `attendance` for "present today".
+ * A frozen table has no rows dated CURRENT_DATE and never will, so every
+ * attendance tile on every dashboard read 0 — `attendanceRate: 0` regardless
+ * of who actually clocked in. Column map, if you are porting another query:
+ * date -> attendance_date, check_in -> check_in_time, work_hours ->
+ * total_hours, and add `deleted_at IS NULL` (records are soft-deleted).
+ * `attendance_records` also carries company_id, which `attendance` never had,
+ * so these counts can finally be tenant-scoped.
+ *
  * PENDING_APPROVALS_SQL — the one definition of "pending approvals".
  *
- * Three endpoints answered this question with three different queries:
- * /dashboard/summary and /dashboard/approvals summed leave_requests +
- * expense_claims + approvals and got 168, while /dashboard/live-kpis summed six
- * queues but read `leave_applications` (4 rows) instead of `leave_requests`
- * (769) and got 11. Same label, same screen family, two answers an order of
- * magnitude apart.
+ * Three endpoints answered this question with three different queries, and the
+ * fix at the time picked the table with more rows in it. That was the wrong
+ * test. `leave_requests` had 769 rows because it is FROZEN: its last write was
+ * 2026-03-30, from the WhatsApp integration, and the apply-for-leave path has
+ * never written to it. `leave_applications` had 4 rows because it is the live
+ * ledger and this is a young dataset.
  *
- * `leave_requests` is the live ledger. Every queue below is scoped, and every
- * caller binds exactly one parameter: the company id (or null for global).
+ * Reading row count as liveness cost half a year of wrong numbers: every
+ * approver's home screen showed 159 pending leave approvals aged 184 days,
+ * none of which could be actioned, because the Leave screens read the other
+ * table. The count could never fall.
+ *
+ * `leave_applications` is the ledger. It is the only INSERT target of
+ * leaves.repository.js (the real apply path), and its `status` column defaults
+ * to 'pending', so LEAVE_PENDING means the same thing here as it did there.
+ * Two things differ and both matter: rows are SOFT-deleted, so every read needs
+ * `deleted_at IS NULL`; and the leave type is an FK (`leave_type_id`), not the
+ * free text `leave_type` the old table carried — join `leave_types` for a name.
+ *
+ * Every queue below is scoped, and every caller binds exactly one parameter:
+ * the company id (or null for global).
+ *
+ * If you are here because a leave count looks low, check whether the workflow
+ * is writing rows, not whether some other table has more of them.
  */
 const PENDING_APPROVALS_SQL = `SELECT (
-  COALESCE((SELECT COUNT(*) FROM leave_requests lr
-             WHERE ${isIn('lr.status', LEAVE_PENDING)} AND ($1::int IS NULL OR lr.company_id = $1)),0) +
+  COALESCE((SELECT COUNT(*) FROM leave_applications lr
+             WHERE lr.deleted_at IS NULL AND ${isIn('lr.status', LEAVE_PENDING)} AND ($1::int IS NULL OR lr.company_id = $1)),0) +
   COALESCE((SELECT COUNT(*) FROM expense_claims ec
              WHERE LOWER(ec.status)='pending' AND ($1::int IS NULL OR ec.company_id = $1)),0) +
   COALESCE((SELECT COUNT(*) FROM purchase_requests pr
@@ -91,7 +123,7 @@ export const getDashboardInsights = async (req, res) => {
       cidParams(cid)
     );
     const lv = await safeOne(
-      `SELECT COUNT(*) AS total FROM leave_requests WHERE ${isIn('status', LEAVE_PENDING)}${cidClause(cid, 1)}`,
+      `SELECT COUNT(*) AS total FROM leave_applications WHERE deleted_at IS NULL AND ${isIn('status', LEAVE_PENDING)}${cidClause(cid, 1)}`,
       cidParams(cid)
     );
     res.json({
@@ -276,17 +308,18 @@ export const getDashboardWorkforce = async (req, res) => {
       safeOne(`SELECT COUNT(*) AS total FROM employees WHERE ${isIn('status', EMPLOYEE_EXITED)} AND updated_at >= DATE_TRUNC('month', NOW())${cf}`, cp),
       safeOne(`
         SELECT
-          COUNT(*) FILTER (WHERE a.status = 'present') AS present_count,
+          COUNT(*) FILTER (WHERE ${sqlAttendancePresent('a.status')}) AS present_count,
           (SELECT COUNT(*) FROM employees WHERE ${isIn('status', EMPLOYEE_ACTIVE)}${cf}) AS total_emp
-        FROM attendance a WHERE a.date = CURRENT_DATE
+        FROM attendance_records a
+         WHERE a.attendance_date = CURRENT_DATE AND a.deleted_at IS NULL
       `, cp),
-      // `leaves` is a near-empty legacy table (single-digit rows); the live leave
-      // ledger the whole app writes to is `leave_requests`. Reading the wrong one
-      // made "On Leave Today" report 0 on three dashboards while people were
-      // genuinely on leave.
+      // "On Leave Today" reads the live ledger, leave_applications. Both
+      // `leaves` and `leave_requests` are frozen legacy tables — see the
+      // PENDING_APPROVALS_SQL note at the top of this file before repointing
+      // this at whichever one currently holds more rows.
       safeOne(`
-        SELECT COUNT(*) AS total FROM leave_requests
-        WHERE ${isIn('status', LEAVE_APPROVED)} AND start_date <= CURRENT_DATE AND end_date >= CURRENT_DATE${cf}
+        SELECT COUNT(*) AS total FROM leave_applications
+        WHERE deleted_at IS NULL AND ${isIn('status', LEAVE_APPROVED)} AND start_date <= CURRENT_DATE AND end_date >= CURRENT_DATE${cf}
       `, cp),
       safeOne(`SELECT COUNT(*) AS total FROM employees WHERE LOWER(status) = 'probation'${cf}`, cp),
       safeQuery(`
@@ -328,7 +361,7 @@ export const getDashboardApprovals = async (req, res) => {
     const limit = detail ? 20 : 8;
 
     const [leaveCnt, expCnt, apprCnt, pendingTotal, recent] = await Promise.all([
-      safeOne(`SELECT COUNT(*) AS total FROM leave_requests WHERE ${isIn('status', LEAVE_PENDING)}${cf}`, cp),
+      safeOne(`SELECT COUNT(*) AS total FROM leave_applications WHERE deleted_at IS NULL AND ${isIn('status', LEAVE_PENDING)}${cf}`, cp),
       safeOne(`SELECT COUNT(*) AS total FROM expense_claims WHERE LOWER(status) = 'pending'${cf}`, cp),
       safeOne(`SELECT COUNT(*) AS total FROM approvals WHERE status = 'Pending'${cf}`, cp),
       // The headline total comes from the shared definition, so this endpoint,
@@ -338,21 +371,26 @@ export const getDashboardApprovals = async (req, res) => {
       safeOne(PENDING_APPROVALS_SQL, [cid]),
       safeQuery(`
         SELECT l.id,
-               -- leave_requests carries no employee_email column; the name comes
-               -- from the joined employee row, or a generic label when unlinked.
+               -- there is no employee_email column; the name comes from the
+               -- joined employee row, or a generic label when unlinked.
                COALESCE(NULLIF(TRIM(e.first_name || ' ' || COALESCE(e.last_name,'')), ''), 'Employee') AS employee_name,
                e.department,
-               l.leave_type AS type, l.start_date, l.end_date, l.status, l.created_at,
+               -- leave_applications stores the type as an FK, not the free text
+               -- leave_requests carried. Join the master rather than selecting a
+               -- column that does not exist on this table.
+               lt.leave_name AS type, l.start_date, l.end_date, l.status, l.created_at,
                (CURRENT_DATE - l.created_at::date) AS days_waiting
-        FROM leave_requests l
-        -- leave_requests links to employees by id, not by an email column it does
-        -- not have. Joining on l.employee_email threw, so this approval queue was
+        FROM leave_applications l
+        LEFT JOIN leave_types lt ON lt.id = l.leave_type_id
+        -- links to employees by id, not by an email column it does not have.
+        -- Joining on l.employee_email threw, so this approval queue was
         -- permanently empty.
         LEFT JOIN employees e ON e.id = l.employee_id
         -- Both joined tables carry company_id, so the unqualified cf fragment
         -- was ambiguous (42702) and the whole statement rejected — the approval
         -- queue rendered empty against 159 pending requests. Qualify it.
-        WHERE ${isIn('l.status', LEAVE_PENDING)}
+        WHERE l.deleted_at IS NULL
+          AND ${isIn('l.status', LEAVE_PENDING)}
           AND ($1::int IS NULL OR l.company_id = $1)
         ORDER BY l.created_at ASC LIMIT ${limit}
       `, [cid]),
@@ -430,14 +468,19 @@ export const getDashboardAlerts = async (req, res) => {
     const cid = req.scope?.company_id ?? null;
     const cf  = cidClause(cid, 1);
     const cp  = cidParams(cid);
+    // Probation window: the company's reminder lead time (default 14 days),
+    // measured from the STORED probation_end_date, today included — the one
+    // shared rule (shared/probationDates.js probationEndingSoonSql), also used
+    // by the analytics onboarding count. It used to be a hardcoded
+    // joining_date + 165..180 days, a rule no other screen used.
+    const probWindow = await reminderDaysFor(pool, cid);
 
     const [leaves, overdueInv, probDue, overdueTasks, pendExp, lowStock, pendTS] = await Promise.all([
-      safeOne(`SELECT COUNT(*) AS total FROM leave_requests WHERE ${isIn('status', LEAVE_PENDING)}${cf}`, cp),
+      safeOne(`SELECT COUNT(*) AS total FROM leave_applications WHERE deleted_at IS NULL AND ${isIn('status', LEAVE_PENDING)}${cf}`, cp),
       safeOne(`SELECT COUNT(*) AS total FROM invoices WHERE due_date < NOW() AND status NOT IN ('paid','cancelled')${cf}`, cp),
       safeOne(`SELECT COUNT(*) AS total FROM employees
-               WHERE LOWER(status) = 'probation' AND joining_date IS NOT NULL
-                 AND (joining_date::date + INTERVAL '165 days')::date <= CURRENT_DATE
-                 AND (joining_date::date + INTERVAL '180 days')::date >= CURRENT_DATE${cf}`, cp),
+               WHERE LOWER(status) = 'probation' AND deleted_at IS NULL
+                 AND ${probationEndingSoonSql(probWindow)}${cf}`, cp),
       safeOne(`SELECT COUNT(*) AS total FROM tasks t
               WHERE t.status NOT IN ('done','cancelled') AND t.due_date < CURRENT_DATE
                 ${cid != null ? 'AND EXISTS (SELECT 1 FROM projects p WHERE p.id = t.project_id AND p.company_id = $1)' : ''}`, cp),
@@ -449,7 +492,7 @@ export const getDashboardAlerts = async (req, res) => {
     const alerts = [];
     if (safeInt(leaves?.total)       > 0) alerts.push({ type:"approval",  message:`${leaves.total} pending leave request${leaves.total > 1 ? 's' : ''} awaiting approval`,       priority:"high",   module:"leaves"     });
     if (safeInt(overdueInv?.total)   > 0) alerts.push({ type:"finance",   message:`${overdueInv.total} overdue invoice${overdueInv.total > 1 ? 's' : ''} need attention`,         priority:"high",   module:"finance"    });
-    if (safeInt(probDue?.total)      > 0) alerts.push({ type:"probation", message:`${probDue.total} employee probation${probDue.total > 1 ? 's' : ''} ending in ≤15 days`,        priority:"high",   module:"employees"  });
+    if (safeInt(probDue?.total)      > 0) alerts.push({ type:"probation", message:`${probDue.total} employee probation${probDue.total > 1 ? 's' : ''} ending in ≤${probWindow} days`,        priority:"high",   module:"employees"  });
     if (safeInt(overdueTasks?.total) > 0) alerts.push({ type:"tasks",     message:`${overdueTasks.total} overdue task${overdueTasks.total > 1 ? 's' : ''}`,                       priority:"medium", module:"projects"   });
     if (safeInt(pendExp?.total)      > 0) alerts.push({ type:"expense",   message:`${pendExp.total} expense claim${pendExp.total > 1 ? 's' : ''} pending approval`,               priority:"medium", module:"finance"    });
     if (safeInt(lowStock?.total)     > 0) alerts.push({ type:"inventory", message:`${lowStock.total} item${lowStock.total > 1 ? 's' : ''} below reorder level`,                   priority:"medium", module:"inventory"  });
@@ -611,10 +654,10 @@ export const getDashboardOperations = async (req, res) => {
       safeOne(
         `SELECT COUNT(*) AS total FROM invoices
           WHERE ${sqlInvoiceOutstanding()} AND ($1::int IS NULL OR company_id = $1)`, [cid]),
-      // leave_requests, not the near-empty legacy `leaves` table.
+      // leave_applications — the live ledger, not the frozen `leaves`/`leave_requests`.
       safeOne(
-        `SELECT COUNT(*) AS total FROM leave_requests
-          WHERE ${isIn('status', LEAVE_APPROVED)}
+        `SELECT COUNT(*) AS total FROM leave_applications
+          WHERE deleted_at IS NULL AND ${isIn('status', LEAVE_APPROVED)}
             AND start_date <= CURRENT_DATE AND end_date >= CURRENT_DATE${cf}`, cp),
       safeOne(
         `SELECT COUNT(*) AS total FROM tasks t
@@ -835,17 +878,22 @@ export const getDashboardLeaveSummary = async (req, res) => {
     const cp  = cidParams(cid);
 
     const [pending, approved, onLeave, byType] = await Promise.all([
-      safeOne(`SELECT COUNT(*) AS total FROM leave_requests WHERE ${isIn('status', LEAVE_PENDING)}${cf}`, cp),
-      safeOne(`SELECT COUNT(*) AS total FROM leave_requests WHERE ${isIn('status', LEAVE_APPROVED)} AND created_at >= DATE_TRUNC('month', NOW())${cf}`, cp),
-      safeOne(`SELECT COUNT(*) AS total FROM leave_requests WHERE ${isIn('status', LEAVE_APPROVED)} AND start_date <= CURRENT_DATE AND end_date >= CURRENT_DATE${cf}`, cp),
+      safeOne(`SELECT COUNT(*) AS total FROM leave_applications WHERE deleted_at IS NULL AND ${isIn('status', LEAVE_PENDING)}${cf}`, cp),
+      safeOne(`SELECT COUNT(*) AS total FROM leave_applications WHERE deleted_at IS NULL AND ${isIn('status', LEAVE_APPROVED)} AND created_at >= DATE_TRUNC('month', NOW())${cf}`, cp),
+      safeOne(`SELECT COUNT(*) AS total FROM leave_applications WHERE deleted_at IS NULL AND ${isIn('status', LEAVE_APPROVED)} AND start_date <= CURRENT_DATE AND end_date >= CURRENT_DATE${cf}`, cp),
       // Was `FROM leaves`, which carries no company_id — the ${cf} fragment made
       // it raise 42703 on every call and safeQuery emptied the breakdown. The
-      // other three counts on this endpoint already read leave_requests (769 rows
-      // vs 1), so the breakdown now reads the same table and agrees with them.
+      // other three counts on this endpoint read leave_applications, so the
+      // breakdown reads the same table and agrees with them. The type is an FK
+      // here, so the name comes from the leave_types join, not a text column.
       safeQuery(`
-        SELECT leave_type, COUNT(*) AS count FROM leave_requests
-        WHERE ${isIn('status', LEAVE_APPROVED)} AND created_at >= DATE_TRUNC('month', NOW())${cf}
-        GROUP BY leave_type ORDER BY count DESC LIMIT 6
+        SELECT lt.leave_name AS leave_type, COUNT(*) AS count
+        FROM leave_applications la
+        LEFT JOIN leave_types lt ON lt.id = la.leave_type_id
+        WHERE la.deleted_at IS NULL AND ${isIn('la.status', LEAVE_APPROVED)}
+          AND la.created_at >= DATE_TRUNC('month', NOW())
+          AND ($1::int IS NULL OR la.company_id = $1)
+        GROUP BY lt.leave_name ORDER BY count DESC LIMIT 6
       `, cp),
     ]);
     res.json({
@@ -872,13 +920,13 @@ const getExecutiveData = async (cid = null) => {
     safeOne(`SELECT COUNT(*) AS total FROM employees WHERE joining_date >= DATE_TRUNC('month', NOW()) AND LOWER(status) != 'left'${cf}`, cp),
     safeOne(`SELECT COUNT(*) AS total FROM employees WHERE LOWER(status) IN ('inactive','terminated','left') AND updated_at >= DATE_TRUNC('month', NOW())${cf}`, cp),
     safeOne(`
-      SELECT COUNT(*) FILTER (WHERE status = 'present') AS present_count,
+      SELECT COUNT(*) FILTER (WHERE ${sqlAttendancePresent()}) AS present_count,
              (SELECT COUNT(*) FROM employees WHERE LOWER(status) IN ('active', 'probation')${cf}) AS total_emp
-      FROM attendance WHERE date = CURRENT_DATE
+      FROM attendance_records WHERE attendance_date = CURRENT_DATE AND deleted_at IS NULL
     `, cp),
     safeOne(`
       SELECT COALESCE(
-        (SELECT COUNT(*) FROM leave_requests WHERE ${isIn('status', LEAVE_PENDING)}${cf}), 0
+        (SELECT COUNT(*) FROM leave_applications WHERE deleted_at IS NULL AND ${isIn('status', LEAVE_PENDING)}${cf}), 0
       ) + COALESCE(
         (SELECT COUNT(*) FROM expense_claims WHERE status='pending'${cf}), 0
       ) + COALESCE(
@@ -914,12 +962,12 @@ const getManagerData = async (userId, cid = null) => {
 
   const [teamSize, pendAppr, overdueTasks, attRow] = await Promise.all([
     safeOne(`SELECT COUNT(*) AS total FROM employees WHERE LOWER(status) IN ('active','probation')${cf}`, cp),
-    safeOne(`SELECT COUNT(*) AS total FROM leave_requests WHERE ${isIn('status', LEAVE_PENDING)}${cf}`, cp),
+    safeOne(`SELECT COUNT(*) AS total FROM leave_applications WHERE deleted_at IS NULL AND ${isIn('status', LEAVE_PENDING)}${cf}`, cp),
     safeOne("SELECT COUNT(*) AS total FROM tasks WHERE status NOT IN ('done','cancelled') AND due_date < CURRENT_DATE"),
     safeOne(`
-      SELECT COUNT(*) FILTER (WHERE status = 'present') AS present,
+      SELECT COUNT(*) FILTER (WHERE ${sqlAttendancePresent()}) AS present,
              (SELECT COUNT(*) FROM employees WHERE LOWER(status) IN ('active','probation')${cf}) AS total
-      FROM attendance WHERE date = CURRENT_DATE
+      FROM attendance_records WHERE attendance_date = CURRENT_DATE AND deleted_at IS NULL
     `, cp),
   ]);
   const present = safeInt(attRow?.present);
@@ -940,8 +988,8 @@ const getEmployeeData = async (userId, cid = null) => {
   const [tasks, leaveBal, attRow, pendActions] = await Promise.all([
     safeOne("SELECT COUNT(*) AS total FROM tasks WHERE status NOT IN ('done','cancelled') AND due_date <= NOW() + INTERVAL '7 days'"),
     safeOne("SELECT COALESCE(SUM(days_remaining), 0) AS total FROM leave_balances WHERE CURRENT_DATE BETWEEN valid_from AND valid_to"),
-    safeOne("SELECT COUNT(*) AS total FROM attendance WHERE date = CURRENT_DATE AND status = 'present'"),
-    safeOne(`SELECT COUNT(*) AS total FROM leave_requests WHERE ${isIn('status', LEAVE_PENDING)}`),
+    safeOne(`SELECT COUNT(*) AS total FROM attendance_records WHERE attendance_date = CURRENT_DATE AND deleted_at IS NULL AND ${sqlAttendancePresent()}`),
+    safeOne(`SELECT COUNT(*) AS total FROM leave_applications WHERE deleted_at IS NULL AND ${isIn('status', LEAVE_PENDING)}`),
   ]);
 
   return {
@@ -987,13 +1035,14 @@ export const getDashboardSummary = async (req, res) => {
       safeOne(PENDING_APPROVALS_SQL, [cid]),
       safeOne(`SELECT COUNT(*) AS total FROM projects
                 WHERE ${notIn('status', PROJECT_CLOSED)} AND deleted_at IS NULL${cf}`, cp),
-      safeOne(`SELECT COUNT(*) FILTER (WHERE a.status='present') AS present,
+      safeOne(`SELECT COUNT(*) FILTER (WHERE ${sqlAttendancePresent('a.status')}) AS present,
                       (SELECT COUNT(*) FROM employees WHERE ${isIn('status', EMPLOYEE_ACTIVE)}${cf}) AS total_emp
-               FROM attendance a
+               FROM attendance_records a
                JOIN employees e ON e.id = a.employee_id
-               WHERE a.date = CURRENT_DATE AND ($1::int IS NULL OR e.company_id = $1)`, [cid]),
+               WHERE a.attendance_date = CURRENT_DATE AND a.deleted_at IS NULL
+                 AND ($1::int IS NULL OR e.company_id = $1)`, [cid]),
       safeOne(`SELECT COUNT(*) AS total FROM (
-        SELECT 1 FROM leave_requests WHERE ${isIn('status', LEAVE_PENDING)}${cf}
+        SELECT 1 FROM leave_applications WHERE deleted_at IS NULL AND ${isIn('status', LEAVE_PENDING)}${cf}
         UNION ALL SELECT 1 FROM invoices
           WHERE due_date < NOW() AND status NOT IN ('paid','cancelled')${cf}
         UNION ALL SELECT 1 FROM tasks t
@@ -1115,17 +1164,18 @@ export const getLiveKPIs = async (req, res) => {
       safeOne(`SELECT COUNT(*)::int AS v FROM invoices WHERE due_date < CURRENT_DATE AND LOWER(status) NOT IN ('paid','cancelled')${cf}`, cp),
       // One definition, shared with /dashboard/summary and /dashboard/approvals.
       // This block used to inline its own six-queue variant that read
-      // leave_applications (4 rows) where the others read leave_requests (769),
+      // a different leave table from the others on this endpoint,
       // so the same label reported 11 here and 168 two endpoints away.
       safeOne(PENDING_APPROVALS_SQL.replace(/AS total$/, "AS v"), [cid]),
       // EMPLOYEE_ACTIVE, not a hand-written ('active','probation'): that literal
       // drops everyone on notice, and made this tile report 32 where
       // /analytics/headcount and /dashboard/workforce both reported 33.
       safeOne(`SELECT COUNT(*)::int AS v FROM employees WHERE ${isIn('status', EMPLOYEE_ACTIVE)}${cf}`, cp),
-      // leave_requests is the populated table (769 rows vs 1 in `leaves`) and it
-      // carries company_id directly, so both branches now read one table.
-      safeOne(`SELECT COUNT(*)::int AS v FROM leave_requests
-                WHERE ${isIn('status', LEAVE_APPROVED)}
+      // leave_applications is the live ledger and carries company_id directly,
+      // so both branches read one table. (Row count is not the test for which
+      // table is live — see the note on PENDING_APPROVALS_SQL above.)
+      safeOne(`SELECT COUNT(*)::int AS v FROM leave_applications
+                WHERE deleted_at IS NULL AND ${isIn('status', LEAVE_APPROVED)}
                   AND start_date <= CURRENT_DATE AND end_date >= CURRENT_DATE${cf}`, cp),
       safeQuery(`SELECT a.action_type AS action, a.module_name AS module,
                         CASE WHEN a.reference_type IS NULL THEN a.action_type
@@ -1154,10 +1204,11 @@ export const getLiveKPIs = async (req, res) => {
                       AND EXTRACT(day   FROM anniversary_date) = EXTRACT(day   FROM CURRENT_DATE))
                    )${cf}
                  LIMIT 20`, cp),
-      safeOne(`SELECT COUNT(*) FILTER (WHERE status = 'present') AS present,
+      safeOne(`SELECT COUNT(*) FILTER (WHERE ${sqlAttendancePresent()}) AS present,
                       (SELECT COUNT(*) FROM employees
                         WHERE LOWER(status) IN ('active','probation')${cf}) AS total
-               FROM attendance WHERE date = CURRENT_DATE`, cp),
+               FROM attendance_records
+                WHERE attendance_date = CURRENT_DATE AND deleted_at IS NULL`, cp),
     ]);
 
     const val = (p) => (p.status === 'fulfilled' ? p.value : null);
@@ -1667,11 +1718,11 @@ export const getCFODashboard = async (req, res) => {
                 WHERE LOWER(t.status) NOT IN ('done','completed','cancelled') AND t.due_date < CURRENT_DATE
                   AND ($1::int IS NULL OR EXISTS (
                         SELECT 1 FROM projects p WHERE p.id = t.project_id AND p.company_id = $1))`, [cid]),
-      // `leaves` is a near-empty legacy table; the live ledger is leave_requests.
+      // `leaves` and `leave_requests` are frozen legacy tables; the ledger is leave_applications.
       // Reading the wrong one meant this alert never fired while a real approval
       // queue was building up.
       safeOne(
-        `SELECT COUNT(*)::int AS total FROM leave_requests WHERE ${isIn('status', LEAVE_PENDING)}${cidClause(cid, 1)}`,
+        `SELECT COUNT(*)::int AS total FROM leave_applications WHERE deleted_at IS NULL AND ${isIn('status', LEAVE_PENDING)}${cidClause(cid, 1)}`,
         cidParams(cid)
       ),
       // Low stock inventory

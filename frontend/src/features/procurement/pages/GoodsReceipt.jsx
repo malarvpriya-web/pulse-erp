@@ -17,7 +17,12 @@ const sc = s => STATUS_CFG[(s||'').toLowerCase()] || STATUS_CFG.pending;
 
 const today = () => new Date().toISOString().slice(0, 10);
 
-const emptyDetails = () => ({ received_date: today(), warehouse_id: '', notes: '', vendor_invoice_no: '', vendor_invoice_date: '', vendor_invoice_amount: '' });
+// Inbound charges start as '' and not 0 on purpose. '' is sent as nothing at
+// all, which the backend stores as NULL = "this consignment was not costed";
+// a typed 0 is stored as a real measured zero and credits the vendor for a
+// free delivery in the TCO comparison. The two are different facts and the
+// form must be able to express both.
+const emptyDetails = () => ({ received_date: today(), warehouse_id: '', notes: '', vendor_invoice_no: '', vendor_invoice_date: '', vendor_invoice_amount: '', freight_amount: '', insurance_amount: '', other_charges: '' });
 
 export default function GoodsReceipt() {
   const { readOnly } = usePageAccess();
@@ -155,6 +160,13 @@ export default function GoodsReceipt() {
           vendor_invoice_date:   details.vendor_invoice_date || null,
           vendor_invoice_amount: details.vendor_invoice_amount ? parseFloat(details.vendor_invoice_amount) : 0,
         } : {}),
+        // Inbound charges for THIS consignment. Each key is included only when
+        // something was typed — `'' ? :` and not `|| 0`, so a blank box sends
+        // no key and the column stays NULL. Sending 0 for an untouched field
+        // would tell the costing model this lorry arrived free of charge.
+        ...(details.freight_amount   !== '' ? { freight_amount:   parseFloat(details.freight_amount) }   : {}),
+        ...(details.insurance_amount !== '' ? { insurance_amount: parseFloat(details.insurance_amount) } : {}),
+        ...(details.other_charges    !== '' ? { other_charges:    parseFloat(details.other_charges) }    : {}),
         items: poItems.map(it => ({
           po_item_id:        it.id,
           item_id:           it.item_id,
@@ -559,6 +571,52 @@ export default function GoodsReceipt() {
                         <option key={w.id} value={w.id}>{w.warehouse_name}</option>
                       ))}
                     </select>
+                  </div>
+                </div>
+                {/*
+                  Inbound charges for this delivery. Freight is a per-lorry
+                  cost — the same PO received in three part-loads carries three
+                  different carrier bills — so it is captured on the receipt,
+                  not on the order. These feed the vendor's observed freight
+                  ratio in Component 360's TCO comparison; until one is entered
+                  that comparison falls back to the company's assumed rate and
+                  labels the line "assumed".
+                */}
+                <div className="grn-charges-group">
+                  <div className="grn-charges-head">
+                    <span className="grn-charges-title">Inbound Charges</span>
+                    <span className="grn-charges-hint">
+                      Optional. Leave blank if not known — blank means “not costed”, while 0 means the vendor delivered free.
+                    </span>
+                  </div>
+                  <div className="grn-form-row grn-form-row--3">
+                    <div className="grn-field">
+                      <label>Freight / Transport (₹)</label>
+                      <input
+                        type="number" min="0" step="0.01" inputMode="decimal"
+                        value={details.freight_amount}
+                        onChange={e => setDetails(p => ({ ...p, freight_amount: e.target.value }))}
+                        placeholder="Carrier bill for this delivery"
+                      />
+                    </div>
+                    <div className="grn-field">
+                      <label>Insurance (₹)</label>
+                      <input
+                        type="number" min="0" step="0.01" inputMode="decimal"
+                        value={details.insurance_amount}
+                        onChange={e => setDetails(p => ({ ...p, insurance_amount: e.target.value }))}
+                        placeholder="—"
+                      />
+                    </div>
+                    <div className="grn-field">
+                      <label>Other Charges (₹)</label>
+                      <input
+                        type="number" min="0" step="0.01" inputMode="decimal"
+                        value={details.other_charges}
+                        onChange={e => setDetails(p => ({ ...p, other_charges: e.target.value }))}
+                        placeholder="Loading, handling, octroi…"
+                      />
+                    </div>
                   </div>
                 </div>
                 <div className="grn-field">

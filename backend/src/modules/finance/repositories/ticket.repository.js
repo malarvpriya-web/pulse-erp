@@ -34,12 +34,31 @@ class TicketRepository {
     const response_due = new Date(now.getTime() + sla.rows[0].response_time_hours * 60 * 60 * 1000);
     const resolution_due = new Date(now.getTime() + sla.rows[0].resolution_time_hours * 60 * 60 * 1000);
     
+    // ⚠⚠ `category_id` used to be bound into the `category` COLUMN — an integer
+    // into a varchar — so a ticket raised here stored "3" where every reader
+    // expects "Network", and `category_id` was left NULL on every row ever
+    // created. findById() joins on category_id, so its category_name was always
+    // null; findAll() reads the text column, so the grid showed a bare number.
+    //
+    // Both are written now, and the text comes from the master rather than from
+    // the caller: `category` is what the service desk groups and reports by, and
+    // `category_id` is the link that makes a later rename propagate.
+    const { rows: [cat] } = await pool.query(
+      'SELECT id, name FROM ticket_categories WHERE id = $1 AND is_active = true',
+      [category_id]
+    );
+    if (!cat) {
+      const err = new Error('Unknown ticket category');
+      err.statusCode = 400;
+      throw err;
+    }
+
     const result = await pool.query(
       `INSERT INTO support_tickets
-         (ticket_number, title, description, category, priority,
+         (ticket_number, title, description, category, category_id, priority,
           requester_name, requester_email, sla_due_date, due_date, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'Open') RETURNING *`,
-      [ticket_number, subject, description, category_id, priority,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'Open') RETURNING *`,
+      [ticket_number, subject, description, cat.name, cat.id, priority,
        requester_name, requester_email, response_due, resolution_due]
     );
     return result.rows[0];

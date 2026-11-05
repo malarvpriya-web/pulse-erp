@@ -21,7 +21,7 @@
  *
  * Runner: Vitest | npx vitest run src/__tests__/analytics.dataIntegrity.test.js
  */
-import { describe, test, expect, afterAll } from 'vitest';
+import { describe, test, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
@@ -53,7 +53,6 @@ const { INVOICE_PAID, BILL_UNPAID, EMPLOYEE_ACTIVE, isIn } = await import('../sh
 
 const COMPANY = 1;
 
-afterAll(async () => { await pool.end().catch(() => {}); });
 
 /* ══════════════════════════════════════════════════════════════════════════════
    1. Columns the code names must exist

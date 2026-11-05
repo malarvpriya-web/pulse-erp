@@ -170,11 +170,10 @@ describe('Home — smoke', () => {
     await waitFor(() => expect(screen.getByText('All caught up!')).toBeDefined());
   });
 
-  it('shows the awaiting-mine/awaiting-others empty copy when approvals are empty', async () => {
+  it('shows the empty copy when nothing awaits my approval', async () => {
     stubApi();
     render(<Home setPage={() => {}} />);
     await waitFor(() => expect(screen.getByText('Nothing needs your sign-off.')).toBeDefined());
-    expect(screen.getByText('You have no requests pending sign-off.')).toBeDefined();
   });
 
   it('shows "No active announcements." when announcements list is empty', async () => {
@@ -219,18 +218,16 @@ describe('Home — smoke', () => {
   });
 
   // ── Navigation ────────────────────────────────────────────────────────────
-  // Both approval-related hero KPIs route to the read-only MyRequests page
-  // (never ApprovalCenter — that page is section-gated and dead-ends roles
-  // without approval authority; MyRequests is a PERSONAL_PAGES entry, always
-  // reachable regardless of role).
+  // To Action opens the Approval Center (PERSONAL_PAGES + ALWAYS_VISIBLE, so
+  // every role reaches it); My Requests opens the read-only MyRequests page.
 
-  it('calls setPage("MyRequests") when To Action is clicked', async () => {
+  it('calls setPage("ApprovalCenter") when To Action is clicked', async () => {
     stubApi();
     const setPage = vi.fn();
     render(<Home setPage={setPage} />);
     await waitFor(() => expect(screen.getByText('To Action')).toBeDefined());
     fireEvent.click(screen.getByText('To Action'));
-    expect(setPage).toHaveBeenCalledWith('MyRequests');
+    expect(setPage).toHaveBeenCalledWith('ApprovalCenter');
   });
 
   it('calls setPage("MyRequests") when My Requests is clicked', async () => {
@@ -393,4 +390,68 @@ describe('Home — smoke', () => {
     expect(screen.getByText('No templates yet.')).toBeDefined();   // brandAssets is genuinely empty
   });
 
+});
+
+// ── Policies / Brand Vault download (homeDocuments.js) ──────────────────────
+describe('Home — document tiles download the file itself', () => {
+  const docs = summary({
+    policies: [
+      { id: 41, title: 'Leave Policy', version: 'v1.1', effective_date: '2026-01-01', download: 'file', file_url: null },
+      { id: 42, title: 'Holiday List', version: 'v1.0', download: 'link', file_url: 'https://example.com/holidays' },
+      { id: 43, title: 'IT Policy', download: null, file_url: null },
+    ],
+    brandAssets: [{ id: 9, title: 'Logo Pack', download: 'file', file_url: null }],
+  });
+
+  it('fetches the file through Pulse and saves it under the server filename', async () => {
+    const blob = new Blob(['%PDF-1.4']);
+    api.get.mockImplementation((url, opts) => {
+      if (url === '/home/summary') return Promise.resolve({ data: docs });
+      if (url === '/attendance/punch-mode') return Promise.resolve({ data: punchMode() });
+      if (url === '/home/documents/policy/41/download') {
+        expect(opts).toMatchObject({ responseType: 'blob' });
+        return Promise.resolve({ data: blob, headers: { 'content-disposition': `attachment; filename="Leave Policy _ v1.1.pdf"; filename*=UTF-8''${encodeURIComponent('Leave Policy – v1.1.pdf')}` } });
+      }
+      return Promise.resolve({ data: [] });
+    });
+    URL.createObjectURL = vi.fn(() => 'blob:zz');
+    URL.revokeObjectURL = vi.fn();
+    const saved = [];
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function () { saved.push(this.download); });
+
+    render(<Home setPage={() => {}} />);
+    await waitFor(() => expect(screen.getByLabelText('Download Leave Policy')).toBeDefined());
+    expect(screen.getByText('v1.1 · Effective 01 Jan 26')).toBeDefined();
+    fireEvent.click(screen.getByLabelText('Download Leave Policy'));
+    await waitFor(() => expect(saved).toEqual(['Leave Policy – v1.1.pdf']));
+    expect(URL.createObjectURL).toHaveBeenCalledWith(blob);
+    click.mockRestore();
+  });
+
+  it('opens a non-Drive link in a new tab and marks an unlinked document', async () => {
+    stubApi(docs);
+    const open = vi.spyOn(window, 'open').mockImplementation(() => null);
+    render(<Home setPage={() => {}} />);
+    await waitFor(() => expect(screen.getByLabelText('Open Holiday List')).toBeDefined());
+    fireEvent.click(screen.getByLabelText('Open Holiday List'));
+    expect(open).toHaveBeenCalledWith('https://example.com/holidays', '_blank', 'noopener,noreferrer');
+    expect(screen.getByText('Not linked yet')).toBeDefined();
+    open.mockRestore();
+  });
+
+  it('shows the server\'s reason when the file cannot be fetched', async () => {
+    const reason = 'This file is not shared for download. In Google Drive, share it as "Anyone with the link — Viewer".';
+    api.get.mockImplementation((url) => {
+      if (url === '/home/summary') return Promise.resolve({ data: docs });
+      if (url === '/attendance/punch-mode') return Promise.resolve({ data: punchMode() });
+      if (url === '/home/documents/brand/9/download') {
+        return Promise.reject({ response: { status: 502, data: new Blob([JSON.stringify({ code: 'NOT_SHARED', error: reason })], { type: 'application/json' }) } });
+      }
+      return Promise.resolve({ data: [] });
+    });
+    render(<Home setPage={() => {}} />);
+    await waitFor(() => expect(screen.getByLabelText('Download Logo Pack')).toBeDefined());
+    fireEvent.click(screen.getByLabelText('Download Logo Pack'));
+    await waitFor(() => expect(screen.getByRole('status').textContent).toBe(reason));
+  });
 });

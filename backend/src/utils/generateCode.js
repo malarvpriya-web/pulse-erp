@@ -4,11 +4,17 @@ import pool from '../config/db.js';
  * Generate a sequential reference code for any table.
  * Falls back to MAX()+1 counting for tables not covered by a DB sequence.
  *
- * @param {string} table      - table name (e.g. 'employees')
- * @param {string} prefix     - code prefix (e.g. 'EMP')
+ * ⚠ NOT for Employee IDs. `employees.office_id` follows the company's own
+ * convention (EMP001, no hyphen, per-company sequence) and is minted only by
+ * `shared/employeeCode.js`. This helper produces the hyphenated `PREFIX-0001`
+ * shape used by document numbers, and its EMP example was one of the things that
+ * misled an earlier pass into backfilling employees as `EMP-0013`.
+ *
+ * @param {string} table      - table name (e.g. 'vendors')
+ * @param {string} prefix     - code prefix (e.g. 'VND')
  * @param {number} companyId  - company_id for scoping
  * @param {object} [client]   - optional pg transaction client
- * @returns {Promise<string>} - e.g. 'EMP-0001'
+ * @returns {Promise<string>} - e.g. 'VND-0001'
  */
 async function generateCode(table, prefix, companyId, client) {
   const db = client || pool;

@@ -4,6 +4,7 @@ import api from '@/services/api/client';
 import { CheckCircle, Clock, AlertTriangle, Circle, FolderKanban, RefreshCw, Search, User, Calendar, TrendingUp } from 'lucide-react';
 import './ProjectWorkflowTracker.css';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import { projectStageOf } from '@/features/projects/shared/projectStage';
 
 const STATUS_CONFIG = {
   'On Track':  { color: '#15803d', bg: '#dcfce7', icon: CheckCircle },
@@ -134,7 +135,9 @@ export default function ProjectWorkflowTracker() {
             const progColor = PROGRESS_COLOR(pct);
             const name = p.name || p.project_name || '—';
             const manager = p.project_manager || p.manager_name || '—';
-            const stage = p.current_stage || p.stage || p.status || '—';
+            // The stage the backend derives from the project's lifecycle — never
+            // the administrative status. No lifecycle = "Unavailable stage".
+            const stage = projectStageOf(p);
             const due = fmtDate((p.end_date || p.due_date || '').toString().slice(0, 10));
 
             return (
@@ -151,7 +154,8 @@ export default function ProjectWorkflowTracker() {
                     <span className="pwt-status-badge" style={{ background: sc.bg, color: sc.color }}>
                       <Icon size={10} /> {p.status || 'Planning'}
                     </span>
-                    <span className="pwt-stage-badge">{stage}</span>
+                    <span className="pwt-stage-badge" data-testid="pwt-stage" title={stage.why}
+                      style={{ background: stage.bg, color: stage.color }}>{stage.label}</span>
                   </div>
                 </div>
 

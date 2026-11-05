@@ -1034,10 +1034,23 @@ router.get('/collections', requirePermission('finance', 'view'), async (req, res
     const aging = await pool.query(`
       SELECT p.id AS customer_id, p.name AS customer,
              COALESCE(SUM(i.total_amount),0) AS total_outstanding,
-             COALESCE(SUM(i.total_amount) FILTER (WHERE NOW()-i.due_date BETWEEN '0 days' AND '30 days'), 0) AS bucket_0_30,
-             COALESCE(SUM(i.total_amount) FILTER (WHERE NOW()-i.due_date BETWEEN '31 days' AND '60 days'), 0) AS bucket_31_60,
-             COALESCE(SUM(i.total_amount) FILTER (WHERE NOW()-i.due_date BETWEEN '61 days' AND '90 days'), 0) AS bucket_61_90,
-             COALESCE(SUM(i.total_amount) FILTER (WHERE NOW()-i.due_date > '90 days'), 0) AS bucket_90plus,
+             -- The five buckets are mutually exclusive and EXHAUSTIVE, so they
+             -- always sum to total_outstanding. They previously did not:
+             --   * BETWEEN '0 days' AND '30 days' excludes a NEGATIVE interval, so
+             --     an invoice not yet due was in total_outstanding but in no
+             --     bucket at all (measured 2026-09-16: 5,55,000 of 51,86,400 —
+             --     one customer's entire 5,00,000 balance showed as a blank row);
+             --   * the ranges left holes. NOW()-due_date carries a time part, so
+             --     '30 days 05:00:00' is > '30 days' and < '31 days' and fell
+             --     through every branch.
+             -- Not-due is kept SEPARATE rather than folded into 0-30: money due in
+             -- 287 days is not a collections problem and must not be reported as
+             -- one. Half-open ranges (> lower, <= upper) close the holes.
+             COALESCE(SUM(i.total_amount) FILTER (WHERE i.due_date > NOW()), 0) AS bucket_not_due,
+             COALESCE(SUM(i.total_amount) FILTER (WHERE i.due_date <= NOW() AND i.due_date > NOW() - INTERVAL '30 days'), 0) AS bucket_0_30,
+             COALESCE(SUM(i.total_amount) FILTER (WHERE i.due_date <= NOW() - INTERVAL '30 days' AND i.due_date > NOW() - INTERVAL '60 days'), 0) AS bucket_31_60,
+             COALESCE(SUM(i.total_amount) FILTER (WHERE i.due_date <= NOW() - INTERVAL '60 days' AND i.due_date > NOW() - INTERVAL '90 days'), 0) AS bucket_61_90,
+             COALESCE(SUM(i.total_amount) FILTER (WHERE i.due_date <= NOW() - INTERVAL '90 days'), 0) AS bucket_90plus,
              EXTRACT(DAY FROM MAX(NOW()-i.due_date))::int AS max_overdue_days
       FROM parties p
       JOIN invoices i ON i.customer_id = p.id
@@ -1050,6 +1063,7 @@ router.get('/collections', requirePermission('finance', 'view'), async (req, res
       customer_id: r.customer_id,
       customer: r.customer,
       total_outstanding: parseFloat(r.total_outstanding),
+      bucket_not_due: parseFloat(r.bucket_not_due),
       bucket_0_30: parseFloat(r.bucket_0_30),
       bucket_31_60: parseFloat(r.bucket_31_60),
       bucket_61_90: parseFloat(r.bucket_61_90),
@@ -1062,12 +1076,17 @@ router.get('/collections', requirePermission('finance', 'view'), async (req, res
 
     const summary = {
       total_outstanding: rows.reduce((s, r) => s + r.total_outstanding, 0),
+      bucket_not_due:    rows.reduce((s, r) => s + r.bucket_not_due, 0),
       bucket_0_30:       rows.reduce((s, r) => s + r.bucket_0_30, 0),
       bucket_31_60:      rows.reduce((s, r) => s + r.bucket_31_60, 0),
       bucket_61_90:      rows.reduce((s, r) => s + r.bucket_61_90, 0),
       bucket_90plus:     rows.reduce((s, r) => s + r.bucket_90plus, 0),
       critical_count:    rows.filter(r => r.risk === 'Critical').length,
     };
+    // total_overdue is what the collections team can actually chase today.
+    // total_outstanding includes not-yet-due money and is NOT a collections target.
+    summary.total_overdue = summary.bucket_0_30 + summary.bucket_31_60
+                          + summary.bucket_61_90 + summary.bucket_90plus;
 
     res.json({ aging: rows, summary });
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -1151,7 +1170,8 @@ router.get('/strategic-alerts', requirePermission('crm', 'view'), async (req, re
     ] = await Promise.all([
       // Customers with critical tickets or 90+ day outstanding
       pool.query(`
-        SELECT DISTINCT p.name, 'Critical Customer Health' AS type,
+        SELECT DISTINCT p.id AS entity_id, 'customer' AS entity_kind, p.name,
+               'Critical Customer Health' AS type,
                'Customer health score critical - requires immediate attention' AS message
         FROM parties p
         JOIN invoices i ON i.customer_id=p.id
@@ -1161,7 +1181,8 @@ router.get('/strategic-alerts', requirePermission('crm', 'view'), async (req, re
 
       // Vendors with Blocked status or 3+ open NCRs
       pool.query(`
-        SELECT v.name, 'Critical Vendor Risk' AS type,
+        SELECT v.id AS entity_id, 'vendor' AS entity_kind, v.name,
+               'Critical Vendor Risk' AS type,
                'Vendor has open NCRs or is blocked - supply chain at risk' AS message
         FROM vendors v
         LEFT JOIN ncr_reports n ON n.vendor_id=v.id AND n.status!='Closed'
@@ -1172,7 +1193,8 @@ router.get('/strategic-alerts', requirePermission('crm', 'view'), async (req, re
 
       // Projects with margin < 5%
       pool.query(`
-        SELECT p.project_name AS name, 'Low Margin Project' AS type,
+        SELECT p.id AS entity_id, 'project' AS entity_kind, p.project_name AS name,
+               'Low Margin Project' AS type,
                'Project margin below 5% - profitability at risk' AS message
         FROM projects p
         LEFT JOIN project_cost_summary cs ON cs.project_id=p.id
@@ -1183,17 +1205,26 @@ router.get('/strategic-alerts', requirePermission('crm', 'view'), async (req, re
 
       // Collections overdue > 90 days
       pool.query(`
-        SELECT p.name, 'Collection Risk' AS type,
+        SELECT p.id AS entity_id, 'customer' AS entity_kind, p.name,
+               'Collection Risk' AS type,
                'Outstanding collection overdue 90+ days' AS message
         FROM parties p JOIN invoices i ON i.customer_id=p.id
         WHERE ${sqlInvoiceOutstanding('i.status')} AND NOW()-i.due_date > INTERVAL '90 days'
         ${cc(companyId, 'p')}
-        GROUP BY p.name LIMIT 5
+        GROUP BY p.id, p.name LIMIT 5
       `).catch(() => ({ rows: [] })),
 
       // AMC expiring in 30 days — amc_contracts has no customer_id, resolve via sales_order_id
       pool.query(`
-        SELECT COALESCE(p.name, ac.product_name) AS name, 'AMC Expiring' AS type,
+        -- Prefer the CUSTOMER (Customer360 shows the whole relationship), and fall
+        -- back to the CONTRACT itself when the AMC resolves to no party — which is
+        -- the common case here, since amc_contracts carries no customer_id and the
+        -- join runs through sales_order_id. Either way the alert is navigable;
+        -- before this it fell back to nothing and the row was inert.
+        -- ::text on both because parties.id is a uuid and amc_contracts.id is not.
+        SELECT COALESCE(p.id::text, ac.id::text) AS entity_id,
+               CASE WHEN p.id IS NOT NULL THEN 'customer' ELSE 'amc' END AS entity_kind,
+               COALESCE(p.name, ac.product_name) AS name, 'AMC Expiring' AS type,
                'AMC contract expiring within 30 days - renewal required' AS message
         FROM amc_contracts ac
         LEFT JOIN sales_orders so ON so.id=ac.sales_order_id
@@ -1204,7 +1235,10 @@ router.get('/strategic-alerts', requirePermission('crm', 'view'), async (req, re
 
       // Critical NCRs open
       pool.query(`
-        SELECT COALESCE(v.name, proj.customer_name, proj.client_name, 'Unknown') AS name,
+        SELECT COALESCE(v.id, proj.id) AS entity_id,
+               CASE WHEN v.id IS NOT NULL THEN 'vendor'
+                    WHEN proj.id IS NOT NULL THEN 'project' END AS entity_kind,
+               COALESCE(v.name, proj.customer_name, proj.client_name, 'Unknown') AS name,
                'Critical NCR Open' AS type,
                'Critical quality non-conformance report unresolved' AS message
         FROM ncr_reports n
@@ -1222,6 +1256,12 @@ router.get('/strategic-alerts', requirePermission('crm', 'view'), async (req, re
       ...overdueCollections.rows.map(r => ({ ...r, category: 'collection', severity: 'red', acknowledged: false })),
       ...expiringAMC.rows.map(r => ({ ...r, category: 'amc', severity: 'amber', acknowledged: false })),
       ...openCriticalNCR.rows.map(r => ({ ...r, category: 'quality', severity: 'red', acknowledged: false })),
+    // `id` is a synthetic render key, NOT a record id — it is the array index and
+    // means nothing outside this response. `entity_id` + `entity_kind` are what a
+    // caller can navigate with; each sub-query above now selects the real row id so
+    // an alert can open the customer/vendor/project it is actually about.
+    // entity_kind is NULL where the source row resolves to no navigable record
+    // (an AMC contract known only by product name), and the UI leaves those inert.
     ].map((a, i) => ({ ...a, id: `alert_${i}` }));
 
     res.json({
@@ -1563,6 +1603,11 @@ router.get('/manifest', requirePermission('projects', 'view'), async (req, res) 
     const measuredWinRate = closed >= 5 ? parseFloat(winRateRow.rows[0]?.won || 0) / closed : null;
     const winRate = measuredWinRate ?? 0.35;
 
+    // display_name -> product_lines.id, so a business line can link to the projects
+    // behind it. 'Unassigned' and any stale free-text opportunity product_line
+    // resolve to null here and stay unlinked — they name no row in the taxonomy.
+    const lineIdByName = Object.fromEntries(lines.rows.map(r => [r.display_name, r.id]));
+
     const manifest = [...names].map(name => {
       const proj    = projectsByBL.rows.find(r => r.business_line === name) || {};
       const revenue = parseFloat(proj.revenue || 0);
@@ -1576,6 +1621,7 @@ router.get('/manifest', requirePermission('projects', 'view'), async (req, res) 
 
       return {
         business_line:  name,
+        product_line_id: lineIdByName[name] ?? null,
         project_count:  parseInt(proj.project_count || 0),
         costed_count:   costed,
         revenue, cost, profit,

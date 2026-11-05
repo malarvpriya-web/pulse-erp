@@ -73,7 +73,7 @@ function empDisplayName(e) {
 
 /* ── component ────────────────────────────────────────────────────────────── */
 
-export default function PayslipGenerator() {
+export default function PayslipGenerator({ embedded = false } = {}) {
   const [employees,   setEmployees]   = useState([]);
   const [empSearch,   setEmpSearch]   = useState('');
   const [loadingEmps, setLoadingEmps] = useState(true);
@@ -90,18 +90,20 @@ export default function PayslipGenerator() {
   const [emailing,    setEmailing]    = useState(false);
   const [bulkEmail,   setBulkEmail]   = useState(EMPTY_BULK);
   const [msg,         setMsg]         = useState({ text: '', type: '' });
-  const [cutoffDay,   setCutoffDay]   = useState(20);
+  const [cycle,       setCycle]       = useState(null);
 
   const slipRef       = useRef(null);
   const bulkAbortRef  = useRef(false);
   const computeIdRef  = useRef(0);
   const flashTimerRef = useRef(null);
 
-  /* payroll deadline — only fires for the selected month/year */
-  const now = new Date();
-  const isCurrentMonth = month === now.getMonth() + 1 && year === now.getFullYear();
-  const payrollOverdue = isCurrentMonth && now.getDate() > cutoffDay;
-  const payrollDueSoon = isCurrentMonth && !payrollOverdue && now.getDate() >= cutoffDay - 3;
+  /* pay cycle for the selected month (server: /payroll/cycle).
+     "Overdue" = the PAY date has passed and payroll is not approved/paid.
+     It used to compare today with the attendance CUTOFF, so with cutoff 29
+     September became "overdue" on the 30th although pay day was the 25th. */
+  const payrollOverdue = cycle?.state === 'overdue' || cycle?.state === 'approved_unpaid_overdue';
+  const payrollDueSoon = cycle?.state === 'cutoff_passed';
+  const finalised      = cycle?.run_status === 'approved' || cycle?.run_status === 'paid';
 
   /* ── flash ── */
   const flash = useCallback((text, type = 'success') => {
@@ -131,12 +133,15 @@ export default function PayslipGenerator() {
 
   useEffect(() => { loadEmployees(); }, [loadEmployees]);
 
-  /* ── payroll settings ── */
+  /* ── pay cycle + run status for the selected month ── */
   useEffect(() => {
-    api.get('/settings/payroll')
-      .then(r => { if (r.data?.payroll_cutoff_day) setCutoffDay(Number(r.data.payroll_cutoff_day)); })
+    let live = true;
+    setCycle(null);
+    api.get('/payroll/cycle', { params: { month, year } })
+      .then(r => { if (live) setCycle(r.data?.data || null); })
       .catch(() => {});
-  }, []);
+    return () => { live = false; };
+  }, [month, year]);
 
   /* ── clear stale slip when params change ── */
   useEffect(() => { setSlip(null); setPdfData(null); }, [selEmployee, month, year]);
@@ -185,7 +190,10 @@ export default function PayslipGenerator() {
       }
     } catch (err) {
       if (reqId !== computeIdRef.current) return;
-      flash(err.response?.data?.error || err.message || 'Failed to compute payslip.', 'error');
+      const reasons = err.response?.data?.reasons;
+      flash(reasons?.length
+        ? `Not payable for ${MONTHS[month - 1]} ${year}: ${reasons.map(r => r.message).join('; ')}`
+        : (err.response?.data?.error || err.message || 'Failed to compute payslip.'), 'error');
     } finally {
       if (reqId === computeIdRef.current) setComputing(false);
     }
@@ -209,7 +217,9 @@ export default function PayslipGenerator() {
       doc.text(`GSTIN: ${pdfData.company.gstin}`, 105, y, { align: 'center' }); y += 5;
     }
     doc.setFontSize(12); doc.setFont('helvetica', 'bold');
-    doc.text(`PAYSLIP — ${pdfData.period.period_label}`, 105, y, { align: 'center' }); y += 10;
+    doc.text(`PAYSLIP — ${pdfData.period.period_label}`, 105, y, { align: 'center' }); y += 6;
+    if (pdfData.watermark) { doc.setTextColor(220, 38, 38); doc.text(pdfData.watermark, 105, y, { align: 'center' }); doc.setTextColor(0, 0, 0); }
+    y += 6;
     doc.setFontSize(10); doc.setFont('helvetica', 'bold');
     doc.text('Employee Details', 14, y); y += 5;
     doc.setFont('helvetica', 'normal');
@@ -245,7 +255,13 @@ export default function PayslipGenerator() {
     doc.setFontSize(12);
     doc.text(`Net Pay: ${fmtINR(pdfData.net_pay)}`, 105, y, { align: 'center' }); y += 8;
     doc.setFontSize(9); doc.setFont('helvetica', 'normal');
-    doc.text(`(${numWords(Math.round(pdfData.net_pay))} Rupees Only)`, 105, y, { align: 'center' }); y += 12;
+    doc.text(`(${numWords(Math.round(pdfData.net_pay))} Rupees Only)`, 105, y, { align: 'center' }); y += 10;
+    if (pdfData.employer_contributions?.length) {
+      doc.setFont('helvetica', 'bold'); doc.text('Employer contributions (not deducted from pay)', 14, y); y += 5;
+      doc.setFont('helvetica', 'normal');
+      pdfData.employer_contributions.forEach(c => { doc.text(c.name, 14, y); doc.text(fmtINR(c.monthly), 110, y, { align: 'right' }); y += 5; });
+      y += 4;
+    }
     doc.text('This is a computer-generated payslip. No physical signature required.', 105, y, { align: 'center' });
     doc.save(`Payslip_${pdfData.employee.code}_${pdfData.period.period_label.replace(/\s+/g, '_')}.pdf`);
     flash('PDF downloaded successfully.');
@@ -267,9 +283,17 @@ export default function PayslipGenerator() {
   };
 
   /* ── bulk email ── */
-  const openBulkEmail = () => {
-    if (!employees.length) return flash('No employees loaded.', 'error');
-    const rows = employees.map(e => ({
+  const openBulkEmail = async () => {
+    if (!finalised) return flash(`Bulk email is available only after ${MONTHS[month - 1]} ${year} payroll is approved in Run Payroll.`, 'error');
+    let released = [];
+    try {
+      const r = await api.get('/payroll', { params: { month, year, limit: 500 } });
+      released = (r.data?.data || []).filter(p => p.status === 'approved' || p.status === 'paid');
+    } catch { return flash('Could not load the approved payroll for this month.', 'error'); }
+    const ids = new Set(released.map(p => p.employee_id));
+    const recipients = employees.filter(e => ids.has(e.id));
+    if (!recipients.length) return flash('No approved payslips for this month.', 'error');
+    const rows = recipients.map(e => ({
       id: e.id,
       name: empDisplayName(e),
       dept: e.department || '—',
@@ -364,7 +388,7 @@ export default function PayslipGenerator() {
 
   /* ── render ─────────────────────────────────────────────────────────────── */
   return (
-    <PageShell dock={
+    <PageShell embedded={embedded} dock={embedded ? null :
       <PageHero
         icon={Wallet}
         eyebrow="Human Resources"
@@ -377,18 +401,28 @@ export default function PayslipGenerator() {
       {/* Header */}
 
 
-      {/* Deadline banners */}
+      <div style={bannerStyle('warning')}>
+        <strong>Preview only.</strong> This screen computes a payslip with the same inputs as Run Payroll
+        (salary revision, structure, Payroll Settings, attendance, loans) and saves nothing. The official
+        payslip is created by <strong>Payroll Center → Payroll Processing</strong> and is issued only after approval.
+        {cycle && <> {MONTHS[month - 1]} {year} payroll: <strong>{cycle.run_status || 'not generated'}</strong>.</>}
+      </div>
+
+      {/* Deadline banners — keyed off the configured PAY date */}
       {payrollOverdue && (
         <div style={bannerStyle('error')}>
-          Payroll overdue — {MONTHS[month - 1]} {year} payslips should have been
-          generated by the {cutoffDay}th. Generate now.
+          Payroll overdue — {MONTHS[month - 1]} {year} salary was due on {cycle.pay_date} and the payroll is
+          {cycle.run_status === 'approved' ? ' approved but not paid.' : ' not approved.'}
         </div>
       )}
       {payrollDueSoon && (
         <div style={bannerStyle('warning')}>
-          Payroll due soon — generate and email {MONTHS[month - 1]} {year} payslips
-          before the {cutoffDay}th.
+          Attendance cutoff ({cycle.attendance_cutoff_date}) has passed — generate and approve {MONTHS[month - 1]} {year} payroll
+          before the pay date, {cycle.pay_date}.
         </div>
+      )}
+      {cycle?.errors?.length > 0 && (
+        <div style={bannerStyle('error')}>Pay cycle configuration: {cycle.errors.join(' ')}</div>
       )}
 
       {/* Flash message */}
@@ -518,7 +552,7 @@ export default function PayslipGenerator() {
             style={btnStyle('#6B3FDB')}
             aria-label="Compute payslip"
           >
-            {computing ? 'Computing…' : 'Compute Payslip'}
+            {computing ? 'Computing…' : 'Preview Payslip'}
           </button>
 
           {slip && (
@@ -541,8 +575,9 @@ export default function PayslipGenerator() {
               </button>
               <button
                 onClick={emailPayslip}
-                disabled={emailing}
-                style={btnStyle('#0891b2')}
+                disabled={emailing || !['approved', 'paid'].includes(slip.run_status)}
+                title={['approved', 'paid'].includes(slip.run_status) ? 'Email the approved payslip' : 'Only an approved payslip can be emailed'}
+                style={{ ...btnStyle('#0891b2'), opacity: ['approved', 'paid'].includes(slip.run_status) ? 1 : 0.45 }}
                 aria-label="Email payslip to employee"
               >
                 {emailing ? 'Sending…' : 'Email Payslip'}
@@ -553,13 +588,26 @@ export default function PayslipGenerator() {
           <div style={{ marginLeft: 'auto' }}>
             <button
               onClick={openBulkEmail}
-              style={btnStyle('#6d28d9')}
+              disabled={!finalised}
+              title={finalised ? 'Email every approved payslip for this month' : 'Available after this month\'s payroll is approved'}
+              style={{ ...btnStyle('#6d28d9'), opacity: finalised ? 1 : 0.45 }}
               aria-label={`Bulk email payslips for ${MONTHS[month - 1]} ${year}`}
             >
               Bulk Email — {MONTHS[month - 1]} {year}
             </button>
           </div>
         </div>
+        {/* The disabled reasons used to live only in hover titles. */}
+        {(!finalised || (slip && !['approved', 'paid'].includes(slip.run_status))) && (
+          <p style={{ margin: '10px 0 0', fontSize: 12, color: '#92400e' }}>
+            <strong>Emailing is unavailable:</strong>{' '}
+            {!finalised
+              ? <>{MONTHS[month - 1]} {year} payroll is {cycle?.run_status ? `"${cycle.run_status}"` : 'not generated'} — payslips
+                can be emailed only after the month is approved in Payroll Processing. Until then this screen is a preview.</>
+              : <>this employee's payslip is {slip.run_status ? `"${slip.run_status}"` : 'not generated'}, not approved — only an
+                approved payslip can be emailed. Bulk Email sends the approved ones.</>}
+          </p>
+        )}
       </div>
 
       {/* ── Bulk Email Panel ── */}
@@ -716,6 +764,9 @@ export default function PayslipGenerator() {
             <div style={{ fontSize: 16, fontWeight: 700, color: '#6B3FDB', marginTop: 8 }}>
               PAYSLIP FOR {pdfData.period.period_label.toUpperCase()}
             </div>
+            {pdfData.watermark && (
+              <div style={{ fontSize: 13, fontWeight: 700, color: '#dc2626', marginTop: 4 }}>{pdfData.watermark}</div>
+            )}
           </div>
 
           {/* Employee details */}
@@ -747,7 +798,6 @@ export default function PayslipGenerator() {
                   <tr style={{ background: '#f5f3ff' }}>
                     <th style={colHStyle('#4c1d95', 'left')}>Component</th>
                     <th style={colHStyle('#4c1d95', 'right')}>Monthly</th>
-                    <th style={colHStyle('#4c1d95', 'right')}>YTD</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -755,13 +805,11 @@ export default function PayslipGenerator() {
                     <tr key={i} style={{ borderBottom: '1px solid #f0ebff' }}>
                       <td style={tdL}>{e.name}</td>
                       <td style={{ ...tdR, fontWeight: 500 }}>{fmtINR(e.monthly)}</td>
-                      <td style={{ ...tdR, color: '#6b7280', fontSize: 12 }}>{fmtINR(e.ytd)}</td>
                     </tr>
                   ))}
                   <tr style={{ background: '#f5f3ff', fontWeight: 700 }}>
                     <td style={{ ...tdL, color: '#4c1d95' }}>Gross</td>
                     <td style={{ ...tdR, color: '#16a34a' }}>{fmtINR(pdfData.gross)}</td>
-                    <td style={{ ...tdR, color: '#6b7280', fontSize: 12 }}>{fmtINR(pdfData.ytd?.gross)}</td>
                   </tr>
                 </tbody>
               </table>
@@ -775,7 +823,6 @@ export default function PayslipGenerator() {
                   <tr style={{ background: '#fef2f2' }}>
                     <th style={colHStyle('#dc2626', 'left')}>Component</th>
                     <th style={colHStyle('#dc2626', 'right')}>Monthly</th>
-                    <th style={colHStyle('#dc2626', 'right')}>YTD</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -783,18 +830,29 @@ export default function PayslipGenerator() {
                     <tr key={i} style={{ borderBottom: '1px solid #fef2f2' }}>
                       <td style={tdL}>{d.name}</td>
                       <td style={{ ...tdR, color: '#dc2626', fontWeight: 500 }}>{fmtINR(d.monthly)}</td>
-                      <td style={{ ...tdR, color: '#6b7280', fontSize: 12 }}>{fmtINR(d.ytd)}</td>
                     </tr>
                   ))}
                   <tr style={{ background: '#fef2f2', fontWeight: 700 }}>
                     <td style={{ ...tdL, color: '#dc2626' }}>Total Deductions</td>
                     <td style={{ ...tdR, color: '#dc2626' }}>{fmtINR(pdfData.total_deductions)}</td>
-                    <td style={{ ...tdR, color: '#6b7280', fontSize: 12 }}>—</td>
                   </tr>
                 </tbody>
               </table>
             </div>
           </div>
+
+          {pdfData.employer_contributions?.length > 0 && (
+            <div style={{ background: '#f9fafb', borderRadius: 8, padding: 14, marginBottom: 16, fontSize: 13 }}>
+              <div style={{ fontWeight: 700, color: '#374151', marginBottom: 6 }}>
+                EMPLOYER CONTRIBUTIONS <span style={{ fontWeight: 400, color: '#6b7280' }}>— employer cost, not deducted from pay</span>
+              </div>
+              {pdfData.employer_contributions.map((c, i) => (
+                <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '2px 0' }}>
+                  <span style={{ color: '#6b7280' }}>{c.name}</span><span>{fmtINR(c.monthly)}</span>
+                </div>
+              ))}
+            </div>
+          )}
 
           {/* Net pay */}
           <div style={{
@@ -820,7 +878,6 @@ export default function PayslipGenerator() {
                 <span>Tax Regime: <strong>{pdfData.form16_summary.tax_regime?.toUpperCase()}</strong></span>
                 <span>Annual Taxable Income: <strong>{fmtINR(pdfData.form16_summary.annual_taxable_income)}</strong></span>
                 <span>Annual Tax Liability: <strong>{fmtINR(pdfData.form16_summary.annual_tax)}</strong></span>
-                <span>YTD TDS: <strong>{fmtINR(pdfData.ytd?.tds)}</strong></span>
               </div>
             </div>
           )}

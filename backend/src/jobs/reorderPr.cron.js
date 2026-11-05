@@ -1,8 +1,7 @@
 import cron from 'node-cron';
 import pool from '../config/db.js';
 import notificationsRepository from '../modules/notifications/repositories/notifications.repository.js';
-import purchaseRequestRepo from '../modules/procurement/repositories/purchaseRequest.repository.js';
-import advancedInventoryRepository from '../modules/inventory/repositories/advancedInventory.repository.js';
+import { convertSuggestionToPurchaseRequest } from '../modules/inventory/services/suggestionToPr.service.js';
 import { scheduled } from './jobRun.js';
 
 // Automation Opportunity Audit §5.1 — "Inventory reorder -> auto-draft
@@ -18,11 +17,25 @@ import { scheduled } from './jobRun.js';
 // button runs, on a schedule instead of a click — reusing it exactly rather
 // than re-deriving reorder logic against inventory_items directly.
 //
-// Dedup is structural, not bolted on: a suggestion converted here flips to
-// status='converted_to_pr' inside the same transaction, and
-// checkAndCreateAlerts() already skips creating a new suggestion for an
-// item/warehouse pair that still has one 'pending' — so nothing can be
-// redrafted.
+// ⚠ THE DEDUP CLAIM THAT USED TO BE HERE WAS WRONG, and it is worth recording why
+// because it reads as sound. It said: "a suggestion converted here flips to
+// status='converted_to_pr' inside the same transaction, and checkAndCreateAlerts()
+// already skips creating a new suggestion for an item/warehouse pair that still
+// has one 'pending' — so nothing can be redrafted."
+//
+// The second half is true and does prevent a duplicate SUGGESTION. The first half
+// does not prevent a duplicate REQUISITION. A status flip inside a transaction only
+// excludes a concurrent writer if that writer reads the row under a lock, and
+// neither this job nor the Convert button did: both took a plain SELECT. In READ
+// COMMITTED (this database's default) two transactions both see 'pending', both
+// insert a requisition, and the second UPDATE overwrites `converted_to_pr_id` —
+// leaving the FIRST requisition in the register attributable to nothing. The cron
+// racing a human's click is the realistic path, and two app instances both running
+// crons is the other.
+//
+// Dedup is NOW structural, in the database: `uq_pr_source_suggestion` (migration
+// 20260926000011) makes a second requisition for one suggestion a unique violation.
+// See suggestionToPr.service.js.
 
 async function getPendingSuggestionsByCompany() {
   const { rows } = await pool.query(
@@ -89,53 +102,45 @@ async function getReceivers(companyId) {
   return rows.map((r) => r.id);
 }
 
+/**
+ * Draft one requisition from one suggestion.
+ *
+ * ⚠ THIS NO LONGER OWNS THE TRANSACTION. It used to hold a near-copy of the
+ * Convert button's handler — the same getNextNumber → create → createItem →
+ * recomputeTotal → convertSuggestionToPR sequence, written out twice. Both copies
+ * read the suggestion without a lock and neither re-checked its status, so the
+ * dedup claim in this file's header (the status flip "happens inside the
+ * transaction") did not hold: in READ COMMITTED two transactions both see
+ * 'pending' and both commit. The cron racing a human's click, or two app
+ * instances both running crons, produced two requisitions for one reorder signal
+ * — a duplicate order that nothing pointed at.
+ *
+ * `inventory/services/suggestionToPr.service.js` is now the one implementation,
+ * and it takes the row lock, re-checks after it, and is backed by
+ * `uq_pr_source_suggestion`. This function keeps the two things that are genuinely
+ * the CRON's and not the button's:
+ *
+ *   - `status: 'draft'`. The notification below tells the reviewer these arrive as
+ *     drafts to review before submitting for approval. Without this they are born
+ *     'pending_approval' (purchaseRequestRepo.PR_INITIAL_STATUS) — straight into
+ *     the approval queue, skipping the review this job says it wants. The Convert
+ *     button deliberately keeps the repository default; that difference is real.
+ *   - the auto-drafted notes wording.
+ *
+ * `created: false` (the suggestion was already converted, by a human's click
+ * between this job's SELECT and this call) is returned as `null` so the caller can
+ * count it as skipped rather than drafted, instead of double-counting somebody
+ * else's requisition as this job's output.
+ */
 async function draftPrFromSuggestion(suggestion, requesterEmployeeId, companyId) {
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    // companyId, and the client, both matter:
-    //  - getNextNumber() without a company falls back to the built-in 'PR'
-    //    prefix, ignoring the pr_prefix the company configured;
-    //  - without the transaction client the number is drawn on a different
-    //    connection, so it is not part of this unit of work.
-    const prNumber = await purchaseRequestRepo.getNextNumber(client, companyId || null);
-    const pr = await purchaseRequestRepo.create(client, {
-      request_number: prNumber,
-      requested_by_employee_id: requesterEmployeeId,
-      request_date: new Date(),
-      // company_id was never passed, so every auto-drafted requisition was
-      // created with a NULL company. findAll() scopes on pr.company_id (it was
-      // changed to do so in the 2026-09-02 pass, precisely because scoping via
-      // the requester's employee row hid every PR with no requester) — so a
-      // NULL-company requisition is invisible to EVERY company-scoped user.
-      // The reorder job's whole output was landing where nobody could see it,
-      // while its notification told them there were drafts waiting for review.
-      company_id: companyId || null,
-      // The notification below tells the reviewer these arrive "status: draft"
-      // and asks them to review before submitting for approval. Without an
-      // explicit status they were born 'pending_approval' — straight into the
-      // approval queue, skipping the review this job says it wants. Say which
-      // one is meant rather than letting the repository default decide.
-      status: 'draft',
-      notes: `Auto-drafted: ${suggestion.item_code || suggestion.item_name} fell to or below its reorder point.`,
-    });
-    await purchaseRequestRepo.createItem(client, {
-      pr_id: pr.id,
-      item_id: suggestion.item_id,
-      item_name: suggestion.item_name,
-      quantity: suggestion.suggested_quantity,
-      expected_price: suggestion.standard_cost || 0,
-    });
-    await purchaseRequestRepo.recomputeTotal(client, pr.id);
-    await advancedInventoryRepository.convertSuggestionToPR(suggestion.id, pr.id, client);
-    await client.query('COMMIT');
-    return pr;
-  } catch (err) {
-    await client.query('ROLLBACK');
-    throw err;
-  } finally {
-    client.release();
-  }
+  const { created, purchase_request } = await convertSuggestionToPurchaseRequest({
+    suggestionId: suggestion.id,
+    companyId: companyId || null,
+    requestedByEmployeeId: requesterEmployeeId,
+    status: 'draft',
+    notes: `Auto-drafted: ${suggestion.item_code || suggestion.item_name} fell to or below its reorder point.`,
+  });
+  return created ? purchase_request : null;
 }
 
 async function insertSummaryReminder(userId, companyId, count) {
@@ -183,8 +188,13 @@ async function runReorderPrCheck() {
     let drafted = 0;
     for (const suggestion of suggestions) {
       try {
-        await draftPrFromSuggestion(suggestion, requesterEmployeeId, companyId || null);
-        drafted++;
+        const pr = await draftPrFromSuggestion(suggestion, requesterEmployeeId, companyId || null);
+        // null = already converted between this run's SELECT and now (a human
+        // clicked Convert). Counted as skipped, not drafted: the notification
+        // below quotes `drafted`, and telling a reviewer there are N drafts
+        // waiting when one of them is somebody else's already-submitted
+        // requisition is how the old double-count read.
+        if (pr) drafted++; else counters.skipped++;
       } catch (err) {
         counters.failed++;
         console.error(`[reorderPrCron] failed to draft PR for suggestion ${suggestion.id} (company ${companyId}):`, err.message);

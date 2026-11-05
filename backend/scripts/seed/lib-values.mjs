@@ -189,7 +189,29 @@ const CHARGE_RATE = /(^|_)(gst|cgst|sgst|igst|utgst|cess|vat|tax|tds|tcs|duty|wd
 // `rate_with_pan` / `rate_without_pan` (TDS/TCS masters) and any `*_rate_pct`.
 const NAMED_PCT_RATE = /^rate_(with|without)_pan$|^rate_pct$|_rate_pct$/;
 
-const PCT_RATE = (n) => PROPORTION_RATE.test(n) || CHARGE_RATE.test(n) || NAMED_PCT_RATE.test(n);
+// The `_pct` twin of CHARGE_RATE, and the reason 20260917000004 exists.
+//
+// CHARGE_RATE above rescued the tax family from the money branch, but only for
+// names ending in `_rate`. Their `_pct` / `_percentage` spellings kept falling
+// through to the generic percentage branch in numFor(), which returns a ladder
+// of 55, 61.5, 68, 74.5, 81 — and that ladder went into `discount_pct`,
+// `tax_pct`, `commission_pct`, `margin_pct` and `increment_pct_*` across 28
+// columns in the 2026-08-20 seed run.
+//
+// A seeded 55-81% is harmless in a column like `score_pct` or `on_time_pct`,
+// where it reads as an ordinary figure. In a column that PRICES something it is
+// not: an 81% discount on item_vendor_prices turned a ₹1,950.50 part into a
+// ₹370.60 "best price" and made Component 360 report a 2,328% price spread and
+// award the wrong vendor. The defect is semantic, not numeric — the value is
+// well-formed, which is exactly why no range CHECK caught it and why the fix
+// has to be here, at the point the number is invented.
+//
+// These names all mean "a percentage OF some base amount", so they take the
+// same modest 12-69.5% band the `_rate` family already uses.
+const CHARGE_PCT = /(^|_)(gst|cgst|sgst|igst|utgst|cess|vat|tax|tds|tcs|duty|depreciation|deduction|commission|brokerage|discount|rebate|markup|margin|interest|penalty|surcharge|increment|revision|contingency|allocation)_(pct|percentage)(_|$)/;
+
+const PCT_RATE = (n) =>
+  PROPORTION_RATE.test(n) || CHARGE_RATE.test(n) || NAMED_PCT_RATE.test(n) || CHARGE_PCT.test(n);
 
 function numFor(n, i, rng) {
   // An FX rate is neither a percentage nor a unit price. `exchange_rate` and

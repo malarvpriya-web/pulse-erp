@@ -2,6 +2,7 @@
 // Phase 49H — Customer Risk Center (Section 3) — CEO Executive View
 // Shows customers at risk sorted by highest risk first
 import { AlertTriangle, Clock, FileText, Ticket, Shield } from 'lucide-react';
+import { drillProps, toCustomer } from './drillThrough';
 
 const fmtL = (n) => {
   const v = parseFloat(n || 0);
@@ -46,7 +47,7 @@ function MetricPill({ icon: Icon, value, color, label }) {
   );
 }
 
-export default function CustomerRiskPanel({ atRisk = [] }) {
+export default function CustomerRiskPanel({ atRisk = [], onNavigate }) {
   if (atRisk.length === 0) {
     return (
       <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 14, padding: 40, textAlign: 'center' }}>
@@ -96,7 +97,11 @@ export default function CustomerRiskPanel({ atRisk = [] }) {
                 const rowBg = c.risk_level === 'Critical' ? '#fff8f8'
                   : c.risk_level === 'High' ? '#fffdf0' : i % 2 === 0 ? '#fff' : '#fafafa';
                 return (
-                  <tr key={c.id} style={{ borderBottom: '1px solid #f3f4f6', background: rowBg }}>
+                  <tr
+                    key={c.id}
+                    {...drillProps(onNavigate && c.id ? () => onNavigate(...toCustomer(c.id)) : null, c.name)}
+                    style={{ borderBottom: '1px solid #f3f4f6', background: rowBg, cursor: onNavigate && c.id ? 'pointer' : 'default' }}
+                  >
                     <td style={{ padding: '10px 14px' }}>
                       <div style={{ fontWeight: 700, color: '#111827' }}>{c.name}</div>
                       {c.city && <div style={{ fontSize: 10, color: '#9ca3af' }}>{c.city}{c.state ? `, ${c.state}` : ''}</div>}

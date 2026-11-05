@@ -40,7 +40,14 @@ export default function SuccessionCenter({ setPage }) {
         actions={TABS.map(({ id, label, icon: Icon }) => {
             const on = active === id;
             return (
-              <button className="plh-cta" key={id} onClick={() => go(id)}>
+              <button
+                key={id}
+                type="button"
+                role="tab"
+                aria-selected={on}
+                className={`plh-cta${on ? '' : ' plh-cta--ghost'}`}
+                onClick={() => go(id)}
+              >
                 <Icon size={14} />{label}
               </button>
             );
@@ -48,7 +55,12 @@ export default function SuccessionCenter({ setPage }) {
       />
     }>
 
-      <div>
+      {/* Every tab body is a full PageShell page. Without `.plh-tabpanel` its
+          sticky, opaque dock froze over this hub's tab strip once the body
+          scrolled, so elementFromPoint at each tab returned the child's hero and
+          Planning (and every other tab) stopped responding until scrolled back
+          up. Same host-side guard TabHub uses — see pulse-hero.css. */}
+      <div className="plh-tabpanel" role="tabpanel">
         {active === 'planning'  && <SuccessionPlanning />}
         {active === 'pipeline'  && <LeadershipPipeline />}
         {active === 'plans'     && <DevelopmentPlans />}

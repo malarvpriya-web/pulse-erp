@@ -24,11 +24,18 @@ class InvoiceRepository {
   }
 
   async createItem(client, data) {
-    const { invoice_id, description, quantity, unit_price, tax_rate, amount } = data;
+    const { invoice_id, description, quantity, unit_price, tax_rate, amount,
+            item_id = null, pick_list_line_id = null, unit_cost = null,
+            cogs_qty = null, sales_order_item_id = null } = data;
+    // item_id / pick_list_line_id / unit_cost are set only for a line that bills
+    // shipped goods (migration 20261027000003; validated by invoiceService and
+    // by trg_invoice_items_fulfilment_guard). A service line leaves them NULL.
     const result = await client.query(
-      `INSERT INTO invoice_items (invoice_id, description, quantity, unit_price, tax_rate, amount) 
-       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-      [invoice_id, description, quantity, unit_price, tax_rate, amount]
+      `INSERT INTO invoice_items (invoice_id, description, quantity, unit_price, tax_rate, amount,
+                                  item_id, pick_list_line_id, unit_cost, cogs_qty, sales_order_item_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
+      [invoice_id, description, quantity, unit_price, tax_rate, amount,
+       item_id, pick_list_line_id, unit_cost, cogs_qty, sales_order_item_id]
     );
     return result.rows[0];
   }

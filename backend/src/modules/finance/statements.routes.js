@@ -8,6 +8,8 @@ import { Router } from 'express';
 import pool from './db.js';
 import { requirePermission } from '../../middlewares/auth.middleware.js';
 import { companyOf } from '../../shared/scope.js';
+import { computeBalanceSheet } from './services/balanceSheet.service.js';
+import { toCsvObjects } from '../../shared/csv.js';
 
 const router = Router();
 
@@ -142,154 +144,63 @@ router.get('/income-statement', requirePermission('finance', 'view'), async (req
 // ────────────────────────────────────────────────────────────────────────────
 // GET /statements/balance-sheet
 // ────────────────────────────────────────────────────────────────────────────
+// Delegates to the one dated GL snapshot (balanceSheet.service.js). This
+// handler used to read AR, AP and cash from the CURRENT state of invoices,
+// bills and bank_accounts with no as-of predicate, while taking inventory, GST,
+// TDS and salary from the GL as at fyEnd — so half the statement moved with the
+// FY selector and half stayed at today. It then derived
+//
+//     equity = totalAssets - currentLiab - nonCurrentLiab
+//
+// which made `balanced: true` a tautology rather than a check, hardcoded
+// long-term liabilities to zero, and summed bills.amount for AP instead of the
+// unpaid balance. The response shape below is unchanged so existing callers
+// keep working; only the numbers behind it are now real.
 router.get('/balance-sheet', requirePermission('finance', 'view'), async (req, res) => {
   try {
     const { fyEnd } = fyRange(req.query);
     const cid = companyOf(req);
+    const bs = await computeBalanceSheet(pool, { asOfDate: fyEnd, companyId: cid });
 
-    const [arRow, apRow, cashRow, fixedRow, invRow, gstItcRow, gstPayRow, tdsPayRow, salaryPayRow] = await Promise.all([
-      // Accounts Receivable
-      q1(`SELECT COALESCE(SUM(total_amount - COALESCE(paid_amount,0)),0) AS ar
-          FROM invoices WHERE status NOT IN ('paid','cancelled','draft') AND company_id = $1`, [cid]),
+    const items = (list) => list
+      .filter(a => Math.abs(a.balance) > 0.005)
+      .map(a => ({ name: a.name, value: a.balance }));
 
-      // Accounts Payable
-      q1(`SELECT COALESCE(SUM(amount),0) AS ap
-          FROM bills WHERE status NOT IN ('paid','cancelled','draft') AND company_id = $1`, [cid]),
-
-      // Cash (bank accounts balances)
-      q1(`SELECT COALESCE(SUM(current_balance),0) AS cash FROM bank_accounts WHERE company_id = $1`, [cid]),
-
-      // Fixed Assets
-      q1(`SELECT
-            COALESCE(SUM(cost),0)                       AS gross_assets,
-            COALESCE(SUM(accumulated_depreciation),0)   AS accum_dep
-          FROM fixed_assets WHERE status != 'disposed' AND company_id = $1`, [cid]),
-
-      // Inventory (GL account 1030 Finished Goods + 1031 WIP + 1032 Raw Materials)
-      q1(`SELECT COALESCE(SUM(jl.debit - jl.credit), 0) AS inventory
-          FROM journal_lines jl
-          JOIN journal_entries je ON je.id = jl.entry_id
-          JOIN chart_of_accounts coa ON coa.id = jl.account_id
-          WHERE je.status = 'posted' AND DATE(je.entry_date) <= $1
-            AND coa.code IN ('1030','1031','1032')
-            AND jl.company_id = $2`, [fyEnd, cid]),
-
-      // GST Input Tax Credit (ITC) — net balance in ITC accounts 1020/1021/1022
-      q1(`SELECT COALESCE(SUM(jl.debit - jl.credit), 0) AS gst_itc
-          FROM journal_lines jl
-          JOIN journal_entries je ON je.id = jl.entry_id
-          JOIN chart_of_accounts coa ON coa.id = jl.account_id
-          WHERE je.status = 'posted' AND DATE(je.entry_date) <= $1
-            AND coa.code IN ('1020','1021','1022')
-            AND jl.company_id = $2`, [fyEnd, cid]),
-
-      // GST Payable — credit balance in GST output accounts 2010/2011/2012
-      q1(`SELECT COALESCE(SUM(jl.credit - jl.debit), 0) AS gst_payable
-          FROM journal_lines jl
-          JOIN journal_entries je ON je.id = jl.entry_id
-          JOIN chart_of_accounts coa ON coa.id = jl.account_id
-          WHERE je.status = 'posted' AND DATE(je.entry_date) <= $1
-            AND coa.code IN ('2010','2011','2012')
-            AND jl.company_id = $2`, [fyEnd, cid]),
-
-      // TDS Payable — credit balance in TDS payable account 2030
-      q1(`SELECT COALESCE(SUM(jl.credit - jl.debit), 0) AS tds_payable
-          FROM journal_lines jl
-          JOIN journal_entries je ON je.id = jl.entry_id
-          JOIN chart_of_accounts coa ON coa.id = jl.account_id
-          WHERE je.status = 'posted' AND DATE(je.entry_date) <= $1
-            AND coa.code = '2030'
-            AND jl.company_id = $2`, [fyEnd, cid]),
-
-      // Salary Payable — credit balance in account 2040
-      q1(`SELECT COALESCE(SUM(jl.credit - jl.debit), 0) AS salary_payable
-          FROM journal_lines jl
-          JOIN journal_entries je ON je.id = jl.entry_id
-          JOIN chart_of_accounts coa ON coa.id = jl.account_id
-          WHERE je.status = 'posted' AND DATE(je.entry_date) <= $1
-            AND coa.code = '2040'
-            AND jl.company_id = $2`, [fyEnd, cid]),
-    ]);
-
-    const ar           = n(arRow.ar);
-    const ap           = n(apRow.ap);
-    const cash         = n(cashRow.cash);
-    const netFixed     = n(fixedRow.gross_assets) - n(fixedRow.accum_dep);
-    const inventory    = Math.max(0, n(invRow.inventory));
-    const gstItc       = Math.max(0, n(gstItcRow.gst_itc));
-    const gstPayable   = Math.max(0, n(gstPayRow.gst_payable));
-    const tdsPayable   = Math.max(0, n(tdsPayRow.tds_payable));
-    const salaryPayable= Math.max(0, n(salaryPayRow.salary_payable));
-
-    const currentAssets    = cash + ar + inventory + gstItc;
-    const nonCurrentAssets = netFixed;
-    const totalAssets      = currentAssets + nonCurrentAssets;
-
-    const currentLiab    = ap + gstPayable + tdsPayable + salaryPayable;
-    const nonCurrentLiab = 0;   // no long-term debt table yet
-    const equity         = totalAssets - currentLiab - nonCurrentLiab;
-
-    const totalLiab  = currentLiab + nonCurrentLiab + Math.max(equity, 0);
-    const balanced   = Math.abs(totalAssets - totalLiab) < 1;
-    const variance   = totalAssets - totalLiab;
-
-    const currentAssetItems = [
-      { name: 'Cash & Bank',          value: cash },
-      { name: 'Accounts Receivable',  value: ar },
-    ];
-    if (inventory > 0)  currentAssetItems.push({ name: 'Inventory',          value: inventory });
-    if (gstItc > 0)     currentAssetItems.push({ name: 'GST Input Tax Credit', value: gstItc });
-
-    const currentLiabItems = [
-      { name: 'Accounts Payable',     value: ap },
-    ];
-    if (gstPayable > 0)    currentLiabItems.push({ name: 'GST Payable',     value: gstPayable });
-    if (tdsPayable > 0)    currentLiabItems.push({ name: 'TDS Payable',     value: tdsPayable });
-    if (salaryPayable > 0) currentLiabItems.push({ name: 'Salary Payable',  value: salaryPayable });
+    const currentAssets = bs.total_current_assets;
+    const currentLiab   = bs.total_current_liabilities;
+    const equityItems   = items(bs.equity_accounts);
+    if (Math.abs(bs.retained_earnings) > 0.005) {
+      equityItems.push({ name: 'Retained Earnings (prior years)', value: bs.retained_earnings });
+    }
 
     res.json({
-      balanced,
-      variance,
+      balanced: bs.balanced,
+      variance: bs.variance,
+      as_of_date: bs.as_of_date,
       ratios: {
         currentRatio:   currentLiab > 0 ? parseFloat((currentAssets / currentLiab).toFixed(2)) : null,
-        debtToEquity:   equity > 0       ? parseFloat((currentLiab / equity).toFixed(2)) : null,
+        debtToEquity:   bs.total_equity > 0
+          ? parseFloat(((currentLiab + bs.total_long_term_liabilities) / bs.total_equity).toFixed(2))
+          : null,
         workingCapital: currentAssets - currentLiab,
       },
       assets: {
-        total: totalAssets,
-        current: {
-          total: currentAssets,
-          items: currentAssetItems,
-        },
-        nonCurrent: {
-          total: nonCurrentAssets,
-          items: [
-            { name: 'Fixed Assets (Net)',   value: netFixed },
-          ],
-        },
+        total: bs.total_assets,
+        current:    { total: currentAssets,          items: items(bs.current_assets) },
+        nonCurrent: { total: bs.total_fixed_assets,  items: items(bs.fixed_assets) },
       },
       liabilities: {
-        total: totalLiab,
-        current: {
-          total: currentLiab,
-          items: currentLiabItems,
-        },
-        nonCurrent: {
-          total: nonCurrentLiab,
-          items: [],
-        },
-        equity: {
-          total: Math.max(equity, 0),
-          items: [
-            { name: 'Retained Earnings',    value: Math.max(equity, 0) },
-          ],
-        },
+        total: bs.total_liabilities_equity,
+        current:    { total: currentLiab,                        items: items(bs.current_liabilities) },
+        nonCurrent: { total: bs.total_long_term_liabilities,     items: items(bs.long_term_liabilities) },
+        equity:     { total: bs.total_equity,                    items: equityItems },
       },
     });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.status || 500).json({ error: e.message });
   }
 });
+
 
 // ────────────────────────────────────────────────────────────────────────────
 // GET /statements/cash-flow
@@ -303,7 +214,11 @@ router.get('/cash-flow', requirePermission('finance', 'view'), async (req, res) 
       q1(`SELECT COALESCE(SUM(amount),0) AS total FROM receipts  WHERE DATE(receipt_date) BETWEEN $1 AND $2 AND company_id = $3`, [fyStart, fyEnd, cid]),
       q1(`SELECT COALESCE(SUM(amount),0) AS total FROM payments  WHERE DATE(payment_date) BETWEEN $1 AND $2 AND company_id = $3`, [fyStart, fyEnd, cid]),
       q1(`SELECT COALESCE(SUM(amount),0) AS total FROM expense_claims  WHERE DATE(created_at)   BETWEEN $1 AND $2 AND status = 'approved' AND company_id = $3`, [fyStart, fyEnd, cid]),
-      q1(`SELECT COALESCE(SUM(cost),0)   AS total FROM fixed_assets WHERE DATE(purchase_date) BETWEEN $1 AND $2 AND company_id = $3`, [fyStart, fyEnd, cid]),
+      // fixed_assets has no `cost` column — it is `purchase_cost`. This read 500'd
+      // on both /cash-flow and /export/cash-flow from the day the failQuery hardening
+      // above stopped swallowing errors, which is exactly what that hardening is for:
+      // before it, capex silently read 0 and the statement rendered as if balanced.
+      q1(`SELECT COALESCE(SUM(purchase_cost),0) AS total FROM fixed_assets WHERE DATE(purchase_date) BETWEEN $1 AND $2 AND company_id = $3`, [fyStart, fyEnd, cid]),
     ]);
 
     const inflow   = n(receiptsRow.total);
@@ -552,11 +467,15 @@ router.get('/ratios', requirePermission('finance', 'view'), async (req, res) => 
     const { fyStart, fyEnd } = fyRange(req.query);
     const cid = companyOf(req);
 
-    const [arRow, apRow, cashRow, fixedRow, revRow, expRow, cogsRow] = await Promise.all([
-      q1(`SELECT COALESCE(SUM(total_amount - COALESCE(paid_amount,0)),0) AS ar FROM invoices WHERE status NOT IN ('paid','cancelled','draft') AND company_id = $1`, [cid]),
-      q1(`SELECT COALESCE(SUM(amount),0) AS ap FROM bills WHERE status NOT IN ('paid','cancelled','draft') AND company_id = $1`, [cid]),
-      q1(`SELECT COALESCE(SUM(current_balance),0) AS cash FROM bank_accounts WHERE company_id = $1`, [cid]),
-      q1(`SELECT COALESCE(SUM(cost - COALESCE(accumulated_depreciation,0)),0) AS net FROM fixed_assets WHERE status != 'disposed' AND company_id = $1`, [cid]),
+    // Balance-sheet components come from the SAME dated GL snapshot the balance
+    // sheet itself renders, so a ratio and the statement it is computed from can
+    // no longer disagree. They used to be read from the CURRENT state of
+    // invoices, bills, bank_accounts and fixed_assets with no as-of predicate —
+    // so picking a past FY moved revenue and COGS but left every balance-sheet
+    // input at today's values, silently mixing two dates in one ratio.
+    const bs = await computeBalanceSheet(pool, { asOfDate: fyEnd, companyId: cid });
+
+    const [revRow, expRow, cogsRow] = await Promise.all([
       q1(`SELECT COALESCE(SUM(CASE WHEN status NOT IN ('draft','cancelled') THEN total_amount ELSE 0 END),0) AS revenue FROM invoices WHERE DATE(invoice_date) BETWEEN $1 AND $2 AND company_id = $3`, [fyStart, fyEnd, cid]),
       q1(`SELECT COALESCE(SUM(amount),0) AS expenses FROM expense_claims WHERE DATE(created_at) BETWEEN $1 AND $2 AND status='approved' AND company_id = $3`, [fyStart, fyEnd, cid]),
 
@@ -574,23 +493,31 @@ router.get('/ratios', requirePermission('finance', 'view'), async (req, res) => 
             AND jl.company_id = $3`, [fyStart, fyEnd, cid]),
     ]);
 
-    const ar       = n(arRow.ar);
-    const ap       = n(apRow.ap);
-    const cash     = n(cashRow.cash);
-    const netFixed = n(fixedRow.net);
     const revenue  = n(revRow.revenue);
     const expenses = n(expRow.expenses);
     const cogs     = n(cogsRow.cogs);
 
-    const currentAssets = cash + ar;
+    // Named from the snapshot's account groups rather than from single tables.
+    // `currentAssets` now includes inventory, GST input credit and every other
+    // current asset — it used to be cash + AR only, which made the current and
+    // quick ratios numerically identical and understated both.
+    const currentAssets = bs.total_current_assets;
+    const netFixed      = bs.total_fixed_assets;
+    const totalAssets   = bs.total_assets;
+    // Total current liabilities, not accounts payable alone: GST, TDS and
+    // salary payable are obligations too and were simply missing.
+    const currentLiab   = bs.total_current_liabilities;
+    const totalDebt     = bs.total_current_liabilities + bs.total_long_term_liabilities;
+    const ar            = bs.current_assets.filter(a => a.code === '1010').reduce((t, a) => t + a.balance, 0);
+    const cash          = bs.current_assets.filter(a => a.code === '1001' || a.code === '1002').reduce((t, a) => t + a.balance, 0);
+    const inventory     = bs.current_assets.filter(a => ['1030','1031','1032'].includes(a.code)).reduce((t, a) => t + a.balance, 0);
+    const ap            = bs.current_liabilities.filter(a => a.code === '2001').reduce((t, a) => t + a.balance, 0);
 
-    // Denominators are NOT clamped to 1 any more. Clamping turned an undefined
-    // ratio (no assets, no equity, negative equity) into a confident-looking
-    // number computed against ₹1 — ROE on a ₹0 book read as the whole profit as
-    // a percentage. The sd()/sp() helpers below already return null → 'N/A'
-    // when a denominator is not positive, which is the honest answer.
-    const totalAssets   = currentAssets + netFixed;
-    const equity        = currentAssets + netFixed - ap;
+    // Equity is the snapshot's summed equity, never assets-minus-liabilities.
+    // Denominators are NOT clamped to 1: clamping turned an undefined ratio
+    // (no assets, no equity, negative equity) into a confident-looking number
+    // computed against one rupee. sd()/sp() return null → 'N/A' instead.
+    const equity        = bs.total_equity;
     const grossProfit   = revenue - cogs;
     const netProfit     = grossProfit - expenses;
 
@@ -612,16 +539,16 @@ router.get('/ratios', requirePermission('finance', 'view'), async (req, res) => 
       return 'risk';
     };
 
-    const _cr  = sd(currentAssets, ap);
-    const _qr  = sd(cash + ar, ap);
-    const _csr = sd(cash, ap);
+    const _cr  = sd(currentAssets, currentLiab);
+    const _qr  = sd(currentAssets - inventory, currentLiab);
+    const _csr = sd(cash, currentLiab);
     const _gm  = sp(grossProfit, revenue);
     const _nm  = sp(netProfit, revenue);
     const _roa = sp(netProfit, totalAssets);
     const _roe = sp(netProfit, equity);
     const _art = ar > 0 ? parseFloat((revenue / ar).toFixed(1)) : null;
     const _at  = sd(revenue, totalAssets);
-    const _de  = sd(ap, equity);
+    const _de  = sd(totalDebt, equity);
     const _er  = sp(equity, totalAssets);
 
     const ratios = {
@@ -690,7 +617,7 @@ router.get('/ratios', requirePermission('finance', 'view'), async (req, res) => 
           name: 'Debt/Equity', value: _de, benchmark: 2.0, unit: 'x',
           status: ratioStatus(_de, 2.0, true),
           description: 'Financial leverage — debt vs. shareholder equity.',
-          components: { 'Total Debt (AP)': fmt(ap), 'Equity': fmt(equity) },
+          components: { 'Total Liabilities': fmt(totalDebt), 'Equity': fmt(equity) },
         },
         {
           name: 'Equity Ratio', value: _er, benchmark: 50, unit: '%',
@@ -713,22 +640,11 @@ router.get('/ratios', requirePermission('finance', 'view'), async (req, res) => 
 // GET /statements/export/cash-flow         — CSV download
 // ────────────────────────────────────────────────────────────────────────────
 
-function toCSV(rows) {
-  if (!rows || rows.length === 0) return 'No data';
-  const headers = Object.keys(rows[0]);
-  const lines = [
-    headers.join(','),
-    ...rows.map(r => headers.map(h => {
-      const v = r[h];
-      if (v === null || v === undefined) return '';
-      const s = String(v);
-      return s.includes(',') || s.includes('"') || s.includes('\n')
-        ? `"${s.replace(/"/g, '""')}"`
-        : s;
-    }).join(','))
-  ];
-  return lines.join('\r\n');
-}
+// Delegates to the shared writer, which additionally neutralises values a
+// spreadsheet would EVALUATE as formulas (a leading = + - @). `minimal: true`
+// preserves this helper's conditional quoting, so only the injection changes.
+// See shared/csv.js.
+const toCSV = (rows) => (rows?.length ? toCsvObjects(rows, { minimal: true }) : 'No data');
 
 router.get('/export/income-statement', requirePermission('finance', 'view'), async (req, res) => {
   try {
@@ -777,23 +693,24 @@ router.get('/export/balance-sheet', requirePermission('finance', 'view'), async 
   try {
     const { fyEnd } = fyRange(req.query);
     const cid = companyOf(req);
-    const [arRow, apRow, cashRow, fixedRow] = await Promise.all([
-      q1(`SELECT COALESCE(SUM(total_amount - COALESCE(paid_amount,0)),0) AS ar FROM invoices WHERE status NOT IN ('paid','cancelled','draft') AND company_id = $1`, [cid]),
-      q1(`SELECT COALESCE(SUM(amount),0) AS ap FROM bills WHERE status NOT IN ('paid','cancelled','draft') AND company_id = $1`, [cid]),
-      q1(`SELECT COALESCE(SUM(current_balance),0) AS cash FROM bank_accounts WHERE company_id = $1`, [cid]),
-      q1(`SELECT COALESCE(SUM(cost),0) AS gross, COALESCE(SUM(accumulated_depreciation),0) AS dep FROM fixed_assets WHERE status != 'disposed' AND company_id = $1`, [cid]),
-    ]);
-    const ar = n(arRow.ar); const ap = n(apRow.ap); const cash = n(cashRow.cash);
-    const netFixed = n(fixedRow.gross) - n(fixedRow.dep);
-    const equity = Math.max(0, cash + ar + netFixed - ap);
+    // The SAME snapshot the screen renders. This export used to re-derive its
+    // own figures from current-state tables and silently drop inventory, GST
+    // input credit and the GST/TDS/salary payables, so the downloaded file
+    // disagreed with the page it was downloaded from on both lines and totals.
+    const bs = await computeBalanceSheet(pool, { asOfDate: fyEnd, companyId: cid });
+    const line = (section) => (a) => ({ Section: section, Item: a.name, Amount: a.balance.toFixed(2) });
+    const material = (a) => Math.abs(a.balance) > 0.005;
     const rows = [
-      { Section: 'ASSETS', Item: 'Cash & Bank',            Amount: cash.toFixed(2) },
-      { Section: 'ASSETS', Item: 'Accounts Receivable',    Amount: ar.toFixed(2) },
-      { Section: 'ASSETS', Item: 'Fixed Assets (Net)',      Amount: netFixed.toFixed(2) },
-      { Section: 'ASSETS', Item: 'TOTAL ASSETS',           Amount: (cash + ar + netFixed).toFixed(2) },
-      { Section: 'LIABILITIES', Item: 'Accounts Payable',  Amount: ap.toFixed(2) },
-      { Section: 'EQUITY', Item: 'Retained Earnings',      Amount: equity.toFixed(2) },
-      { Section: 'TOTAL', Item: 'TOTAL LIAB + EQUITY',     Amount: (ap + equity).toFixed(2) },
+      ...bs.current_assets.filter(material).map(line('ASSETS — CURRENT')),
+      ...bs.fixed_assets.filter(material).map(line('ASSETS — FIXED')),
+      { Section: 'ASSETS', Item: 'TOTAL ASSETS', Amount: bs.total_assets.toFixed(2) },
+      ...bs.current_liabilities.filter(material).map(line('LIABILITIES — CURRENT')),
+      ...bs.long_term_liabilities.filter(material).map(line('LIABILITIES — LONG TERM')),
+      ...bs.equity_accounts.filter(material).map(line('EQUITY')),
+      { Section: 'EQUITY', Item: 'Retained Earnings (prior years)', Amount: bs.retained_earnings.toFixed(2) },
+      { Section: 'EQUITY', Item: 'TOTAL EQUITY', Amount: bs.total_equity.toFixed(2) },
+      { Section: 'TOTAL', Item: 'TOTAL LIAB + EQUITY', Amount: bs.total_liabilities_equity.toFixed(2) },
+      { Section: 'CHECK', Item: 'Variance (assets - liabilities & equity)', Amount: bs.variance.toFixed(2) },
     ];
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', `attachment; filename="balance-sheet-${fyEnd}.csv"`);
@@ -809,7 +726,11 @@ router.get('/export/cash-flow', requirePermission('finance', 'view'), async (req
       q1(`SELECT COALESCE(SUM(amount),0) AS total FROM receipts  WHERE DATE(receipt_date) BETWEEN $1 AND $2 AND company_id = $3`, [fyStart, fyEnd, cid]),
       q1(`SELECT COALESCE(SUM(amount),0) AS total FROM payments  WHERE DATE(payment_date) BETWEEN $1 AND $2 AND company_id = $3`, [fyStart, fyEnd, cid]),
       q1(`SELECT COALESCE(SUM(amount),0) AS total FROM expense_claims  WHERE DATE(created_at)   BETWEEN $1 AND $2 AND status = 'approved' AND company_id = $3`, [fyStart, fyEnd, cid]),
-      q1(`SELECT COALESCE(SUM(cost),0)   AS total FROM fixed_assets WHERE DATE(purchase_date) BETWEEN $1 AND $2 AND company_id = $3`, [fyStart, fyEnd, cid]),
+      // fixed_assets has no `cost` column — it is `purchase_cost`. This read 500'd
+      // on both /cash-flow and /export/cash-flow from the day the failQuery hardening
+      // above stopped swallowing errors, which is exactly what that hardening is for:
+      // before it, capex silently read 0 and the statement rendered as if balanced.
+      q1(`SELECT COALESCE(SUM(purchase_cost),0) AS total FROM fixed_assets WHERE DATE(purchase_date) BETWEEN $1 AND $2 AND company_id = $3`, [fyStart, fyEnd, cid]),
     ]);
     const inflow  = n(receiptsRow.total);
     const outflow = n(paymentsRow.total) + n(expRow.total);

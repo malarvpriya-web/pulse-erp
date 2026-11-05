@@ -341,9 +341,11 @@ export const createJournalEntry = async (req, res) => {
 
     for (const line of lines) {
       await client.query(
+        // company_id forwarded from the entry above — a tenant-less GL line is
+        // either invisible or globally visible depending on which idiom reads it.
         `INSERT INTO journal_lines
-           (entry_id, account_code, account_name, debit, credit, narration)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
+           (entry_id, account_code, account_name, debit, credit, narration, company_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
         [
           entry.id,
           line.account || line.account_code || null,
@@ -351,6 +353,7 @@ export const createJournalEntry = async (req, res) => {
           parseFloat(line.debit)  || 0,
           parseFloat(line.credit) || 0,
           line.narration || line.description || null,
+          companyId,
         ]
       );
     }

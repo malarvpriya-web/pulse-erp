@@ -12,8 +12,10 @@
  * it goes to the record's own assigned_to employee. assigned_to FKs employees,
  * not users (see stock_ledger.created_by-style gotcha), so the employee is
  * resolved to a login via users.employee_id (set on every login auto-created
- * by addEmployee since 20260706000001), falling back to the company_email <->
- * email match that migration backfilled for accounts predating the column.
+ * by addEmployee since 20260706000001). The company_email <-> login email
+ * fallback was removed on 2026-10-12: company email is an editable HR field,
+ * so it could route this employee's reminders to whichever account held that
+ * address (no company predicate). No account relied on it.
  */
 
 import cron from 'node-cron';
@@ -25,9 +27,9 @@ async function resolveUserId(employeeId) {
   const { rows } = await pool.query(
     `SELECT u.id
        FROM employees e
-       JOIN users u ON (u.employee_id = e.id OR LOWER(u.email) = LOWER(e.company_email))
+       JOIN users u ON u.employee_id = e.id
       WHERE e.id = $1 AND u.is_active = true
-      ORDER BY (u.employee_id = e.id) DESC
+      ORDER BY u.id
       LIMIT 1`,
     [employeeId]
   );

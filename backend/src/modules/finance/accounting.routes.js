@@ -5,8 +5,19 @@ import { nextAccountingJournalNumber } from '../../shared/docNumber.js';
 import { numberToWordsINR } from '../../shared/numberToWordsINR.js';
 import { requirePermission } from '../../middlewares/auth.middleware.js';
 import { respondError } from '../../shared/pgErrors.js';
-import { postPayrollJournal } from './services/payrollJournal.service.js';
+import { logAudit } from '../../services/AuditService.js';
+import { recoverPayrollJournals, PayrollJournalError } from './services/payrollJournal.service.js';
+import { getLoanGlMapping, setLoanGlMapping, clearLoanGlMapping, LoanGlMappingError } from './services/loanGlMapping.service.js';
+import { getPaymentGlMapping, setPaymentGlMapping, clearPaymentGlMapping, PaymentGlMappingError } from './services/paymentGlMapping.service.js';
 import { captureBefore } from '../../middlewares/captureBefore.js';
+import {
+  assertBalanced,
+  assertAccountsUsable,
+  assertNotLocked,
+  assertPeriodOpen,
+} from './services/postingGuards.js';
+import { computeBalanceSheet } from './services/balanceSheet.service.js';
+import { toCsv } from '../../shared/csv.js';
 
 const router = express.Router();
 
@@ -41,30 +52,30 @@ async function captureEntryBefore(req, entry) {
 }
 
 // ─── Helper: check transaction lock date ─────────────────────────────────────
+// Delegates to postingGuards so this route and journalRepo.postEntry enforce one
+// definition. The previous local copy swallowed every error and returned "no
+// lock", so an unreachable company_settings silently disabled the lock entirely.
+// Kept as a message-returning wrapper because callers here branch on the string.
 async function checkLockDate(companyId, entryDate) {
   try {
-    const { rows } = await pool.query(
-      `SELECT settings->>'lock_date' AS lock_date
-       FROM company_settings
-       WHERE company_id = $1 AND module = 'finance'
-       LIMIT 1`,
-      [companyId ?? 0]
-    );
-    const lockDate = rows[0]?.lock_date;
-    if (lockDate && entryDate && entryDate <= lockDate) {
-      return `This period is locked (lock date: ${lockDate}). Contact your finance admin to unlock.`;
-    }
-  } catch {
-    // ignore — don't block if settings table unavailable
+    await assertNotLocked(pool, companyId, entryDate);
+    return null;
+  } catch (err) {
+    return err.message;
   }
-  return null;
 }
 
 // ─── Helper: validate debit/credit balance ────────────────────────────────────
+// Used at draft-creation time for an early 400. The authoritative check is
+// assertBalanced() at post time — this must agree with it, or an entry could be
+// accepted as balanced on save and then rejected on post. Same paise-integer
+// comparison: the old `Math.abs(dr - cr) <= 0.01` float form both accepted a
+// genuine one-paise break and mis-summed ordinary amounts.
 function validateBalance(lines) {
-  const sumDebit = lines.reduce((s, l) => s + parseFloat(l.debit || 0), 0);
-  const sumCredit = lines.reduce((s, l) => s + parseFloat(l.credit || 0), 0);
-  return Math.abs(sumDebit - sumCredit) <= 0.01;
+  const paise = (v) => Math.round(parseFloat(v || 0) * 100);
+  const sumDebit = lines.reduce((s, l) => s + paise(l.debit), 0);
+  const sumCredit = lines.reduce((s, l) => s + paise(l.credit), 0);
+  return sumDebit === sumCredit;
 }
 
 // ─── Helper: generate next entry number ───────────────────────────────────────
@@ -166,47 +177,64 @@ router.post('/journal-entries', requirePermission('finance', 'add'), async (req,
 });
 
 // ─── POST /journal-entries/:id/post ───────────────────────────────────────────
+// A reversing entry and the entry it reverses (journal_entries.reversal_of_id)
+// are a pair. While either is a draft, editing or deleting one leg would leave
+// the other mirroring nothing — so both are refused.
+async function reversalPairOf(db, entry) {
+  if (entry.reversal_of_id) return { role: 'reversal', other: entry.reversal_of_id };
+  const { rows: [rev] } = await db.query(
+    `SELECT id FROM journal_entries WHERE reversal_of_id = $1 AND deleted_at IS NULL LIMIT 1`, [entry.id]);
+  return rev ? { role: 'original', other: rev.id } : null;
+}
+
 router.post('/journal-entries/:id/post', requirePermission('finance', 'approve'), async (req, res) => {
   try {
     const { id } = req.params;
-    const { rows: entries } = await pool.query('SELECT * FROM journal_entries WHERE id=$1', [id]);
+    // Scoped by company, not by id alone. Selecting on the bare id let a
+    // caller in company A name company B's journal id and act on it — the
+    // handler read the row, trusted entry.company_id for its own period and
+    // lock checks, and then mutated the other tenant's entry.
+    const { rows: entries } = await pool.query(
+      'SELECT * FROM journal_entries WHERE id = $1 AND ($2::int IS NULL OR company_id = $2::int)',
+      [id, cid(req)]
+    );
     if (entries.length === 0) return res.status(404).json({ error: 'Journal entry not found.' });
     const entry = entries[0];
     if (entry.status !== 'draft') return res.status(400).json({ error: `Cannot post entry with status '${entry.status}'.` });
-
-    const postLockErr = await checkLockDate(entry.company_id, entry.entry_date?.toISOString?.().split('T')[0] ?? entry.entry_date);
-    if (postLockErr) return res.status(403).json({ error: postLockErr, code: 'PERIOD_LOCKED' });
-
-    const { rows: lines } = await pool.query('SELECT * FROM journal_lines WHERE entry_id=$1', [id]);
-    if (!validateBalance(lines)) {
-      return res.status(400).json({ error: 'Entry lines are not balanced. Cannot post.' });
-    }
-
-    // Check period is open for entry_date — only enforced when periods are configured for this company
-    const { rows: periodCount } = await pool.query(
-      `SELECT COUNT(*) FROM accounting_periods WHERE ($1::int IS NULL OR company_id = $1)`,
-      [entry.company_id ?? null]
-    );
-    if (parseInt(periodCount[0].count) > 0) {
-      const { rows: periods } = await pool.query(
-        `SELECT * FROM accounting_periods
-         WHERE start_date <= $1 AND end_date >= $1 AND status='open'
-           AND ($2::int IS NULL OR company_id = $2)`,
-        [entry.entry_date, entry.company_id ?? null]
-      );
-      if (periods.length === 0) {
-        return res.status(400).json({ error: `No open accounting period found for date ${entry.entry_date}. Please open the period first.` });
+    // A reversal is posted only after what it reverses: a posted reversal of a
+    // draft would take out of the ledger an amount that was never in it.
+    if (entry.reversal_of_id) {
+      const { rows: [orig] } = await pool.query(`SELECT status, entry_number FROM journal_entries WHERE id = $1`, [entry.reversal_of_id]);
+      if (!orig || orig.status !== 'posted') {
+        return res.status(409).json({ code: 'ORIGINAL_NOT_POSTED',
+          error: `Post the entry this reverses (${orig?.entry_number ?? entry.reversal_of_id}) first; it is ${orig?.status ?? 'missing'}.` });
       }
     }
 
+    const { rows: lines } = await pool.query('SELECT * FROM journal_lines WHERE entry_id=$1', [id]);
+
+    // The same four guards journalRepo.postEntry runs, in the same order, from
+    // the same module — this route and the automatic posting paths cannot drift.
+    assertBalanced(lines);
+    await assertAccountsUsable(pool, lines, entry.company_id);
+    await assertNotLocked(pool, entry.company_id, entry.entry_date);
+    await assertPeriodOpen(pool, entry.company_id, entry.entry_date);
+
+    // is_posted is set alongside status. The repository's postEntry() always set
+    // both; this route set only status, so the two posting paths produced rows
+    // that report filters written as `is_posted OR status='posted'` treated
+    // differently — most visibly after a reversal, where the original's status
+    // changes but is_posted does not.
     const { rows: updated } = await pool.query(
-      `UPDATE journal_entries SET status='posted', posted_at=NOW() WHERE id=$1 RETURNING *`,
+      `UPDATE journal_entries
+          SET status = 'posted', is_posted = true, posted_at = NOW()
+        WHERE id = $1 AND status = 'draft' RETURNING *`,
       [id]
     );
     res.json({ ...updated[0], lines });
   } catch (err) {
     console.error('[POST /journal-entries/:id/post]', err.message);
-    res.status(500).json({ error: err.message });
+    res.status(err.status || 500).json({ error: err.message, code: err.code });
   }
 });
 
@@ -214,10 +242,36 @@ router.post('/journal-entries/:id/post', requirePermission('finance', 'approve')
 router.post('/journal-entries/:id/reverse', requirePermission('finance', 'approve'), async (req, res) => {
   try {
     const { id } = req.params;
-    const { rows: entries } = await pool.query('SELECT * FROM journal_entries WHERE id=$1', [id]);
+    // Scoped by company, not by id alone. Selecting on the bare id let a
+    // caller in company A name company B's journal id and act on it — the
+    // handler read the row, trusted entry.company_id for its own period and
+    // lock checks, and then mutated the other tenant's entry.
+    const { rows: entries } = await pool.query(
+      'SELECT * FROM journal_entries WHERE id = $1 AND ($2::int IS NULL OR company_id = $2::int)',
+      [id, cid(req)]
+    );
     if (entries.length === 0) return res.status(404).json({ error: 'Journal entry not found.' });
     const original = entries[0];
     if (original.status !== 'posted') return res.status(400).json({ error: `Can only reverse posted entries. Current status: '${original.status}'.` });
+
+    // Refuse a second reversal. This used to be implicit: reversing set the
+    // original to status='reversed', and the check above then rejected it. Now
+    // that the original correctly stays 'posted' so it survives in reports, that
+    // accident no longer protects us — without this check an entry could be
+    // reversed twice, leaving two offsetting legs against one original and
+    // swinging the ledger the other way by the full amount.
+    const { rows: priorReversals } = await pool.query(
+      `SELECT entry_number FROM journal_entries
+        WHERE reversal_of_id = $1 AND deleted_at IS NULL
+        LIMIT 1`,
+      [id]
+    );
+    if (priorReversals.length) {
+      return res.status(409).json({
+        error: `Entry ${original.entry_number} has already been reversed by ${priorReversals[0].entry_number}.`,
+        code: 'ALREADY_REVERSED',
+      });
+    }
 
     const { rows: originalLines } = await pool.query('SELECT * FROM journal_lines WHERE entry_id=$1', [id]);
 
@@ -247,7 +301,21 @@ router.post('/journal-entries/:id/reverse', requirePermission('finance', 'approv
         reversalLines.push(lineRows[0]);
       }
 
-      await client.query(`UPDATE journal_entries SET status='reversed', posted_at=NOW() WHERE id=$1`, [id]);
+      // The original is deliberately left POSTED.
+      //
+      // It used to be set to status='reversed', which removed it from every
+      // report filtering status='posted' while the reversing leg — posted —
+      // stayed. Reversing a 100 credit to revenue therefore left revenue
+      // reporting -100 instead of 0: the reversal counted, unopposed.
+      //
+      // A reversal offsets an entry; it does not un-post it. Both legs stay in
+      // the ledger and net to zero, which is also what makes the audit trail
+      // readable. "Reversed" is a RELATIONSHIP, recorded by the reversing
+      // entry's reversal_of_id, and is derived for display (see is_reversed on
+      // the list/get endpoints) rather than stored as a status.
+      //
+      // posted_at is likewise untouched — the previous code re-stamped the
+      // original's posting time with the reversal's.
       await client.query('COMMIT');
       res.status(201).json({ ...reversal, lines: reversalLines });
     } catch (err) {
@@ -274,7 +342,14 @@ router.get('/journal-entries', requirePermission('finance', 'view'), async (req,
     if (companyId) { where.push(`je.company_id = $${idx++}`); params.push(companyId); }
     if (date_from) { where.push(`je.entry_date >= $${idx++}`); params.push(date_from); }
     if (date_to) { where.push(`je.entry_date <= $${idx++}`); params.push(date_to); }
-    if (status) { where.push(`je.status = $${idx++}`); params.push(status); }
+    // 'reversed' is no longer a status, so the UI's existing filter value is
+    // translated to the derived relationship rather than silently matching zero
+    // rows once the status stopped being written.
+    if (status === 'reversed') {
+      where.push(`EXISTS (SELECT 1 FROM journal_entries r WHERE r.reversal_of_id = je.id AND r.deleted_at IS NULL)`);
+    } else if (status) {
+      where.push(`je.status = $${idx++}`); params.push(status);
+    }
     if (reference_type) { where.push(`je.reference_type = $${idx++}`); params.push(reference_type); }
     if (account_id) { where.push(`je.id IN (SELECT entry_id FROM journal_lines WHERE account_id = $${idx++})`); params.push(account_id); }
 
@@ -283,8 +358,21 @@ router.get('/journal-entries', requirePermission('finance', 'view'), async (req,
     params.push(parseInt(limit));
     params.push(parseInt(offset));
 
+    // is_reversed / reversed_by_number are derived from the reversing entry's
+    // reversal_of_id. They replace the old status='reversed', which the UI used
+    // for its badge and filter but which cost the original its place in reports.
     const { rows: entries } = await pool.query(
-      `SELECT je.* FROM journal_entries je ${whereClause} ORDER BY je.entry_date DESC, je.id DESC LIMIT $${idx++} OFFSET $${idx++}`,
+      `SELECT je.*,
+              (rev.id IS NOT NULL AND rev.status = 'posted') AS is_reversed,
+              (rev.id IS NOT NULL AND rev.status <> 'posted') AS reversal_pending,
+              rev.status            AS reversal_status,
+              rev.entry_number      AS reversed_by_number,
+              rev.entry_date        AS reversed_on
+         FROM journal_entries je
+         LEFT JOIN journal_entries rev
+                ON rev.reversal_of_id = je.id
+               AND rev.deleted_at IS NULL
+       ${whereClause} ORDER BY je.entry_date DESC, je.id DESC LIMIT $${idx++} OFFSET $${idx++}`,
       params
     );
 
@@ -324,8 +412,20 @@ router.get('/journal-entries/:id', requirePermission('finance', 'view'), async (
     let scope = '';
     if (companyId) { params.push(companyId); scope = ' AND je.company_id = $2'; }
 
+    // is_reversed is derived from the reversing entry's reversal_of_id — the
+    // original itself stays 'posted' so it keeps its place in the ledger (F06).
     const { rows: [entry] } = await pool.query(
-      `SELECT je.* FROM journal_entries je WHERE je.id = $1${scope}`,
+      `SELECT je.*,
+              (rev.id IS NOT NULL AND rev.status = 'posted') AS is_reversed,
+              (rev.id IS NOT NULL AND rev.status <> 'posted') AS reversal_pending,
+              rev.status           AS reversal_status,
+              rev.entry_number     AS reversed_by_number,
+              rev.entry_date       AS reversed_on
+         FROM journal_entries je
+         LEFT JOIN journal_entries rev
+                ON rev.reversal_of_id = je.id
+               AND rev.deleted_at IS NULL
+        WHERE je.id = $1${scope}`,
       params
     );
     if (!entry) return res.status(404).json({ error: 'Journal entry not found' });
@@ -544,7 +644,21 @@ router.get('/profit-loss', requirePermission('finance', 'view'), async (req, res
       const gross_profit = total_revenue - cogs;
       const operating_profit = gross_profit - total_opex;
       const net_profit = operating_profit + other_income;
-      return { revenue_accounts, total_revenue, cogs, gross_profit, operating_expenses: expense_accounts.filter(e => e.sub_type !== 'cogs'), total_opex, operating_profit, other_income, net_profit };
+      // `cogs_accounts` is returned alongside the `cogs` total so a caller can
+      // list the accounts behind it. Without it the only way to show COGS lines
+      // was to re-query, and the Reports page had no per-line source at all.
+      return {
+        revenue_accounts,
+        total_revenue,
+        cogs,
+        cogs_accounts: expense_accounts.filter(e => e.sub_type === 'cogs'),
+        gross_profit,
+        operating_expenses: expense_accounts.filter(e => e.sub_type !== 'cogs'),
+        total_opex,
+        operating_profit,
+        other_income,
+        net_profit,
+      };
     }
 
     const current = await computePL(period_from, period_to);
@@ -580,99 +694,17 @@ router.get('/profit-loss', requirePermission('finance', 'view'), async (req, res
 });
 
 // ─── GET /balance-sheet ────────────────────────────────────────────────────────
+// Thin wrapper over the shared dated snapshot. The computation that used to
+// live inline here is now balanceSheet.service.js, so /statements/balance-sheet
+// and the CSV export produce the same figures instead of three different ones.
 router.get('/balance-sheet', requirePermission('finance', 'view'), async (req, res) => {
   try {
     const as_of_date = req.query.as_of_date || new Date().toISOString().split('T')[0];
-    const companyId = cid(req);
-    const coaCidFilter = companyId ? `AND (company_id = ${parseInt(companyId)} OR company_id IS NULL)` : '';
-    const jeCidFilter = companyId ? `AND je.company_id = ${parseInt(companyId)}` : '';
-
-    const { rows: accounts } = await pool.query(`SELECT * FROM chart_of_accounts WHERE is_active=true ${coaCidFilter} ORDER BY code`);
-    const { rows: movements } = await pool.query(
-      `SELECT jl.account_id,
-              SUM(jl.debit) AS total_debit,
-              SUM(jl.credit) AS total_credit
-       FROM journal_lines jl
-       JOIN journal_entries je ON je.id=jl.entry_id
-       WHERE je.status='posted' AND je.entry_date <= $1 ${jeCidFilter}
-       GROUP BY jl.account_id`,
-      [as_of_date]
-    );
-    const movMap = movements.reduce((acc, m) => { acc[m.account_id] = m; return acc; }, {});
-
-    function getBalance(acc) {
-      const mov = movMap[acc.id] || { total_debit: 0, total_credit: 0 };
-      const dr = parseFloat(mov.total_debit) || 0;
-      const cr = parseFloat(mov.total_credit) || 0;
-      const opening = parseFloat(acc.opening_balance) || 0;
-      if (['Asset', 'Expense'].includes(acc.account_type)) {
-        return opening + dr - cr;
-      } else {
-        return opening - dr + cr;
-      }
-    }
-
-    const currentAssets = accounts.filter(a => a.account_type === 'Asset' && a.code >= '1001' && a.code <= '1099').map(a => ({ ...a, balance: getBalance(a) }));
-    const fixedAssets = accounts.filter(a => a.account_type === 'Asset' && a.code >= '1100' && a.code <= '1199').map(a => ({ ...a, balance: a.code === '1101' ? -getBalance(a) : getBalance(a) }));
-    const currentLiabilities = accounts.filter(a => a.account_type === 'Liability' && a.code >= '2001' && a.code <= '2099').map(a => ({ ...a, balance: getBalance(a) }));
-    const longTermLiabilities = accounts.filter(a => a.account_type === 'Liability' && a.code >= '2100' && a.code <= '2199').map(a => ({ ...a, balance: getBalance(a) }));
-    const equityAccounts = accounts.filter(a => a.account_type === 'Equity').map(a => ({ ...a, balance: getBalance(a) }));
-
-    // Retained earnings from previous FY (India FY Apr-Mar), derived from as_of_date
-    const [asOfYearStr, asOfMonthStr] = String(as_of_date).split('-');
-    const asOfYear = parseInt(asOfYearStr, 10);
-    const asOfMonth = parseInt(asOfMonthStr, 10);
-    if (!Number.isFinite(asOfYear) || !Number.isFinite(asOfMonth) || asOfMonth < 1 || asOfMonth > 12) {
-      return res.status(400).json({ error: 'Invalid as_of_date. Expected format YYYY-MM-DD.' });
-    }
-    const currentFyStartYear = asOfMonth >= 4 ? asOfYear : asOfYear - 1;
-    const prevFyStartYear = currentFyStartYear - 1;
-    const prevYearStart = `${prevFyStartYear}-04-01`;
-    const prevYearEnd = `${currentFyStartYear}-03-31`;
-    const { rows: retainedRows } = await pool.query(
-      `SELECT
-         SUM(CASE WHEN coa.account_type='Revenue' THEN jl.credit - jl.debit ELSE 0 END) -
-         SUM(CASE WHEN coa.account_type='Expense' THEN jl.debit - jl.credit ELSE 0 END) AS net_profit
-       FROM journal_lines jl
-       JOIN journal_entries je ON je.id=jl.entry_id AND je.status='posted' AND je.entry_date BETWEEN $1 AND $2
-       JOIN chart_of_accounts coa ON coa.id=jl.account_id
-       WHERE coa.account_type IN ('Revenue','Expense') ${jeCidFilter}`,
-      [prevYearStart, prevYearEnd]
-    );
-    const retained_earnings = parseFloat(retainedRows[0]?.net_profit) || 0;
-
-    const total_current_assets = currentAssets.reduce((s, a) => s + a.balance, 0);
-    const total_fixed_assets = fixedAssets.reduce((s, a) => s + a.balance, 0);
-    const total_assets = total_current_assets + total_fixed_assets;
-
-    const total_current_liabilities = currentLiabilities.reduce((s, a) => s + a.balance, 0);
-    const total_long_term_liabilities = longTermLiabilities.reduce((s, a) => s + a.balance, 0);
-    const total_equity = equityAccounts.reduce((s, a) => s + a.balance, 0) + retained_earnings;
-    const total_liabilities_equity = total_current_liabilities + total_long_term_liabilities + total_equity;
-    const balanced = total_assets === 0 && total_liabilities_equity === 0
-      ? true
-      : Math.abs(total_assets - total_liabilities_equity) <= 1;
-
-    res.json({
-      as_of_date,
-      current_assets: currentAssets,
-      total_current_assets,
-      fixed_assets: fixedAssets,
-      total_fixed_assets,
-      total_assets,
-      current_liabilities: currentLiabilities,
-      total_current_liabilities,
-      long_term_liabilities: longTermLiabilities,
-      total_long_term_liabilities,
-      equity_accounts: equityAccounts,
-      retained_earnings,
-      total_equity,
-      total_liabilities_equity,
-      balanced,
-    });
+    const bs = await computeBalanceSheet(pool, { asOfDate: as_of_date, companyId: cid(req) });
+    res.json(bs);
   } catch (err) {
     console.error('[GET /balance-sheet]', err.message);
-    res.status(500).json({ error: err.message });
+    res.status(err.status || 500).json({ error: err.message });
   }
 });
 
@@ -871,12 +903,19 @@ router.put('/journal-entries/:id', requirePermission('finance', 'edit'), async (
     if (entry.status !== 'draft') {
       return res.status(400).json({ error: `Only draft entries can be edited. Current status: '${entry.status}'.` });
     }
+    const editPair = await reversalPairOf(pool, entry);
+    if (editPair) {
+      return res.status(409).json({ code: 'REVERSAL_PAIR_LOCKED',
+        error: `This entry is the ${editPair.role} of a reversal pair; editing it would break the pair.` });
+    }
     if (!lines || lines.length === 0) return res.status(400).json({ error: 'At least one line is required.' });
 
     for (const line of lines) {
       const { rows } = await pool.query(
-        'SELECT id, code, name FROM chart_of_accounts WHERE id=$1 AND is_active=true',
-        [line.account_id]
+        `SELECT id, code, name FROM chart_of_accounts
+          WHERE id = $1 AND is_active = true
+            AND ($2::int IS NULL OR company_id = $2::int OR company_id IS NULL)`,
+        [line.account_id, companyId]
       );
       if (rows.length === 0) return res.status(400).json({ error: `Account ${line.account_id} not found or inactive.` });
       line._account_code = rows[0].code;
@@ -941,6 +980,11 @@ router.delete('/journal-entries/:id', requirePermission('finance', 'delete'), as
     if (entry.status !== 'draft') {
       return res.status(400).json({ error: `Only draft entries can be deleted. Current status: '${entry.status}'.` });
     }
+    const deletePair = await reversalPairOf(pool, entry);
+    if (deletePair) {
+      return res.status(409).json({ code: 'REVERSAL_PAIR_LOCKED',
+        error: `This entry is the ${deletePair.role} of a reversal pair; deleting it would break the pair.` });
+    }
 
     await captureEntryBefore(req, entry);
 
@@ -1004,9 +1048,12 @@ router.post('/auto-entries/from-invoice/:invoiceId', requirePermission('finance'
       const insertedLines = [];
       for (const line of lines) {
         const { rows: lr } = await client.query(
-          `INSERT INTO journal_lines (entry_id, account_id, account_code, account_name, debit, credit, narration)
-           VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-          [entry.id, line.account_id, line._account_code, line._account_name, line.debit, line.credit, line.narration]
+          // company_id is carried onto the LINE, not just the entry. A tenant-less
+          // GL line is invisible to every read scoped `company_id = $1` and visible
+          // to all of them under `OR company_id IS NULL`.
+          `INSERT INTO journal_lines (entry_id, account_id, account_code, account_name, debit, credit, narration, company_id)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+          [entry.id, line.account_id, line._account_code, line._account_name, line.debit, line.credit, line.narration, companyId]
         );
         insertedLines.push(lr[0]);
       }
@@ -1072,9 +1119,12 @@ router.post('/auto-entries/from-payment/:paymentId', requirePermission('finance'
       const insertedLines = [];
       for (const line of lines) {
         const { rows: lr } = await client.query(
-          `INSERT INTO journal_lines (entry_id, account_id, account_code, account_name, debit, credit, narration)
-           VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-          [entry.id, line.account_id, line.code, line.name, line.debit, line.credit, line.narration]
+          // company_id is carried onto the LINE, not just the entry. A tenant-less
+          // GL line is invisible to every read scoped `company_id = $1` and visible
+          // to all of them under `OR company_id IS NULL`.
+          `INSERT INTO journal_lines (entry_id, account_id, account_code, account_name, debit, credit, narration, company_id)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+          [entry.id, line.account_id, line.code, line.name, line.debit, line.credit, line.narration, companyId]
         );
         insertedLines.push(lr[0]);
       }
@@ -1140,9 +1190,12 @@ router.post('/auto-entries/from-bill/:billId', requirePermission('finance', 'add
       const insertedLines = [];
       for (const line of lines) {
         const { rows: lr } = await client.query(
-          `INSERT INTO journal_lines (entry_id, account_id, account_code, account_name, debit, credit, narration)
-           VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-          [entry.id, line.account_id, line.code, line.name, line.debit, line.credit, line.narration]
+          // company_id is carried onto the LINE, not just the entry. A tenant-less
+          // GL line is invisible to every read scoped `company_id = $1` and visible
+          // to all of them under `OR company_id IS NULL`.
+          `INSERT INTO journal_lines (entry_id, account_id, account_code, account_name, debit, credit, narration, company_id)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+          [entry.id, line.account_id, line.code, line.name, line.debit, line.credit, line.narration, companyId]
         );
         insertedLines.push(lr[0]);
       }
@@ -1455,35 +1508,97 @@ router.post('/opening-balances', requirePermission('finance', 'approve'), async 
 // Creates a journal entry from a completed payroll run. See payrollJournal.service.js
 // for the full DR/CR breakdown — every employee-side deduction (PF/ESI/LWF/TDS/
 // professional tax) now gets its own payable credit line so the entry balances.
+// PC-02a PD-15 (04 Nov 26): RECOVERY ONLY. Body { month, year }: posts the
+// accrual journal an approved payroll batch of the caller's company is missing,
+// with every amount derived from the approved runs (recoverPayrollJournals).
+// It used to accept gross / net / PF / … and any reference string from the
+// request, so a second accrual — or one with arbitrary amounts — could be
+// posted for any month. An amount in the request is now refused, not ignored;
+// a batch already posted is reported, never posted twice; the posting guards
+// (lock date, open period) apply.
+const PAYROLL_JOURNAL_AMOUNT_KEYS = ['net_salary', 'gross_salary', 'pf_employer', 'esi_employer', 'pf_employee', 'esi_employee',
+  'tds', 'professional_tax', 'lwf_employee', 'lwf_employer', 'loan_principal', 'loan_interest', 'payroll_run_id', 'payroll_month'];
 router.post('/payroll-journal', requirePermission('finance', 'approve'), async (req, res) => {
   try {
-    const {
-      payroll_run_id, payroll_month, net_salary, pf_employer, esi_employer, gross_salary,
-      pf_employee, esi_employee, tds, professional_tax, lwf_employee, lwf_employer,
-    } = req.body;
-    if (!payroll_run_id || !payroll_month) {
-      return res.status(400).json({ error: 'payroll_run_id and payroll_month are required' });
+    const sent = PAYROLL_JOURNAL_AMOUNT_KEYS.filter(k => k in (req.body || {}));
+    if (sent.length) {
+      return res.status(400).json({ code: 'AMOUNTS_NOT_ACCEPTED', error: `The payroll journal is derived from the approved payroll; ${sent.join(', ')} cannot be supplied. Send { month, year }.` });
     }
     const companyId = cid(req);
-    const userId = req.user?.userId ?? req.user?.id ?? null;
-
-    const result = await postPayrollJournal({
-      payroll_run_id, payroll_month, net_salary, pf_employer, esi_employer, gross_salary,
-      pf_employee, esi_employee, tds, professional_tax, lwf_employee, lwf_employer,
-      companyId, userId,
-    });
-
-    if (result.skipped && result.reason === 'already_posted') {
-      return res.status(409).json({ error: `Journal entry already exists for payroll run ${payroll_run_id}`, journal_entry_id: result.journal_entry_id });
-    }
-    if (result.skipped) {
-      return res.status(400).json({ error: result.reason });
-    }
-    res.status(201).json(result);
+    if (companyId == null) return res.status(403).json({ code: 'COMPANY_REQUIRED', error: 'No company context for this login' });
+    const result = await recoverPayrollJournals({ companyId, month: req.body?.month, year: req.body?.year, userId: req.user?.userId ?? req.user?.id ?? null });
+    const posted = result.batches.filter(b => b.status === 'posted').length;
+    const refused = result.batches.filter(b => b.status === 'refused');
+    logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'finance', recordType: 'payroll_journal', recordId: null,
+      action: 'payroll_journal_recovery', newData: { company_id: companyId, ...result }, req });
+    const status = posted ? 201 : refused.length ? 422 : 409;
+    res.status(status).json({ ...result, posted, message: posted ? `${posted} missing payroll journal(s) posted`
+      : refused.length ? `Not posted: ${refused.map(b => b.reason).join('; ')}` : 'Every approval batch of this period already has its journal' });
   } catch (err) {
+    if (err instanceof PayrollJournalError) return res.status(err.status).json({ code: err.code, error: err.message });
     console.error('[POST /payroll-journal]', err.message);
     res.status(500).json({ error: err.message });
   }
+});
+
+// ─── Payment account mapping (Finance decision, PC-02b-0 B-02) ──────────────
+// The payable account and the ledger account of each company bank account that
+// supplier payment batches post Dr AP / Cr Bank to. Without an approved mapping
+// for the batch's bank account, processing is refused (PAYMENT_GL_MAPPING_REQUIRED).
+// Body: { accounts_payable_account_code, bank_ledgers: { <bank_account_id>: <account code> }, note }.
+router.get('/payment-gl-mapping', requirePermission('finance', 'view'), async (req, res) => {
+  try {
+    if (cid(req) == null) return res.status(403).json({ code: 'COMPANY_REQUIRED', error: 'No company context for this login' });
+    res.json(await getPaymentGlMapping(cid(req)));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+router.put('/payment-gl-mapping', requirePermission('finance', 'approve'), async (req, res) => {
+  try {
+    const { before, mapping } = await setPaymentGlMapping(cid(req), req.body, req.user?.userId ?? req.user?.id ?? null);
+    req._auditBefore = before;
+    logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'finance', recordType: 'payment_gl_mapping', recordId: null,
+      action: 'approve', oldData: before, newData: { status: mapping.status, payable: mapping.payable?.code, bank_ledgers: Object.fromEntries(Object.entries(mapping.bankLedgers).map(([k, a]) => [k, a.code])) }, req });
+    res.json(mapping);
+  } catch (err) {
+    if (err instanceof PaymentGlMappingError) return res.status(err.status).json({ code: err.code, message: err.message, problems: err.problems });
+    res.status(500).json({ error: err.message });
+  }
+});
+router.delete('/payment-gl-mapping', requirePermission('finance', 'approve'), async (req, res) => {
+  try {
+    if (cid(req) == null) return res.status(403).json({ code: 'COMPANY_REQUIRED', error: 'No company context for this login' });
+    req._auditBefore = await clearPaymentGlMapping(cid(req));
+    logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'finance', recordType: 'payment_gl_mapping', recordId: null, action: 'delete', oldData: req._auditBefore, req });
+    res.json(await getPaymentGlMapping(cid(req)));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ─── Loan account mapping (Finance decision) ─────────────────────────────────
+// The receivable that loan principal reduces, the income account for loan
+// interest, and (optional, not yet posted) the disbursement account. Until
+// finance:approve saves this, payroll approval refuses any batch that
+// recovers a loan. See loanGlMapping.service.js / PAYROLL_DATA_FLOW_AUDIT.md Part 14.
+router.get('/loan-gl-mapping', requirePermission('finance', 'view'), async (req, res) => {
+  try { res.json(await getLoanGlMapping(cid(req))); }
+  catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+router.put('/loan-gl-mapping', requirePermission('finance', 'approve'), async (req, res) => {
+  try {
+    const { before, mapping } = await setLoanGlMapping(cid(req), req.body, req.user?.userId ?? req.user?.id ?? null);
+    req._auditBefore = before;
+    res.json(mapping);
+  } catch (err) {
+    if (err instanceof LoanGlMappingError) return res.status(err.status).json({ code: err.code, message: err.message, problems: err.problems });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.delete('/loan-gl-mapping', requirePermission('finance', 'approve'), async (req, res) => {
+  try {
+    req._auditBefore = await clearLoanGlMapping(cid(req));
+    res.json(await getLoanGlMapping(cid(req)));
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // ── GET /project-profit-loss/:projectId ───────────────────────────────────────
@@ -1566,19 +1681,20 @@ router.get('/trial-balance/export', requirePermission('finance', 'view'), async 
       ORDER BY coa.code
     `, [asOf, companyId]);
 
+    // Account names went straight from the DB into a quoted string with no
+    // escaping at all: one containing a quote or a comma did not merely inject,
+    // it shifted every column after it. See shared/csv.js.
     const lines = [
-      `"Account Code","Account Name","Type","Total Debit","Total Credit","Net Balance"`,
-      ...rows.map(r =>
-        `"${r.code}","${r.name}","${r.account_type}","${r.total_debit}","${r.total_credit}","${r.net_balance}"`
-      ),
+      ['Account Code', 'Account Name', 'Type', 'Total Debit', 'Total Credit', 'Net Balance'],
+      ...rows.map(r => [r.code, r.name, r.account_type, r.total_debit, r.total_credit, r.net_balance]),
     ];
     const totalDebit  = rows.reduce((s, r) => s + parseFloat(r.total_debit), 0);
     const totalCredit = rows.reduce((s, r) => s + parseFloat(r.total_credit), 0);
-    lines.push(`"","TOTAL","","${totalDebit}","${totalCredit}","${totalDebit - totalCredit}"`);
+    lines.push(['', 'TOTAL', '', totalDebit, totalCredit, totalDebit - totalCredit]);
 
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', `attachment; filename="trial-balance-${asOf}.csv"`);
-    res.send(lines.join('\r\n'));
+    res.send(toCsv(lines[0], lines.slice(1)));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1612,16 +1728,15 @@ router.get('/profit-loss/export', requirePermission('finance', 'view'), async (r
       ORDER BY coa.account_type, coa.code
     `, [fyStart, fyEnd, companyId]);
 
+    // Same unescaped interpolation as the trial balance above.
     const lines = [
-      `"Account Code","Account Name","Type","Sub Type","Net Amount"`,
-      ...rows.map(r =>
-        `"${r.code}","${r.name}","${r.account_type}","${r.sub_type || ''}","${r.net}"`
-      ),
+      ['Account Code', 'Account Name', 'Type', 'Sub Type', 'Net Amount'],
+      ...rows.map(r => [r.code, r.name, r.account_type, r.sub_type || '', r.net]),
     ];
 
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', `attachment; filename="profit-loss-${fyStart}-to-${fyEnd}.csv"`);
-    res.send(lines.join('\r\n'));
+    res.send(toCsv(lines[0], lines.slice(1)));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -2146,7 +2261,14 @@ router.get('/vouchers/special', requirePermission('finance', 'view'), async (req
 // Convert a memorandum/optional voucher into a regular draft entry (Tally: convert).
 router.post('/journal-entries/:id/convert', requirePermission('finance', 'approve'), async (req, res) => {
   try {
-    const { rows: [entry] } = await pool.query('SELECT * FROM journal_entries WHERE id=$1', [req.params.id]);
+    // Scoped by company. The sibling PUT/DELETE handlers compare
+    // entry.company_id against cid(req) after loading; this one had no check of
+    // either kind, so any company could convert another's memorandum voucher
+    // into a live draft entry.
+    const { rows: [entry] } = await pool.query(
+      'SELECT * FROM journal_entries WHERE id = $1 AND ($2::int IS NULL OR company_id = $2::int)',
+      [req.params.id, cid(req)]
+    );
     if (!entry) return res.status(404).json({ error: 'Voucher not found.' });
     if (!SPECIAL_STATUSES.includes(entry.status)) {
       return res.status(400).json({ error: `Only memorandum/optional vouchers can be converted. Current status: '${entry.status}'.` });
@@ -2154,7 +2276,9 @@ router.post('/journal-entries/:id/convert', requirePermission('finance', 'approv
     const lockErr = await checkLockDate(entry.company_id, entry.entry_date?.toISOString?.().split('T')[0] ?? entry.entry_date);
     if (lockErr) return res.status(403).json({ error: lockErr, code: 'PERIOD_LOCKED' });
     const { rows: [updated] } = await pool.query(
-      `UPDATE journal_entries SET status='draft', updated_at=NOW() WHERE id=$1 RETURNING *`, [req.params.id]
+      `UPDATE journal_entries SET status='draft', updated_at=NOW()
+        WHERE id = $1 AND ($2::int IS NULL OR company_id = $2::int) RETURNING *`,
+      [req.params.id, cid(req)]
     );
     res.json(updated);
   } catch (err) {

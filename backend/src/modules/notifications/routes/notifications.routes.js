@@ -145,8 +145,11 @@ router.post('/run-probation-check', async (req, res) => {
     return res.status(403).json({ error: 'Forbidden' });
   }
   try {
-    await runProbationCheckNow();
-    res.json({ message: 'Probation check completed successfully' });
+    // A company admin runs the check for THEIR company only; only a global
+    // (company-less) super admin runs it across every company, as the daily
+    // job does. Each reminder is still scoped to its employee's company.
+    const counters = await runProbationCheckNow({ companyId: companyOf(req) });
+    res.json({ message: 'Probation check completed successfully', counters });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

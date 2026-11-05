@@ -1,38 +1,31 @@
 import * as service from "./probation.service.js";
 
-export const createNotification = async (req, res) => {
+/**
+ * Every handler resolves the caller's company first (service.requireCompany):
+ * a caller with no company context gets a 403 before any query runs. A
+ * ProbationError carries its own status (400/403/404); anything else is a
+ * real failure and is reported as a 500 with its message — never swallowed.
+ */
+const handle = (fn) => async (req, res) => {
   try {
-    const notification = await service.createNotification(req.body);
-    res.json(notification);
+    const companyId = service.requireCompany(req);
+    res.json(await fn(companyId, req));
   } catch (err) {
+    if (err instanceof service.ProbationError) return res.status(err.status).json({ error: err.message });
+    console.error('[Probation]', err);
     res.status(500).json({ error: err.message });
   }
 };
 
-export const getNotifications = async (req, res) => {
-  try {
-    const notifications = await service.getNotifications();
-    res.json(notifications);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-};
+export const getPolicy          = handle((cid) => service.getPolicy(cid));
+export const updatePolicy       = handle((cid, req) => service.updatePolicy(cid, req.body));
+export const calculate          = handle((cid, req) => service.calculate(cid, req.query));
+export const getNotifications   = handle((cid) => service.getNotifications(cid));
+export const createNotification = handle((cid, req) => service.createNotification(cid, req.body));
+export const updateNotification = handle((cid, req) => service.updateNotification(cid, req.params.id, req.body));
 
-export const updateNotification = async (req, res) => {
-  try {
-    const notification = await service.updateNotification(req.params.id, req.body);
-    res.json(notification);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-};
-
-export const updateByEmployee = async (req, res) => {
-  try {
-    const notification = await service.updateByEmployee(req.params.employee_id, req.body);
-    if (!notification) return res.status(404).json({ error: 'No pending probation record found for this employee' });
-    res.json(notification);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-};
+export const updateByEmployee = handle(async (cid, req) => {
+  const row = await service.updateByEmployee(cid, req.params.employee_id, req.body);
+  if (!row) throw new service.ProbationError(404, 'No pending probation record found for this employee');
+  return row;
+});

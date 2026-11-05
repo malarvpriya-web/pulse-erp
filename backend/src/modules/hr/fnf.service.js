@@ -10,16 +10,29 @@
  * net_payable onto exit_requests. Accepts a pg Pool or an in-transaction
  * Client — either exposes .query(). Returns null if the employee has no
  * exit_requests row to compute against.
+ *
+ * `companyId` is REQUIRED (2026-10-20): the employee — salary included — and
+ * the exit request it writes are read and written only inside that company.
+ * `null` is a deliberate global scope (a super admin), `undefined` means the
+ * caller forgot and throws; the old signature read and wrote by employee id
+ * alone. The fnfAutoTrigger cron passes each row's own company.
+ * A settlement already PAID is never recomputed (409): this overwrote
+ * fnf_status back to 'draft' and replaced net_payable on a closed exit.
  */
-export async function computeFnf(db, employeeId) {
+export async function computeFnf(db, employeeId, { companyId } = {}) {
+  if (companyId === undefined) throw new Error('computeFnf requires a company scope');
   const { rows: [emp] } = await db.query(
-    `SELECT e.*, er.last_working_date, er.id AS exit_id, er.notice_period
+    `SELECT e.*, er.last_working_date, er.id AS exit_id, er.notice_period, er.fnf_status AS exit_fnf_status
      FROM employees e
      JOIN exit_requests er ON er.employee_id = e.id
-     WHERE e.id=$1 ORDER BY er.created_at DESC LIMIT 1`,
-    [employeeId]
+     WHERE e.id=$1 AND e.deleted_at IS NULL AND ($2::int IS NULL OR e.company_id = $2::int)
+     ORDER BY er.created_at DESC LIMIT 1`,
+    [employeeId, companyId]
   );
   if (!emp) return null;
+  if (emp.exit_fnf_status === 'paid') {
+    throw Object.assign(new Error('F&F is already paid — it cannot be recomputed'), { statusCode: 409 });
+  }
 
   const basicSalary      = parseFloat(emp.basic_salary || 0);
   const dailyBasic       = parseFloat((basicSalary / 26).toFixed(2));
@@ -64,9 +77,18 @@ export async function computeFnf(db, employeeId) {
   const netPayable = parseFloat((grossFnf - noticeRecovery).toFixed(2));
 
   const { rows: [updated] } = await db.query(
-    `UPDATE exit_requests SET fnf_status='draft', net_payable=$1 WHERE id=$2 RETURNING id`,
-    [netPayable, emp.exit_id]
+    `UPDATE exit_requests er SET fnf_status='draft', net_payable=$1
+      WHERE er.id=$2 AND er.fnf_status IS DISTINCT FROM 'paid'
+        AND EXISTS (SELECT 1 FROM employees e WHERE e.id = er.employee_id
+                      AND ($3::int IS NULL OR e.company_id = $3::int))
+      RETURNING er.id`,
+    [netPayable, emp.exit_id, companyId]
   );
+  if (!updated) {
+    // Paid between the read and the write (or the row moved company): refuse
+    // rather than return a computation that was never stored.
+    throw Object.assign(new Error('F&F is already paid — it cannot be recomputed'), { statusCode: 409 });
+  }
 
   return {
     id:          updated?.id,

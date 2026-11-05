@@ -2,12 +2,14 @@ import { useState, useEffect } from 'react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import VocabSelect from '@/components/core/VocabSelect';
 import {
   Plus, X, Search, MapPin, Calendar, Users, CheckSquare, Clock, Eye,
   Contact,
 } from 'lucide-react';
 
-const VISIT_TYPES = ['Customer Visit','Site Visit','Service Visit','Commissioning Visit','Review Meeting','FAT Witness','Warranty Inspection'];
+// Now the visit-type master — this seven-item list and VisitReports' thirteen
+// were two vocabularies writing to the same kind of column.
 
 const EMPTY = {
   visit_type: 'Customer Visit',
@@ -132,11 +134,11 @@ export default function CustomerVisits() {
           <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search customer, project, site..."
             style={{ width:'100%', paddingLeft:32, paddingRight:12, paddingTop:8, paddingBottom:8, border:'1px solid #e5e7eb', borderRadius:8, fontSize:13, outline:'none', boxSizing:'border-box' }}/>
         </div>
-        <select value={typeFilter} onChange={e => setTypeFilter(e.target.value)}
-          style={{ padding:'7px 14px', borderRadius:8, border:'1px solid #e5e7eb', fontSize:12, outline:'none' }}>
-          <option value="All">All Types</option>
-          {VISIT_TYPES.map(t => <option key={t}>{t}</option>)}
-        </select>
+        <div style={{ minWidth: 150 }}>
+          <VocabSelect vocab="visit-types" allowAdd={false} value={typeFilter === 'All' ? '' : typeFilter}
+            onChange={v => setTypeFilter(v || 'All')} placeholder="All Types"
+            selectStyle={{ padding:'7px 14px', borderRadius:8, border:'1px solid #e5e7eb', fontSize:12, outline:'none' }} />
+        </div>
       </div>
 
       {/* Visit Cards */}
@@ -256,9 +258,8 @@ export default function CustomerVisits() {
             <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16, marginBottom:20 }}>
               <div>
                 <label style={labelStyle}>Visit Type</label>
-                <select value={form.visit_type} onChange={e => fld('visit_type', e.target.value)} style={inputStyle}>
-                  {VISIT_TYPES.map(t => <option key={t}>{t}</option>)}
-                </select>
+                <VocabSelect vocab="visit-types" value={form.visit_type}
+                  onChange={v => fld('visit_type', v)} selectStyle={inputStyle} />
               </div>
               <div>
                 <label style={labelStyle}>Visit Date *</label>
