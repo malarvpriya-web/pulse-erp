@@ -18,7 +18,7 @@ const auth = vi.hoisted(() => ({ grants: new Set(['hr:view', 'employees:view', '
 vi.mock('../context/AuthContext', () => ({
   useAuth: () => ({ hasPermission: (m, a) => auth.grants.has(`${m}:${a}`) }),
 }));
-vi.mock('../services/api/client', () => ({ default: { get: vi.fn() } }));
+vi.mock('../services/api/client', () => ({ default: { get: vi.fn(), put: vi.fn() } }));
 
 // Recharts draws nothing in jsdom. Containers pass children through; each Bar
 // records its props so a test can see whether it is clickable.
@@ -33,7 +33,8 @@ vi.mock('recharts', () => {
 });
 
 import api from '../services/api/client';
-import EmployeeReports, { REPORT_LINKS, COMPOSITION, workforceErrorMessage } from '../features/hr/pages/EmployeeReports.jsx';
+import EmployeeReports, { REPORT_LINKS, COMPOSITION, workforceErrorMessage, monthWithinPeriod } from '../features/hr/pages/EmployeeReports.jsx';
+import { peekEmployeeListFilter } from '../features/employees/employeeListFilter';
 import { ROUTES, NAV_ITEMS } from '@/config/routes';
 
 const bd = (buckets, total = 31) => {
@@ -76,8 +77,20 @@ const DATA = {
   ],
 };
 
-function mockApi(data = DATA) {
-  api.get.mockImplementation(async () => ({ data }));
+const SETTINGS = {
+  min_employee_age: 18, max_employee_age: 80, analytics_min_sample: 5,
+  is_default: { min_employee_age: true, max_employee_age: true, analytics_min_sample: true },
+};
+const SETTINGS_URL = '/analytics/workforce-settings';
+function mockApi(data = DATA, settings = SETTINGS) {
+  api.get.mockImplementation(async (url) => ({ data: url === SETTINGS_URL ? { settings } : data }));
+}
+/** The analytics call fails; the settings call still answers. */
+function failAnalytics(err) {
+  api.get.mockImplementation(async (url) => {
+    if (url === SETTINGS_URL) return { data: { settings: SETTINGS } };
+    throw err;
+  });
 }
 const workforceCalls = () => api.get.mock.calls.filter(([u]) => u === '/analytics/workforce');
 const lastParams = () => workforceCalls().at(-1)[1].params;
@@ -211,7 +224,7 @@ describe('completeness and data states', () => {
   });
 
   it('the 2026-10-13 failure — Express "Cannot GET" HTML 404 — names the status and the likely cause', async () => {
-    api.get.mockRejectedValue({ response: {
+    failAnalytics({ response: {
       status: 404,
       data: '<!DOCTYPE html><html><body><pre>Cannot GET /api/analytics/workforce</pre></body></html>',
     } });
@@ -225,7 +238,7 @@ describe('completeness and data states', () => {
   });
 
   it('a server that does not respond says so', async () => {
-    api.get.mockRejectedValue(new Error('Network Error'));
+    failAnalytics(new Error('Network Error'));
     render(<EmployeeReports setPage={vi.fn()} />);
     await waitFor(() => expect(screen.getByRole('alert').textContent).toMatch(/server did not respond/));
   });
@@ -241,7 +254,7 @@ describe('completeness and data states', () => {
   });
 
   it('an API failure shows an error with Retry', async () => {
-    api.get.mockRejectedValue({ response: { status: 500, data: { error: 'boom' } } });
+    failAnalytics({ response: { status: 500, data: { error: 'boom' } } });
     render(<EmployeeReports setPage={vi.fn()} />);
     await waitFor(() => expect(screen.getByRole('alert').textContent).toMatch(/boom/));
     expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy();
@@ -300,6 +313,70 @@ describe('drill-through with employees:view', () => {
     await waitFor(() => expect(lastParams()).toMatchObject({ status: 'Exited' }));
     await waitFor(() => expect(screen.queryAllByRole('button', { name: /in All Employees/ })).toEqual([]));
   });
+
+  // 2026-11-10: every test above read sessionStorage directly. All Employees
+  // reads it through peekEmployeeListFilter(), which ignored `wf` — so each of
+  // these drills opened an UNFILTERED list while the suite stayed green.
+  it.each([
+    ['Department', /"Finance"/, { department: 'Finance' }],
+    ['Designation', /"Driver"/, { designation: 'Driver' }],
+    ['Gender', /"Male"/, { gender: 'Male' }],
+    ['Qualification', /"Graduate"/, { qualification: 'Graduate' }],
+  ])('%s drill reaches All Employees as a filter (through peek)', async (title, name, wf) => {
+    await renderPage();
+    fireEvent.click(within(card(title)).getByRole('button', { name }));
+    expect(peekEmployeeListFilter()).toMatchObject({ wf });
+  });
+
+  it('Location card drills by branch id', async () => {
+    await renderPage();
+    fireEvent.click(within(card('Location')).getByRole('button', { name: /"North Plant"/ }));
+    expect(peekEmployeeListFilter()).toMatchObject({ wf: { branchId: '7' } });
+  });
+
+  it('a partial month at the edge of the period drills to the days the bar counted', async () => {
+    mockApi({
+      ...DATA,
+      period: { ...DATA.period, from: '2025-11-10', to: '2026-11-10' },
+      joiningTrend: { months: [{ monthKey: '2025-11', month: 'Nov 25', joins: 1 }, { monthKey: '2026-11', month: 'Nov 26', joins: 1 }], total: 2 },
+    });
+    await renderPage();
+    const trend = screen.getByRole('article', { name: 'Joining trend' });
+    fireEvent.click(within(trend).getByRole('button', { name: /joined in Nov 25/ }));
+    expect(peekEmployeeListFilter()).toMatchObject({ joinedFrom: '2025-11-10', joinedTo: '2025-11-30' });
+    fireEvent.click(within(trend).getByRole('button', { name: /joined in Nov 26/ }));
+    expect(peekEmployeeListFilter()).toMatchObject({ joinedFrom: '2026-11-01', joinedTo: '2026-11-10' });
+  });
+});
+
+describe('monthWithinPeriod', () => {
+  it('clips only the months the period cuts', () => {
+    const p = { from: '2025-11-10', to: '2026-11-10' };
+    expect(monthWithinPeriod('2025-11', p)).toEqual({ from: '2025-11-10', to: '2025-11-30' });
+    expect(monthWithinPeriod('2026-02', p)).toEqual({ from: '2026-02-01', to: '2026-02-28' });
+    expect(monthWithinPeriod('2026-11', p)).toEqual({ from: '2026-11-01', to: '2026-11-10' });
+  });
+});
+
+describe('a Status filter other than Exited', () => {
+  it('attrition explains the leavers are filtered out instead of claiming nobody ever left', async () => {
+    mockApi({
+      ...DATA,
+      population: { basis: 'status:Active', total: 27 },
+      exits: { inPeriod: 0, byMonth: [], byReason: [], dateUnknown: { count: 0, byReason: [] }, allTime: 0 },
+    });
+    await renderPage();
+    const attr = screen.getByRole('article', { name: 'Attrition' });
+    expect(attr.textContent).toMatch(/Status filter \(Active\) leaves them out/);
+    expect(attr.textContent).not.toMatch(/left in total/);
+    expect(screen.getByRole('article', { name: 'Joining trend' }).textContent)
+      .toMatch(/only people whose status is now Active/);
+  });
+
+  it('without a Status filter attrition shows its figures as before', async () => {
+    await renderPage();
+    expect(screen.getByRole('article', { name: 'Attrition' }).textContent).toMatch(/3 people have left in total/);
+  });
 });
 
 describe('without employees:view', () => {
@@ -323,9 +400,9 @@ describe('without employees:view', () => {
 
 // ── Scope of this stage ───────────────────────────────────────────────────────
 describe('scope', () => {
-  it('requests only /analytics/workforce — no salary endpoint, no salary on the page', async () => {
+  it('requests only /analytics/workforce (and its settings) — no salary endpoint, no salary on the page', async () => {
     await renderPage();
-    expect(api.get.mock.calls.every(([u]) => u === '/analytics/workforce')).toBe(true);
+    expect(api.get.mock.calls.every(([u]) => u === '/analytics/workforce' || u === SETTINGS_URL)).toBe(true);
     expect(document.body.textContent).not.toMatch(/salary/i);
   });
 
@@ -342,5 +419,89 @@ describe('scope', () => {
       fireEvent.click(screen.getByRole('button', { name: new RegExp(`^${l.label}`) }));
       expect(setPage).toHaveBeenCalledWith(l.page);
     }
+  });
+});
+
+// ── Settings: every input editable with hr:edit ─────────────────────────────
+describe('workforce settings', () => {
+  const input = (label) => screen.getByLabelText(label);
+  const LABELS = ['Minimum age on date of birth', 'Maximum age on date of birth', 'Records needed to draw a chart'];
+
+  it('with hr:edit every setting is an editable input showing the stored value', async () => {
+    auth.grants = new Set([...auth.grants, 'hr:edit']);
+    await renderPage();
+    await waitFor(() => expect(input(LABELS[0])).toBeTruthy());
+    for (const l of LABELS) {
+      expect(input(l).readOnly).toBe(false);
+      expect(input(l).disabled).toBe(false);
+    }
+    expect(input(LABELS[0]).value).toBe('18');
+    fireEvent.change(input(LABELS[0]), { target: { value: '16' } });
+    expect(input(LABELS[0]).value).toBe('16');
+  });
+
+  it('saves the edited values and reloads the analytics', async () => {
+    auth.grants = new Set([...auth.grants, 'hr:edit']);
+    api.put.mockResolvedValue({ data: { settings: { ...SETTINGS, min_employee_age: 16, is_default: {} } } });
+    await renderPage();
+    await waitFor(() => expect(input(LABELS[0])).toBeTruthy());
+    const before = workforceCalls().length;
+    fireEvent.change(input(LABELS[0]), { target: { value: '16' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save settings' }));
+    await waitFor(() => expect(api.put).toHaveBeenCalledWith(SETTINGS_URL,
+      { min_employee_age: 16, max_employee_age: 80, analytics_min_sample: 5 }));
+    await waitFor(() => expect(screen.getByText(/Saved\./)).toBeTruthy());
+    await waitFor(() => expect(workforceCalls().length).toBeGreaterThan(before));
+  });
+
+  it('refuses out-of-range and crossed values before sending anything', async () => {
+    auth.grants = new Set([...auth.grants, 'hr:edit']);
+    await renderPage();
+    await waitFor(() => expect(input(LABELS[0])).toBeTruthy());
+    fireEvent.change(input(LABELS[0]), { target: { value: '10' } });
+    expect(screen.getByText('Whole number from 14 to 25.')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Save settings' }).disabled).toBe(true);
+    fireEvent.change(input(LABELS[0]), { target: { value: '18' } });
+    fireEvent.change(input(LABELS[1]), { target: { value: '50' } });
+    fireEvent.change(input(LABELS[0]), { target: { value: '25' } });
+    expect(screen.getByRole('button', { name: 'Save settings' }).disabled).toBe(false);
+    expect(api.put).not.toHaveBeenCalled();
+  });
+
+  it('a server rejection is shown, not swallowed', async () => {
+    auth.grants = new Set([...auth.grants, 'hr:edit']);
+    api.put.mockRejectedValue({ response: { status: 400, data: { error: 'Minimum age (25) must be lower than maximum age (25).' } } });
+    await renderPage();
+    await waitFor(() => expect(input(LABELS[0])).toBeTruthy());
+    fireEvent.change(input(LABELS[2]), { target: { value: '7' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save settings' }));
+    await waitFor(() => expect(screen.getByText(/must be lower than maximum/)).toBeTruthy());
+  });
+
+  it('without hr:edit the values are shown read-only, with no Save', async () => {
+    await renderPage();
+    await waitFor(() => expect(input(LABELS[0])).toBeTruthy());
+    for (const l of LABELS) expect(input(l).readOnly).toBe(true);
+    expect(screen.queryByRole('button', { name: 'Save settings' })).toBeNull();
+    expect(screen.getByText(/needs HR edit access/)).toBeTruthy();
+  });
+});
+
+// ── Implausible dates of birth ────────────────────────────────────────────────
+describe('dates of birth outside the age limits', () => {
+  it('the Age card says how many and opens exactly those records', async () => {
+    mockApi({ ...DATA, dataIssues: { implausibleDob: { count: 1, ids: [3], minAge: 18, maxAge: 80 } } });
+    const setPage = await renderPage();
+    const age = card('Age');
+    expect(age.textContent).toMatch(/1 date of birth is outside 18–80 years/);
+    fireEvent.click(within(age).getByRole('button', { name: /date of birth needs checking/ }));
+    expect(setPage).toHaveBeenCalledWith('EmployeesData');
+    expect(peekEmployeeListFilter()).toMatchObject({ ids: [3] });
+  });
+
+  it('no note when every date of birth is plausible', async () => {
+    mockApi({ ...DATA, dataIssues: { implausibleDob: { count: 0, ids: [], minAge: 18, maxAge: 80 } } });
+    await renderPage();
+    expect(card('Age').textContent).not.toMatch(/outside/);
   });
 });

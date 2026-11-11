@@ -21,6 +21,40 @@ export function companyOf(req) {
 }
 
 /**
+ * Router guard: every request must carry a company, or be a genuine global
+ * super-admin scope (2026-11-10).
+ *
+ * Many handlers scope with `req.scope?.company_id ?? null`, and null means
+ * "every company" to their SQL. verifyToken sets `req.scope = null` for a
+ * NON-super-admin with no company (22 active pilot.* logins on 11-10, among
+ * them finance_manager, hr_manager and payroll_admin), so such a user read
+ * every tenant's data. Mounted on a router this answers for every handler on
+ * it, including ones written later:
+ *
+ *   · a company on the scope, the token or the user row → req.scope is
+ *     normalised to carry it, so `req.scope?.company_id` can never read null;
+ *   · req.scope.isGlobal (super admin, no company)      → passes, as before;
+ *   · anyone else                                       → 403 NO_COMPANY_SCOPE.
+ *
+ * Mount AFTER verifyToken (it reads req.user / req.scope).
+ */
+export function requireCompanyScope(req, res, next) {
+  const cid = companyOf(req);
+  if (cid != null) {
+    if (req.scope?.company_id == null || Number(req.scope.company_id) !== cid) {
+      req.scope = { ...(req.scope || {}), company_id: cid, isGlobal: false };
+    }
+    return next();
+  }
+  if (req.scope?.isGlobal) return next();
+  return res.status(403).json({
+    error: 'No company scope for this user',
+    code: 'NO_COMPANY_SCOPE',
+    message: 'This login is not assigned to a company. Ask an administrator to assign one.',
+  });
+}
+
+/**
  * The caller's `employees.id`, or null when they have no employee record.
  *
  * Distinct from `req.user.id`, which is a `users.id`. Confusing the two is a

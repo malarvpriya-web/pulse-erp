@@ -117,6 +117,25 @@
 .wfa-export-note-error { color: #b91c1c; }
 .wfa-subsection { margin: 6px 0 0; font-size: 12.5px; font-weight: 700; color: #4b5563; }
 
+/* Settings — the company's editable limits */
+.wfa-settings { display: flex; flex-direction: column; gap: 8px; }
+.wfa-settings-form {
+  background: #fff; border: 1px solid #e9e4ff; border-radius: 10px; padding: 14px 16px;
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px;
+}
+.wfa-setting > span:first-child { font-weight: 600; color: #374151; font-size: 12px; }
+.wfa-setting-default { font-style: normal; font-weight: 500; color: #6b7280; }
+.wfa-setting-input { display: flex; align-items: center; gap: 6px; }
+.wfa-setting-input input {
+  width: 90px; padding: 5px 8px; border: 1px solid #d7d7e0; border-radius: 7px;
+  font-size: 12.5px; background: #fff; color: #1f2937;
+}
+.wfa-setting-input input[readonly] { background: #f5f5f8; color: #6b7280; }
+.wfa-setting-input input[aria-invalid="true"] { border-color: #dc2626; }
+.wfa-settings-actions { grid-column: 1 / -1; display: flex; gap: 8px; flex-wrap: wrap; }
+.wfa-settings-form > [role="status"],
+.wfa-settings-form > [role="alert"] { grid-column: 1 / -1; }
+
 /* Phone widths. styles/global-overrides.css (≤768px) narrows .page-content's
    side padding to 12px !important, but the shared .plh-page still cancels the
    20px --spacing-md, so the page ran 8px past each edge of the scroller — a

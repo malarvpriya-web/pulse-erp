@@ -7,6 +7,7 @@ import { validatePAN } from "../utils/gst.js";
 import { syncPrimaryRole } from "../services/userRoles.js";
 import { initOnboardingChecklist } from "../modules/hr/onboarding.service.js";
 import { resolveRange } from "../shared/dashboardFilters.js";
+import { getWorkforcePolicy, dobProblem, localTodayIso } from "../shared/workforcePolicy.js";
 import {
   bucketSql, isExitedSql, isCurrentSql, statusExpr,
   canonicalWritableStatus, WRITABLE_STATUSES,
@@ -525,6 +526,13 @@ export const addEmployee = async (data) => {
     if (yearsAhead > 2) {
       throw badRequest(`Joining date ${String(joining_date).slice(0, 10)} is more than two years in the future.`);
     }
+  }
+
+  // DATE OF BIRTH — plausible against the company's age limits (editable on
+  // Workforce Analytics → Settings). Optional: a blank DOB is not refused.
+  if (String(dob ?? '').trim()) {
+    const problem = dobProblem(dob, await getWorkforcePolicy(pool, company_id ?? null));
+    if (problem) throw badRequest(problem);
   }
 
   // PROBATION — the one server-side rule (shared/probationDates.js), replacing
@@ -1463,6 +1471,22 @@ export const updateEmployee = async (id, data, company_id = null) => {
       throw badRequest(`Joining date ${String(data.joining_date).slice(0, 10)} is more than two years in the future.`);
     }
   }
+  // DATE OF BIRTH — checked only when it CHANGES. Edit Employee sends every
+  // field on every save, so checking an unchanged value would lock a record
+  // that already holds a bad date (EMP003: 27 Feb 2026) — HR could not save a
+  // phone number without first fixing the DOB. A new value must be plausible.
+  if ('dob' in data && String(data.dob ?? '').trim()) {
+    const sent = String(data.dob).trim().slice(0, 10);
+    const { rows: [cur] } = await pool.query(
+      `SELECT TO_CHAR(dob, 'YYYY-MM-DD') AS dob FROM employees
+        WHERE id = $1 AND ($2::int IS NULL OR company_id = $2)`,
+      [id, company_id ?? null],
+    );
+    if (!cur || cur.dob !== sent) {
+      const problem = dobProblem(data.dob, await getWorkforcePolicy(pool, company_id ?? null), localTodayIso());
+      if (problem) throw badRequest(problem);
+    }
+  }
   if ('company_email' in data && String(data.company_email ?? '').trim()) {
     const dupe = await pool.query(
       `SELECT id, office_id FROM employees
@@ -1854,6 +1878,7 @@ const WORKFORCE_COLUMNS = `,
            ELSE COALESCE(NULLIF(TRIM(b.name), ''), 'Unknown branch')
       END                                    AS wf_branch,
       CASE WHEN e.dob <= CURRENT_DATE THEN e.dob END AS wf_dob,
+      e.dob                                  AS wf_dob_raw,
       CASE WHEN e.previous_years_1 IS NULL AND e.previous_years_2 IS NULL THEN NULL
            ELSE COALESCE(e.previous_years_1, 0) + COALESCE(e.previous_years_2, 0)
       END                                    AS wf_prior_years,
@@ -2425,17 +2450,31 @@ async function workforcePeriod(src, params, { period, from, to }) {
 }
 
 export const getWorkforceAnalytics = async ({
-  company_id, filters = {}, period, from, to,
+  company_id, filters = {}, period, from, to, policy = null,
 } = {}) => {
   if (company_id === undefined) {
     throw new Error('getWorkforceAnalytics: company_id is required (null = global scope)');
   }
+  // Company-editable limits (Workforce Analytics → Settings). Validated
+  // integers, so they are safe to inline in the SQL below.
+  const pol = policy || await getWorkforcePolicy(pool, company_id);
+  const minAge = Math.trunc(Number(pol.min_employee_age));
+  const maxAge = Math.trunc(Number(pol.max_employee_age));
+  const minSample = Math.trunc(Number(pol.analytics_min_sample)) || WORKFORCE_MIN_SAMPLE;
+  if (![minAge, maxAge].every(Number.isInteger)) throw new Error('workforce policy ages must be integers');
+
   const { src, params, population } = workforceSource(company_id, filters);
   const { range, rangeFrom, rangeTo } = await workforcePeriod(src, params, { period, from, to });
 
   // ── Composition (point-in-time) ───────────────────────────────────────────
+  // A date of birth outside the company's age limits (or in the future) is not
+  // an age: EMP003's 27 Feb 2026 was charted as "Under 25". It is counted as
+  // not recorded and listed under dataIssues.implausibleDob so HR can fix it.
+  const ageYears = `EXTRACT(YEAR FROM AGE(CURRENT_DATE, wf_dob))`;
+  const dobImplausible = `(wf_dob_raw IS NOT NULL AND (wf_dob_raw > CURRENT_DATE
+        OR ${ageYears} < ${minAge} OR ${ageYears} > ${maxAge}))`;
   const ageBand = `CASE
-        WHEN wf_dob IS NULL THEN '${NOT_RECORDED}'
+        WHEN wf_dob IS NULL OR ${dobImplausible} THEN '${NOT_RECORDED}'
         WHEN EXTRACT(YEAR FROM AGE(CURRENT_DATE, wf_dob)) < 25 THEN 'Under 25'
         WHEN EXTRACT(YEAR FROM AGE(CURRENT_DATE, wf_dob)) < 30 THEN '25-29'
         WHEN EXTRACT(YEAR FROM AGE(CURRENT_DATE, wf_dob)) < 35 THEN '30-34'
@@ -2513,11 +2552,17 @@ export const getWorkforceAnalytics = async ({
     const recorded = total - notRecorded;
     return {
       total, recorded, notRecorded,
-      lowSample: recorded < WORKFORCE_MIN_SAMPLE,
+      lowSample: recorded < minSample,
       buckets,
     };
   };
   const breakdowns = Object.fromEntries(Object.keys(DIMS).map(d => [d, breakdown(d)]));
+
+  const implausibleRes = await pool.query(`
+    ${src}, pop AS (SELECT * FROM emp WHERE ${population})
+    SELECT id FROM pop WHERE ${dobImplausible} ORDER BY id
+  `, params);
+  const implausibleIds = implausibleRes.rows.map(r => r.id);
 
   const fromIdx = params.length + 1;
   const toIdx   = params.length + 2;
@@ -2572,7 +2617,7 @@ export const getWorkforceAnalytics = async ({
   const pct = (n, d) => (d > 0 ? Number(((n / d) * 100).toFixed(1)) : null);
   const field = (key, label, recorded, of) => ({
     field: key, label, recorded, total: of, pct: pct(recorded, of),
-    lowSample: recorded < WORKFORCE_MIN_SAMPLE,
+    lowSample: recorded < minSample,
   });
 
   return {
@@ -2590,7 +2635,16 @@ export const getWorkforceAnalytics = async ({
       basis: filters.status ? `status:${filters.status}` : 'current',
       total,
     },
-    minSample: WORKFORCE_MIN_SAMPLE,
+    minSample,
+    policy: {
+      min_employee_age: minAge,
+      max_employee_age: maxAge,
+      analytics_min_sample: minSample,
+    },
+    dataIssues: {
+      // Current population only (the same people the Age card counts).
+      implausibleDob: { count: implausibleIds.length, ids: implausibleIds, minAge, maxAge },
+    },
     period_scoped: ['joiningTrend', 'exits'],
     point_in_time: ['breakdowns', 'completeness'],
     breakdowns,

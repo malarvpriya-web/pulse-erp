@@ -56,8 +56,11 @@ describe('server.js wiring', () => {
     expect(SERVER_SRC).toMatch(/import analyticsRoutes\s+from "\.\/src\/analytics\/routes\/analytics\.routes\.js"/);
   });
 
-  it('mounts it at /analytics behind verifyToken, then analyticsPolicy', () => {
-    expect(SERVER_SRC).toMatch(/v1Router\.use\("\/analytics",\s*verifyToken,\s*analyticsPolicy,\s*analyticsRoutes\)/);
+  it('mounts it at /analytics behind verifyToken, then analyticsPolicy, then the audit floor', () => {
+    // auditMutations added 2026-11-10: PUT /workforce-settings is this router's
+    // one write and must reach the audit trail.
+    expect(SERVER_SRC).toMatch(
+      /v1Router\.use\("\/analytics",\s*verifyToken,\s*analyticsPolicy,\s*auditMutations\('analytics'[^)]*\),\s*analyticsRoutes\)/);
   });
 
   it('serves v1Router at both /api/v1 and /api (the frontend calls /api/...)', () => {

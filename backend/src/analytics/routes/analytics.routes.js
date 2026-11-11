@@ -27,7 +27,11 @@ import {
   getWorkforceAnalytics, parseWorkforceFilters,
   getWorkforceHeadcountExport, getWorkforceAttritionExport, getWorkforceDocumentExpiryExport,
 } from '../../employees/employee.service.js';
-import { companyOf } from '../../shared/scope.js';
+import { companyOf, requireCompanyScope } from '../../shared/scope.js';
+import { requirePermission } from '../../middlewares/auth.middleware.js';
+import {
+  getWorkforcePolicy, saveWorkforcePolicy, WORKFORCE_POLICY_FIELDS,
+} from '../../shared/workforcePolicy.js';
 import { reminderDaysFor, probationEndingSoonSql } from '../../shared/probationDates.js';
 
 /* safe single-row helper */
@@ -145,6 +149,23 @@ function hrFrags(req, { defaultPeriod = 'last12m' } = {}) {
 }
 
 const router = Router();
+
+/**
+ * COMPANY SCOPE — fail CLOSED for every route on this router (2026-11-10).
+ *
+ * About twenty handlers below scope with `req.scope?.company_id ?? null`, and
+ * null means "every company" to their SQL. verifyToken sets `req.scope = null`
+ * for a NON-super-admin with no company (the pilot.* logins are like this), so
+ * such a user holding hr:view read every tenant's headcount, attrition, leave
+ * and onboarding figures. Fixing each handler leaves the next one written the
+ * same way open; this guard answers for all of them, sub-routers included:
+ *
+ *   · a company on the token or the user  → req.scope carries it (normalised,
+ *     so `req.scope?.company_id` below can never read null for this user);
+ *   · a genuine global super-admin scope  → passes, null = all companies, as before;
+ *   · anyone else                         → 403, before any query runs.
+ */
+router.use(requireCompanyScope);   // shared/scope.js — same guard the other routers mount
 
 /*
  * REMOVED 2026-08-18 — five endpoints with no caller anywhere in the frontend:
@@ -824,6 +845,42 @@ router.get('/workforce', async (req, res) => {
   }
 });
 
+/**
+ * GET /api/analytics/workforce-settings — the company's editable workforce
+ * limits (minimum/maximum age on a date of birth, records needed to chart).
+ * PUT the same path to change them: hr:edit, and a real company scope.
+ * Not under '/workforce/…' on purpose — see the note on GET /workforce.
+ */
+router.get('/workforce-settings', async (req, res) => {
+  const company_id = companyOf(req);
+  if (company_id == null && !req.scope?.isGlobal) {
+    return res.status(403).json({ error: 'No company scope for this user' });
+  }
+  try {
+    res.json({ settings: await getWorkforcePolicy(pool, company_id), fields: WORKFORCE_POLICY_FIELDS });
+  } catch (e) {
+    console.error('[analytics/workforce-settings]', e.message);
+    res.status(500).json({ error: 'Failed to load workforce settings' });
+  }
+});
+
+router.put('/workforce-settings', requirePermission('hr', 'edit'), async (req, res) => {
+  const company_id = companyOf(req);
+  if (company_id == null) {
+    return res.status(403).json({ error: 'Workforce settings are saved per company; this user has none' });
+  }
+  try {
+    const before = await getWorkforcePolicy(pool, company_id);
+    const settings = await saveWorkforcePolicy(pool, company_id, req.body);
+    req._auditBefore = before;
+    res.json({ settings, fields: WORKFORCE_POLICY_FIELDS });
+  } catch (e) {
+    if (e.status === 400) return res.status(400).json({ error: e.message, errors: e.errors });
+    console.error('[analytics/workforce-settings PUT]', e.message);
+    res.status(500).json({ error: 'Failed to save workforce settings' });
+  }
+});
+
 // GET /api/analytics/age-distribution — headcount by age bracket
 router.get('/age-distribution', async (req, res) => {
   try {
@@ -947,7 +1004,10 @@ router.get('/employee-reports/salary-bands', async (req, res) => {
     // driver text; the caller could not tell a bad request from an outage.
     const bad = assertDateParams(req.query);
     if (bad) return res.status(bad.status).json(bad.body);
-    const cid = req.scope?.company_id ?? null;
+    // companyOf + fail closed (2026-11-10). `req.scope?.company_id ?? null`
+    // read a user with no company as "every company".
+    const cid = exportScope(req, res);
+    if (cid === undefined) return;
     const { and, params } = scopeFrags(cid);
     const { rows } = await pool.query(`
       SELECT
@@ -978,7 +1038,8 @@ router.get('/employee-reports/onboarding-progress', async (req, res) => {
     // driver text; the caller could not tell a bad request from an outage.
     const bad = assertDateParams(req.query);
     if (bad) return res.status(bad.status).json(bad.body);
-    const cid = req.scope?.company_id ?? null;
+    const cid = exportScope(req, res);   // companyOf + fail closed (2026-11-10)
+    if (cid === undefined) return;
     const cidClause = cid != null ? `AND e.company_id = $1` : '';
     const params = cid != null ? [cid] : [];
     const { rows } = await pool.query(`
@@ -993,6 +1054,7 @@ router.get('/employee-reports/onboarding-progress', async (req, res) => {
       FROM employees e
       LEFT JOIN hr_onboarding_checklist_progress p ON p.employee_id = e.id
       WHERE ${isIn('e.status', EMPLOYEE_ACTIVE)}
+        AND e.deleted_at IS NULL
         ${cidClause}
       GROUP BY e.id, e.office_id, e.first_name, e.last_name, e.department, e.joining_date
       ORDER BY e.joining_date DESC
@@ -1011,7 +1073,8 @@ router.get('/employee-reports/pending-confirmations', async (req, res) => {
     // driver text; the caller could not tell a bad request from an outage.
     const bad = assertDateParams(req.query);
     if (bad) return res.status(bad.status).json(bad.body);
-    const cid = req.scope?.company_id ?? null;
+    const cid = exportScope(req, res);   // companyOf + fail closed (2026-11-10)
+    if (cid === undefined) return;
     const { and, params } = scopeFrags(cid);
     const { rows } = await pool.query(`
       SELECT

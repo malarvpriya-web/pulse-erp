@@ -130,7 +130,14 @@ export function peekEmployeeListFilter() {
     'joinedFrom', 'joinedTo', 'expiry', 'missing', 'ids']
     .some(k => out[k] != null && out[k] !== '' && out[k] !== 'All'
                && !(Array.isArray(out[k]) && out[k].length === 0));
-  return hasCriteria ? out : null;
+  // Workforce Analytics sends its criteria under `wf` (an object). Leaving it
+  // out of the list above dropped every chart drill-through — Designation,
+  // Department, Gender … — and All Employees opened UNFILTERED (2026-11-10).
+  // A `wf` key counts even when its value is null: { branchId: null } means
+  // "no location recorded", a real filter.
+  const hasWorkforce = out.wf != null && typeof out.wf === 'object' && !Array.isArray(out.wf)
+    && Object.keys(out.wf).some(k => out.wf[k] !== undefined && out.wf[k] !== '');
+  return (hasCriteria || hasWorkforce) ? out : null;
 }
 
 /** Drop the pending filter so a later visit to the page starts clean. */

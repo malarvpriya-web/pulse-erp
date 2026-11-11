@@ -250,6 +250,9 @@ import { requestId }     from "./src/middlewares/requestId.js";
 import { requestLogger } from "./src/middlewares/requestLogger.js";
 import { memoryRateLimit } from "./src/middlewares/rateLimit.js";
 import { auditMutations } from "./src/middlewares/auditMutations.js";
+// Fail closed without a company: mounted after verifyToken on the routers whose
+// handlers read `req.scope?.company_id ?? null` (2026-11-10). See shared/scope.js.
+import { requireCompanyScope } from "./src/shared/scope.js";
 import { applyFieldPermissions } from "./src/middlewares/auth.middleware.js";
 import { responseCap } from "./src/middlewares/responseCap.js";
 import { denialLogger } from "./src/middlewares/denialLogger.js";
@@ -622,14 +625,14 @@ v1Router.use("/probation",       auditMutations('hr'), probationRoutes);
 v1Router.use("/department-heads", auditMutations('hr'), departmentHeadsRoutes);
 // Probation review cycles: HR request (hr:view/add) + reviewer submission (identity-scoped).
 v1Router.use("/probation-reviews", auditMutations('hr'), probationReviewRoutes);
-v1Router.use("/leaves",          verifyToken, auditMutations('leaves'), leavesNewRoutes);
+v1Router.use("/leaves",          verifyToken, requireCompanyScope, auditMutations('leaves'), leavesNewRoutes);
 v1Router.use("/comp-off",        verifyToken, auditMutations('leaves'), compOffRoutes);
 v1Router.use("/leave-encashment", verifyToken, auditMutations('leaves'), encashmentRoutes);
 v1Router.use("/leave-accrual",   verifyToken, auditMutations('leaves'), accrualRoutes);
 
 // FINANCE
-v1Router.use("/finance",         verifyToken, applyFieldPermissions('finance'), auditMutations('finance'), financeRoutes);
-v1Router.use("/finance",         verifyToken, applyFieldPermissions('finance'), auditMutations('finance'), extendedFinanceRoutes);
+v1Router.use("/finance",         verifyToken, requireCompanyScope, applyFieldPermissions('finance'), auditMutations('finance'), financeRoutes);
+v1Router.use("/finance",         verifyToken, requireCompanyScope, applyFieldPermissions('finance'), auditMutations('finance'), extendedFinanceRoutes);
 v1Router.use("/statements",      verifyToken, statementsRoutes);
 v1Router.use("/accounting",      verifyToken, auditMutations('finance'), accountingRoutes);
 v1Router.use("/gst",             verifyToken, auditMutations('finance'), gstRoutes);
@@ -651,7 +654,7 @@ v1Router.use("/procurement",     verifyToken, auditMutations('procurement'), pro
 // only matches its own paths and falls through otherwise.
 v1Router.use(["/vendors", "/rfqs", "/three-way-match"], verifyToken);
 v1Router.use("/",                vendorRoutes);
-v1Router.use("/inventory",       verifyToken, auditMutations('inventory'), inventoryRoutes);
+v1Router.use("/inventory",       verifyToken, requireCompanyScope, auditMutations('inventory'), inventoryRoutes);
 v1Router.use("/warehouse",       verifyToken, auditMutations('warehouse'), warehouseRoutes);
 v1Router.use("/scan",            verifyToken, auditMutations('warehouse'), scanRoutes);
 v1Router.use("/logistics",       verifyToken, auditMutations('logistics'), logisticsRoutes);
@@ -704,13 +707,13 @@ v1Router.use("/recruitment",     verifyToken, auditMutations('recruitment'), car
 v1Router.use("/recruitment",     verifyToken, auditMutations('recruitment'), candidateIntelligenceRoutes);
 v1Router.use("/recruitment",     verifyToken, auditMutations('recruitment'), recruitmentRoutes);
 v1Router.use("/talent",          verifyToken, auditMutations('hr'), talentRoutes);
-v1Router.use("/leaves-new",      verifyToken, auditMutations('leaves'), leavesNewRoutes); // backward-compat alias
+v1Router.use("/leaves-new",      verifyToken, requireCompanyScope, auditMutations('leaves'), leavesNewRoutes); // backward-compat alias
 v1Router.use("/attendance",         verifyToken, auditMutations('attendance'), attendanceRoutes);
 v1Router.use("/attendance/offline", verifyToken, auditMutations('attendance'), offlineSyncRoutes); // PWA offline punch sync
 v1Router.use("/holidays",           verifyToken, auditMutations('leaves'), holidaysRoutes);
 v1Router.use("/payroll",         verifyToken, applyFieldPermissions('payroll'), auditMutations('payroll'), payrollRoutes);
 v1Router.use("/salary-structures", verifyToken, auditMutations('payroll'), salaryRoutes);
-v1Router.use("/hr",              verifyToken, applyFieldPermissions('hr'), auditMutations('hr'), hrRoutes);
+v1Router.use("/hr",              verifyToken, requireCompanyScope, applyFieldPermissions('hr'), auditMutations('hr'), hrRoutes);
 v1Router.use("/training",        verifyToken, auditMutations('training'), trainingRoutes);
 v1Router.use("/certifications",  verifyToken, auditMutations('hr'), certificationsRoutes);
 v1Router.use("/learning-paths",  verifyToken, auditMutations('training'), learningPathsRoutes);
@@ -808,7 +811,7 @@ v1Router.use("/lifecycle",       verifyToken, auditMutations('lifecycle'), lifec
 v1Router.use("/maintenance",     verifyToken, auditMutations('maintenance'), maintenanceRoutes);
 v1Router.use("/workflows",       verifyToken, auditMutations('admin'), workflowRoutes);
 v1Router.use("/security",        verifyToken, auditMutations('security'), securityRoutes);
-v1Router.use("/admin",           verifyToken, auditMutations('admin'), adminRoutes);
+v1Router.use("/admin",           verifyToken, requireCompanyScope, auditMutations('admin'), adminRoutes);
 v1Router.use("/settings",        verifyToken, auditMutations('settings'), settingsStatusRoutes);
 v1Router.use("/system-health",   verifyToken, allowRoles('admin', 'super_admin'), systemHealthRoutes);   // live DB table introspection — admin-only diagnostic
 v1Router.use("/company-profile", verifyToken, auditMutations('company_profile'), companyProfileRoutes);
@@ -864,7 +867,7 @@ v1Router.use("/approvals",       verifyToken, auditMutations('approvals'), appro
 // 72 endpoints (full P&L, salary bands, named performance ratings) readable by
 // any authenticated user. Each mount now applies a path-prefix permission policy
 // that denies by default, so new routes inherit a guard instead of shipping open.
-v1Router.use("/dashboard",       verifyToken, withOpenPaths(dashboardPolicy, DASHBOARD_PUBLIC_PATHS), auditMutations('dashboard'), dashboardRoutes);
+v1Router.use("/dashboard",       verifyToken, requireCompanyScope, withOpenPaths(dashboardPolicy, DASHBOARD_PUBLIC_PATHS), auditMutations('dashboard'), dashboardRoutes);
 // IPS (Service Master) is mounted ahead of the general servicedesk router so its
 // /ips/* paths resolve here rather than falling through that router first.
 v1Router.use("/servicedesk/ips", verifyToken, auditMutations('servicedesk'), ipsRoutes);
@@ -918,10 +921,12 @@ v1Router.use("/engineering/ecn", verifyToken, auditMutations('engineering'), ecn
 const aiCombined = express.Router();
 aiCombined.use(aiRoutes);
 aiCombined.use(aiPayrollRoutes);
-v1Router.use("/ai",              verifyToken, aiPolicy, auditMutations('analytics'), aiCombined);
+v1Router.use("/ai",              verifyToken, requireCompanyScope, aiPolicy, auditMutations('analytics'), aiCombined);
 v1Router.use("/intelligence",      verifyToken, intelligencePolicy, auditMutations('analytics'), intelligenceRoutes);
 v1Router.use("/ceo-intelligence",  verifyToken, auditMutations('crm'), ceoIntelligenceRoutes);
-v1Router.use("/analytics",       verifyToken, analyticsPolicy, analyticsRoutes);
+// auditMutations: PUT /analytics/workforce-settings (2026-11-10) is this
+// router's one write; it sets req._auditBefore, so the trail has old and new.
+v1Router.use("/analytics",       verifyToken, analyticsPolicy, auditMutations('analytics', { recordType: 'workforce_settings' }), analyticsRoutes);
 v1Router.use("/user-dashboard",  verifyToken, userDashboardRoutes);
 // Manager / Ops dashboard aggregates (budget vs actual, team capacity, OKR targets).
 //

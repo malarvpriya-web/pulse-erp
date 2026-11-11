@@ -55,6 +55,9 @@ export const REPORT_LINKS = [
 /** Composition cards, in display order. `drill` = the All Employees filter key, if it can express the bucket. */
 export const COMPOSITION = [
   { key: 'department',        title: 'Department',         drill: 'department' },
+  // Drills by branch ID (each bucket carries one), never by name: two branches
+  // can share a name.
+  { key: 'location',          title: 'Location',           drill: 'branchId' },
   { key: 'status',            title: 'Employee Status',    drill: 'status' },
   { key: 'designation',       title: 'Designation',        drill: 'designation' },
   { key: 'employmentType',    title: 'Employment Type',    drill: 'employmentType' },
@@ -130,6 +133,7 @@ function optionsFrom(data) {
 export default function EmployeeReports({ setPage }) {
   const { hasPermission } = useAuth();
   const canView  = hasPermission('hr', 'view');
+  const canEdit  = hasPermission('hr', 'edit');
   const canDrill = hasPermission('employees', 'view');
   const links = REPORT_LINKS.filter(l => !l.module || hasPermission(l.module, 'view'));
 
@@ -220,6 +224,10 @@ export default function EmployeeReports({ setPage }) {
     return (bucket) => {
       if (card.drill === 'status' && bucket.value === 'Exited') return undefined;
       if (card.drill === 'status') return drill({ status: bucket.value }, `Workforce Analytics · Status: ${bucket.value}`);
+      if (card.drill === 'branchId') {
+        return drill({ wf: { branchId: bucket.branchId == null ? null : String(bucket.branchId) } },
+          `Workforce Analytics · Location: ${bucket.value}`);
+      }
       return drill({ wf: { [card.drill]: bucket.value } }, `Workforce Analytics · ${card.title}: ${bucket.value}`);
     };
   };
@@ -231,6 +239,10 @@ export default function EmployeeReports({ setPage }) {
       </PageShell>
     );
   }
+
+  // The Status filter the server applied (null = the default "current staff").
+  const basis = data?.population?.basis || '';
+  const statusFilter = basis.startsWith('status:') ? basis.slice('status:'.length) : null;
 
   const dimensionDefs = DIMENSIONS.map(d => ({
     key: d.key, label: d.label, options: options[d.key] || [], width: 130,
@@ -289,6 +301,9 @@ export default function EmployeeReports({ setPage }) {
                   breakdown={data.breakdowns[card.key]}
                   minSample={data.minSample}
                   onDrill={drillFor(card)}
+                  note={card.key === 'age'
+                    ? <ImplausibleDobNote issue={data.dataIssues?.implausibleDob} canOpen={canDrill} setPage={setPage} />
+                    : null}
                 />
               ))}
             </div>
@@ -302,12 +317,20 @@ export default function EmployeeReports({ setPage }) {
                 months={data.joiningTrend.months}
                 valueKey="joins"
                 truncated={data.period?.trendTruncated}
+                statusFilter={statusFilter}
                 onDrill={drillAllowed
-                  ? (m) => drill({ joinedFrom: `${m.monthKey}-01`, joinedTo: lastDayOf(m.monthKey) },
-                                 `Workforce Analytics · Joined ${m.month}`)
+                  ? (m) => {
+                    // The chart counts each month only inside the period, so the
+                    // first and last month are partial (Last 12 months starts on
+                    // today's date a year ago). The list must use the same days.
+                    const { from, to } = monthWithinPeriod(m.monthKey, data.period);
+                    const partial = from !== `${m.monthKey}-01` || to !== lastDayOf(m.monthKey);
+                    return drill({ joinedFrom: from, joinedTo: to },
+                      `Workforce Analytics · Joined ${partial ? `${from} to ${to}` : m.month}`);
+                  }
                   : null}
               />
-              <AttritionCard exits={data.exits} truncated={data.period?.trendTruncated} />
+              <AttritionCard exits={data.exits} truncated={data.period?.trendTruncated} statusFilter={statusFilter} />
             </div>
           </>
         )}
@@ -331,8 +354,154 @@ export default function EmployeeReports({ setPage }) {
             </div>
           </>
         )}
+
+        <WorkforceSettings canEdit={canEdit} onSaved={() => load(params)} />
       </div>
     </PageShell>
+  );
+}
+
+// ── Data issue: dates of birth outside the company's age limits ──────────────
+function ImplausibleDobNote({ issue, canOpen, setPage }) {
+  if (!issue?.count) return null;
+  const open = () => {
+    setEmployeeListFilter({
+      ids: issue.ids,
+      label: `Date of birth outside ${issue.minAge}–${issue.maxAge} years`,
+      origin: 'EmployeeReports',
+    });
+    setPage?.('EmployeesData');
+  };
+  return (
+    <p className="wfa-state wfa-state-warn" role="note">
+      {issue.count} {issue.count === 1 ? 'date of birth is' : 'dates of birth are'} outside {issue.minAge}–{issue.maxAge} years
+      (or in the future) and {issue.count === 1 ? 'is' : 'are'} not counted as an age.
+      {canOpen && (
+        <>
+          {' '}
+          <button type="button" className="wfa-drill" onClick={open}
+                  aria-label={`Open the ${issue.count} employees whose date of birth needs checking`}>
+            Open to fix
+          </button>
+        </>
+      )}
+    </p>
+  );
+}
+
+// ── Settings: the company's editable limits ──────────────────────────────────
+
+/** What the page lets HR edit. Ranges mirror backend shared/workforcePolicy.js. */
+export const SETTING_FIELDS = [
+  { key: 'min_employee_age', label: 'Minimum age on date of birth', unit: 'years', min: 14, max: 25,
+    help: 'Add/Edit Employee refuses a new date of birth that makes someone younger. Cannot go below 14 (child labour law).' },
+  { key: 'max_employee_age', label: 'Maximum age on date of birth', unit: 'years', min: 50, max: 100,
+    help: 'Catches typing slips such as 1906 for 1996.' },
+  { key: 'analytics_min_sample', label: 'Records needed to draw a chart', unit: 'records', min: 1, max: 50,
+    help: 'Below this, a card shows a list instead of a chart.' },
+];
+
+export function WorkforceSettings({ canEdit, onSaved }) {
+  const [saved, setSaved]     = useState(null);   // settings as stored
+  const [values, setValues]   = useState({});     // what the inputs show (strings)
+  const [loadError, setLoadError] = useState('');
+  const [saving, setSaving]   = useState(false);
+  const [msg, setMsg]         = useState(null);
+
+  const fill = (s) => {
+    setSaved(s);
+    setValues(Object.fromEntries(SETTING_FIELDS.map(f => [f.key, String(s[f.key] ?? '')])));
+  };
+
+  useEffect(() => {
+    let live = true;
+    api.get('/analytics/workforce-settings')
+      .then(res => {
+        if (!live) return;
+        const s = res?.data?.settings;
+        if (s && typeof s === 'object') fill(s);
+        else setLoadError('Settings could not be loaded: the server sent an unexpected response.');
+      })
+      .catch(e => { if (live) setLoadError(exportErrorMessage(e).replace('Download failed', 'Settings could not be loaded')); });
+    return () => { live = false; };
+  }, []);
+
+  const fieldError = (f) => {
+    const raw = String(values[f.key] ?? '').trim();
+    const n = Number(raw);
+    if (!raw || !Number.isInteger(n) || n < f.min || n > f.max) return `Whole number from ${f.min} to ${f.max}.`;
+    return null;
+  };
+  const errors = Object.fromEntries(SETTING_FIELDS.map(f => [f.key, fieldError(f)]));
+  const crossError = !errors.min_employee_age && !errors.max_employee_age
+    && Number(values.min_employee_age) >= Number(values.max_employee_age)
+    ? 'Minimum age must be lower than maximum age.' : null;
+  const dirty = saved && SETTING_FIELDS.some(f => String(saved[f.key]) !== String(values[f.key]).trim());
+  const invalid = Object.values(errors).some(Boolean) || !!crossError;
+
+  const save = async () => {
+    setSaving(true);
+    setMsg(null);
+    try {
+      const body = Object.fromEntries(SETTING_FIELDS.map(f => [f.key, Number(values[f.key])]));
+      const res = await api.put('/analytics/workforce-settings', body);
+      fill(res.data.settings);
+      setMsg({ tone: 'ok', text: 'Saved. The charts below use the new settings.' });
+      onSaved?.();
+    } catch (e) {
+      const status = e?.response?.status;
+      const text = status === 403 ? 'You do not have permission to change these settings.'
+        : (typeof e?.response?.data?.error === 'string' ? e.response.data.error : exportErrorMessage(e));
+      setMsg({ tone: 'error', text });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <section className="wfa-settings" aria-label="Workforce settings">
+      <h2 className="wfa-section">Settings <span>{canEdit ? 'for your company' : 'view only — needs HR edit access to change'}</span></h2>
+      {loadError && <p className="wfa-error" role="alert"><AlertTriangle size={14} aria-hidden="true" /> {loadError}</p>}
+      {!loadError && !saved && <p className="wfa-empty">Loading settings…</p>}
+      {saved && (
+        <form className="wfa-settings-form" onSubmit={(e) => { e.preventDefault(); if (canEdit && dirty && !invalid) save(); }}>
+          {SETTING_FIELDS.map(f => (
+            <label key={f.key} className="wfa-export-field wfa-setting">
+              <span>
+                {f.label}
+                {saved.is_default?.[f.key] && <em className="wfa-setting-default"> (default)</em>}
+              </span>
+              <span className="wfa-setting-input">
+                <input
+                  type="number" inputMode="numeric" step="1" min={f.min} max={f.max}
+                  value={values[f.key] ?? ''}
+                  readOnly={!canEdit}
+                  aria-readonly={!canEdit || undefined}
+                  aria-invalid={!!errors[f.key] || undefined}
+                  aria-label={f.label}
+                  onChange={e => { setMsg(null); setValues(v => ({ ...v, [f.key]: e.target.value })); }}
+                />
+                <span>{f.unit}</span>
+              </span>
+              <small className="wfa-link-desc">{f.help}</small>
+              {canEdit && errors[f.key] && <small className="wfa-export-note wfa-export-note-error">{errors[f.key]}</small>}
+            </label>
+          ))}
+          {canEdit && crossError && <p className="wfa-export-note wfa-export-note-error" role="alert">{crossError}</p>}
+          {canEdit && (
+            <div className="wfa-settings-actions">
+              <button type="submit" className="wfa-btn" disabled={!dirty || invalid || saving}>
+                {saving ? 'Saving…' : 'Save settings'}
+              </button>
+              <button type="button" className="wfa-btn" disabled={!dirty || saving} onClick={() => { setMsg(null); fill(saved); }}>
+                Undo changes
+              </button>
+            </div>
+          )}
+          {msg && <p role="status" className={`wfa-export-note wfa-export-note-${msg.tone}`}>{msg.text}</p>}
+        </form>
+      )}
+    </section>
   );
 }
 
@@ -451,6 +620,21 @@ function lastDayOf(monthKey) {
   return `${monthKey}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
+/**
+ * The days of `monthKey` that fall inside the period — exactly the days the
+ * server counted for that month's bar (it clips each month to from/to).
+ * ISO dates compare correctly as strings.
+ */
+export function monthWithinPeriod(monthKey, period) {
+  let from = `${monthKey}-01`;
+  let to = lastDayOf(monthKey);
+  const pFrom = period?.from ? String(period.from).slice(0, 10) : null;
+  const pTo = period?.to ? String(period.to).slice(0, 10) : null;
+  if (pFrom && pFrom > from) from = pFrom;
+  if (pTo && pTo < to) to = pTo;
+  return { from, to };
+}
+
 // ── Completeness ──────────────────────────────────────────────────────────────
 function Completeness({ fields }) {
   return (
@@ -473,7 +657,7 @@ function Completeness({ fields }) {
 }
 
 // ── One composition breakdown ─────────────────────────────────────────────────
-export function BreakdownCard({ card, breakdown, minSample, onDrill }) {
+export function BreakdownCard({ card, breakdown, minSample, onDrill, note = null }) {
   const bd = breakdown || { total: 0, recorded: 0, notRecorded: 0, buckets: [] };
   const recorded = bd.buckets.filter(b => b.value !== NOT_RECORDED);
   const bars = card.ordered ? recorded : recorded.filter(b => b.count > 0);
@@ -494,6 +678,7 @@ export function BreakdownCard({ card, breakdown, minSample, onDrill }) {
         </span>
       </header>
 
+      {note}
       {state === 'empty' && <p className="wfa-state">No employees match the current filters.</p>}
       {state === 'none' && (
         <p className="wfa-state wfa-state-warn">
@@ -517,7 +702,7 @@ export function BreakdownCard({ card, breakdown, minSample, onDrill }) {
               <Bar dataKey="count" barSize={14} radius={[0, 4, 4, 0]}
                    onClick={onDrill ? (d) => onDrill(d?.payload ?? d) : undefined}
                    style={onDrill ? { cursor: 'pointer' } : undefined}>
-                {bars.map(b => <Cell key={b.value} fill={colorOf(b)} />)}
+                {bars.map(b => <Cell key={rowKey(b)} fill={colorOf(b)} />)}
               </Bar>
             </BarChart>
           </ResponsiveContainer>
@@ -539,6 +724,9 @@ export function BreakdownCard({ card, breakdown, minSample, onDrill }) {
   );
 }
 
+/** React key for a bucket: Location buckets can share a name, never a branch id. */
+const rowKey = (b) => (b.branchId !== undefined ? `${b.value}|${b.branchId ?? ''}` : b.value);
+
 /** The numbers behind a chart, and — when allowed — the drill-through buttons. */
 function DataTable({ caption, rows, open, onDrill, drillLabel, canOpen = () => true }) {
   return (
@@ -549,7 +737,7 @@ function DataTable({ caption, rows, open, onDrill, drillLabel, canOpen = () => t
         <thead><tr><th scope="col">Value</th><th scope="col">Employees</th>{onDrill && <th scope="col"><span className="wfa-sr">Open</span></th>}</tr></thead>
         <tbody>
           {rows.map(b => (
-            <tr key={b.value}>
+            <tr key={rowKey(b)}>
               <th scope="row">{b.value}</th>
               <td>{b.count}</td>
               {onDrill && (
@@ -588,13 +776,18 @@ function MonthlyBars({ months, valueKey, onDrill, color = BAR }) {
   );
 }
 
-function TrendCard({ title, total, unit, months, valueKey, truncated, onDrill }) {
+function TrendCard({ title, total, unit, months, valueKey, truncated, onDrill, statusFilter }) {
   return (
     <article className="wfa-card" aria-label={title}>
       <header className="wfa-card-head">
         <h3>{title}</h3>
         <span className="wfa-card-sub">{total} {unit} in the period{truncated ? ' · chart shows the latest months' : ''}</span>
       </header>
+      {statusFilter && (
+        <p className="wfa-state">
+          Counts only people whose status is now {statusFilter}; anyone who joined and has since changed status is not included.
+        </p>
+      )}
       {months.length === 0
         ? <p className="wfa-state">No months in the selected period.</p>
         : <MonthlyBars months={months} valueKey={valueKey} onDrill={onDrill} />}
@@ -608,7 +801,21 @@ function TrendCard({ title, total, unit, months, valueKey, truncated, onDrill })
   );
 }
 
-function AttritionCard({ exits, truncated }) {
+function AttritionCard({ exits, truncated, statusFilter }) {
+  // A Status filter other than Exited removes every leaver before anything is
+  // counted, so every figure below would be 0 — and "0 people have left in
+  // total, across all time" would be false. Say why instead of showing zeros.
+  if (statusFilter && statusFilter !== 'Exited') {
+    return (
+      <article className="wfa-card" aria-label="Attrition">
+        <header className="wfa-card-head"><h3>Attrition</h3></header>
+        <p className="wfa-state wfa-state-warn">
+          Attrition counts people who have left. The Status filter ({statusFilter}) leaves them out,
+          so there is nothing to show. Set Status to All or Exited to see exits.
+        </p>
+      </article>
+    );
+  }
   return (
     <article className="wfa-card" aria-label="Attrition">
       <header className="wfa-card-head">

@@ -56,3 +56,21 @@ describe('matchesEmployeeFilter with wf', () => {
     expect(matchesEmployeeFilter(emp({ department: '' }), { department: NOT_RECORDED })).toBe(false);
   });
 });
+
+// 2026-11-10: All Employees reads the drill filter through peek, which ignored
+// `wf` — every Workforce Analytics chart drill opened an unfiltered list.
+import { setEmployeeListFilter, peekEmployeeListFilter } from '../features/employees/employeeListFilter';
+describe('peekEmployeeListFilter keeps a wf-only filter', () => {
+  it('a wf filter with status All is still a filter', () => {
+    setEmployeeListFilter({ status: 'All', wf: { designation: 'Engineer' }, label: 'x' });
+    expect(peekEmployeeListFilter()).toMatchObject({ wf: { designation: 'Engineer' } });
+  });
+  it('{ branchId: null } ("no location") is a real filter', () => {
+    setEmployeeListFilter({ status: 'All', wf: { branchId: null }, label: 'x' });
+    expect(peekEmployeeListFilter()).toMatchObject({ wf: { branchId: null } });
+  });
+  it('an empty wf object is not a filter', () => {
+    setEmployeeListFilter({ status: 'All', wf: {}, label: 'x' });
+    expect(peekEmployeeListFilter()).toBeNull();
+  });
+});

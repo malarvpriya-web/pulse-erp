@@ -3,6 +3,7 @@ import orgChartRepository from '../repositories/orgchart.repository.js';
 import { verifyToken, allowRoles } from '../../../middlewares/auth.middleware.js';
 import { logAudit } from '../../../services/AuditService.js';
 import { assertValidManager } from '../../../shared/employeeHierarchy.js';
+import { requireCompanyScope } from '../../../shared/scope.js';
 
 const router = express.Router();
 
@@ -13,6 +14,10 @@ const HR_ROLES = [
 
 // All org chart routes require authentication
 router.use(verifyToken);
+// …and a company (or a global super-admin scope). Handlers below read
+// `req.scope?.company_id ?? null`, which is every company for a company-less
+// login. See shared/scope.js requireCompanyScope (2026-11-10).
+router.use(requireCompanyScope);
 
 // Org chart membership. One row per org_relationships record, enriched from the
 // employees master at read time — identity fields are never copied into the org
