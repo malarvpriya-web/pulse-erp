@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   FlaskConical, Cpu, FileBadge, GitBranch, Plus, X, RefreshCw,
   CircuitBoard, Package, LayoutDashboard, Lightbulb,
@@ -48,8 +49,12 @@ function Drawer({ title, onClose, children }) {
   );
 }
 
+const TABS = ['repository', 'patents', 'lifecycle', 'inputs'];
+
 export default function RDHub() {
-  const [tab, setTab] = useState('repository');
+  // ?tab=inputs&ref=<id> is where an R&D-input notification lands (§277.1).
+  const [search] = useSearchParams();
+  const [tab, setTab] = useState(TABS.includes(search.get('tab')) ? search.get('tab') : 'repository');
   const [summary, setSummary] = useState({});
   const [productLines, setProductLines] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -94,7 +99,7 @@ export default function RDHub() {
       {tab === 'repository' && <Repository productLines={productLines} onChange={loadSummary} />}
       {tab === 'patents' && <Patents productLines={productLines} onChange={loadSummary} />}
       {tab === 'lifecycle' && <Lifecycle rows={productLines} onChange={loadSummary} />}
-      {tab === 'inputs' && <ImprovementInputs />}
+      {tab === 'inputs' && <ImprovementInputs focusId={search.get('tab') === 'inputs' ? search.get('ref') : null} />}
     </PageShell>
   );
 }
@@ -282,9 +287,18 @@ function Lifecycle({ rows, onChange }) {
 // R&D reviews each one here; the answer shows back on the deal / workflow.
 const SOURCE_COLOR = { sales_won: '#059669', sales_lost: '#dc2626', commissioning: '#0891b2', service: '#0891b2' };
 const PRIORITY_COLOR = { high: '#dc2626', medium: '#6d28d9', low: '#6b7280' };
+/** The record a point came from: the bid, the commissioning, the visit or the ticket. */
+function sourceRecord(r) {
+  if (r.opportunity_name) return r.opportunity_name;
+  if (r.workflow_number) return r.workflow_number;
+  if (r.field_visit_id) return `${r.visit_type || 'Field'} visit ${fmtDate(r.visit_date)}${r.ticket_number ? ` · ${r.ticket_number}` : ''}`;
+  if (r.ticket_number) return `${r.ticket_number}${r.ticket_title ? ` — ${r.ticket_title}` : ''}`;
+  return '—';
+}
 
-function ImprovementInputs() {
+function ImprovementInputs({ focusId = null }) {
   const { readOnly } = usePageAccess();
+  const [focused, setFocused] = useState(false);
   const [rows, setRows] = useState([]);
   const [summary, setSummary] = useState({});
   const [error, setError] = useState(null);
@@ -297,6 +311,12 @@ function ImprovementInputs() {
       .catch((e) => { setRows([]); setError(e.response?.data?.error || 'Could not load inputs'); });
   }, [f]);
   useEffect(() => { const t = setTimeout(load, 250); return () => clearTimeout(t); }, [load]);
+  // Opened from a notification: show that point once the list has it.
+  useEffect(() => {
+    if (!focusId || focused || !rows.length) return;
+    const hit = rows.find((r) => String(r.id) === String(focusId));
+    if (hit) { setReview(hit); setFocused(true); }
+  }, [focusId, focused, rows]);
   const set = (k) => (e) => setF((s) => ({ ...s, [k]: e.target.value }));
 
   return (
@@ -309,7 +329,7 @@ function ImprovementInputs() {
       </div>
       <div style={{ ...CARD, padding: 0, overflow: 'hidden' }}>
         <div style={{ padding: 12, borderBottom: '1px solid #f0f0f4', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <input style={{ ...INPUT, width: 220 }} placeholder="Search point, customer, deal…" value={f.search} onChange={set('search')} />
+          <input style={{ ...INPUT, width: 220 }} placeholder="Search point, customer, deal, ticket…" value={f.search} onChange={set('search')} />
           <select style={{ ...INPUT, width: 'auto' }} value={f.status} onChange={set('status')}>
             <option value="open">Open</option>
             <option value="">All statuses</option>
@@ -342,7 +362,7 @@ function ImprovementInputs() {
                   </td>
                   <td style={TD}><Chip text={RD_SOURCE[r.source] || r.source} color={SOURCE_COLOR[r.source] || '#6b7280'} /></td>
                   <td style={{ ...TD, color: '#374151' }}>
-                    <div style={{ fontWeight: 600 }}>{r.opportunity_name || r.workflow_number || '—'}</div>
+                    <div style={{ fontWeight: 600 }}>{sourceRecord(r)}</div>
                     <div style={{ fontSize: 11, color: '#9ca3af' }}>{[r.opportunity_number, r.customer_name, r.product_line].filter(Boolean).join(' · ')}</div>
                   </td>
                   <td style={{ ...TD, color: '#6b7280' }}>{RD_CATEGORIES[r.category] || r.category}</td>
@@ -371,7 +391,7 @@ function ReviewDrawer({ row, readOnly, onClose, onSaved }) {
     try { await api.patch(`/rd-inputs/${row.id}/review`, { status, rd_response: response }); onSaved(); }
     catch (e) { setErr(e.response?.data?.error || 'Save failed'); } finally { setBusy(false); }
   };
-  const from = row.opportunity_name || row.workflow_number;
+  const from = sourceRecord(row);
   return (
     <Drawer title="Review input" onClose={onClose}>
       {err && <div style={{ background: '#fee2e2', color: '#b91c1c', padding: '8px 10px', borderRadius: 8, fontSize: 13, marginBottom: 12 }}>{err}</div>}

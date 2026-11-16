@@ -2,6 +2,8 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import { usePageAccess } from '@/hooks/usePageAccess';
+import { RdPointsEditor, RdInputsPanel, emptyPoint, filledPoints } from '@/features/rd/components/RdInputs';
 import {
   Plus, X, Search, MapPin, Clock, Calendar, AlertCircle, CheckCircle,
   Download, ChevronLeft, ChevronRight, List, LayoutGrid, TrendingUp,
@@ -57,6 +59,10 @@ export default function FieldVisitScheduler() {
   const [calMonth,     setCalMonth]     = useState(() => new Date().toISOString().slice(0, 7));
   const isMounted = useRef(true);
   const toast = useToast();
+  const { readOnly } = usePageAccess();
+  // §277.1 R&D points: written while completing a visit, or added later.
+  const [rdPoints, setRdPoints] = useState([emptyPoint()]);
+  const [rdVisit,  setRdVisit]  = useState(null);
 
   useEffect(() => {
     isMounted.current = true;
@@ -162,8 +168,16 @@ export default function FieldVisitScheduler() {
         customer_rating:    completeData.customer_rating    || null,
         customer_feedback:  completeData.customer_feedback  || null,
       });
-      toast.success('Visit marked as completed');
-      setCompleting(null); setCompleteData(EMPTY_COMPLETE);
+      const points = filledPoints(rdPoints);
+      if (points.length) {
+        try {
+          await api.post('/rd-inputs', { field_visit_id: completing, points });
+        } catch (e) {
+          toast.error(`Visit completed, but R&D points were not saved: ${e.response?.data?.error || 'error'}`);
+        }
+      }
+      toast.success(points.length ? `Visit completed · ${points.length} R&D point${points.length > 1 ? 's' : ''} sent` : 'Visit marked as completed');
+      setCompleting(null); setCompleteData(EMPTY_COMPLETE); setRdPoints([emptyPoint()]);
       load();
     } catch (e) {
       toast.error(e.response?.data?.error || 'Failed to complete visit');
@@ -372,7 +386,7 @@ export default function FieldVisitScheduler() {
                               style={{ padding: '3px 8px', background: '#ede9fe', color: '#5b21b6', border: 'none', borderRadius: 5, cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>Start</button>
                           )}
                           {(v?.status === 'Scheduled' || v?.status === 'In Progress') && (
-                            <button onClick={() => { setCompleting(v.id); setCompleteData(EMPTY_COMPLETE); }}
+                            <button onClick={() => { setCompleting(v.id); setCompleteData(EMPTY_COMPLETE); setRdPoints([emptyPoint()]); }}
                               style={{ padding: '3px 8px', background: '#d1fae5', color: '#065f46', border: 'none', borderRadius: 5, cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>Complete</button>
                           )}
                           {v?.status === 'Scheduled' && (
@@ -383,6 +397,10 @@ export default function FieldVisitScheduler() {
                             <span title={v.work_done} style={{ cursor: 'help' }}>
                               <CheckCircle size={14} color="#10b981" />
                             </span>
+                          )}
+                          {v?.status === 'Completed' && (
+                            <button onClick={() => setRdVisit(v)} title="Inputs for R&D from this visit"
+                              style={{ padding: '3px 8px', background: '#f5f3ff', color: '#6B3FDB', border: 'none', borderRadius: 5, cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>R&amp;D</button>
                           )}
                         </div>
                       </td>
@@ -674,6 +692,15 @@ export default function FieldVisitScheduler() {
                   rows={2} placeholder="Any comments the customer shared about this visit..."
                   style={{ ...inputStyle, resize: 'vertical' }} />
               </div>
+
+              {/* §277.1 — points for R&D from this visit (AMC / service). Optional. */}
+              <div style={{ gridColumn: '1/-1', borderTop: '1px solid #f3f4f6', paddingTop: 14, marginTop: 4 }}>
+                <label style={labelStyle}>Inputs for R&amp;D (optional)</label>
+                <p style={{ margin: '0 0 8px', fontSize: 12, color: '#6b7280' }}>
+                  Recurring faults, design or installation problems, what the customer asked for.
+                </p>
+                <RdPointsEditor value={rdPoints} onChange={setRdPoints} />
+              </div>
             </div>
 
             <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 20 }}>
@@ -683,6 +710,21 @@ export default function FieldVisitScheduler() {
                 Mark Complete
               </button>
             </div>
+          </div>
+        </div>
+      )}
+      {rdVisit && (
+        <div onClick={() => setRdVisit(null)} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.4)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+          <div onClick={e => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, padding: 22, width: 520, maxWidth: '100%', maxHeight: '90vh', overflowY: 'auto' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+              <div>
+                <div style={{ fontSize: 15, fontWeight: 700 }}>{rdVisit.customer_name || 'Field visit'}</div>
+                <div style={{ fontSize: 12, color: '#6b7280' }}>{rdVisit.visit_type || 'Visit'} · {(rdVisit.visit_date || '').slice(0, 10)}</div>
+              </div>
+              <button onClick={() => setRdVisit(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#9ca3af' }}><X size={20} /></button>
+            </div>
+            <RdInputsPanel fieldVisitId={rdVisit.id} canAdd={!readOnly}
+              hint="Points from this visit for R&D. R&D reviews each one and replies here." />
           </div>
         </div>
       )}

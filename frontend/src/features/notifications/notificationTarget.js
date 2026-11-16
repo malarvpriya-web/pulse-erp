@@ -26,6 +26,11 @@ import { MERGED_ROUTES } from '@/config/autoRouter';
 
 const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 
+/* notification_type → extra query params for the page (e.g. which tab). */
+const TYPE_PARAMS = {
+  rd_input: { tab: 'inputs' },   // §277.1 — R&D Hub → Improvement Inputs, `ref` opens the point
+};
+
 /* notification_type → page. Exact match, checked first. */
 const TYPE_PAGE = {
   // attendance
@@ -260,6 +265,8 @@ export function notificationTarget(n, canOpen) {
   const params = n.reference_id != null && n.reference_id !== ''
     ? { ref: String(n.reference_id) }
     : {};
+  // A page with tabs can be told which one the event belongs to.
+  Object.assign(params, TYPE_PARAMS[type] || {});
   return { page, params };
 }
 

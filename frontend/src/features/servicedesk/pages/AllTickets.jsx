@@ -10,6 +10,7 @@ import ConfirmDialog from '@/components/core/ConfirmDialog';
 import { usePageAccess } from '@/hooks/usePageAccess';
 import ReadOnlyBanner from '@/components/ReadOnlyBanner';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import { RdInputsPanel } from '@/features/rd/components/RdInputs';
 
 const emptyForm = () => ({
   title: '', description: '', category: '', priority: 'Medium',
@@ -504,6 +505,15 @@ export default function AllTickets() {
                     )}
                   </div>
                 ))}
+              </div>
+
+              {/* §277.1 — what this ticket taught us, for R&D. */}
+              <div style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid #f0f0f4' }}>
+                <RdInputsPanel
+                  ticketId={detail.id}
+                  canAdd={!readOnly}
+                  hint="Design faults, recurring failures, what the customer asked for. R&D reviews each point."
+                />
               </div>
 
               {/* Comments */}

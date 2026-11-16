@@ -4,7 +4,7 @@
  *
  *   <RdPointsEditor value onChange />   controlled list of points, for a form that
  *                                        saves them together with something else
- *   <RdInputsPanel opportunityId | commissioningId canAdd />
+ *   <RdInputsPanel opportunityId | commissioningId | ticketId | fieldVisitId canAdd />
  *                                        what was already raised on a record, with
  *                                        R&D's answer, and a form to add more
  */
@@ -34,7 +34,7 @@ export const RD_SOURCE = {
   sales_won:     'Sales — won',
   sales_lost:    'Sales — lost',
   commissioning: 'Commissioning',
-  service:       'Service',
+  service:       'Service — ticket / visit',
 };
 
 export const emptyPoint = () => ({ requirement: '', category: 'product_feature', priority: 'medium' });
@@ -90,7 +90,7 @@ export function RdPointsEditor({ value, onChange, disabled = false }) {
   );
 }
 
-export function RdInputsPanel({ opportunityId, commissioningId, canAdd = false, title = 'Inputs for R&D', hint }) {
+export function RdInputsPanel({ opportunityId, commissioningId, ticketId, fieldVisitId, canAdd = false, title = 'Inputs for R&D', hint }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -98,8 +98,11 @@ export function RdInputsPanel({ opportunityId, commissioningId, canAdd = false, 
   const [draft, setDraft] = useState([emptyPoint()]);
   const [saving, setSaving] = useState(false);
 
-  const params = opportunityId ? { opportunity_id: opportunityId } : { commissioning_id: commissioningId };
-  const key = opportunityId ? `o${opportunityId}` : `c${commissioningId}`;
+  const params = opportunityId ? { opportunity_id: opportunityId }
+    : commissioningId ? { commissioning_id: commissioningId }
+    : ticketId ? { ticket_id: ticketId }
+    : { field_visit_id: fieldVisitId };
+  const key = JSON.stringify(params);
 
   const load = useCallback(() => {
     setLoading(true);

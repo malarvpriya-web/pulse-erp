@@ -6,11 +6,14 @@
  *     writes the points in the same transaction as the close, and the closed
  *     deal's drawer can add more later through POST / here.
  *   - Service, after commissioning: the commissioning workflow page.
+ *   - Service, from a support ticket or a field visit (AMC visits are field
+ *     visits) — source 'service' (§277.1).
+ * Every new batch notifies the R&D team (notifyRd below).
  *
  * Who may do what (no new permission module — the raisers already hold one):
  *   raise a sales input           crm:edit, on a CLOSED opportunity of the caller's company
- *   raise a commissioning input   servicedesk:edit, on a workflow of the caller's company
- *   read inputs of one record     crm:view (opportunity) / servicedesk:view (workflow)
+ *   raise a service input         servicedesk:edit, on a workflow / ticket / visit of the caller's company
+ *   read inputs of one record     crm:view (opportunity) / servicedesk:view (workflow, ticket, visit)
  *   read the whole register       rd:view
  *   review (status + response)    rd:edit
  *   withdraw                      the person who raised it, while still 'new'; or rd:delete
@@ -20,6 +23,7 @@ import pool from '../../config/db.js';
 import { can } from '../../middlewares/auth.middleware.js';
 import { companyOf, callerIdentity } from '../../shared/scope.js';
 import { logAudit } from '../../services/AuditService.js';
+import notificationsRepository from '../notifications/repositories/notifications.repository.js';
 
 export const SOURCES    = ['sales_won', 'sales_lost', 'commissioning', 'service'];
 export const CATEGORIES = ['product_feature', 'performance', 'quality', 'cost', 'documentation', 'installation', 'software', 'other'];
@@ -29,10 +33,89 @@ export const MAX_POINTS = 20;
 
 const SELECT = `
   SELECT i.*, o.opportunity_name, o.opportunity_number, o.stage AS opportunity_stage,
-         c.workflow_number
+         c.workflow_number, t.ticket_number, t.title AS ticket_title,
+         v.visit_type, v.visit_date, v.purpose AS visit_purpose
     FROM rd_improvement_inputs i
     LEFT JOIN opportunities o           ON o.id = i.opportunity_id
-    LEFT JOIN commissioning_workflows c ON c.id = i.commissioning_id`;
+    LEFT JOIN commissioning_workflows c ON c.id = i.commissioning_id
+    LEFT JOIN support_tickets t         ON t.id = i.ticket_id
+    LEFT JOIN field_visits v            ON v.id = i.field_visit_id`;
+
+/** Short name of the record a point came from — for the R&D alert. */
+async function contextLabel(ctx) {
+  if (ctx.opportunity_id) {
+    const { rows } = await pool.query(`SELECT opportunity_number, opportunity_name FROM opportunities WHERE id = $1`, [ctx.opportunity_id]);
+    return rows[0] ? `${rows[0].opportunity_number} ${rows[0].opportunity_name}` : 'a bid';
+  }
+  if (ctx.commissioning_id) {
+    const { rows } = await pool.query(`SELECT workflow_number FROM commissioning_workflows WHERE id = $1`, [ctx.commissioning_id]);
+    return `commissioning ${rows[0]?.workflow_number || ''}`.trim();
+  }
+  if (ctx.ticket_id) {
+    const { rows } = await pool.query(`SELECT ticket_number FROM support_tickets WHERE id = $1`, [ctx.ticket_id]);
+    return `ticket ${rows[0]?.ticket_number || ''}`.trim();
+  }
+  if (ctx.field_visit_id) {
+    const { rows } = await pool.query(`SELECT visit_type, visit_date FROM field_visits WHERE id = $1`, [ctx.field_visit_id]);
+    const v = rows[0];
+    return v ? `${v.visit_type || 'field'} visit ${String(v.visit_date || '').slice(0, 10)}`.trim() : 'a field visit';
+  }
+  return 'a record';
+}
+
+/**
+ * Tell the R&D team a batch of points arrived. Recipients: active logins in the
+ * company holding rd:edit (by role, or a user-level override). Design / product
+ * roles first; admins only when nobody else holds the grant, so a company with
+ * an R&D team does not copy every admin on every point. The person who raised
+ * the points is never notified of their own. Fire-and-forget: a failed alert
+ * must not fail the save it follows.
+ */
+export async function notifyRd(companyId, rows, raisedBy) {
+  try {
+    if (!rows?.length) return;
+    const { rows: holders } = await pool.query(
+      `WITH grant_holders AS (
+         SELECT ur.user_id, BOOL_OR(LOWER(r.code) IN ('super_admin','admin')) AS is_admin
+           FROM user_roles ur
+           JOIN roles r ON r.id = ur.role_id
+           JOIN role_permissions rp ON rp.role_id = r.id AND rp.module = 'rd' AND rp.can_edit = true
+          GROUP BY ur.user_id
+         UNION
+         SELECT p.user_id, false FROM permissions p WHERE p.module = 'rd' AND p.can_edit = true
+       )
+       SELECT u.id, BOOL_AND(g.is_admin) AS is_admin
+         FROM grant_holders g
+         JOIN users u ON u.id = g.user_id AND u.is_active IS NOT FALSE
+         LEFT JOIN employees e ON e.id = u.employee_id
+        WHERE ($1::int IS NULL
+               OR u.company_id = $1 OR e.company_id = $1
+               OR EXISTS (SELECT 1 FROM user_scope s WHERE s.user_id = u.id AND s.company_id = $1))
+          AND ($2::int IS NULL OR u.id <> $2)
+          -- a user override that REVOKES rd:edit wins over the role grant
+          AND NOT EXISTS (SELECT 1 FROM permissions x WHERE x.user_id = u.id AND x.module = 'rd' AND x.can_edit IS NOT TRUE)
+        GROUP BY u.id`,
+      [companyId ?? null, raisedBy ?? null]);
+    const team = holders.filter((h) => !h.is_admin);
+    const recipients = team.length ? team : holders;
+    if (!recipients.length) return;
+    const first = rows[0];
+    const label = await contextLabel(first);
+    const high = rows.filter((r) => r.priority === 'high').length;
+    const title = `${rows.length} new R&D input${rows.length > 1 ? 's' : ''}${high ? ` (${high} high priority)` : ''}`;
+    const preview = first.requirement.length > 140 ? `${first.requirement.slice(0, 137)}…` : first.requirement;
+    const message = `From ${label}${first.raised_by_name ? ` by ${first.raised_by_name}` : ''}: "${preview}"`
+      + `${rows.length > 1 ? ` and ${rows.length - 1} more` : ''}. Review in R&D → Improvement Inputs.`;
+    for (const r of recipients) {
+      await notificationsRepository.create({
+        user_id: r.id, title, message, module_name: 'rd', reference_id: first.id,
+        notification_type: 'rd_input', company_id: companyId ?? null,
+      }).catch((e) => console.error('[rd-inputs] notify', r.id, e.message));
+    }
+  } catch (e) {
+    console.error('[rd-inputs] notifyRd failed:', e.message);
+  }
+}
 
 export class InputError extends Error {
   constructor(message, status = 400) { super(message); this.status = status; }
@@ -71,11 +154,11 @@ export async function insertPoints(db, points, ctx) {
   for (const p of points) {
     const { rows: r } = await db.query(
       `INSERT INTO rd_improvement_inputs
-         (company_id, source, opportunity_id, commissioning_id, customer_name, product_line,
-          category, requirement, priority, raised_by, raised_by_name)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+         (company_id, source, opportunity_id, commissioning_id, ticket_id, field_visit_id,
+          customer_name, product_line, category, requirement, priority, raised_by, raised_by_name)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
       [ctx.company_id, ctx.source, ctx.opportunity_id ?? null, ctx.commissioning_id ?? null,
-       ctx.customer_name ?? null, ctx.product_line ?? null,
+       ctx.ticket_id ?? null, ctx.field_visit_id ?? null, ctx.customer_name ?? null, ctx.product_line ?? null,
        p.category, p.requirement, p.priority, ctx.raised_by ?? null, ctx.raised_by_name ?? null],
     );
     rows.push(r[0]);
@@ -122,7 +205,30 @@ async function resolveContext(req, body) {
     if (!w) throw new InputError('Commissioning workflow not found', 404);
     return { company_id: w.company_id ?? cid, source: 'commissioning', commissioning_id: w.id, customer_name: w.customer_name };
   }
-  throw new InputError('Say which opportunity or commissioning the point is for');
+  if (body.ticket_id) {
+    if (!(await can(req, 'servicedesk', 'edit'))) throw new InputError('You need Service Desk edit rights to add service inputs', 403);
+    const { rows } = await pool.query(
+      `SELECT id, company_id, requester_name FROM support_tickets
+        WHERE id = $1 AND deleted_at IS NULL AND ($2::int IS NULL OR company_id = $2)`,
+      [body.ticket_id, cid],
+    );
+    const t = rows[0];
+    if (!t) throw new InputError('Ticket not found', 404);
+    return { company_id: t.company_id ?? cid, source: 'service', ticket_id: t.id, customer_name: t.requester_name };
+  }
+  if (body.field_visit_id) {
+    if (!(await can(req, 'servicedesk', 'edit'))) throw new InputError('You need Service Desk edit rights to add service inputs', 403);
+    const { rows } = await pool.query(
+      `SELECT id, company_id, customer_name, ticket_id_int FROM field_visits
+        WHERE id = $1 AND ($2::int IS NULL OR company_id = $2)`,
+      [body.field_visit_id, cid],
+    );
+    const v = rows[0];
+    if (!v) throw new InputError('Field visit not found', 404);
+    return { company_id: v.company_id ?? cid, source: 'service', field_visit_id: v.id,
+             ticket_id: v.ticket_id_int ?? null, customer_name: v.customer_name };
+  }
+  throw new InputError('Say which bid, commissioning, ticket or visit the point is for');
 }
 
 const router = Router();
@@ -151,7 +257,8 @@ router.get('/', async (req, res) => {
     if (search && String(search).trim()) {
       const p = `$${params.push(`%${String(search).trim()}%`)}`;
       where += ` AND (i.requirement ILIKE ${p} OR i.customer_name ILIKE ${p} OR i.product_line ILIKE ${p}
-                      OR o.opportunity_name ILIKE ${p} OR c.workflow_number ILIKE ${p})`;
+                      OR o.opportunity_name ILIKE ${p} OR c.workflow_number ILIKE ${p}
+                      OR t.ticket_number ILIKE ${p})`;
     }
     const { rows } = await pool.query(
       `${SELECT}${where}
@@ -179,13 +286,15 @@ router.get('/', async (req, res) => {
 router.get('/for', async (req, res) => {
   try {
     const cid = companyOf(req);
-    const { opportunity_id, commissioning_id } = req.query;
+    const { opportunity_id, commissioning_id, ticket_id, field_visit_id } = req.query;
     let col; let mod;
     if (opportunity_id)        { col = 'opportunity_id';   mod = 'crm'; }
     else if (commissioning_id) { col = 'commissioning_id'; mod = 'servicedesk'; }
-    else return res.status(400).json({ error: 'opportunity_id or commissioning_id is required' });
+    else if (ticket_id)        { col = 'ticket_id';        mod = 'servicedesk'; }
+    else if (field_visit_id)   { col = 'field_visit_id';   mod = 'servicedesk'; }
+    else return res.status(400).json({ error: 'opportunity_id, commissioning_id, ticket_id or field_visit_id is required' });
     if (!(await can(req, mod, 'view')) && !(await can(req, 'rd', 'view'))) return res.status(403).json({ error: 'Forbidden' });
-    const params = [opportunity_id || commissioning_id];
+    const params = [opportunity_id || commissioning_id || ticket_id || field_visit_id];
     const { rows } = await pool.query(
       `${SELECT} WHERE i.deleted_at IS NULL AND i.${col} = $1
          ${cid != null ? `AND i.company_id = $${params.push(cid)}` : ''}
@@ -208,6 +317,7 @@ router.post('/', async (req, res) => {
     logAudit({ userId: req.user?.userId, module: 'rd', recordType: 'rd_improvement_input',
                recordId: rows[0]?.id, action: 'create', newData: { ...ctx, count: rows.length }, req });
     res.status(201).json({ data: rows });
+    notifyRd(ctx.company_id, rows, req.user?.userId);
   } catch (e) { fail(res, e); }
 });
 

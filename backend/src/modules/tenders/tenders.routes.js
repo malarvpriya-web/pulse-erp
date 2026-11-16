@@ -139,7 +139,7 @@ router.put('/:id', crm('edit'), captureBefore('opportunities'), async (req, res)
       if (cur && !['won', 'lost'].includes(String(cur.stage || '').toLowerCase())) {
         return res.status(400).json({
           code: 'CLOSE_DETAILS_REQUIRED',
-          error: 'Closing a bid as Won or Lost needs the reason, remarks and a file. Use the close form on the Opportunities board.',
+          error: 'Closing a bid as Won or Lost needs the reason, remarks, a file and R&D points. Use the close form on the Opportunities board.',
         });
       }
     }

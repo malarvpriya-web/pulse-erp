@@ -9,7 +9,7 @@ import { logAudit } from '../../../services/AuditService.js';
 import path from 'path';
 import fs from 'fs';
 import { uploadFile, deleteFile, LOCAL_UPLOAD_DIR } from '../../../services/StorageService.js';
-import { cleanPoints as cleanRdPoints, insertPoints as insertRdPoints } from '../../rd/rdInputs.routes.js';
+import { cleanPoints as cleanRdPoints, insertPoints as insertRdPoints, notifyRd } from '../../rd/rdInputs.routes.js';
 import { companyOf, callerIdentity } from '../../../shared/scope.js';
 import { nextProjectCode, nextLifecycleNumber } from '../../../shared/docNumber.js';
 import { resolveAutoAssignee, resolveAssignment } from '../services/leadAssignment.service.js';
@@ -1870,6 +1870,7 @@ async function changeOpportunityStage(req, res, evidence = null) {
                newData: { stage, close_reason: close_reason || null,
                           ...(evidence ? { close_file: evidence.fileName, rd_points: rdInputs.length } : {}) }, req });
     res.json(evidence ? { ...rows[0], rd_inputs: rdInputs } : rows[0]);
+    if (rdInputs.length) notifyRd(rows[0].company_id ?? cid, rdInputs, userId);
 
     // Fire configured automation for this event. Deliberately AFTER the commit
     // and after the response: a workflow rule is an observer of the stage
@@ -1935,7 +1936,7 @@ async function changeOpportunityStage(req, res, evidence = null) {
 
 const CLOSE_REQUIRED = {
   code: 'CLOSE_DETAILS_REQUIRED',
-  error: 'Closing a bid as Won or Lost needs the reason, remarks and a file. Use the close form.',
+  error: 'Closing a bid as Won or Lost needs the reason, remarks, a file and R&D points. Use the close form.',
 };
 const isClosingStage = (v) => ['won', 'lost'].includes(canonicalState(v ?? ''));
 
@@ -1982,21 +1983,24 @@ async function opportunityCustomerName(id, cid) {
  *   close_remarks  what happened, in the salesperson's words (required)
  *   file           the evidence (required)
  *   competitor     optional
- *   rd_points      JSON [{ requirement, category, priority }] — inputs for R&D
+ *   rd_points      JSON [{ requirement, category, priority }] — inputs for R&D, at least one
  */
 router.post('/opportunities/:id/close', requirePermission('crm', 'edit'), closeUploadSingle, async (req, res) => {
   const b = req.body || {};
   if (!isClosingStage(b.stage)) return res.status(400).json({ error: 'stage must be Won or Lost' });
   const reason  = String(b.close_reason ?? '').trim();
   const remarks = String(b.close_remarks ?? '').trim();
-  const missing = [!reason && 'reason', !remarks && 'remarks', !req.file && 'file'].filter(Boolean);
-  if (missing.length) {
-    return res.status(400).json({ code: 'CLOSE_DETAILS_REQUIRED', missing,
-      error: `To close the bid, add the ${missing.join(', ')}.` });
-  }
   let points;
   try { points = cleanRdPoints(b.rd_points); }
   catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
+  // Owner 2026-11-16: "something need to write" — at least one R&D point on
+  // every close, won or lost.
+  const missing = [!reason && 'reason', !remarks && 'remarks', !req.file && 'file',
+                   !points.length && 'R&D points'].filter(Boolean);
+  if (missing.length) {
+    return res.status(400).json({ code: 'CLOSE_DETAILS_REQUIRED', missing,
+      error: `To close the bid, add the ${missing.length > 1 ? `${missing.slice(0, -1).join(', ')} and ${missing[missing.length - 1]}` : missing[0]}.` });
+  }
 
   try {
     const cid = companyOf(req);

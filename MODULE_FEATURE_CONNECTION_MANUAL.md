@@ -25226,6 +25226,23 @@ flowchart LR
 - R&D Hub: new **Improvement Inputs** tab — KPIs, filters (status / source / category / priority / search), review drawer.
 - Shared component: `frontend/src/features/rd/components/RdInputs.jsx`.
 
-**Not built:** notification to R&D when a point arrives; standalone service inputs from a ticket/AMC visit (`source = 'service'` exists, no UI yet); automatic link from an accepted input to an Artifact/ECN.
+**Not built:** automatic link from an accepted input to an Artifact/ECN. (The R&D alert and ticket / AMC-visit inputs were added in §277.1.)
 
 **Files:** `backend/src/database/migrations/20261116000001_rd_improvement_inputs.js`, `backend/src/modules/rd/rdInputs.routes.js`, `backend/src/modules/crm/routes/crm.routes.js`, `backend/src/modules/tenders/tenders.routes.js`, `backend/server.js`, `frontend/src/features/rd/components/RdInputs.jsx`, `frontend/src/features/rd/pages/RDHub.jsx`, `frontend/src/features/crm/pages/OpportunitiesKanban.jsx`, `frontend/src/features/servicedesk/pages/CommissioningWorkflow.jsx`.
+
+### §277.1 — R&D points required on close; R&D alert; tickets and field visits (2026-11-16)
+
+Owner answers to the §277 open questions: R&D points are **required** ("something need to write"); R&D gets an **alert**; service can raise points from **tickets and AMC visits**.
+
+- **Close needs at least one R&D point.** `POST /crm/opportunities/:id/close` adds `R&D points` to `missing[]` when none has text; the board dialog marks the field required.
+- **Alert to R&D** (`notifyRd()` in `rdInputs.routes.js`): after every new batch (bid close or `POST /rd-inputs`), one notification per R&D recipient — `module_name 'rd'`, `notification_type 'rd_input'`, `reference_id` = first point. Recipients: active logins in the company holding `rd:edit` (role grant or user override; a user override revoking it wins), **non-admin roles first** (design_engineer, production_manager today); admins only when nobody else holds it; never the person who raised it. Fire-and-forget after the response. Click → `RDHub?tab=inputs&ref=<id>` (`TYPE_PARAMS` in `notificationTarget.js`), which opens that point's review drawer.
+- **Service sources.** Migration `20261116000002_rd_inputs_ticket_field_visit.js`: `rd_improvement_inputs.ticket_id` → support_tickets, `field_visit_id` → field_visits (both SET NULL); a `service` input must name one (NOT VALID). An AMC visit is a field visit (`visit_type` AMC / `amc_contract_id`). `POST /rd-inputs` accepts `ticket_id` or `field_visit_id` (servicedesk:edit, same company); a visit's linked ticket is copied. `GET /rd-inputs/for?ticket_id=|field_visit_id=`. Register search also matches the ticket number.
+- **UI.** All Tickets → ticket detail: Inputs for R&D panel. Field Service scheduler: optional R&D points in the Complete form (saved after the visit completes), and an **R&D** button on completed visits opening the panel. R&D Hub "From" column names the ticket / visit.
+
+```mermaid
+flowchart LR
+  TKT["Support ticket"] -->|"R&D panel"| REG["rd_improvement_inputs (service)"]
+  FV["Field / AMC visit — Complete form or R&D button"] --> REG
+  REG --> N["notification rd_input → R&D team"]
+  N -->|"click"| RDH["RDHub?tab=inputs&ref=id → review drawer"]
+```

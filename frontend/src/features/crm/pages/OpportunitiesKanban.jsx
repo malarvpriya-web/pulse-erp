@@ -349,8 +349,13 @@ export default function OpportunitiesKanban({ setPage } = {}) {
       !selectedReason && 'reason',
       !closeRemarks.trim() && 'remarks',
       !closeFile && 'file',
+      !filledPoints(rdPoints).length && 'at least one R&D point',
     ].filter(Boolean);
-    if (missing.length) { setCloseError(`Add the ${missing.join(', ')} to close this bid.`); return; }
+    if (missing.length) {
+      const list = missing.length > 1 ? `${missing.slice(0, -1).join(', ')} and ${missing[missing.length - 1]}` : missing[0];
+      setCloseError(`To close this bid, add the ${list}.`);
+      return;
+    }
     const fd = new FormData();
     fd.append('stage', pendingMove.newStage);
     fd.append('close_reason', selectedReason);
@@ -785,7 +790,7 @@ export default function OpportunitiesKanban({ setPage } = {}) {
             <div className="ok-drawer-body" style={{ overflowY: 'auto' }}>
               <p style={{ margin: '0 0 16px', fontSize: 13, color: '#6b7280' }}>
                 Why was <strong>{pendingMove.opp.opportunity_name}</strong> {isWonStage(pendingMove.newStage) ? 'won' : 'lost'}?
-                Reason, remarks and a file are required.
+                Reason, remarks, a file and at least one R&D point are required.
               </p>
               {closeError && (
                 <div style={{ background: '#fee2e2', color: '#b91c1c', padding: '8px 10px', borderRadius: 8, fontSize: 13, marginBottom: 12 }}>{closeError}</div>
@@ -840,7 +845,7 @@ export default function OpportunitiesKanban({ setPage } = {}) {
                 </p>
               </div>
               <div className="ok-field">
-                <label>Inputs for R&D (continuous improvement)</label>
+                <label>Inputs for R&D (continuous improvement) *</label>
                 <p style={{ margin: '0 0 8px', fontSize: 11, color: '#9ca3af' }}>
                   What the customer asked for that we lack, or what made the difference. Goes to the R&D register.
                 </p>
