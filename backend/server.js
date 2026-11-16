@@ -147,6 +147,7 @@ import iotPilotRoutes, { deviceRouter as iotPilotDeviceRoutes } from "./src/modu
 import complianceRoutes       from "./src/modules/compliance/compliance.routes.js";
 import unifiedAssetsRoutes     from "./src/modules/assets/assets.routes.js";
 import rdRoutes                from "./src/modules/rd/rd.routes.js";
+import rdInputsRoutes          from "./src/modules/rd/rdInputs.routes.js";
 import tenderRoutes            from "./src/modules/tenders/tenders.routes.js";
 import workflowRoutes         from "./src/modules/admin/workflow.routes.js";
 import securityRoutes         from "./src/modules/admin/security.routes.js";
@@ -896,6 +897,7 @@ v1Router.use("/iot",                verifyToken, auditMutations('iot'), iotPilot
 v1Router.use("/compliance",         verifyToken, auditMutations('compliance'), complianceRoutes);
 v1Router.use("/assets",             verifyToken, auditMutations('assets'), unifiedAssetsRoutes); // read-only consolidation over fixed_assets/assets_register/allocations
 v1Router.use("/rd",                 verifyToken, auditMutations('rd'), rdRoutes); // R&D artifact repo + patents + product lifecycle (PLM)
+v1Router.use("/rd-inputs",          verifyToken, requireCompanyScope, auditMutations('rd'), rdInputsRoutes); // §277 improvement inputs from sales close + commissioning
 v1Router.use("/tenders",            verifyToken, auditMutations('crm'), tenderRoutes); // Government tender workspace over opportunities
 
 // INTEGRATIONS

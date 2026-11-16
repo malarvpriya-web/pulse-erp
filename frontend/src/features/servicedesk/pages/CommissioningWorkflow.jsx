@@ -3,6 +3,8 @@ import api from '@/services/api/client';
 import { getPosition } from '@/mobile/native';
 import { useToast } from '@/context/ToastContext';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import { usePageAccess } from '@/hooks/usePageAccess';
+import { RdInputsPanel } from '@/features/rd/components/RdInputs';
 import {
   Plus, MapPin, CheckCircle, Circle, Camera, Zap, FileText, X,
   ChevronDown, ChevronUp, Award, Shield, CheckSquare,
@@ -29,6 +31,7 @@ export default function CommissioningWorkflow() {
   // Shimmed rather than rewritten so every call site below keeps its
   // existing (message, type) signature.
   const toast = useToast();
+  const { readOnly } = usePageAccess();
   const showToast = (message, type = 'success') => toast({ message, type });
   const [workflows, setWorkflows] = useState([]);
   const [selected, setSelected] = useState(null);
@@ -364,6 +367,15 @@ export default function CommissioningWorkflow() {
             ) : <div style={{ color:'#9ca3af', fontSize:13 }}>No sign-off recorded yet</div>}
           </Section>
         )}
+
+        {/* §277 — what the site taught us, for R&D's continuous-improvement register. */}
+        <div style={CARD}>
+          <RdInputsPanel
+            commissioningId={detail.id}
+            canAdd={!readOnly}
+            hint="Points from commissioning for R&D: site problems, design or installation difficulties, what the customer asked for. R&D reviews each one."
+          />
+        </div>
 
         {/* Sign-off Modal */}
         {showSignoff && (

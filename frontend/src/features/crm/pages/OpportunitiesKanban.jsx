@@ -9,6 +9,7 @@ import { usePageAccess } from '@/hooks/usePageAccess';
 import ReadOnlyBanner from '@/components/ReadOnlyBanner';
 import './OpportunitiesKanban.css';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import { RdPointsEditor, RdInputsPanel, emptyPoint, filledPoints } from '@/features/rd/components/RdInputs';
 
 const fmt = n => {
   const v = parseFloat(n || 0);
@@ -97,6 +98,16 @@ export default function OpportunitiesKanban({ setPage } = {}) {
   const [selectedReason, setSelectedReason] = useState('');
   const [competitorList, setCompetitorList] = useState([]);
   const [selectedCompetitor, setSelectedCompetitor] = useState('');
+  // §277: closing a bid (won OR lost) records remarks, a file and R&D points.
+  const [closeRemarks, setCloseRemarks] = useState('');
+  const [closeFile,    setCloseFile]    = useState(null);
+  const [rdPoints,     setRdPoints]     = useState([emptyPoint()]);
+  const [closeError,   setCloseError]   = useState(null);
+  const [closing,      setClosing]      = useState(false);
+  // Evidence on an already-closed deal (backlog, or a wrong file).
+  const [evidenceFile,    setEvidenceFile]    = useState(null);
+  const [evidenceRemarks, setEvidenceRemarks] = useState('');
+  const [savingEvidence,  setSavingEvidence]  = useState(false);
   // Close attribution on an *already* closed deal, edited from the detail
   // drawer. The close dialog only fires on the transition, so without this a
   // deal lost before the field existed stays untagged forever.
@@ -186,7 +197,9 @@ export default function OpportunitiesKanban({ setPage } = {}) {
       reason:     detailOpp?.lost_reason || detailOpp?.close_reason || '',
       competitor: detailOpp?.competitor  || '',
     });
-  }, [detailOpp?.id, detailOpp?.lost_reason, detailOpp?.close_reason, detailOpp?.competitor]);
+    setEvidenceRemarks(detailOpp?.close_remarks || '');
+    setEvidenceFile(null);
+  }, [detailOpp?.id, detailOpp?.lost_reason, detailOpp?.close_reason, detailOpp?.competitor, detailOpp?.close_remarks]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -318,18 +331,74 @@ export default function OpportunitiesKanban({ setPage } = {}) {
     if (isClosed(newStage)) {
       setSelectedReason('');
       setSelectedCompetitor('');
+      setCloseRemarks('');
+      setCloseFile(null);
+      setRdPoints([emptyPoint()]);
+      setCloseError(null);
       setPendingMove({ opp, newStage });
     } else {
       executeMove(opp, newStage);
     }
   };
 
-  const confirmClose = () => {
+  // Won/Lost is no longer an optimistic drag: the server refuses the close
+  // without reason, remarks and file, so the dialog stays open until it lands.
+  const confirmClose = async () => {
     if (!pendingMove) return;
-    executeMove(pendingMove.opp, pendingMove.newStage, selectedReason, selectedCompetitor);
-    setPendingMove(null);
-    setSelectedReason('');
-    setSelectedCompetitor('');
+    const missing = [
+      !selectedReason && 'reason',
+      !closeRemarks.trim() && 'remarks',
+      !closeFile && 'file',
+    ].filter(Boolean);
+    if (missing.length) { setCloseError(`Add the ${missing.join(', ')} to close this bid.`); return; }
+    const fd = new FormData();
+    fd.append('stage', pendingMove.newStage);
+    fd.append('close_reason', selectedReason);
+    fd.append('close_remarks', closeRemarks.trim());
+    if (selectedCompetitor.trim()) fd.append('competitor', selectedCompetitor.trim());
+    fd.append('rd_points', JSON.stringify(filledPoints(rdPoints)));
+    fd.append('file', closeFile);
+    setClosing(true); setCloseError(null);
+    try {
+      const { data } = await api.post(`/crm/opportunities/${pendingMove.opp.id}/close`, fd);
+      const n = data?.rd_inputs?.length || 0;
+      showToast(`Marked ${pendingMove.newStage}${n ? ` · ${n} R&D point${n > 1 ? 's' : ''} sent` : ''}`);
+      setPendingMove(null);
+      load();
+    } catch (err) {
+      setCloseError(err.response?.data?.error || 'Could not close the bid');
+    } finally { setClosing(false); }
+  };
+
+  const openCloseFile = async (opp) => {
+    try {
+      const res = await api.get(`/crm/opportunities/${opp.id}/close-file`, { params: { disposition: 'inline' }, responseType: 'blob' });
+      const url = URL.createObjectURL(res.data);
+      window.open(url, '_blank', 'noopener');
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } catch {
+      showToast('Could not open the file', 'error');
+    }
+  };
+
+  const saveEvidence = async () => {
+    if (!detailOpp) return;
+    const remarksChanged = evidenceRemarks.trim() !== (detailOpp.close_remarks || '').trim();
+    if (!evidenceFile && !remarksChanged) return;
+    if (remarksChanged && !evidenceRemarks.trim()) { showToast('Remarks cannot be empty', 'error'); return; }
+    const fd = new FormData();
+    if (evidenceFile) fd.append('file', evidenceFile);
+    if (remarksChanged) fd.append('close_remarks', evidenceRemarks.trim());
+    setSavingEvidence(true);
+    try {
+      const { data } = await api.post(`/crm/opportunities/${detailOpp.id}/close-file`, fd);
+      setDetailOpp(d => (d ? { ...d, ...data } : d));
+      setEvidenceFile(null);
+      showToast('Close record saved');
+      load();
+    } catch (err) {
+      showToast(err.response?.data?.error || 'Could not save', 'error');
+    } finally { setSavingEvidence(false); }
   };
 
   const saveCloseDetails = async () => {
@@ -705,23 +774,26 @@ export default function OpportunitiesKanban({ setPage } = {}) {
 
       {/* ── Win/Loss Reason Modal ── */}
       {pendingMove && (
-        <div className="ok-overlay" onClick={() => setPendingMove(null)}>
-          <div className="ok-drawer" style={{ maxWidth: 440, top: '30%', height: 'auto' }} onClick={e => e.stopPropagation()}>
+        <div className="ok-overlay" onClick={() => !closing && setPendingMove(null)}>
+          <div className="ok-drawer" style={{ maxWidth: 520, top: '4vh', height: 'auto', maxHeight: '92vh' }} onClick={e => e.stopPropagation()}>
             <div className="ok-drawer-hd">
               <h3 style={{ color: isWonStage(pendingMove.newStage) ? '#059669' : '#6b7280' }}>
                 Mark as {pendingMove.newStage}
               </h3>
               <button className="ok-icon-btn" onClick={() => setPendingMove(null)}><X size={16} /></button>
             </div>
-            <div className="ok-drawer-body" style={{ flex: 'none' }}>
+            <div className="ok-drawer-body" style={{ overflowY: 'auto' }}>
               <p style={{ margin: '0 0 16px', fontSize: 13, color: '#6b7280' }}>
-                Select a {isWonStage(pendingMove.newStage) ? 'win' : 'loss'} reason for{' '}
-                <strong>{pendingMove.opp.opportunity_name}</strong>
+                Why was <strong>{pendingMove.opp.opportunity_name}</strong> {isWonStage(pendingMove.newStage) ? 'won' : 'lost'}?
+                Reason, remarks and a file are required.
               </p>
+              {closeError && (
+                <div style={{ background: '#fee2e2', color: '#b91c1c', padding: '8px 10px', borderRadius: 8, fontSize: 13, marginBottom: 12 }}>{closeError}</div>
+              )}
               <div className="ok-field">
-                <label>{isWonStage(pendingMove.newStage) ? 'Win' : 'Loss'} Reason</label>
+                <label>{isWonStage(pendingMove.newStage) ? 'Win' : 'Loss'} Reason *</label>
                 <select value={selectedReason} onChange={e => setSelectedReason(e.target.value)}>
-                  <option value="">— Select a reason (optional) —</option>
+                  <option value="">— Select a reason —</option>
                   {winLossReasons
                     .filter(r => r.type === (isWonStage(pendingMove.newStage) ? 'win' : 'loss') && r.is_active)
                     .map(r => <option key={r.id} value={r.reason}>{r.reason}</option>)}
@@ -744,15 +816,46 @@ export default function OpportunitiesKanban({ setPage } = {}) {
                   Feeds Top Competitors on the Sales Command Center.
                 </p>
               </div>
+              <div className="ok-field">
+                <label>Remarks *</label>
+                <textarea
+                  rows={3}
+                  value={closeRemarks}
+                  onChange={e => setCloseRemarks(e.target.value)}
+                  placeholder={isWonStage(pendingMove.newStage)
+                    ? 'What made the customer choose us — price, specs, delivery, relationship…'
+                    : 'What happened — price gap, missing spec, delivery time, who won and at what price…'}
+                  style={{ width: '100%', resize: 'vertical' }}
+                />
+              </div>
+              <div className="ok-field">
+                <label>File *</label>
+                <input
+                  type="file"
+                  accept=".pdf,.png,.jpg,.jpeg,.webp,.doc,.docx,.xls,.xlsx,.csv,.msg,.eml"
+                  onChange={e => setCloseFile(e.target.files?.[0] || null)}
+                />
+                <p style={{ margin: '6px 0 0', fontSize: 11, color: '#9ca3af' }}>
+                  {isWonStage(pendingMove.newStage) ? 'PO / LOA / order confirmation' : 'Regret letter / price comparison / customer e-mail'} — PDF, image, Word, Excel or e-mail, up to 10 MB.
+                </p>
+              </div>
+              <div className="ok-field">
+                <label>Inputs for R&D (continuous improvement)</label>
+                <p style={{ margin: '0 0 8px', fontSize: 11, color: '#9ca3af' }}>
+                  What the customer asked for that we lack, or what made the difference. Goes to the R&D register.
+                </p>
+                <RdPointsEditor value={rdPoints} onChange={setRdPoints} disabled={closing} />
+              </div>
             </div>
             <div className="ok-drawer-ft">
-              <button className="ok-btn-outline" onClick={() => setPendingMove(null)}>Cancel</button>
+              <button className="ok-btn-outline" disabled={closing} onClick={() => setPendingMove(null)}>Cancel</button>
               <button
                 className="ok-btn-primary"
                 style={{ background: isWonStage(pendingMove.newStage) ? '#059669' : '#6b7280' }}
+                disabled={closing}
                 onClick={confirmClose}
               >
-                Confirm {pendingMove.newStage}
+                {closing ? 'Saving…' : `Confirm ${pendingMove.newStage}`}
               </button>
             </div>
           </div>
@@ -877,6 +980,55 @@ export default function OpportunitiesKanban({ setPage } = {}) {
                   >
                     {savingClose ? 'Saving…' : 'Save attribution'}
                   </button>
+                </div>
+              )}
+              {/* §277 close record: remarks + evidence file, then R&D points. */}
+              {isClosed(detailOpp.stage) && (
+                <div className="ok-detail-notes">
+                  <span className="ok-detail-label">Close Record</span>
+                  <div style={{ marginTop: 8, fontSize: 13 }}>
+                    {detailOpp.close_file_name ? (
+                      <button type="button" onClick={() => openCloseFile(detailOpp)}
+                        style={{ border: 'none', background: 'none', padding: 0, color: '#6B3FDB', cursor: 'pointer', fontWeight: 600, textDecoration: 'underline' }}>
+                        {detailOpp.close_file_name}
+                      </button>
+                    ) : (
+                      <span style={{ color: '#b45309' }}>No file uploaded</span>
+                    )}
+                  </div>
+                  {readOnly ? (
+                    <p style={{ whiteSpace: 'pre-wrap' }}>{detailOpp.close_remarks || '—'}</p>
+                  ) : (
+                    <>
+                      <div className="ok-field" style={{ marginTop: 8 }}>
+                        <label>Remarks</label>
+                        <textarea rows={3} value={evidenceRemarks} onChange={e => setEvidenceRemarks(e.target.value)}
+                          placeholder="Not recorded" style={{ width: '100%', resize: 'vertical' }} />
+                      </div>
+                      <div className="ok-field" style={{ marginTop: 8 }}>
+                        <label>{detailOpp.close_file_name ? 'Replace file' : 'Upload file'}</label>
+                        <input type="file" accept=".pdf,.png,.jpg,.jpeg,.webp,.doc,.docx,.xls,.xlsx,.csv,.msg,.eml"
+                          onChange={e => setEvidenceFile(e.target.files?.[0] || null)} />
+                      </div>
+                      <button
+                        className="ok-btn-primary"
+                        style={{ marginTop: 10, background: '#6d28d9' }}
+                        disabled={savingEvidence || (!evidenceFile && evidenceRemarks.trim() === (detailOpp.close_remarks || '').trim())}
+                        onClick={saveEvidence}
+                      >
+                        {savingEvidence ? 'Saving…' : 'Save close record'}
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
+              {isClosed(detailOpp.stage) && (
+                <div className="ok-detail-notes">
+                  <RdInputsPanel
+                    opportunityId={detailOpp.id}
+                    canAdd={!readOnly}
+                    hint="Requirements from this bid for continuous improvement. R&D reviews each one."
+                  />
                 </div>
               )}
             </div>

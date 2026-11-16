@@ -6,7 +6,11 @@ import opportunitiesRepository from '../repositories/opportunities.repository.js
 import { requirePermission, allowRoles } from '../../../middlewares/auth.middleware.js';
 import * as drive from '../../../services/googleDrive.service.js';
 import { logAudit } from '../../../services/AuditService.js';
-import { companyOf } from '../../../shared/scope.js';
+import path from 'path';
+import fs from 'fs';
+import { uploadFile, deleteFile, LOCAL_UPLOAD_DIR } from '../../../services/StorageService.js';
+import { cleanPoints as cleanRdPoints, insertPoints as insertRdPoints } from '../../rd/rdInputs.routes.js';
+import { companyOf, callerIdentity } from '../../../shared/scope.js';
 import { nextProjectCode, nextLifecycleNumber } from '../../../shared/docNumber.js';
 import { resolveAutoAssignee, resolveAssignment } from '../services/leadAssignment.service.js';
 import { convertOpportunityToProject } from '../services/opportunityConversion.service.js';
@@ -1755,7 +1759,10 @@ router.post('/opportunities', requirePermission('crm', 'add'), async (req, res) 
   }
 });
 
-router.patch('/opportunities/:id/stage', requirePermission('crm', 'edit'), async (req, res) => {
+// The stage change itself. `evidence` is set only by POST /opportunities/:id/close
+// (§277): the close remarks, the uploaded file and the R&D points, written in the
+// SAME transaction as the stage, so a deal can never be Won/Lost without them.
+async function changeOpportunityStage(req, res, evidence = null) {
   const client = await pool.connect();
   try {
     const { stage: rawStage, notes: stageNotes, close_reason, competitor } = req.body;
@@ -1807,6 +1814,12 @@ router.patch('/opportunities/:id/stage', requirePermission('crm', 'edit'), async
         (stageLc === 'won' || stageLc === 'lost')) {
       extraSet += `, competitor = $${params.push(competitor.trim())}`;
     }
+    if (evidence && (stageLc === 'won' || stageLc === 'lost')) {
+      extraSet += `, close_remarks = $${params.push(evidence.remarks)}`
+                + `, close_file_url = $${params.push(evidence.fileUrl)}`
+                + `, close_file_name = $${params.push(evidence.fileName)}`
+                + `, closed_by = $${params.push(userId)}`;
+    }
     const cidClause = cid != null ? ` AND company_id = $${params.push(cid)}` : '';
 
     const { rows } = await client.query(
@@ -1838,11 +1851,25 @@ router.patch('/opportunities/:id/stage', requirePermission('crm', 'edit'), async
       [req.params.id, cid, prevStage, stage, userId, stageNotes || close_reason || null]
     );
 
+    let rdInputs = [];
+    if (evidence?.points?.length) {
+      rdInputs = await insertRdPoints(client, evidence.points, {
+        company_id: rows[0].company_id ?? cid,
+        source: stageLc === 'won' ? 'sales_won' : 'sales_lost',
+        opportunity_id: rows[0].id,
+        customer_name: evidence.customerName ?? null,
+        product_line: rows[0].product_line || rows[0].product_category || null,
+        raised_by: userId,
+        raised_by_name: evidence.raisedByName ?? null,
+      });
+    }
+
     await client.query('COMMIT');
     logAudit({ userId, module: 'CRM', recordId: req.params.id, recordType: 'opportunity',
                action: 'stage_change', oldData: { stage: prevStage },
-               newData: { stage, close_reason: close_reason || null }, req });
-    res.json(rows[0]);
+               newData: { stage, close_reason: close_reason || null,
+                          ...(evidence ? { close_file: evidence.fileName, rd_points: rdInputs.length } : {}) }, req });
+    res.json(evidence ? { ...rows[0], rd_inputs: rdInputs } : rows[0]);
 
     // Fire configured automation for this event. Deliberately AFTER the commit
     // and after the response: a workflow rule is an observer of the stage
@@ -1899,9 +1926,156 @@ router.patch('/opportunities/:id/stage', requirePermission('crm', 'edit'), async
     }
   } catch (error) {
     await client.query('ROLLBACK');
+    if (evidence?.fileUrl) deleteFile(evidence.fileUrl).catch(() => {});
     res.status(500).json({ error: error.message });
   } finally {
     client.release();
+  }
+}
+
+const CLOSE_REQUIRED = {
+  code: 'CLOSE_DETAILS_REQUIRED',
+  error: 'Closing a bid as Won or Lost needs the reason, remarks and a file. Use the close form.',
+};
+const isClosingStage = (v) => ['won', 'lost'].includes(canonicalState(v ?? ''));
+
+// Open stages only. Won/Lost go through POST /opportunities/:id/close.
+router.patch('/opportunities/:id/stage', requirePermission('crm', 'edit'), (req, res) => {
+  if (isClosingStage(req.body?.stage)) return res.status(400).json(CLOSE_REQUIRED);
+  return changeOpportunityStage(req, res);
+});
+
+// Evidence of the decision: PO / LOA / regret letter / comparison sheet. PDF,
+// images, Word, Excel, e-mail — never HTML or SVG (served from this origin).
+const CLOSE_FILE_TYPES = new Set(['.pdf', '.png', '.jpg', '.jpeg', '.webp', '.doc', '.docx', '.xls', '.xlsx', '.csv', '.msg', '.eml']);
+const closeUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const ext = path.extname(file.originalname || '').toLowerCase();
+    if (CLOSE_FILE_TYPES.has(ext)) return cb(null, true);
+    const err = new Error('File type not allowed. Upload PDF, image, Word, Excel or e-mail.');
+    err.status = 400;
+    return cb(err);
+  },
+});
+const closeUploadSingle = (req, res, next) => closeUpload.single('file')(req, res, (err) => {
+  if (!err) return next();
+  if (err.code === 'LIMIT_FILE_SIZE') return res.status(400).json({ error: 'File is larger than 10 MB' });
+  return res.status(err.status || 400).json({ error: err.message });
+});
+
+async function opportunityCustomerName(id, cid) {
+  const { rows } = await pool.query(
+    `SELECT COALESCE(a.account_name, a.name, l.company_name) AS customer_name
+       FROM opportunities o
+       LEFT JOIN accounts a ON a.id = o.account_id
+       LEFT JOIN leads l    ON l.id = o.lead_id
+      WHERE o.id = $1 AND ($2::int IS NULL OR o.company_id = $2)`, [id, cid]);
+  return rows[0]?.customer_name ?? null;
+}
+
+/**
+ * POST /crm/opportunities/:id/close — multipart (§277).
+ *   stage          Won | Lost (required)
+ *   close_reason   from the win/loss reason master (required)
+ *   close_remarks  what happened, in the salesperson's words (required)
+ *   file           the evidence (required)
+ *   competitor     optional
+ *   rd_points      JSON [{ requirement, category, priority }] — inputs for R&D
+ */
+router.post('/opportunities/:id/close', requirePermission('crm', 'edit'), closeUploadSingle, async (req, res) => {
+  const b = req.body || {};
+  if (!isClosingStage(b.stage)) return res.status(400).json({ error: 'stage must be Won or Lost' });
+  const reason  = String(b.close_reason ?? '').trim();
+  const remarks = String(b.close_remarks ?? '').trim();
+  const missing = [!reason && 'reason', !remarks && 'remarks', !req.file && 'file'].filter(Boolean);
+  if (missing.length) {
+    return res.status(400).json({ code: 'CLOSE_DETAILS_REQUIRED', missing,
+      error: `To close the bid, add the ${missing.join(', ')}.` });
+  }
+  let points;
+  try { points = cleanRdPoints(b.rd_points); }
+  catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
+
+  try {
+    const cid = companyOf(req);
+    const exists = await pool.query(
+      `SELECT id FROM opportunities WHERE id = $1 AND deleted_at IS NULL AND ($2::int IS NULL OR company_id = $2)`,
+      [req.params.id, cid]);
+    if (!exists.rows[0]) return res.status(404).json({ error: 'Opportunity not found' });
+
+    const fileUrl = await uploadFile(req.file.buffer, req.file.originalname, req.file.mimetype);
+    const who = await callerIdentity(req, pool, cid);
+    const customerName = await opportunityCustomerName(req.params.id, cid);
+    req.body = { stage: b.stage, close_reason: reason, competitor: b.competitor, notes: remarks };
+    return await changeOpportunityStage(req, res, {
+      remarks, fileUrl, fileName: req.file.originalname.slice(0, 255), points,
+      customerName, raisedByName: who.name,
+    });
+  } catch (error) {
+    respondError(res, error);
+  }
+});
+
+/**
+ * POST /crm/opportunities/:id/close-file — add or replace the evidence (and
+ * optionally the remarks) on a deal that is ALREADY closed: deals closed before
+ * §277 have none, and a wrong file must be replaceable.
+ */
+router.post('/opportunities/:id/close-file', requirePermission('crm', 'edit'), closeUploadSingle, async (req, res) => {
+  try {
+    const cid = companyOf(req);
+    const { rows: [opp] } = await pool.query(
+      `SELECT id, stage, close_file_url FROM opportunities
+        WHERE id = $1 AND deleted_at IS NULL AND ($2::int IS NULL OR company_id = $2)`, [req.params.id, cid]);
+    if (!opp) return res.status(404).json({ error: 'Opportunity not found' });
+    if (!isClosingStage(opp.stage)) return res.status(409).json({ error: 'Only a Won or Lost bid carries a close file' });
+    const remarks = req.body?.close_remarks != null ? String(req.body.close_remarks).trim() : null;
+    if (!req.file && remarks == null) return res.status(400).json({ error: 'Send a file or remarks' });
+    if (remarks === '') return res.status(400).json({ error: 'Remarks cannot be empty' });
+
+    const params = [req.params.id];
+    let set = 'updated_at = NOW()';
+    let fileUrl = null;
+    if (req.file) {
+      fileUrl = await uploadFile(req.file.buffer, req.file.originalname, req.file.mimetype);
+      set += `, close_file_url = $${params.push(fileUrl)}, close_file_name = $${params.push(req.file.originalname.slice(0, 255))}`;
+    }
+    if (remarks != null) set += `, close_remarks = $${params.push(remarks)}`;
+    const { rows } = await pool.query(`UPDATE opportunities SET ${set} WHERE id = $1 RETURNING *`, params);
+    if (fileUrl && opp.close_file_url) deleteFile(opp.close_file_url).catch(() => {});
+    logAudit({ userId: req.user?.userId, module: 'CRM', recordId: req.params.id, recordType: 'opportunity',
+               action: 'close_evidence', oldData: { close_file_url: opp.close_file_url },
+               newData: { close_file_name: req.file?.originalname ?? undefined, remarks_changed: remarks != null }, req });
+    res.json(rows[0]);
+  } catch (error) {
+    respondError(res, error);
+  }
+});
+
+/** GET /crm/opportunities/:id/close-file — the evidence, to anyone who can see the deal. */
+router.get('/opportunities/:id/close-file', requirePermission('crm', 'view'), async (req, res) => {
+  try {
+    const cid = companyOf(req);
+    const { rows: [opp] } = await pool.query(
+      `SELECT close_file_url, close_file_name FROM opportunities
+        WHERE id = $1 AND deleted_at IS NULL AND ($2::int IS NULL OR company_id = $2)`, [req.params.id, cid]);
+    if (!opp?.close_file_url) return res.status(404).json({ error: 'No close file on this bid' });
+    const url = opp.close_file_url;
+    if (/^https?:\/\//i.test(url)) return res.redirect(url);
+    const abs = path.join(LOCAL_UPLOAD_DIR, path.basename(url));
+    if (!fs.existsSync(abs)) return res.status(404).json({ error: 'The file is missing from storage' });
+    const ext = path.extname(abs).toLowerCase();
+    const inline = req.query.disposition === 'inline' && ['.pdf', '.png', '.jpg', '.jpeg', '.webp'].includes(ext);
+    logAudit({ userId: req.user?.userId, module: 'CRM', recordId: req.params.id, recordType: 'opportunity',
+               action: inline ? 'view_close_file' : 'download_close_file', req });
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Content-Disposition',
+      `${inline ? 'inline' : 'attachment'}; filename="${encodeURIComponent(opp.close_file_name || path.basename(abs))}"`);
+    return res.sendFile(abs);
+  } catch (error) {
+    respondError(res, error);
   }
 });
 
@@ -1910,6 +2084,10 @@ router.put('/opportunities/:id', requirePermission('crm', 'edit'), async (req, r
     const userId = req.user?.userId ?? req.user?.id ?? null;
     const before = await opportunitiesRepository.findById(req.params.id, companyOf(req));
     if (!before) return res.status(404).json({ error: 'Opportunity not found' });
+    // An open deal cannot be edited into Won/Lost — that skips the close form.
+    if (req.body?.stage !== undefined && isClosingStage(req.body.stage) && !isClosingStage(before.stage)) {
+      return res.status(400).json(CLOSE_REQUIRED);
+    }
     const opportunity = await opportunitiesRepository.update(req.params.id, req.body, companyOf(req));
     if (!opportunity) return res.status(404).json({ error: 'Opportunity not found' });
 

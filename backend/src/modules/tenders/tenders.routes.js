@@ -105,7 +105,10 @@ router.post('/', crm('add'), async (req, res) => {
     const cid = companyOf(req) ?? 1;
     const { opportunity_name, stage = 'bidding' } = req.body || {};
     if (!opportunity_name) return res.status(400).json({ error: 'opportunity_name (tender title) is required' });
-    const nn = (v) => (v === '' || v === undefined ? null : v);
+    if (['won', 'lost'].includes(String(stage).trim().toLowerCase())) {
+      return res.status(400).json({ code: 'CLOSE_DETAILS_REQUIRED', error: 'Create the tender open, then close it as Won or Lost with the close form.' });
+    }
+    const nn =(v) => (v === '' || v === undefined ? null : v);
 
     const cols = ['opportunity_name', 'stage', 'company_id', 'created_by'];
     const vals = [opportunity_name, stage, cid, req.user?.userId ?? null];
@@ -123,7 +126,23 @@ router.post('/', crm('add'), async (req, res) => {
 router.put('/:id', crm('edit'), captureBefore('opportunities'), async (req, res) => {
   try {
     const cid = companyOf(req);
-    const safe = await pickUpdatable('opportunities', req.body, { protect: ['opportunity_number', 'lead_id'] });
+    // §277: a bid becomes Won/Lost only through POST /crm/opportunities/:id/close,
+    // which requires the reason, remarks and file. The evidence columns are
+    // written there and nowhere else.
+    const safe = await pickUpdatable('opportunities', req.body, {
+      protect: ['opportunity_number', 'lead_id', 'close_file_url', 'close_file_name', 'closed_by'],
+    });
+    if (typeof safe.stage === 'string' && ['won', 'lost'].includes(safe.stage.trim().toLowerCase())) {
+      const { rows: [cur] } = await pool.query(
+        `SELECT stage FROM opportunities WHERE id = $1 AND deleted_at IS NULL${cid != null ? ' AND company_id = $2' : ''}`,
+        cid != null ? [req.params.id, cid] : [req.params.id]);
+      if (cur && !['won', 'lost'].includes(String(cur.stage || '').toLowerCase())) {
+        return res.status(400).json({
+          code: 'CLOSE_DETAILS_REQUIRED',
+          error: 'Closing a bid as Won or Lost needs the reason, remarks and a file. Use the close form on the Opportunities board.',
+        });
+      }
+    }
     const keys = Object.keys(safe);
     if (!keys.length) return res.status(400).json({ error: 'no updatable fields supplied' });
     for (const k of ['submission_deadline', 'emd_expiry_date', 'emd_refund_date', 'loa_date', 'expected_closing_date']) {

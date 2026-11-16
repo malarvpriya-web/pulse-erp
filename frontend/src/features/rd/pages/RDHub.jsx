@@ -1,10 +1,12 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   FlaskConical, Cpu, FileBadge, GitBranch, Plus, X, RefreshCw,
-  CircuitBoard, Package, LayoutDashboard,
+  CircuitBoard, Package, LayoutDashboard, Lightbulb,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import { usePageAccess } from '@/hooks/usePageAccess';
+import { RD_CATEGORIES, RD_PRIORITIES, RD_STATUS, RD_SOURCE, RdStatusChip } from '@/features/rd/components/RdInputs';
 
 const CARD = { background: '#fff', border: '1px solid #f0f0f4', borderRadius: 11, padding: 16 };
 const TH = { padding: '9px 12px', textAlign: 'left', fontWeight: 600, fontSize: 11, color: '#6b7280', borderBottom: '1px solid #f0f0f4', whiteSpace: 'nowrap', textTransform: 'uppercase', letterSpacing: '.04em' };
@@ -69,7 +71,7 @@ export default function RDHub() {
     }>
 
       <p style={{ margin: '0 0 16px', color: '#6b7280', fontSize: 13 }}>
-        Versioned design repository, patents &amp; IP, and the product lifecycle (PLM) across product lines.
+        Versioned design repository, patents &amp; IP, the product lifecycle (PLM) across product lines, and improvement inputs from sales and service.
       </p>
 
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 16 }}>
@@ -80,7 +82,7 @@ export default function RDHub() {
       </div>
 
       <div style={{ display: 'flex', gap: 6, marginBottom: 14, borderBottom: '1px solid #eee' }}>
-        {[['repository', 'Repository', Cpu], ['patents', 'Patents & IP', FileBadge], ['lifecycle', 'Product Lifecycle', GitBranch]].map(([k, l, Ic]) => (
+        {[['repository', 'Repository', Cpu], ['patents', 'Patents & IP', FileBadge], ['lifecycle', 'Product Lifecycle', GitBranch], ['inputs', 'Improvement Inputs', Lightbulb]].map(([k, l, Ic]) => (
           <button key={k} onClick={() => setTab(k)}
             style={{ cursor: 'pointer', border: 'none', background: 'none', padding: '8px 14px', fontSize: 13, fontWeight: 600,
               color: tab === k ? '#6B3FDB' : '#6b7280', borderBottom: tab === k ? '2px solid #6B3FDB' : '2px solid transparent', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
@@ -92,6 +94,7 @@ export default function RDHub() {
       {tab === 'repository' && <Repository productLines={productLines} onChange={loadSummary} />}
       {tab === 'patents' && <Patents productLines={productLines} onChange={loadSummary} />}
       {tab === 'lifecycle' && <Lifecycle rows={productLines} onChange={loadSummary} />}
+      {tab === 'inputs' && <ImprovementInputs />}
     </PageShell>
   );
 }
@@ -271,5 +274,142 @@ function Lifecycle({ rows, onChange }) {
         </table>
       </div>
     </div>
+  );
+}
+
+// ── Improvement inputs (§277) ─────────────────────────────────────────────────
+// Raised by sales when a bid is won or lost, and by service after commissioning.
+// R&D reviews each one here; the answer shows back on the deal / workflow.
+const SOURCE_COLOR = { sales_won: '#059669', sales_lost: '#dc2626', commissioning: '#0891b2', service: '#0891b2' };
+const PRIORITY_COLOR = { high: '#dc2626', medium: '#6d28d9', low: '#6b7280' };
+
+function ImprovementInputs() {
+  const { readOnly } = usePageAccess();
+  const [rows, setRows] = useState([]);
+  const [summary, setSummary] = useState({});
+  const [error, setError] = useState(null);
+  const [f, setF] = useState({ status: 'open', source: '', category: '', priority: '', search: '' });
+  const [review, setReview] = useState(null);
+  const load = useCallback(() => {
+    const params = Object.fromEntries(Object.entries(f).filter(([, v]) => v));
+    api.get('/rd-inputs', { params })
+      .then(({ data }) => { setRows(data?.data || []); setSummary(data?.summary || {}); setError(null); })
+      .catch((e) => { setRows([]); setError(e.response?.data?.error || 'Could not load inputs'); });
+  }, [f]);
+  useEffect(() => { const t = setTimeout(load, 250); return () => clearTimeout(t); }, [load]);
+  const set = (k) => (e) => setF((s) => ({ ...s, [k]: e.target.value }));
+
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
+        <Kpi icon={Lightbulb} label="Open (new + under review)" value={summary.open ?? 0} color="#6B3FDB" />
+        <Kpi icon={FlaskConical} label="Accepted" value={summary.accepted ?? 0} color="#0891b2" />
+        <Kpi icon={Package} label="Implemented" value={summary.implemented ?? 0} color="#059669" />
+        <Kpi icon={FileBadge} label="From sales / service" value={`${summary.from_sales ?? 0} / ${summary.from_service ?? 0}`} color="#6d28d9" />
+      </div>
+      <div style={{ ...CARD, padding: 0, overflow: 'hidden' }}>
+        <div style={{ padding: 12, borderBottom: '1px solid #f0f0f4', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <input style={{ ...INPUT, width: 220 }} placeholder="Search point, customer, deal…" value={f.search} onChange={set('search')} />
+          <select style={{ ...INPUT, width: 'auto' }} value={f.status} onChange={set('status')}>
+            <option value="open">Open</option>
+            <option value="">All statuses</option>
+            {Object.entries(RD_STATUS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+          </select>
+          <select style={{ ...INPUT, width: 'auto' }} value={f.source} onChange={set('source')}>
+            <option value="">All sources</option>
+            <option value="sales">Sales (won + lost)</option>
+            {Object.entries(RD_SOURCE).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+          </select>
+          <select style={{ ...INPUT, width: 'auto' }} value={f.category} onChange={set('category')}>
+            <option value="">All categories</option>
+            {Object.entries(RD_CATEGORIES).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+          </select>
+          <select style={{ ...INPUT, width: 'auto' }} value={f.priority} onChange={set('priority')}>
+            <option value="">All priorities</option>
+            {Object.entries(RD_PRIORITIES).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+          </select>
+        </div>
+        {error && <div style={{ padding: 12, color: '#b91c1c', fontSize: 13 }}>{error}</div>}
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 900 }}>
+            <thead><tr><th style={TH}>Point</th><th style={TH}>Source</th><th style={TH}>From</th><th style={TH}>Category</th><th style={TH}>Priority</th><th style={TH}>Raised</th><th style={TH}>Status</th></tr></thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.id} onClick={() => setReview(r)} style={{ cursor: 'pointer' }}>
+                  <td style={{ ...TD, maxWidth: 380 }}>
+                    <div style={{ color: '#111827', whiteSpace: 'pre-wrap' }}>{r.requirement}</div>
+                    {r.rd_response && <div style={{ fontSize: 11, color: '#6b7280', marginTop: 3 }}>R&amp;D: {r.rd_response}</div>}
+                  </td>
+                  <td style={TD}><Chip text={RD_SOURCE[r.source] || r.source} color={SOURCE_COLOR[r.source] || '#6b7280'} /></td>
+                  <td style={{ ...TD, color: '#374151' }}>
+                    <div style={{ fontWeight: 600 }}>{r.opportunity_name || r.workflow_number || '—'}</div>
+                    <div style={{ fontSize: 11, color: '#9ca3af' }}>{[r.opportunity_number, r.customer_name, r.product_line].filter(Boolean).join(' · ')}</div>
+                  </td>
+                  <td style={{ ...TD, color: '#6b7280' }}>{RD_CATEGORIES[r.category] || r.category}</td>
+                  <td style={TD}><Chip text={RD_PRIORITIES[r.priority] || r.priority} color={PRIORITY_COLOR[r.priority] || '#6b7280'} /></td>
+                  <td style={{ ...TD, color: '#6b7280' }}><div>{fmtDate(r.created_at)}</div><div style={{ fontSize: 11 }}>{r.raised_by_name || ''}</div></td>
+                  <td style={TD}><RdStatusChip status={r.status} /></td>
+                </tr>
+              ))}
+              {!rows.length && !error && <tr><td style={{ ...TD, textAlign: 'center', color: '#9ca3af' }} colSpan={7}>No inputs match. They arrive when a bid is closed or after commissioning.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      {review && <ReviewDrawer row={review} readOnly={readOnly} onClose={() => setReview(null)} onSaved={() => { setReview(null); load(); }} />}
+    </div>
+  );
+}
+
+function ReviewDrawer({ row, readOnly, onClose, onSaved }) {
+  const [status, setStatus] = useState(row.status === 'new' ? 'under_review' : row.status);
+  const [response, setResponse] = useState(row.rd_response || '');
+  const [err, setErr] = useState(null); const [busy, setBusy] = useState(false);
+  const save = async () => {
+    if (status === 'rejected' && !response.trim()) { setErr('Say why it is rejected — the person who raised it reads this.'); return; }
+    setBusy(true); setErr(null);
+    try { await api.patch(`/rd-inputs/${row.id}/review`, { status, rd_response: response }); onSaved(); }
+    catch (e) { setErr(e.response?.data?.error || 'Save failed'); } finally { setBusy(false); }
+  };
+  const from = row.opportunity_name || row.workflow_number;
+  return (
+    <Drawer title="Review input" onClose={onClose}>
+      {err && <div style={{ background: '#fee2e2', color: '#b91c1c', padding: '8px 10px', borderRadius: 8, fontSize: 13, marginBottom: 12 }}>{err}</div>}
+      <div style={{ display: 'grid', gap: 12 }}>
+        <div style={{ fontSize: 14, color: '#111827', whiteSpace: 'pre-wrap', background: '#fafafb', borderRadius: 10, padding: 12 }}>{row.requirement}</div>
+        <div style={{ fontSize: 12, color: '#6b7280', display: 'grid', gap: 3 }}>
+          <div><strong>Source:</strong> {RD_SOURCE[row.source] || row.source}{from ? ` — ${from}` : ''}</div>
+          {row.customer_name && <div><strong>Customer:</strong> {row.customer_name}</div>}
+          {row.product_line && <div><strong>Product line:</strong> {row.product_line}</div>}
+          <div><strong>Category / priority:</strong> {RD_CATEGORIES[row.category] || row.category} / {RD_PRIORITIES[row.priority] || row.priority}</div>
+          <div><strong>Raised:</strong> {fmtDate(row.created_at)}{row.raised_by_name ? ` by ${row.raised_by_name}` : ''}</div>
+          {row.reviewed_at && <div><strong>Last review:</strong> {fmtDate(row.reviewed_at)}{row.reviewed_by_name ? ` by ${row.reviewed_by_name}` : ''}</div>}
+        </div>
+        {readOnly ? (
+          <div style={{ fontSize: 13 }}>
+            <RdStatusChip status={row.status} />
+            {row.rd_response && <p style={{ whiteSpace: 'pre-wrap' }}>{row.rd_response}</p>}
+          </div>
+        ) : (
+          <>
+            <div>
+              <label style={LABEL}>Decision</label>
+              <select style={INPUT} value={status} onChange={(e) => setStatus(e.target.value)}>
+                {Object.entries(RD_STATUS).filter(([k]) => k !== 'new').map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+              </select>
+            </div>
+            <div>
+              <label style={LABEL}>R&amp;D response {status === 'rejected' ? '*' : ''}</label>
+              <textarea style={{ ...INPUT, minHeight: 90 }} value={response} onChange={(e) => setResponse(e.target.value)}
+                placeholder="What R&D will do, by when, or why not. Shown to sales / service on the record." />
+            </div>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button style={btnPri} onClick={save} disabled={busy}>{busy ? 'Saving…' : 'Save'}</button>
+              <button style={btn} onClick={onClose}>Cancel</button>
+            </div>
+          </>
+        )}
+      </div>
+    </Drawer>
   );
 }

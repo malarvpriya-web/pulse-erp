@@ -296,6 +296,9 @@ flowchart LR
     COMPLAINTS -.-> QUAL
     SERVICE -.-> ENG
     ENG --> PROD
+    %% §277 R&D improvement inputs: bid won/lost (sales) and commissioning (service)
+    CRM -->|"bid won/lost: R&D points (§277)"| ENG
+    SERVICE -->|"commissioning: R&D points (§277)"| ENG
 
     %% Travel/Projects/CRM visits were missing
     TRAVEL --> FIN
@@ -25184,3 +25187,45 @@ Moving the application to an ordinary role means re-owning the database objects 
 **Not exercised.** The scripts themselves have not been run; tests lift their loader, target and checksum code from source.
 
 **Test.** `scriptEnvLoading.test.js`, `integration.db01cRuntimeWithoutDdl.test.js`.
+
+## §277 — Bid close needs reason, remarks and a file; R&D improvement inputs from sales (won AND lost) and commissioning (2026-11-16)
+
+**Owner request.** After a bid is decided, won or lost, the salesperson must record why, upload a file, and list requirements for R&D's continuous improvement. After commissioning, the service engineer can add R&D points too.
+
+**Flow**
+
+```mermaid
+flowchart LR
+  OPP["Opportunity / Tender (open stage)"] -->|"Mark Won / Lost"| CLOSE["Close form: reason* + remarks* + file* + competitor + R&D points"]
+  CLOSE -->|"POST /crm/opportunities/:id/close (one transaction)"| CLOSED["Opportunity Won / Lost + close_remarks / close_file_*"]
+  CLOSE --> REG["rd_improvement_inputs (source sales_won / sales_lost)"]
+  CLOSED -->|"closed-deal drawer: add points later, replace file / remarks"| REG
+  COMM["Commissioning workflow"] -->|"Inputs for R&D panel"| REG2["rd_improvement_inputs (source commissioning)"]
+  REG --> RDH["R&D Hub → Improvement Inputs: review"]
+  REG2 --> RDH
+  RDH -->|"status + rd_response"| BACK["Answer shown on the deal / workflow"]
+  RDH -.->|"accepted → design work"| ECN["Artifacts / ECN (manual today)"]
+```
+
+**Data** (migration `20261116000001_rd_improvement_inputs.js`)
+- `opportunities` + `close_remarks`, `close_file_url`, `close_file_name`, `closed_by` (users.id).
+- `rd_improvement_inputs`: `source` sales_won | sales_lost | commissioning | service; `opportunity_id` / `commissioning_id` (FK, SET NULL); `customer_name`, `product_line` (copied at raise time); `category` (product_feature, performance, quality, cost, documentation, installation, software, other); `requirement` (required); `priority` low | medium | high; `status` new → under_review → accepted | rejected → implemented; `rd_response`, `reviewed_by(_name)`, `reviewed_at`; `raised_by(_name)`; soft delete.
+
+**API**
+- `POST /crm/opportunities/:id/close` (crm:edit, multipart): stage Won/Lost, `close_reason`, `close_remarks`, `file` all required (400 `CLOSE_DETAILS_REQUIRED` + `missing[]`); `rd_points` JSON optional. File: PDF / image / Word / Excel / CSV / e-mail, 10 MB, stored by StorageService, deleted again if the transaction rolls back. Reuses the stage-change function, so stage history, workflow dispatch and Won → project auto-convert all still run.
+- `PATCH /crm/opportunities/:id/stage`, `PUT /crm/opportunities/:id`, `PUT /tenders/:id`, `POST /tenders` **refuse** a move into Won/Lost (400 `CLOSE_DETAILS_REQUIRED`). Open-stage moves are unchanged. Server-side paths (e.g. Sales Order bootstrap) are not affected.
+- `POST /crm/opportunities/:id/close-file` (crm:edit): add/replace the file and/or remarks on an already closed deal (deals closed before §277 have none).
+- `GET /crm/opportunities/:id/close-file` (crm:view): serves the file, audit-logged (`view_close_file` / `download_close_file`). It is NOT served through `/files/:filename` (that route would refuse it as unowned).
+- `/rd-inputs` (`rdInputs.routes.js`, verifyToken + requireCompanyScope): `GET /` whole register (rd:view) with summary; `GET /for?opportunity_id|commissioning_id` (crm:view or servicedesk:view, or rd:view); `POST /` raise (crm:edit on a CLOSED opportunity, servicedesk:edit on a workflow); `PATCH /:id/review` (rd:edit; rejected needs a response); `DELETE /:id` (raiser while `new`, or rd:delete).
+
+**Permissions.** No new module. sales_manager and service_manager got `rd:view` (they read the register they feed). R&D review = rd:edit (admin, super_admin, design_engineer, production_manager today).
+
+**UI**
+- Opportunities board: Won/Lost dialog has reason*, remarks*, file*, competitor, and an R&D points editor; it stays open until the server accepts. Closed-deal drawer: Close Record (open file, edit remarks, replace file) + Inputs for R&D panel (list with R&D's answer, add more, withdraw while new).
+- Commissioning workflow detail: Inputs for R&D panel.
+- R&D Hub: new **Improvement Inputs** tab — KPIs, filters (status / source / category / priority / search), review drawer.
+- Shared component: `frontend/src/features/rd/components/RdInputs.jsx`.
+
+**Not built:** notification to R&D when a point arrives; standalone service inputs from a ticket/AMC visit (`source = 'service'` exists, no UI yet); automatic link from an accepted input to an Artifact/ECN.
+
+**Files:** `backend/src/database/migrations/20261116000001_rd_improvement_inputs.js`, `backend/src/modules/rd/rdInputs.routes.js`, `backend/src/modules/crm/routes/crm.routes.js`, `backend/src/modules/tenders/tenders.routes.js`, `backend/server.js`, `frontend/src/features/rd/components/RdInputs.jsx`, `frontend/src/features/rd/pages/RDHub.jsx`, `frontend/src/features/crm/pages/OpportunitiesKanban.jsx`, `frontend/src/features/servicedesk/pages/CommissioningWorkflow.jsx`.
