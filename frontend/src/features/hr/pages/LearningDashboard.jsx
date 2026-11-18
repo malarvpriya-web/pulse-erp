@@ -1,256 +1,183 @@
 // frontend/src/features/hr/pages/LearningDashboard.jsx
-import { useState, useEffect, useCallback } from 'react';
+// L&D Dashboard (2026-11-18). One API call (/training/dashboard) answers every
+// tile and chart for the chosen period / department / category. The Training
+// Calendar's duplicate KPI row and cost charts now live only here.
+import { useCallback, useEffect, useState } from 'react';
 import { LayoutDashboard } from 'lucide-react';
-import {
-  BarChart, Bar, PieChart, Pie, Cell, LineChart, Line,
-  XAxis, YAxis, Tooltip, Legend, ResponsiveContainer, CartesianGrid,
-} from 'recharts';
+import { BarChart, Bar, LineChart, Line, PieChart, Pie, Cell, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer, CartesianGrid } from 'recharts';
 import api from '@/services/api/client';
-import { ChartExpandButton } from '@/components/dashboard/DashCard';
-import '@/components/dashboard/dashkit.css';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import { Filters, Kpi, Pill, Empty, fmtINR, fmtNum, fmtDate, pct, toQuery, errText, statusLabel } from '@/features/hr/learning/lndUi';
 
-const PIE_COLORS  = ['#6B3FDB','#2563eb','#16a34a','#6d28d9','#dc2626','#0891b2'];
+const SERIES = ['#6B3FDB', '#2563eb', '#16a34a', '#d97706', '#dc2626', '#0891b2', '#7c3aed'];
+const DEFAULT = { period: 'fytd', department: '', category: '' };
 
-function KPICard({ label, value, icon, color, sub, index = 0 }) {
-  return (
-    <div className="dk-anim" style={{ background:'#fff', border:'1px solid #e9e4ff', borderRadius:11, padding:'11px 13px', display:'flex', flexDirection:'column', gap:2, '--dk-i': index }}>
-      <div style={{ fontSize:18 }}>{icon}</div>
-      <div style={{ fontSize:22, fontWeight:800, color, marginTop:1 }}>{value}</div>
-      <div style={{ fontSize:11.5, fontWeight:600, color:'#374151' }}>{label}</div>
-      {sub && <div style={{ fontSize:11, color:'#9ca3af' }}>{sub}</div>}
-    </div>
-  );
+function Card({ title, children, right }) {
+  return <div className="lnd-card"><h4 className="lnd-card-title"><span>{title}</span>{right}</h4>{children}</div>;
 }
 
-/* `children` is re-rendered inside the expand modal at full height — every chart
- * here uses ResponsiveContainer height="100%", so it fills whichever box it's in. */
-function ChartCard({ title, height = 200, children, expandable = true, index = 0 }) {
-  return (
-    <div className="dk-anim" style={{ background:'#fff', border:'1px solid #e9e4ff', borderRadius:11, padding:14, '--dk-i': index }}>
-      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', margin:'0 0 9px' }}>
-        <h4 style={{ margin:0, color:'#4c1d95', fontSize:13.5 }}>{title}</h4>
-        {expandable && (
-          <ChartExpandButton title={title}>
-            <div style={{ height: 460 }}>{children}</div>
-          </ChartExpandButton>
-        )}
-      </div>
-      <div style={{ height }}>{children}</div>
-    </div>
-  );
-}
-
-function EmptyChart({ msg }) {
-  return <div style={{ height:'100%', display:'flex', alignItems:'center', justifyContent:'center', color:'#9ca3af', fontSize:13 }}>{msg}</div>;
-}
-
-export default function LearningDashboard() {
-  const [kpis, setKpis] = useState({});
-  const [completionRates, setCompletionRates] = useState([]);
-  const [costTrend, setCostTrend] = useState([]);
-  const [costByType, setCostByType] = useState([]);
-  const [skillGaps, setSkillGaps] = useState([]);
-  const [certExpiry, setCertExpiry] = useState({});
-  const [overdueTraining, setOverdueTraining] = useState([]);
-  const [trainerEff, setTrainerEff] = useState([]);
+export default function LearningDashboard({ setPage }) {
+  const [f, setF] = useState(DEFAULT);
+  const [d, setD] = useState(null);
+  const [err, setErr] = useState('');
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
-    setLoading(true);
-    const [
-      kpiRes, crRes, ctRes, cbtRes, sgRes, ceRes, ovRes, trRes,
-    ] = await Promise.allSettled([
-      api.get('/training/dashboard'),
-      api.get('/lnd-reports/completion-rates'),
-      api.get('/training/cost-trend'),
-      api.get('/training/cost-by-type'),
-      api.get('/lnd-reports/skill-gap/department'),
-      api.get('/certifications/expiry-dashboard'),
-      api.get('/lnd-reports/overdue-training'),
-      api.get('/lnd-reports/trainer-effectiveness'),
-    ]);
-
-    if (kpiRes.status === 'fulfilled') setKpis(kpiRes.value.data || {});
-    if (crRes.status === 'fulfilled') setCompletionRates((crRes.value.data || []).slice(0, 10));
-    if (ctRes.status === 'fulfilled') setCostTrend(ctRes.value.data || []);
-    if (cbtRes.status === 'fulfilled') setCostByType(cbtRes.value.data || []);
-    if (sgRes.status === 'fulfilled') setSkillGaps((sgRes.value.data || []).slice(0, 8));
-    if (ceRes.status === 'fulfilled') setCertExpiry(ceRes.value.data || {});
-    if (ovRes.status === 'fulfilled') setOverdueTraining((ovRes.value.data || []).slice(0, 5));
-    if (trRes.status === 'fulfilled') setTrainerEff((trRes.value.data || []).slice(0, 6));
-    setLoading(false);
-  }, []);
-
+    setLoading(true); setErr('');
+    try { setD((await api.get(`/training/dashboard${toQuery(f)}`)).data); }
+    catch (e) { setErr(errText(e, 'Could not load the dashboard')); }
+    finally { setLoading(false); }
+  }, [f]);
   useEffect(() => { load(); }, [load]);
 
-  const fmtINR = (n) => {
-    const v = parseFloat(n) || 0;
-    if (v >= 100000) return `₹${(v/100000).toFixed(1)}L`;
-    return `₹${Math.round(v).toLocaleString('en-IN')}`;
-  };
-
-  if (loading) return (
-    <div style={{ padding:40, textAlign:'center', color:'#6B3FDB', fontWeight:700, fontSize:18, background:'#f5f3ff', minHeight:'100vh' }}>
-      Loading L&D Dashboard…
-    </div>
-  );
-
-  const certData = [
-    { name:'Active', value: certExpiry.active || 0 },
-    { name:'Expiring 30d', value: certExpiry.expiring_30d || 0 },
-    { name:'Expiring 60d', value: certExpiry.expiring_60d || 0 },
-    { name:'Expired', value: certExpiry.expired || 0 },
-  ].filter(d => d.value > 0);
+  const go = (page) => setPage?.(page);
+  const k = d?.kpis || {};
 
   return (
-    <PageShell dock={
-      <PageHero
-        icon={LayoutDashboard}
-        eyebrow="Human Resources"
-        title="🎓 L&D Command Centre"
-        subtitle="Live learning & development intelligence across your organisation"
-      />
-    }>
-
-
-      {/* KPI Row */}
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(145px,1fr))', gap:10, marginBottom:14 }}>
-        <KPICard index={0} label="Active Programs"       value={kpis.active_programs || 0}         icon="📅" color="#6B3FDB" />
-        <KPICard index={1} label="Completion Rate"       value={`${kpis.completion_rate_pct || 0}%`} icon="✅" color="#16a34a" />
-        <KPICard index={2} label="Employees Trained"     value={kpis.employees_trained || 0}        icon="👥" color="#2563eb" />
-        <KPICard index={3} label="Training Cost"         value={fmtINR(kpis.total_training_cost)}   icon="💰" color="#6d28d9" />
-        <KPICard index={4} label="Skill Gaps"            value={kpis.skill_gap_count || 0}          icon="⚠️" color="#dc2626" />
-        <KPICard index={5} label="Mandatory Pending"     value={kpis.mandatory_pending || 0}        icon="🔴" color="#dc2626" sub="Non-compliant" />
-        <KPICard index={6} label="Certs Expiring 30d"    value={kpis.certs_expiring_30d || 0}       icon="📋" color="#7c5cf0" />
-      </div>
-
-      {/* Row 1: Completion rates + Cost trend */}
-      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginBottom:12 }}>
-        <ChartCard index={7} title="Completion Rate by Program (Top 10)" height={195}>
-          {completionRates.length ? (
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={completionRates} layout="vertical" margin={{ left:120, right:20, top:4, bottom:4 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#e9e4ff" />
-                <XAxis type="number" domain={[0,100]} tick={{ fontSize:10 }} tickFormatter={v => `${v}%`} />
-                <YAxis type="category" dataKey="title" tick={{ fontSize:10 }} width={120} />
-                <Tooltip formatter={v => [`${v}%`, 'Completion']} />
-                <Bar dataKey="completion_pct" radius={[0,4,4,0]}>
-                  {completionRates.map((r,i) => <Cell key={i} fill={r.completion_pct >= 80 ? '#16a34a' : r.completion_pct >= 50 ? '#6d28d9' : '#dc2626'} />)}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          ) : <EmptyChart msg="No completion data" />}
-        </ChartCard>
-
-        <ChartCard index={8} title="Monthly Training Spend" height={195}>
-          {costTrend.length ? (
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={costTrend} margin={{ top:4, right:20, left:0, bottom:4 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#e9e4ff" />
-                <XAxis dataKey="month" tick={{ fontSize:10 }} />
-                <YAxis tick={{ fontSize:10 }} tickFormatter={v => `₹${(v/1000).toFixed(0)}K`} />
-                <Tooltip formatter={v => [fmtINR(v), 'Spend']} />
-                <Line type="monotone" dataKey="cost" stroke="#6B3FDB" strokeWidth={2} dot={{ r:4 }} name="Training Spend" />
-              </LineChart>
-            </ResponsiveContainer>
-          ) : <EmptyChart msg="No cost data" />}
-        </ChartCard>
-      </div>
-
-      {/* Row 2: Cost by type + Cert expiry */}
-      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginBottom:12 }}>
-        <ChartCard index={9} title="Cost by Training Type" height={180}>
-          {costByType.length ? (
-            <ResponsiveContainer width="100%" height="100%">
-              <PieChart>
-                <Pie data={costByType} cx="50%" cy="50%" outerRadius={80} dataKey="value" label={({ name, percent }) => `${name} ${(percent*100).toFixed(0)}%`} labelLine={false}>
-                  {costByType.map((_,i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
-                </Pie>
-                <Tooltip formatter={v => [fmtINR(v)]} />
-              </PieChart>
-            </ResponsiveContainer>
-          ) : <EmptyChart msg="No cost breakdown" />}
-        </ChartCard>
-
-        <ChartCard index={10} title="Certification Expiry Status" height={180}>
-          {certData.length ? (
-            <ResponsiveContainer width="100%" height="100%">
-              <PieChart>
-                <Pie data={certData} cx="50%" cy="50%" innerRadius={50} outerRadius={80} dataKey="value">
-                  {certData.map((_,i) => <Cell key={i} fill={['#16a34a','#7c5cf0','#6d28d9','#dc2626'][i]} />)}
-                </Pie>
-                <Tooltip />
-                <Legend />
-              </PieChart>
-            </ResponsiveContainer>
-          ) : <EmptyChart msg="No certification data" />}
-        </ChartCard>
-      </div>
-
-      {/* Row 3: Skill gaps + Trainer effectiveness */}
-      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginBottom:12 }}>
-        <ChartCard index={11} title="Top Skill Gaps by Department" height={195}>
-          {skillGaps.length ? (
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={skillGaps} layout="vertical" margin={{ left:120, right:20, top:4, bottom:4 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#e9e4ff" />
-                <XAxis type="number" domain={[0,5]} tick={{ fontSize:10 }} />
-                <YAxis type="category" dataKey="skill_name" tick={{ fontSize:10 }} width={120} />
-                <Tooltip />
-                <Bar dataKey="avg_proficiency" name="Avg Proficiency" radius={[0,4,4,0]}>
-                  {skillGaps.map((g,i) => <Cell key={i} fill={g.avg_proficiency < 2 ? '#dc2626' : g.avg_proficiency < 3 ? '#7c5cf0' : '#16a34a'} />)}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          ) : <EmptyChart msg="No skill gap data" />}
-        </ChartCard>
-
-        <ChartCard index={12} title="Trainer Effectiveness (Avg Rating)" height={195}>
-          {trainerEff.length ? (
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={trainerEff} margin={{ top:4, right:20, left:0, bottom:40 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#e9e4ff" />
-                <XAxis dataKey="trainer" tick={{ fontSize:10 }} angle={-25} textAnchor="end" />
-                <YAxis domain={[0,5]} tick={{ fontSize:10 }} />
-                <Tooltip formatter={(v,n) => [v, n]} />
-                <Bar dataKey="avg_rating" name="Avg Rating" radius={[4,4,0,0]}>
-                  {trainerEff.map((t,i) => <Cell key={i} fill={t.avg_rating >= 4 ? '#16a34a' : t.avg_rating >= 3 ? '#6d28d9' : '#dc2626'} />)}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          ) : <EmptyChart msg="No trainer data" />}
-        </ChartCard>
-      </div>
-
-      {/* Overdue Training Alert */}
-      {overdueTraining.length > 0 && (
-        <div className="dk-anim" style={{ background:'#fff', border:'1px solid #fecaca', borderRadius:11, padding:14, '--dk-i': 13 }}>
-          <h4 style={{ margin:'0 0 9px', color:'#dc2626', fontSize:13.5 }}>🔴 Overdue Training ({overdueTraining.length} shown)</h4>
-          <div style={{ maxHeight: 250, overflowY: 'auto' }}>
-          <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
-            <thead><tr>
-              {['Employee','Department','Training','Days Overdue','Mandatory'].map(h => (
-                <th key={h} style={{ padding:'8px 12px', textAlign:'left', borderBottom:'1px solid #fecaca', color:'#dc2626', fontWeight:600, position:'sticky', top:0, background:'#fef2f2', zIndex:1 }}>{h}</th>
-              ))}
-            </tr></thead>
-            <tbody>
-              {overdueTraining.map(r => (
-                <tr key={r.id} style={{ borderBottom:'1px solid #fef2f2' }}>
-                  <td style={{ padding:'8px 12px', fontWeight:600 }}>{r.employee_name}</td>
-                  <td style={{ padding:'8px 12px', color:'#6b7280' }}>{r.department}</td>
-                  <td style={{ padding:'8px 12px' }}>{r.program}</td>
-                  <td style={{ padding:'8px 12px', fontWeight:700, color:'#dc2626' }}>{r.days_overdue}d</td>
-                  <td style={{ padding:'8px 12px' }}>
-                    {r.is_mandatory && <span style={{ padding:'2px 8px', borderRadius:10, fontSize:11, fontWeight:600, background:'#fef2f2', color:'#dc2626' }}>Mandatory</span>}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+    <PageShell dock={<PageHero icon={LayoutDashboard} eyebrow="Learning Center" title="L&D Dashboard"
+      subtitle={d ? `${d.period_label}${d.department ? ` · ${d.department}` : ''}${d.category ? ` · ${d.category}` : ''}` : 'Training, compliance, skills and spend'} />}>
+      <div className="lnd">
+        <Filters value={f} onChange={setF} fields={['period', 'department', 'category']} onReset={() => setF(DEFAULT)} />
+        {err && <div className="lnd-error">{err}</div>}
+        {loading && !d ? <Empty>Loading…</Empty> : d && (<>
+          <div className="lnd-kpis">
+            <Kpi label="Trainings" value={fmtNum(k.programs)} sub={`${k.active_programs} planned / running · ${k.cancelled} cancelled`} tone="brand" onClick={() => go('LearningDevelopment')} />
+            <Kpi label="Upcoming (30 days)" value={fmtNum(k.upcoming_30d)} onClick={() => go('LearningDevelopment')} />
+            <Kpi label="Completion rate" value={pct(k.completion_rate_pct)} sub={`${k.completions} of ${k.enrollments} enrolments`} tone={k.completion_rate_pct >= 80 ? 'good' : k.completion_rate_pct >= 50 ? 'warn' : 'bad'} />
+            <Kpi label="People trained" value={fmtNum(k.employees_trained)} sub={`of ${k.headcount} active staff`} />
+            <Kpi label="Training hours" value={fmtNum(k.training_hours, 1)} sub={`${k.hours_per_employee} h per employee`} />
+            <Kpi label="No-shows" value={fmtNum(k.no_shows)} tone={k.no_shows ? 'warn' : undefined} />
+            <Kpi label="Spend" value={fmtINR(k.total_cost)} sub={k.budget ? `Budget ${fmtINR(k.budget)}` : 'No budget set'} tone={k.budget && k.total_cost > k.budget ? 'bad' : undefined} />
+            <Kpi label="Avg feedback" value={k.avg_feedback ? `${k.avg_feedback} / 5` : '—'} />
+            <Kpi label="Knowledge gain" value={k.knowledge_gain != null ? `${k.knowledge_gain > 0 ? '+' : ''}${k.knowledge_gain}` : '—'}
+              sub={k.self_review_pairs ? `self-rated before → after, ${k.self_review_pairs} people · confidence ${k.confidence_gain > 0 ? '+' : ''}${k.confidence_gain}` : 'no before/after reviews yet'}
+              tone={k.knowledge_gain > 0 ? 'good' : k.knowledge_gain < 0 ? 'bad' : undefined} onClick={() => go('TrainingReports')} />
+            <Kpi label="Mandatory compliance" value={pct(k.mandatory_compliance_pct)} sub={`${k.mandatory_not_done} not done`} tone={k.mandatory_compliance_pct >= 90 ? 'good' : k.mandatory_compliance_pct >= 70 ? 'warn' : 'bad'} onClick={() => go('TrainingReports')} />
+            <Kpi label="Refreshers overdue" value={fmtNum(k.refresher_overdue)} sub={`${k.refresher_due_soon} due within 30 days`} tone={k.refresher_overdue ? 'bad' : 'good'} />
+            <Kpi label="Certificates expiring" value={fmtNum(k.certs_expiring_30d)} sub={`${k.certs_expiring_90d} more within 90 days · ${k.certs_expired} expired`} tone={k.certs_expired ? 'bad' : k.certs_expiring_30d ? 'warn' : 'good'} onClick={() => go('CertificationManagement')} />
+            <Kpi label="Skill gaps" value={fmtNum(k.skill_gaps)} sub="ratings below the required level" tone={k.skill_gaps ? 'warn' : 'good'} onClick={() => go('SkillsCompetencies')} />
           </div>
-        </div>
-      )}
+
+          <div className="lnd-grid lnd-grid-2">
+            <Card title="Month by month">
+              <div style={{ height: 230 }}>
+                {d.monthly.length ? (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={d.monthly} margin={{ top: 6, right: 16, left: 0, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#eee" />
+                      <XAxis dataKey="month" tick={{ fontSize: 11 }} />
+                      <YAxis yAxisId="n" allowDecimals={false} tick={{ fontSize: 11 }} />
+                      <YAxis yAxisId="c" orientation="right" tick={{ fontSize: 11 }} tickFormatter={v => fmtINR(v)} />
+                      <Tooltip formatter={(v, n) => (n === 'Spend' ? fmtINR(v) : v)} />
+                      <Legend />
+                      <Line yAxisId="n" dataKey="programs" name="Trainings" stroke={SERIES[0]} strokeWidth={2} />
+                      <Line yAxisId="n" dataKey="completions" name="Completions" stroke={SERIES[2]} strokeWidth={2} />
+                      <Line yAxisId="c" dataKey="cost" name="Spend" stroke={SERIES[3]} strokeDasharray="4 3" />
+                    </LineChart>
+                  </ResponsiveContainer>
+                ) : <Empty>No trainings in this period.</Empty>}
+              </div>
+            </Card>
+            <Card title="Mandatory trainings — compliance">
+              {d.compliance_series.length ? (
+                <div className="lnd-table-wrap" style={{ maxHeight: 230 }}>
+                  <table className="lnd-table"><thead><tr><th>Training</th><th>Repeats</th><th className="num">Required</th><th className="num">Overdue</th><th className="num">Not done</th><th>Compliance</th></tr></thead>
+                    <tbody>{d.compliance_series.map(s => (
+                      <tr key={s.series_id}><td>{s.title}</td><td>{s.refresher_months ? `every ${s.refresher_months} mo` : 'once'}</td>
+                        <td className="num">{s.required}</td><td className="num">{s.overdue}</td><td className="num">{s.not_done}</td>
+                        <td><div style={{ display: 'flex', alignItems: 'center', gap: 6 }}><div className="lnd-bar" style={{ flex: 1 }}><span style={{ width: `${s.compliance_pct}%` }} /></div>{s.compliance_pct}%</div></td></tr>
+                    ))}</tbody></table>
+                </div>
+              ) : <Empty>No mandatory trainings yet. Mark a training “Mandatory” to track it here.</Empty>}
+            </Card>
+            <Card title="Training hours by department">
+              <div style={{ height: 220 }}>
+                {d.hours_by_department.length ? (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={d.hours_by_department} margin={{ top: 6, right: 10, left: 0, bottom: 30 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#eee" />
+                      <XAxis dataKey="department" tick={{ fontSize: 11 }} angle={-20} textAnchor="end" interval={0} />
+                      <YAxis tick={{ fontSize: 11 }} /><Tooltip />
+                      <Bar dataKey="hours" name="Hours" fill={SERIES[0]} radius={[4, 4, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                ) : <Empty>No completed training in this period.</Empty>}
+              </div>
+            </Card>
+            <Card title="Spend by type">
+              <div style={{ height: 220 }}>
+                {d.cost_by_type.length ? (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie data={d.cost_by_type.map(r => ({ ...r, name: statusLabel(r.name) }))} dataKey="value" nameKey="name" innerRadius={45} outerRadius={80}>
+                        {d.cost_by_type.map((_, i) => <Cell key={i} fill={SERIES[i % SERIES.length]} />)}
+                      </Pie>
+                      <Tooltip formatter={v => fmtINR(v)} /><Legend />
+                    </PieChart>
+                  </ResponsiveContainer>
+                ) : <Empty>No costs recorded. Add them on each training.</Empty>}
+              </div>
+            </Card>
+            <Card title="Lowest completion">
+              {d.lowest_completion.length ? (
+                <div className="lnd-table-wrap" style={{ maxHeight: 220 }}>
+                  <table className="lnd-table"><thead><tr><th>Training</th><th className="num">Enrolled</th><th className="num">Done</th><th>Completion</th></tr></thead>
+                    <tbody>{d.lowest_completion.map(r => (
+                      <tr key={r.id}><td>{r.title}</td><td className="num">{r.enrolled}</td><td className="num">{r.completed}</td><td>{pct(r.completion_pct)}</td></tr>
+                    ))}</tbody></table>
+                </div>
+              ) : <Empty>No enrolments in this period.</Empty>}
+            </Card>
+            <Card title="Trainers by feedback">
+              {d.trainers.length ? (
+                <div className="lnd-table-wrap" style={{ maxHeight: 220 }}>
+                  <table className="lnd-table"><thead><tr><th>Trainer</th><th className="num">Trainings</th><th className="num">Completions</th><th className="num">Avg rating</th></tr></thead>
+                    <tbody>{d.trainers.map(t => (
+                      <tr key={t.id}><td>{t.trainer}</td><td className="num">{t.programs}</td><td className="num">{t.completions}</td><td className="num">{t.avg_rating ?? '—'}</td></tr>
+                    ))}</tbody></table>
+                </div>
+              ) : <Empty>No trainer has a training in this period.</Empty>}
+            </Card>
+          </div>
+
+          <div className="lnd-grid lnd-grid-2" style={{ marginTop: 14 }}>
+            <Card title={`Refreshers due (${d.refresher_due.length})`}>
+              {d.refresher_due.length ? (
+                <div className="lnd-table-wrap" style={{ maxHeight: 300 }}>
+                  <table className="lnd-table"><thead><tr><th>Employee</th><th>Training</th><th>Last done</th><th>Valid until</th><th>Status</th></tr></thead>
+                    <tbody>{d.refresher_due.map((r, i) => (
+                      <tr key={i}><td>{r.employee_name}<div className="lnd-muted">{r.department}</div></td><td>{r.title}</td>
+                        <td>{fmtDate(r.last_completed)}</td><td>{fmtDate(r.valid_until)}</td>
+                        <td><Pill status={r.status} />{r.next_scheduled && <div className="lnd-muted">booked {fmtDate(r.next_scheduled)}</div>}</td></tr>
+                    ))}</tbody></table>
+                </div>
+              ) : <Empty>Everyone is up to date.</Empty>}
+            </Card>
+            <Card title={`Overdue (${d.overdue.length})`}>
+              {d.overdue.length ? (
+                <div className="lnd-table-wrap" style={{ maxHeight: 300 }}>
+                  <table className="lnd-table"><thead><tr><th>Employee</th><th>Training</th><th>Date</th><th className="num">Days late</th></tr></thead>
+                    <tbody>{d.overdue.map(r => (
+                      <tr key={r.id}><td>{r.employee_name}<div className="lnd-muted">{r.department}</div></td>
+                        <td>{r.program} {r.is_mandatory && <Pill tone="bad">Mandatory</Pill>}</td>
+                        <td>{fmtDate(r.scheduled_date)}</td><td className="num">{r.days_overdue}</td></tr>
+                    ))}</tbody></table>
+                </div>
+              ) : <Empty>No overdue training. Mark attendance and completion on each training to keep this accurate.</Empty>}
+            </Card>
+          </div>
+          <div className="lnd-card" style={{ marginTop: 14 }}>
+            <h4 className="lnd-card-title"><span>Coming up</span><button type="button" className="lnd-link" onClick={() => go('LearningDevelopment')}>Open Trainings →</button></h4>
+            {d.upcoming.length ? (
+              <table className="lnd-table"><thead><tr><th>Date</th><th>Training</th><th>Mode</th><th className="num">Enrolled</th></tr></thead>
+                <tbody>{d.upcoming.map(u => (
+                  <tr key={u.id}><td>{fmtDate(u.scheduled_date)}</td><td>{u.title} {u.is_mandatory && <Pill tone="bad">Mandatory</Pill>}</td>
+                    <td>{statusLabel(u.mode)}</td><td className="num">{u.enrolled} / {u.max_participants}</td></tr>
+                ))}</tbody></table>
+            ) : <Empty>Nothing scheduled.</Empty>}
+          </div>
+        </>)}
+      </div>
     </PageShell>
   );
 }

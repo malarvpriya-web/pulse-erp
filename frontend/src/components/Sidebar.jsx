@@ -9,9 +9,10 @@ const EMPLOYEE_HR_ROW_ICONS = {
   EmployeeDashboard: <FaTachometerAlt />,
   MyEmployeeRecord:  <FaIdCard />,
   MyGatePasses:      <FaDoorOpen />,
+  MyLearning:        <FaGraduationCap />,
 };
 import {
-  FaTags, FaBalanceScale, FaBroadcastTower, FaFlask, FaGavel, FaDoorOpen,
+  FaTags, FaBalanceScale, FaBroadcastTower, FaFlask, FaGavel, FaDoorOpen, FaGraduationCap,
 } from 'react-icons/fa';
 import './Sidebar.css';
 import { useAuth } from '@/context/AuthContext';

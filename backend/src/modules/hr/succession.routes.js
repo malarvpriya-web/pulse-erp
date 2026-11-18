@@ -7,6 +7,7 @@ import { toCsvObjects } from '../../shared/csv.js';
 import { requirePermission } from '../../middlewares/auth.middleware.js';
 import { ratingProblem } from '../../shared/ratings.js';
 import { vocabularyValues } from '../../shared/masterVocabulary.js';
+import { linkTrainingAction } from './lnd/lndSuccession.js';
 
 // performance_score is numeric(3,2) (§209): two decimals are kept, a third
 // would be rounded by PostgreSQL, so it is refused.
@@ -1123,9 +1124,15 @@ router.get('/development-plans/:id', requireHRRead, async (req, res) => {
       ),
       pool.query(
         `SELECT da.*, e.name AS owner_name,
-                CASE WHEN e.id IS NULL THEN NULL ELSE succession_employment_phase(e.status, e.deleted_at) END AS owner_phase
+                CASE WHEN e.id IS NULL THEN NULL ELSE succession_employment_phase(e.status, e.deleted_at) END AS owner_phase,
+                tp.title AS training_title, tp.scheduled_date::text AS training_date, tp.status AS training_status,
+                (SELECT te.status FROM training_enrollments te JOIN training_programs r ON r.id = te.program_id
+                   JOIN development_plans p2 ON p2.id = da.plan_id
+                  WHERE te.employee_id = p2.employee_id AND COALESCE(r.series_id, r.id) = COALESCE(tp.series_id, tp.id)
+                  ORDER BY (te.status = 'completed') DESC, r.scheduled_date DESC LIMIT 1) AS training_enrolment_status
          FROM development_actions da
          LEFT JOIN employees e ON e.id = da.owner_employee_id
+         LEFT JOIN training_programs tp ON tp.id = da.linked_training_id AND tp.deleted_at IS NULL
          WHERE da.plan_id = $1
          ORDER BY da.action_order, da.created_at`,
         [req.params.id]
@@ -1282,7 +1289,7 @@ async function recalcPlanProgress(planId) {
 router.post('/development-plans/:id/actions', requireHRWrite, planGate, async (req, res) => {
   const {
     action_type = 'task', title, description, due_date,
-    owner_employee_id, linked_skill, action_order,
+    owner_employee_id, linked_skill, action_order, linked_training_id,
   } = req.body;
   if (!title || !String(title).trim()) return res.status(400).json({ message: 'title required', field: 'title' });
   const bad = vocabProblem({ action_type: [action_type, ACTION_TYPES] })
@@ -1300,8 +1307,15 @@ router.post('/development-plans/:id/actions', requireHRWrite, planGate, async (r
       [req.params.id, action_type, title, description || null, due_date || null,
        owner_employee_id || null, linked_skill || null, action_order || 0]
     );
+    // A training action can name a real training: the plan's employee is
+    // enrolled, and completing it completes the action (Learning Center, 2026-11-18).
+    let action = rows[0];
+    if (linked_training_id) {
+      try { action = await linkTrainingAction(pool, action, linked_training_id, getCid(req), req.user?.userId ?? req.user?.id ?? null); }
+      catch (e) { await pool.query(`DELETE FROM development_actions WHERE id = $1`, [action.id]); return res.status(e.status || 500).json({ message: e.message }); }
+    }
     await recalcPlanProgress(req.params.id);
-    res.status(201).json(rows[0]);
+    res.status(201).json(action);
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
@@ -1336,10 +1350,19 @@ router.patch('/development-plans/:id/actions/:actionId', requireHRWrite, planGat
       params
     );
     if (!rows.length) return res.status(404).json({ message: 'Action not found' });
+    let action = rows[0];
+    if (req.body.linked_training_id !== undefined) {
+      if (req.body.linked_training_id) {
+        try { action = await linkTrainingAction(pool, action, req.body.linked_training_id, getCid(req), req.user?.userId ?? req.user?.id ?? null); }
+        catch (e) { return res.status(e.status || 500).json({ message: e.message }); }
+      } else {
+        action = (await pool.query(`UPDATE development_actions SET linked_training_id = NULL, updated_at = NOW() WHERE id = $1 RETURNING *`, [action.id])).rows[0];
+      }
+    }
 
     await recalcPlanProgress(req.params.id);
 
-    res.json(rows[0]);
+    res.json(action);
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
 

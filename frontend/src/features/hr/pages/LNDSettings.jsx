@@ -1,201 +1,101 @@
 // frontend/src/features/hr/pages/LNDSettings.jsx
-import { useState, useEffect } from 'react';
-import { SlidersHorizontal } from 'lucide-react';
-import { useToast } from '@/context/ToastContext';
+// L&D Setup (2026-11-18): Settings and Trainers as tabs of one page. Every
+// setting here is read by the system — the page says where. Save used to fail.
+import { lazy, useEffect, useState } from 'react';
+import { SlidersHorizontal, Users } from 'lucide-react';
 import api from '@/services/api/client';
-import { PageHero, PageShell } from '@/components/pulse-ui';
+import { useToast } from '@/context/ToastContext';
+import { TabHub } from '@/components/pulse-ui';
+import { Empty, errText, resetLndOptions } from '@/features/hr/learning/lndUi';
 
-const inputStyle = { width:'100%', boxSizing:'border-box', padding:'8px 10px', border:'1px solid #e9e4ff', borderRadius:7, fontSize:13 };
-
-function Section({ title, icon, children }) {
+function Toggle({ label, hint, checked, onChange }) {
   return (
-    <div style={{ background:'#fff', border:'1px solid #e9e4ff', borderRadius:12, padding:20, marginBottom:16 }}>
-      <h3 style={{ margin:'0 0 16px', color:'#4c1d95', fontSize:15, display:'flex', alignItems:'center', gap:8 }}>
-        <span>{icon}</span> {title}
-      </h3>
-      {children}
-    </div>
+    <label className="lnd-inline full" style={{ justifyContent: 'space-between', borderBottom: '1px solid #f3f0ff', paddingBottom: 8 }}>
+      <span><strong style={{ fontSize: 13 }}>{label}</strong>{hint && <span className="hint" style={{ display: 'block' }}>{hint}</span>}</span>
+      <input type="checkbox" checked={!!checked} onChange={e => onChange(e.target.checked)} />
+    </label>
   );
 }
 
-function Toggle({ label, description, checked, onChange }) {
-  return (
-    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'10px 0', borderBottom:'1px solid #f0ebff' }}>
-      <div>
-        <div style={{ fontWeight:600, fontSize:13, color:'#1f2937' }}>{label}</div>
-        {description && <div style={{ fontSize:12, color:'#6b7280', marginTop:2 }}>{description}</div>}
-      </div>
-      <div onClick={onChange} style={{ width:44, height:24, borderRadius:12, background: checked ? '#6B3FDB' : '#e5e7eb', cursor:'pointer', position:'relative', transition:'background 0.2s', flexShrink:0 }}>
-        <div style={{ width:18, height:18, borderRadius:'50%', background:'#fff', position:'absolute', top:3, left: checked ? 23 : 3, transition:'left 0.2s', boxShadow:'0 1px 3px rgba(0,0,0,0.2)' }} />
-      </div>
-    </div>
-  );
-}
-
-export default function LNDSettings() {
+export function SettingsPanel() {
   const toast = useToast();
-  const [settings, setSettings] = useState({
-    training_categories: ['Technical','Soft Skills','Safety','Compliance','Leadership','Onboarding'],
-    default_pass_score: 70,
-    reminder_days_before: 7,
-    cert_expiry_reminder_days: 30,
-    enable_email_notifications: true,
-    enable_manager_notifications: true,
-    mandatory_training_freq_days: 365,
-    feedback_required: true,
-    min_feedback_chars: 10,
-    allow_self_enrollment: true,
-    max_concurrent_enrollments: 5,
-  });
-  const [catInput, setCatInput] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [saved, setSaved] = useState(false);
-
-  useEffect(() => {
-    api.get('/lnd-settings').then(r => {
-      const d = r.data;
-      setSettings({
-        ...d,
-        training_categories: Array.isArray(d.training_categories)
-          ? d.training_categories
-          : (typeof d.training_categories === 'string'
-              ? JSON.parse(d.training_categories)
-              : ['Technical','Soft Skills','Safety','Compliance','Leadership','Onboarding']),
-      });
-    }).catch(() => {});
-  }, []);
-
+  const [s, setS] = useState(null);
+  const [cat, setCat] = useState('');
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { api.get('/lnd-settings').then(r => setS(r.data)).catch(e => setErr(errText(e))); }, []);
+  const set = (k, v) => setS(p => ({ ...p, [k]: v }));
+  const num = (k) => (e) => set(k, e.target.value === '' ? '' : Number(e.target.value));
   const save = async () => {
-    setLoading(true);
-    try {
-      await api.put('/lnd-settings', settings);
-      toast.success('L&D settings saved');
-      setSaved(true);
-      setTimeout(() => setSaved(false), 3000);
-    } catch (err) { toast.error(err?.response?.data?.error || 'Failed to save'); }
-    finally { setLoading(false); }
+    setBusy(true); setErr('');
+    try { setS((await api.put('/lnd-settings', s)).data); resetLndOptions(); toast.success('Settings saved'); }
+    catch (e) { setErr(errText(e)); } finally { setBusy(false); }
   };
-
-  const addCategory = () => {
-    const cat = catInput.trim();
-    if (!cat) return;
-    if (settings.training_categories.includes(cat)) { toast.error('Category already exists'); return; }
-    setSettings(s => ({ ...s, training_categories: [...s.training_categories, cat] }));
-    setCatInput('');
+  if (!s) return <div className="lnd">{err ? <div className="lnd-error">{err}</div> : <Empty>Loading…</Empty>}</div>;
+  const addCat = () => {
+    const c = cat.trim(); if (!c) return;
+    if (s.training_categories.some(x => x.toLowerCase() === c.toLowerCase())) { toast.error('That category already exists'); return; }
+    set('training_categories', [...s.training_categories, c]); setCat('');
   };
-
-  const removeCategory = (cat) => setSettings(s => ({ ...s, training_categories: s.training_categories.filter(c => c !== cat) }));
-
-  const set = (key, val) => setSettings(s => ({ ...s, [key]: val }));
-
   return (
-    <PageShell dock={
-      <PageHero
-        icon={SlidersHorizontal}
-        eyebrow="Human Resources"
-        title="⚙️ L&D Settings"
-        subtitle="Configure training categories, defaults, notifications and policy rules"
-      />
-    }>
-
-
-      {/* Training Categories */}
-      <Section title="Training Categories" icon="📁">
-        <div style={{ display:'flex', flexWrap:'wrap', gap:8, marginBottom:12 }}>
-          {settings.training_categories.map(cat => (
-            <span key={cat} style={{ display:'flex', alignItems:'center', gap:6, padding:'4px 12px', background:'#e9e4ff', color:'#6B3FDB', borderRadius:20, fontWeight:600, fontSize:12 }}>
-              {cat}
-              <button onClick={() => removeCategory(cat)} style={{ background:'none', border:'none', cursor:'pointer', color:'#6B3FDB', fontSize:14, lineHeight:1, padding:0 }}>✕</button>
-            </span>
-          ))}
-        </div>
-        <div style={{ display:'flex', gap:8 }}>
-          <input value={catInput} onChange={e => setCatInput(e.target.value)} onKeyDown={e => e.key==='Enter' && (e.preventDefault(), addCategory())}
-            style={{ ...inputStyle, flex:1 }} placeholder="Add new category…" />
-          <button onClick={addCategory} style={{ background:'#6B3FDB', color:'#fff', border:'none', borderRadius:7, padding:'8px 16px', cursor:'pointer', fontWeight:600 }}>Add</button>
-        </div>
-      </Section>
-
-      {/* Score & Attempt Defaults */}
-      <Section title="Assessment Defaults" icon="📝">
-        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16 }}>
-          <div>
-            <label style={{ fontSize:12, fontWeight:600, color:'#4c1d95', display:'block', marginBottom:4 }}>Default Pass Score (%)</label>
-            <input type="number" value={settings.default_pass_score} onChange={e => set('default_pass_score', parseInt(e.target.value)||70)} style={inputStyle} min={0} max={100} />
+    <div className="lnd">
+      {err && <div className="lnd-error">{err}</div>}
+      <div className="lnd-grid lnd-grid-2">
+        <div className="lnd-card">
+          <h4 className="lnd-card-title"><span>Training categories</span></h4>
+          <p className="lnd-muted" style={{ marginTop: 0 }}>Offered on every training and certification, and used by the Category filter everywhere.</p>
+          <div className="lnd-actions" style={{ marginBottom: 10 }}>
+            {s.training_categories.map(c => (
+              <span key={c} className="lnd-pill is-brand">{c} <button type="button" className="lnd-link" aria-label={`Remove ${c}`} onClick={() => set('training_categories', s.training_categories.filter(x => x !== c))}>×</button></span>
+            ))}
           </div>
-          <div>
-            <label style={{ fontSize:12, fontWeight:600, color:'#4c1d95', display:'block', marginBottom:4 }}>Max Concurrent Enrollments</label>
-            <input type="number" value={settings.max_concurrent_enrollments} onChange={e => set('max_concurrent_enrollments', parseInt(e.target.value)||5)} style={inputStyle} min={1} />
+          <div className="lnd-form"><label className="full">Add category
+            <span style={{ display: 'flex', gap: 8 }}><input value={cat} onChange={e => setCat(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addCat(); } }} />
+              <button type="button" className="pulse-btn-secondary" onClick={addCat}>Add</button></span></label></div>
+          <p className="lnd-muted">Skill categories are kept in Master Setup → Skill Categories.</p>
+        </div>
+        <div className="lnd-card">
+          <h4 className="lnd-card-title"><span>Tests & repeat trainings</span></h4>
+          <div className="lnd-form">
+            <label>Default pass mark %<input type="number" min="1" max="100" value={s.default_pass_score} onChange={num('default_pass_score')} /><span className="hint">New tests start with this.</span></label>
+            <label>Default attempts<input type="number" min="1" max="20" value={s.default_max_attempts} onChange={num('default_max_attempts')} /></label>
+            <label className="full">Mandatory trainings repeat every (months)<input type="number" min="1" max="60" value={s.default_refresher_months} onChange={num('default_refresher_months')} />
+              <span className="hint">Default for a new mandatory training — e.g. 3 or 6 for drills. Each training can override it.</span></label>
           </div>
         </div>
-      </Section>
-
-      {/* Reminders & Deadlines */}
-      <Section title="Reminders & Deadlines" icon="⏰">
-        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:16 }}>
-          <div>
-            <label style={{ fontSize:12, fontWeight:600, color:'#4c1d95', display:'block', marginBottom:4 }}>Remind Before Training (days)</label>
-            <input type="number" value={settings.reminder_days_before} onChange={e => set('reminder_days_before', parseInt(e.target.value)||7)} style={inputStyle} min={1} />
-          </div>
-          <div>
-            <label style={{ fontSize:12, fontWeight:600, color:'#4c1d95', display:'block', marginBottom:4 }}>Cert Expiry Reminder (days)</label>
-            <input type="number" value={settings.cert_expiry_reminder_days} onChange={e => set('cert_expiry_reminder_days', parseInt(e.target.value)||30)} style={inputStyle} min={1} />
-          </div>
-          <div>
-            <label style={{ fontSize:12, fontWeight:600, color:'#4c1d95', display:'block', marginBottom:4 }}>Mandatory Training Frequency (days)</label>
-            <input type="number" value={settings.mandatory_training_freq_days} onChange={e => set('mandatory_training_freq_days', parseInt(e.target.value)||365)} style={inputStyle} min={1} />
+        <div className="lnd-card">
+          <h4 className="lnd-card-title"><span>Enrolment & feedback</span></h4>
+          <div className="lnd-form">
+            <Toggle label="Employees can enrol themselves" hint="Self Service → My Learning → Open trainings" checked={s.allow_self_enrollment} onChange={v => set('allow_self_enrollment', v)} />
+            <label>Open trainings per person<input type="number" min="1" max="50" value={s.max_concurrent_enrollments} onChange={num('max_concurrent_enrollments')} /><span className="hint">Limit for self-enrolment.</span></label>
+            <Toggle label="Feedback needs a written comment" checked={s.feedback_required} onChange={v => set('feedback_required', v)} />
+            {s.feedback_required && <label>Minimum characters<input type="number" min="0" max="2000" value={s.min_feedback_chars} onChange={num('min_feedback_chars')} /></label>}
           </div>
         </div>
-      </Section>
-
-      {/* Feedback Policy */}
-      <Section title="Feedback Policy" icon="⭐">
-        <Toggle
-          label="Feedback Required on Completion"
-          description="Employees must leave feedback when marking a training complete"
-          checked={settings.feedback_required}
-          onChange={() => set('feedback_required', !settings.feedback_required)}
-        />
-        {settings.feedback_required && (
-          <div style={{ marginTop:12 }}>
-            <label style={{ fontSize:12, fontWeight:600, color:'#4c1d95', display:'block', marginBottom:4 }}>Minimum Feedback Characters</label>
-            <input type="number" value={settings.min_feedback_chars} onChange={e => set('min_feedback_chars', parseInt(e.target.value)||10)} style={{ ...inputStyle, maxWidth:160 }} min={0} />
+        <div className="lnd-card">
+          <h4 className="lnd-card-title"><span>Reminders</span></h4>
+          <p className="lnd-muted" style={{ marginTop: 0 }}>Sent every morning at 09:20 as notifications in Pulse.</p>
+          <div className="lnd-form">
+            <label>Training reminder (days before)<input type="number" min="0" max="60" value={s.reminder_days_before} onChange={num('reminder_days_before')} /><span className="hint">0 = off</span></label>
+            <label>Certificate expiry warning (days before)<input type="number" min="1" max="365" value={s.cert_expiry_reminder_days} onChange={num('cert_expiry_reminder_days')} /><span className="hint">Also 7 days and 1 day before.</span></label>
+            <Toggle label="Also notify the reporting manager" hint="Expiring certificates and overdue learning paths of their team" checked={s.enable_manager_notifications} onChange={v => set('enable_manager_notifications', v)} />
+            <Toggle label="Also send e-mail" hint="Only once an SMTP server is configured under Integrations" checked={s.enable_email_notifications} onChange={v => set('enable_email_notifications', v)} />
           </div>
-        )}
-      </Section>
-
-      {/* Enrollment Policy */}
-      <Section title="Enrollment Policy" icon="📋">
-        <Toggle
-          label="Allow Self-Enrollment"
-          description="Employees can enroll in available programs themselves"
-          checked={settings.allow_self_enrollment}
-          onChange={() => set('allow_self_enrollment', !settings.allow_self_enrollment)}
-        />
-      </Section>
-
-      {/* Notifications */}
-      <Section title="Notifications" icon="🔔">
-        <Toggle
-          label="Email Notifications"
-          description="Send email reminders for upcoming trainings and cert expiries"
-          checked={settings.enable_email_notifications}
-          onChange={() => set('enable_email_notifications', !settings.enable_email_notifications)}
-        />
-        <Toggle
-          label="Manager Notifications"
-          description="Notify managers when their team has overdue or expiring items"
-          checked={settings.enable_manager_notifications}
-          onChange={() => set('enable_manager_notifications', !settings.enable_manager_notifications)}
-        />
-      </Section>
-
-      <div style={{ display:'flex', gap:12, alignItems:'center' }}>
-        <button onClick={save} disabled={loading} style={{ background:'#6B3FDB', color:'#fff', border:'none', borderRadius:8, padding:'10px 28px', cursor:'pointer', fontWeight:700, fontSize:15 }}>
-          {loading ? 'Saving…' : 'Save Settings'}
-        </button>
-        {saved && <span style={{ color:'#16a34a', fontWeight:600, fontSize:13 }}>✅ Saved successfully</span>}
+        </div>
       </div>
-    </PageShell>
+      <div className="lnd-actions" style={{ marginTop: 14 }}><button type="button" className="pulse-btn-primary" disabled={busy} onClick={save}>{busy ? 'Saving…' : 'Save settings'}</button></div>
+    </div>
   );
+}
+
+const Trainers = lazy(() => import('./TrainerManagement'));
+const SettingsTab = (props) => <SettingsPanel {...props} />;
+
+export const TABS = [
+  { id: 'settings', label: 'Settings', icon: SlidersHorizontal, page: 'LNDSettings', Component: SettingsTab },
+  { id: 'trainers', label: 'Trainers', icon: Users, page: 'TrainerManagement', Component: Trainers },
+];
+
+export default function LNDSettings({ setPage }) {
+  return <TabHub icon={SlidersHorizontal} eyebrow="Learning Center" title="L&D Setup" subtitle="Trainers, categories, defaults, enrolment rules and reminders" tabs={TABS} setPage={setPage} />;
 }

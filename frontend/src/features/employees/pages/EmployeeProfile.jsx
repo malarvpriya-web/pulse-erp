@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import EmployeeLearningTab from '@/features/hr/learning/EmployeeLearningTab';
 import api from "@/services/api/client";
 import './EmployeesData.css';
 import { useToast } from '@/context/ToastContext';
@@ -25,11 +26,11 @@ const BORDER = '#e9e4ff';
 // It is also the right call on its merits — BGV reports are confidential in a way
 // the general Documents tab is not, and this tab is a SUMMARY plus a way in, not
 // a second place to do the work.
-const BASE_TABS = ['Overview', 'Personal', 'Job', 'Payroll', 'Documents', 'Assets', 'Onboarding', 'Background Verification', 'History', 'Notes'];
+const BASE_TABS = ['Overview', 'Personal', 'Job', 'Payroll', 'Documents', 'Assets', 'Learning', 'Onboarding', 'Background Verification', 'History', 'Notes'];
 // Self view (HR > Self Service > My Details, 2026-11-11): the employee's own
 // record, read-only. Background verification, HR notes and the onboarding
 // checklist (owner, 2026-11-11) are HR's, not shown.
-const SELF_HIDDEN_TABS = new Set(['Background Verification', 'Notes', 'Exit Details', 'Onboarding']);
+const SELF_HIDDEN_TABS = new Set(['Background Verification', 'Notes', 'Exit Details', 'Onboarding', 'Learning']); // own learning: Self Service → My Learning
 
 // NOTE: InfoRow and Card are defined at module scope (not inside the component)
 // so their identity is stable across renders. Defining them inline would make
@@ -1036,6 +1037,9 @@ export default function EmployeeProfile({ employee: employeeProp, setPage, setSe
         )}
 
         {/* ONBOARDING CHECKLIST */}
+        {/* Learning Center summary (2026-11-18) — training:view. */}
+        {activeTab === 'Learning' && <EmployeeLearningTab employeeId={employee?.id} />}
+
         {activeTab === 'Onboarding' && (
           <div>
             {/* Outside the loading/empty branches so the way in to Manage

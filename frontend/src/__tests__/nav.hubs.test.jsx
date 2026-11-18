@@ -102,7 +102,9 @@ describe('hub consolidation', () => {
       // 13, not 12: HR reached 13 when Probation Management and Exit
       // Management were split into separate rows (2026-10-30) — two distinct
       // workflows sharing one hub row confused people more than a 13th row does.
-      .filter(([, n]) => n > 13);
+      // 14: HR's self-service block gained My Learning (Learning Center, owner 2026-11-18) —
+      // every employee reaches their own pages through the HR menu, so it cannot move.
+      .filter(([, n]) => n > 14);
     expect(oversized).toEqual([]);
   });
 });

@@ -74,7 +74,7 @@ describe('no Self Service portal in the menu', () => {
     }, 15000);
 
   it('a manager sees only their own pages in HR — never the HR management rows', () => {
-    expect(hrRows('manager', 7)).toEqual(['My Dashboard', 'My Details', 'My Gate Passes']);
+    expect(hrRows('manager', 7)).toEqual(['My Dashboard', 'My Details', 'My Gate Passes', 'My Learning']);
   });
 
   // My Details (2026-11-11): every employee reads their own record there.

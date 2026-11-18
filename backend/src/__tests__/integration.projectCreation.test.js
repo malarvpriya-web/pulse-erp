@@ -105,6 +105,8 @@ async function sweep() {
   await q(`DELETE FROM discount_approvals WHERE quotation_id IN (SELECT id FROM quotations WHERE company_id = ANY($1))`).catch(() => {});
   await q(`DELETE FROM quotations WHERE company_id = ANY($1)`);
   await q(`DELETE FROM opportunity_stage_history WHERE opportunity_id IN (SELECT id FROM opportunities WHERE company_id = ANY($1))`).catch(() => {});
+  // Closing a bid (§277) files an R&D point against the deal; it goes first.
+  await q(`DELETE FROM rd_improvement_inputs WHERE company_id = ANY($1)`);
   await q(`DELETE FROM opportunities WHERE company_id = ANY($1)`);
   await q(`DELETE FROM accounts WHERE company_id = ANY($1)`);
   await q(`DELETE FROM parties WHERE company_id = ANY($1)`);
@@ -285,7 +287,12 @@ describe('converting a won opportunity (C2)', () => {
 describe('moving an opportunity to Won (C1)', () => {
   it('creates the project through the same service, once', async () => {
     const opp = await makeOpportunity(co.A, { stage: 'negotiation' });
-    const res = await call('patch', `/api/crm/opportunities/${opp}/stage`, 'adminA').send({ stage: 'Won' });
+    // §277 (2026-11-16): Won is reached only through POST /close, with a reason,
+    // remarks, an evidence file and at least one R&D point.
+    const res = await call('post', `/api/crm/opportunities/${opp}/close`, 'adminA')
+      .field('stage', 'Won').field('close_reason', 'Price').field('close_remarks', 'Customer accepted the revised offer')
+      .field('rd_points', JSON.stringify([{ requirement: 'Faster commissioning kit', category: 'product_feature', priority: 'medium' }]))
+      .attach('file', Buffer.from('%PDF-1.4 po'), { filename: 'po.pdf', contentType: 'application/pdf' });
     expect(res.status).toBe(200);
     const projects = await waitFor(async () => { const p = await projectsForOpp(opp); return p.length ? p : null; });
     expect(projects).toHaveLength(1);

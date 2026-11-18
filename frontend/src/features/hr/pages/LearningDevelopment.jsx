@@ -1,597 +1,586 @@
 // frontend/src/features/hr/pages/LearningDevelopment.jsx
-import { useState, useEffect, useCallback } from 'react';
-import { useAuth } from '@/context/AuthContext';
-import { useToast } from '@/context/ToastContext';
-import { TrendingUp, PieChart as PieChartIcon, GraduationCap } from 'lucide-react';
-import {
-  BarChart, Bar, PieChart, Pie, Cell, LineChart, Line,
-  XAxis, YAxis, Tooltip, Legend, ResponsiveContainer, CartesianGrid,
-} from 'recharts';
+// Trainings (2026-11-18) — page key kept so bookmarks and Page Access grants
+// still resolve. Calendar + list with every filter, create / edit, and a full
+// page per training: participants (enrol anyone, mark attended / no-show /
+// completed with score), sessions with attendance, costs, repeat rounds
+// (every 3 / 6 / 12 months), start / complete / cancel. The duplicate KPI row,
+// skill-matrix tab and cost charts moved to the Dashboard and Skills pages.
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
+import { GraduationCap } from 'lucide-react';
 import api from '@/services/api/client';
+import { useToast } from '@/context/ToastContext';
+import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { openEmployeeFile } from '@/features/employees/shared/employeeFiles';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import {
+  Filters, Pill, Empty, Tabs, LndDialog, EmployeePicker, useLndOptions, resetLndOptions,
+  fmtDate, fmtINR, fmtNum, toQuery, errText, statusLabel, stars, downloadCsv, today,
+} from '@/features/hr/learning/lndUi';
 
-function EmptyState({ icon: Icon, title, sub }) {
-  return (
-    <div style={{
-      display: 'flex', flexDirection: 'column', alignItems: 'center',
-      padding: '32px 16px', textAlign: 'center', gap: 8,
-      background: 'var(--color-background-secondary)',
-      borderRadius: 'var(--border-radius-lg)',
-      border: '0.5px solid var(--color-border-tertiary)',
-      height: '100%', justifyContent: 'center',
-    }}>
-      {Icon && <Icon size={28} style={{ color: 'var(--color-text-secondary)', marginBottom: 4 }} />}
-      <p style={{ fontSize: 14, fontWeight: 500, color: 'var(--color-text-primary)', margin: 0 }}>{title}</p>
-      {sub && <p style={{ fontSize: 12, color: 'var(--color-text-secondary)', margin: 0 }}>{sub}</p>}
-    </div>
-  );
-}
+const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+const DEFAULT = { period: 'all', department: '', category: '', status: '', trainer_id: '', mode: '', mandatory: '', cost_min: '', cost_max: '', q: '' };
+const BLANK = { title: '', description: '', category: '', mode: 'offline', scheduled_date: '', end_date: '', duration_hours: 8,
+  max_participants: 30, cost_per_participant: 0, budget: '', trainer_id: '', venue: '', online_link: '', target_department: '',
+  target_role: '', is_mandatory: false, refresher_months: '', competency_id: '', self_review_enabled: true, self_review_items: [] };
 
-/* ─── helpers ─────────────────────────────────────────────────── */
-function fmtINR(n) {
-  const v = parseFloat(n) || 0;
-  if (v >= 100000) return `₹${(v / 100000).toFixed(1)}L`;
-  return `₹${Math.round(v).toLocaleString('en-IN')}`;
-}
-const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-const PROF_COLORS = { 1:'#dc2626', 2:'#7c5cf0', 3:'#8b5cf6', 4:'#86efac', 5:'#16a34a' };
-const PROF_LABELS = { 1:'Beginner', 2:'Basic', 3:'Intermediate', 4:'Advanced', 5:'Expert' };
-const PIE_COLORS  = ['#6B3FDB','#2563eb','#16a34a','#6d28d9','#dc2626'];
-
-const SKILL_NAMES = ['Microsoft Excel','Python','SQL','Leadership','Communication','Project Management','Data Analysis','GST Knowledge','Quality Management'];
-
-const STATUS_COLORS = { planned:'#6B3FDB', ongoing:'#2563eb', completed:'#16a34a', cancelled:'#dc2626' };
-const MODE_COLORS   = { online:'#0891b2', offline:'#6B3FDB', hybrid:'#6d28d9' };
-
-function tabStyle(active) {
-  return { padding: '8px 20px', border: 'none', cursor: 'pointer', borderRadius: '6px 6px 0 0', fontWeight: 600, fontSize: 14, background: active ? '#6B3FDB' : '#e9e4ff', color: active ? '#fff' : '#6B3FDB' };
-}
-
-/* ─── Mini Calendar ────────────────────────────────────────────── */
-function TrainingCalendar({ programs, onEnroll, onComplete }) {
-  const [viewDate, setViewDate] = useState(new Date());
-  const [selected, setSelected] = useState(null);
-
-  const year  = viewDate.getFullYear();
-  const month = viewDate.getMonth();
-  const firstDay = new Date(year, month, 1).getDay();
-  const daysInMonth = new Date(year, month + 1, 0).getDate();
-  const cells = []; for (let i = 0; i < firstDay; i++) cells.push(null); for (let d = 1; d <= daysInMonth; d++) cells.push(d);
-
-  const programsByDate = {};
-  programs.forEach(p => {
-    if (!p.scheduled_date) return;
-    const d = new Date(p.scheduled_date);
-    if (d.getFullYear() === year && d.getMonth() === month) {
-      const key = d.getDate();
-      if (!programsByDate[key]) programsByDate[key] = [];
-      programsByDate[key].push(p);
-    }
-  });
-
-  return (
-    <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 16, alignItems: 'start' }}>
-      <div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14 }}>
-          <button onClick={() => setViewDate(new Date(year, month - 1, 1))} style={{ background: '#e9e4ff', border: 'none', borderRadius: 6, padding: '4px 10px', cursor: 'pointer', fontWeight: 700, color: '#6B3FDB' }}>‹</button>
-          <span style={{ fontWeight: 700, fontSize: 15, color: '#4c1d95', minWidth: 140, textAlign: 'center' }}>{MONTHS[month]} {year}</span>
-          <button onClick={() => setViewDate(new Date(year, month + 1, 1))} style={{ background: '#e9e4ff', border: 'none', borderRadius: 6, padding: '4px 10px', cursor: 'pointer', fontWeight: 700, color: '#6B3FDB' }}>›</button>
-        </div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7,1fr)', gap: 4 }}>
-          {['Su','Mo','Tu','We','Th','Fr','Sa'].map(d => (
-            <div key={d} style={{ textAlign: 'center', fontSize: 11, fontWeight: 700, color: '#6B3FDB', padding: '4px 0' }}>{d}</div>
-          ))}
-          {cells.map((d, i) => {
-            const progs = d ? (programsByDate[d] || []) : [];
-            return (
-              <div key={i} onClick={() => d && progs.length && setSelected(progs[0])}
-                style={{ minHeight: 56, padding: 4, borderRadius: 6, background: d ? (progs.length ? '#ede9fe' : '#fafafa') : 'transparent',
-                  border: d ? '1px solid #e9e4ff' : 'none', cursor: progs.length ? 'pointer' : 'default' }}>
-                {d && <div style={{ fontSize: 11, fontWeight: 600, color: '#374151', marginBottom: 2 }}>{d}</div>}
-                {progs.slice(0, 2).map(p => (
-                  <div key={p.id} style={{ fontSize: 10, background: STATUS_COLORS[p.status] + '20', color: STATUS_COLORS[p.status], borderRadius: 3, padding: '1px 4px', marginBottom: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {p.title.split(' ').slice(0, 2).join(' ')}
-                  </div>
-                ))}
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* detail drawer */}
-      {selected && (
-        <div style={{ background: '#f5f3ff', border: '1px solid #e9e4ff', borderRadius: 10, padding: 16, minWidth: 260, maxWidth: 300 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
-            <h4 style={{ margin: 0, color: '#4c1d95', fontSize: 14 }}>{selected.title}</h4>
-            <button onClick={() => setSelected(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#6b7280', fontSize: 16 }}>✕</button>
-          </div>
-          {[
-            ['Category',   selected.category],
-            ['Trainer',    selected.trainer],
-            ['Mode',       selected.mode],
-            ['Duration',   `${selected.duration_hours}h`],
-            ['Date',       selected.scheduled_date],
-            ['Enrolled',   `${selected.enrolled_count} / ${selected.max_participants}`],
-            ['Status',     selected.status],
-            ['Cost/pax',   fmtINR(selected.cost_per_participant)],
-          ].map(([k, v]) => (
-            <div key={k} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 6 }}>
-              <span style={{ color: '#6b7280' }}>{k}:</span>
-              <span style={{ fontWeight: 600, color: '#374151' }}>{v}</span>
-            </div>
-          ))}
-          <div style={{ display: 'flex', gap: 6, marginTop: 12 }}>
-            <button onClick={() => onEnroll && onEnroll(selected)} style={{ flex: 1, background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 6, padding: '5px 0', cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>Enroll</button>
-            {selected.status === 'ongoing' && <button onClick={() => onComplete && onComplete(selected)} style={{ flex: 1, background: '#16a34a', color: '#fff', border: 'none', borderRadius: 6, padding: '5px 0', cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>Complete</button>}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-/* ─── Skill Matrix Heatmap ─────────────────────────────────────── */
-function SkillMatrixHeatmap({ data, employees, skills, gaps }) {
+/* ── create / edit ─────────────────────────────────────────────── */
+function ProgramForm({ initial, onClose, onSaved }) {
+  const o = useLndOptions();
   const toast = useToast();
-  const [editCell, setEditCell] = useState(null);
-  const [hoveredCell, setHoveredCell] = useState(null);
-
-  const getProficiency = (empId, skill) => {
-    const row = data.find(r => r.employee_id === empId && r.skill_name === skill);
-    return row?.proficiency_level || 0;
+  const [f, setF] = useState(() => ({ ...BLANK, ...(initial || {}),
+    scheduled_date: initial?.scheduled_date?.slice(0, 10) || '', end_date: initial?.end_date?.slice(0, 10) || '',
+    refresher_months: initial?.refresher_months ?? '', trainer_id: initial?.trainer_id ?? '', competency_id: initial?.competency_id ?? '', budget: initial?.budget ?? '',
+    self_review_enabled: initial?.self_review_enabled ?? true, self_review_items: Array.isArray(initial?.self_review_items) ? initial.self_review_items : [] }));
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+  const set = (k) => (e) => setF(p => ({ ...p, [k]: e.target.type === 'checkbox' ? e.target.checked : e.target.value }));
+  const save = async (e) => {
+    e.preventDefault(); setBusy(true); setErr('');
+    const body = { ...f, refresher_months: f.is_mandatory ? (f.refresher_months || null) : (f.refresher_months || null) };
+    try {
+      const r = initial?.id ? await api.put(`/training/programs/${initial.id}`, body) : await api.post('/training/programs', body);
+      toast.success(initial?.id ? 'Training saved' : 'Training scheduled');
+      onSaved(r.data);
+    } catch (x) { setErr(errText(x)); } finally { setBusy(false); }
   };
-
   return (
-    <div>
-      <div style={{ overflowX: 'auto', marginBottom: 24 }}>
-        <table style={{ borderCollapse: 'collapse', fontSize: 12 }}>
-          <thead>
-            <tr>
-              <th style={{ padding: '8px 12px', textAlign: 'left', color: '#4c1d95', fontWeight: 700, whiteSpace: 'nowrap', background: '#f5f3ff', borderBottom: '2px solid #e9e4ff' }}>Employee</th>
-              {skills.map(s => (
-                <th key={s} style={{ padding: '8px 8px', textAlign: 'center', color: '#4c1d95', fontWeight: 600, fontSize: 11, whiteSpace: 'nowrap', background: '#f5f3ff', borderBottom: '2px solid #e9e4ff', maxWidth: 90, overflow: 'hidden', textOverflow: 'ellipsis' }}>{s}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {employees.map(emp => (
-              <tr key={emp.employee_id} style={{ borderBottom: '1px solid #f0ebff' }}>
-                <td style={{ padding: '6px 12px', fontWeight: 600, whiteSpace: 'nowrap', color: '#374151', background: '#fff' }}>
-                  <div>{emp.employee_name}</div>
-                  <div style={{ fontSize: 10, color: '#9ca3af' }}>{emp.department}</div>
-                </td>
-                {skills.map(skill => {
-                  const prof = getProficiency(emp.employee_id, skill);
-                  const isHovered = hoveredCell?.emp === emp.employee_id && hoveredCell?.skill === skill;
-                  return (
-                    <td key={skill} style={{ padding: 4, textAlign: 'center', position: 'relative' }}>
-                      <div
-                        onMouseEnter={() => setHoveredCell({ emp: emp.employee_id, skill })}
-                        onMouseLeave={() => setHoveredCell(null)}
-                        onClick={() => setEditCell({ empId: emp.employee_id, empName: emp.employee_name, skill, current: prof })}
-                        style={{ width: 36, height: 36, margin: '0 auto', borderRadius: 6, cursor: 'pointer',
-                          background: prof ? PROF_COLORS[prof] + (isHovered ? 'ff' : 'cc') : '#e5e7eb',
-                          display: 'flex', alignItems: 'center', justifyContent: 'center',
-                          fontSize: 13, fontWeight: 700, color: prof >= 4 ? '#fff' : (prof >= 2 ? '#1f2937' : '#fff'),
-                          border: isHovered ? `2px solid #6B3FDB` : '2px solid transparent' }}>
-                        {prof || '—'}
-                      </div>
-                      {isHovered && prof > 0 && (
-                        <div style={{ position: 'absolute', bottom: 40, left: '50%', transform: 'translateX(-50%)', background: '#1f2937', color: '#fff', borderRadius: 6, padding: '4px 8px', fontSize: 11, whiteSpace: 'nowrap', zIndex: 100 }}>
-                          {PROF_LABELS[prof]}
-                        </div>
-                      )}
-                    </td>
-                  );
-                })}
-              </tr>
+    <LndDialog title={initial?.id ? 'Edit training' : 'Schedule training'} onClose={onClose} width={760} error={err}
+      footer={<><button type="button" className="pulse-btn-secondary" onClick={onClose}>Cancel</button>
+        <button type="submit" form="lnd-prog" className="pulse-btn-primary" disabled={busy}>{busy ? 'Saving…' : 'Save'}</button></>}>
+      <form id="lnd-prog" className="lnd-form" onSubmit={save}>
+        <label className="full">Title *<input required value={f.title} onChange={set('title')} maxLength={255} /></label>
+        <label>Category<select value={f.category || ''} onChange={set('category')}><option value="">—</option>{o.categories.map(c => <option key={c}>{c}</option>)}</select></label>
+        <label>Mode<select value={f.mode} onChange={set('mode')}><option value="offline">Classroom</option><option value="online">Online</option><option value="hybrid">Hybrid</option></select></label>
+        <label>Trainer<select value={f.trainer_id || ''} onChange={set('trainer_id')}><option value="">— not set —</option>{o.trainers.map(t => <option key={t.id} value={t.id}>{t.name} ({t.trainer_type})</option>)}</select>
+          <span className="hint">Add trainers under L&D Setup → Trainers.</span></label>
+        <label>Start date *<input type="date" required value={f.scheduled_date} onChange={set('scheduled_date')} /></label>
+        <label>End date<input type="date" value={f.end_date || ''} min={f.scheduled_date} onChange={set('end_date')} /></label>
+        <label>Duration (hours)<input type="number" min="0.5" step="0.5" value={f.duration_hours ?? ''} onChange={set('duration_hours')} /></label>
+        <label>Seats<input type="number" min="1" value={f.max_participants ?? ''} onChange={set('max_participants')} /></label>
+        <label>Cost per person (₹)<input type="number" min="0" value={f.cost_per_participant ?? ''} onChange={set('cost_per_participant')} /></label>
+        <label>Budget (₹)<input type="number" min="0" value={f.budget ?? ''} onChange={set('budget')} /></label>
+        <label>Venue<input value={f.venue || ''} onChange={set('venue')} /></label>
+        <label>Online link<input value={f.online_link || ''} onChange={set('online_link')} placeholder="https://…" /></label>
+        <label>For department<select value={f.target_department || ''} onChange={set('target_department')}><option value="">Everyone</option>{o.departments.map(d => <option key={d}>{d}</option>)}</select></label>
+        <label>For designation<select value={f.target_role || ''} onChange={set('target_role')}><option value="">Everyone</option>{o.designations.map(d => <option key={d}>{d}</option>)}</select></label>
+        <label>Builds skill<select value={f.competency_id || ''} onChange={set('competency_id')}><option value="">—</option>{o.competencies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
+          <span className="hint">Completing raises this rating in Skills & Competencies.</span></label>
+        <label className="lnd-inline full"><input type="checkbox" checked={!!f.is_mandatory} onChange={set('is_mandatory')} /> Mandatory — tracked in compliance</label>
+        <label>Repeat every (months)<select value={f.refresher_months || ''} onChange={set('refresher_months')}>
+          <option value="">{f.is_mandatory ? `Default (${o.settings?.default_refresher_months || 12})` : 'Does not repeat'}</option>
+          {[3, 6, 12, 24, 36].map(m => <option key={m} value={m}>{m} months</option>)}</select>
+          <span className="hint">Refresher due this long after someone completes it.</span></label>
+        <label className="full">Description<textarea value={f.description || ''} onChange={set('description')} /></label>
+        <label className="lnd-inline full"><input type="checkbox" checked={!!f.self_review_enabled} onChange={set('self_review_enabled')} />
+          Before / after self-review — each participant rates their knowledge and confidence before the training and again after it</label>
+        {f.self_review_enabled && (
+          <div className="full">
+            <span style={{ fontSize: 12, fontWeight: 600, color: '#4c1d95' }}>Extra statements to rate (optional, up to 10)</span>
+            {(f.self_review_items || []).map((it, i) => (
+              <div key={i} style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+                <input value={it} maxLength={200} placeholder="e.g. I can use a CO2 extinguisher correctly"
+                  onChange={e => setF(p => ({ ...p, self_review_items: p.self_review_items.map((x, j) => (j === i ? e.target.value : x)) }))} />
+                <button type="button" className="lnd-link is-danger" onClick={() => setF(p => ({ ...p, self_review_items: p.self_review_items.filter((_, j) => j !== i) }))}>×</button>
+              </div>
             ))}
-          </tbody>
-        </table>
-      </div>
-
-      {/* legend */}
-      <div style={{ display: 'flex', gap: 12, marginBottom: 24, flexWrap: 'wrap' }}>
-        {[1,2,3,4,5].map(p => (
-          <div key={p} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
-            <div style={{ width: 16, height: 16, borderRadius: 3, background: PROF_COLORS[p] }} />
-            <span>{p} — {PROF_LABELS[p]}</span>
+            {(f.self_review_items || []).length < 10 && <button type="button" className="lnd-link" style={{ marginTop: 6 }} onClick={() => setF(p => ({ ...p, self_review_items: [...(p.self_review_items || []), ''] }))}>+ Add statement</button>}
+            <span className="hint" style={{ display: 'block' }}>Knowledge and confidence are always asked. Statements are rated 1–5 before and after.</span>
           </div>
-        ))}
-      </div>
+        )}
+      </form>
+    </LndDialog>
+  );
+}
 
-      {/* skill gap chart */}
-      <h4 style={{ color: '#4c1d95', margin: '0 0 12px' }}>Skill Gap Analysis (Team Avg Proficiency)</h4>
-      <div style={{ height: 220 }}>
-        <ResponsiveContainer width="100%" height="100%">
-          <BarChart data={gaps} layout="vertical" margin={{ left: 120, right: 20, top: 4, bottom: 4 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#e9e4ff" />
-            <XAxis type="number" domain={[0, 5]} tick={{ fontSize: 11 }} />
-            <YAxis type="category" dataKey="skill" tick={{ fontSize: 11 }} width={120} />
-            <Tooltip formatter={(v) => [v, 'Avg Proficiency']} />
-            <Bar dataKey="avg_proficiency" radius={[0,4,4,0]} name="Avg Proficiency">
-              {gaps.map((g, i) => <Cell key={i} fill={g.gap ? '#dc2626' : '#16a34a'} />)}
-            </Bar>
-          </BarChart>
-        </ResponsiveContainer>
-      </div>
-
-      {/* edit proficiency modal */}
-      {editCell && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 999, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <div style={{ background: '#fff', borderRadius: 12, padding: 24, width: 340 }}>
-            <h3 style={{ color: '#4c1d95', margin: '0 0 12px' }}>Update Proficiency</h3>
-            <p style={{ fontSize: 13, color: '#6b7280', margin: '0 0 16px' }}><strong>{editCell.empName}</strong> — {editCell.skill}</p>
-            <div style={{ display: 'flex', gap: 10, marginBottom: 20 }}>
-              {[1,2,3,4,5].map(p => (
-                <div key={p} onClick={() => setEditCell(ec => ({ ...ec, newVal: p }))}
-                  style={{ flex: 1, height: 40, borderRadius: 8, background: PROF_COLORS[p], cursor: 'pointer',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, fontWeight: 700, color: '#fff',
-                    outline: editCell.newVal === p ? '3px solid #6B3FDB' : 'none' }}>
-                  {p}
-                </div>
-              ))}
-            </div>
-            <div style={{ fontSize: 12, color: '#6b7280', textAlign: 'center', marginBottom: 16 }}>
-              {editCell.newVal ? PROF_LABELS[editCell.newVal] : 'Select proficiency level'}
-            </div>
-            <div style={{ display: 'flex', gap: 10 }}>
-              <button onClick={async () => {
-                if (!editCell.newVal) return;
-                try {
-                  await api.post('/training/skills', { employee_id: editCell.empId, skill_name: editCell.skill, proficiency_level: editCell.newVal });
-                  setEditCell(null);
-                } catch(e) {
-                  toast.error(e?.response?.data?.error || e?.message || 'Failed to update skill proficiency');
-                }
-              }} style={{ flex: 1, background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 8, padding: '8px 0', cursor: 'pointer', fontWeight: 600 }}>Update</button>
-              <button onClick={() => setEditCell(null)} style={{ flex: 1, background: '#e9e4ff', color: '#6B3FDB', border: 'none', borderRadius: 8, padding: '8px 0', cursor: 'pointer', fontWeight: 600 }}>Cancel</button>
-            </div>
-          </div>
+/* ── calendar ──────────────────────────────────────────────────── */
+function Calendar({ programs, month, setMonth, onOpen }) {
+  const y = month.getFullYear(); const m = month.getMonth();
+  const first = new Date(y, m, 1).getDay(); const days = new Date(y, m + 1, 0).getDate();
+  const t = today();
+  const byDay = {};
+  for (const p of programs) {
+    if (!p.scheduled_date) continue;
+    const s = p.scheduled_date.slice(0, 10); const e = (p.end_date || p.scheduled_date).slice(0, 10);
+    for (let d = 1; d <= days; d++) {
+      const iso = `${y}-${String(m + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+      if (iso >= s && iso <= e) (byDay[d] = byDay[d] || []).push(p);
+    }
+  }
+  const cells = [...Array(first).fill(null), ...Array.from({ length: days }, (_, i) => i + 1)];
+  return (
+    <div className="lnd-card">
+      <div className="lnd-card-title">
+        <div className="lnd-actions">
+          <button type="button" className="pulse-btn-secondary lnd-btn-sm" onClick={() => setMonth(new Date(y, m - 1, 1))}>‹</button>
+          <strong style={{ minWidth: 140, textAlign: 'center' }}>{MONTHS[m]} {y}</strong>
+          <button type="button" className="pulse-btn-secondary lnd-btn-sm" onClick={() => setMonth(new Date(y, m + 1, 1))}>›</button>
+          <button type="button" className="lnd-link" onClick={() => setMonth(new Date())}>Today</button>
         </div>
-      )}
+        <span className="lnd-muted">Red edge = mandatory</span>
+      </div>
+      <div className="lnd-cal">
+        {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(d => <div key={d} className="lnd-cal-head">{d}</div>)}
+        {cells.map((d, i) => {
+          const iso = d ? `${y}-${String(m + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}` : '';
+          return (
+            <div key={i} className={`lnd-cal-day${d ? '' : ' is-out'}${iso === t ? ' is-today' : ''}`}>
+              {d && <div className="lnd-cal-num">{d}</div>}
+              {(byDay[d] || []).slice(0, 4).map(p => (
+                <button type="button" key={p.id} title={p.title} onClick={() => onOpen(p.id)}
+                  className={`lnd-cal-ev${p.status === 'completed' ? ' is-done' : p.status === 'cancelled' ? ' is-cancel' : ''}${p.is_mandatory ? ' is-mand' : ''}`}>{p.title}</button>
+              ))}
+              {(byDay[d] || []).length > 4 && <div className="lnd-muted">+{byDay[d].length - 4} more</div>}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
 
-/* ─── main component ───────────────────────────────────────────── */
-export default function LearningDevelopment() {
-  const { user } = useAuth();
-  const [tab, setTab]               = useState('calendar');
-  const [programs, setPrograms]     = useState([]);
-  const [matrixData, setMatrixData] = useState([]);
-  const [matrixEmployees, setMatrixEmps] = useState([]);
-  const [skillGaps, setSkillGaps]   = useState([]);
-  const [dashboard, setDashboard]   = useState({ trainings_this_month: 0, completion_rate_pct: 0, total_training_cost: 0, employees_trained: 0, skill_gap_count: 0, mandatory_pending: 0, certs_expiring_30d: 0 });
-  const [showProgForm, setShowProgForm] = useState(false);
-  const [progForm, setProgForm]     = useState({ title:'', category:'Technical', trainer:'', mode:'offline', duration_hours:'8', cost_per_participant:'0', max_participants:'30', scheduled_date:'' });
-  const [selEmpId, setSelEmpId]     = useState('1');
-  const [empHistory, setEmpHistory] = useState([]);
-  const [loading, setLoading]       = useState(false);
-  const [costMonthly, setCostMonthly] = useState([]);
-  const [costByType, setCostByType]   = useState([]);
-  const [msg, setMsg]               = useState({ text:'', type:'' });
+/* ── one training ──────────────────────────────────────────────── */
+function ProgramDetail({ id, onBack, onChanged }) {
+  const toast = useToast();
+  const o = useLndOptions();
+  const [p, setP] = useState(null);
+  const [tab, setTab] = useState('people');
+  const [err, setErr] = useState('');
+  const [dlg, setDlg] = useState(null); // {type, ...}
+  const [sel, setSel] = useState([]);
+  const [pf, setPf] = useState({ status: '', q: '' });
+  const load = useCallback(async () => {
+    try { setP((await api.get(`/training/programs/${id}`)).data); setErr(''); }
+    catch (e) { setErr(errText(e)); }
+  }, [id]);
+  useEffect(() => { load(); setSel([]); }, [load]);
+  const act = async (fn, ok) => {
+    try { await fn(); if (ok) toast.success(ok); await load(); onChanged?.(); }
+    catch (e) { toast.error(errText(e)); }
+  };
+  if (err) return <div className="lnd"><button type="button" className="lnd-link lnd-back" onClick={onBack}>← All trainings</button><div className="lnd-error">{err}</div></div>;
+  if (!p) return <div className="lnd"><Empty>Loading…</Empty></div>;
 
-  const flash = (text, type = 'success') => { setMsg({ text, type }); setTimeout(() => setMsg({ text:'', type:'' }), 3500); };
+  const active = p.enrollments.filter(e => e.status !== 'withdrawn');
+  const people = p.enrollments.filter(e => (!pf.status || e.status === pf.status)
+    && (!pf.q || `${e.employee_name} ${e.office_id || ''} ${e.department || ''}`.toLowerCase().includes(pf.q.toLowerCase())));
+  const closed = ['cancelled', 'completed'].includes(p.status);
+  const totalCost = p.costs.reduce((s, c) => s + c.amount, 0);
+  const bulk = (status, extra = {}) => act(() => api.post('/training/enrollments/bulk', { ids: sel, status, ...extra }), `${sel.length} updated`).then(() => setSel([]));
+
+  return (
+    <div className="lnd">
+      <button type="button" className="lnd-link lnd-back" onClick={onBack}>← All trainings</button>
+      <div className="lnd-card">
+        <div className="lnd-card-title">
+          <span style={{ fontSize: 18 }}>{p.title} <Pill status={p.status} /> {p.is_mandatory && <Pill tone="bad">Mandatory</Pill>}</span>
+          <div className="lnd-actions">
+            <button type="button" className="pulse-btn-secondary lnd-btn-sm" onClick={() => setDlg({ type: 'edit' })}>Edit</button>
+            {p.status === 'planned' && <button type="button" className="pulse-btn-secondary lnd-btn-sm" onClick={() => act(() => api.post(`/training/programs/${p.id}/status`, { status: 'ongoing' }), 'Marked as running')}>Start</button>}
+            {['planned', 'ongoing'].includes(p.status) && <button type="button" className="pulse-btn-secondary lnd-btn-sm" onClick={() => act(() => api.post(`/training/programs/${p.id}/status`, { status: 'completed' }), 'Training closed')}>Close training</button>}
+            {p.status === 'cancelled' && <button type="button" className="pulse-btn-secondary lnd-btn-sm" onClick={() => act(() => api.post(`/training/programs/${p.id}/status`, { status: 'planned' }), 'Re-opened')}>Re-open</button>}
+            <button type="button" className="pulse-btn-primary lnd-btn-sm" onClick={() => setDlg({ type: 'round' })}>Schedule next round</button>
+            {p.status !== 'cancelled' && <button type="button" className="lnd-link is-danger" onClick={() => setDlg({ type: 'cancel' })}>Cancel training</button>}
+          </div>
+        </div>
+        <div className="lnd-grid lnd-grid-3" style={{ fontSize: 13 }}>
+          <div><span className="lnd-muted">Dates</span><br />{fmtDate(p.scheduled_date)}{p.end_date && p.end_date !== p.scheduled_date ? ` – ${fmtDate(p.end_date)}` : ''} · {fmtNum(p.duration_hours, 1)} h</div>
+          <div><span className="lnd-muted">Trainer · mode</span><br />{p.trainer_name || '—'} · {statusLabel(p.mode)}{p.venue ? ` · ${p.venue}` : ''}</div>
+          <div><span className="lnd-muted">Seats</span><br />{active.length} / {p.max_participants}</div>
+          <div><span className="lnd-muted">For</span><br />{p.target_department || 'All departments'} · {p.target_role || 'all designations'}</div>
+          <div><span className="lnd-muted">Repeats</span><br />{p.refresher_months ? `every ${p.refresher_months} months` : 'no'}{p.rounds.length > 1 ? ` · round ${p.rounds.findIndex(r => r.id === p.id) + 1} of ${p.rounds.length}` : ''}</div>
+          <div><span className="lnd-muted">Cost</span><br />{fmtINR(totalCost)}{p.budget ? ` of ${fmtINR(p.budget)} budget` : ''}</div>
+          {p.competency_name && <div><span className="lnd-muted">Builds skill</span><br />{p.competency_name}</div>}
+          {p.assessments.length > 0 && <div><span className="lnd-muted">Test</span><br />{p.assessments.map(a => `${a.title} (pass ${a.pass_score}%)`).join(', ')}</div>}
+          {p.cancel_reason && <div><span className="lnd-muted">Cancelled because</span><br />{p.cancel_reason}</div>}
+        </div>
+        {p.description && <p style={{ fontSize: 13, color: '#4b5563', marginBottom: 0 }}>{p.description}</p>}
+      </div>
+
+      <div className="lnd-card">
+        <Tabs value={tab} onChange={setTab} tabs={[
+          { id: 'people', label: 'Participants', count: active.length },
+          { id: 'sessions', label: 'Sessions & attendance', count: p.sessions.length },
+          { id: 'costs', label: 'Costs', count: p.costs.length },
+          { id: 'review', label: 'Before / after review', count: p.self_review?.enabled ? p.self_review.summary.both_done : 0 },
+          { id: 'rounds', label: 'Rounds', count: p.rounds.length > 1 ? p.rounds.length : 0 },
+        ]} />
+
+        {tab === 'review' && <SelfReviewTab data={p.self_review} title={p.title} id={p.id} />}
+
+        {tab === 'people' && (<>
+          <div className="lnd-actions" style={{ marginBottom: 10 }}>
+            {!closed && <button type="button" className="pulse-btn-primary lnd-btn-sm" onClick={() => setDlg({ type: 'enrol' })}>+ Enrol employees</button>}
+            <select value={pf.status} onChange={e => setPf(v => ({ ...v, status: e.target.value }))} style={{ padding: '5px 8px', borderRadius: 7, border: '1px solid #e9e4ff' }}>
+              <option value="">All statuses</option>{['enrolled', 'in_progress', 'completed', 'no_show', 'withdrawn'].map(s => <option key={s} value={s}>{statusLabel(s)}</option>)}
+            </select>
+            <input type="search" placeholder="Search" value={pf.q} onChange={e => setPf(v => ({ ...v, q: e.target.value }))} style={{ padding: '5px 8px', borderRadius: 7, border: '1px solid #e9e4ff' }} />
+            {sel.length > 0 && (<>
+              <span className="lnd-muted">{sel.length} selected:</span>
+              <button type="button" className="pulse-btn-secondary lnd-btn-sm" onClick={() => setDlg({ type: 'complete', ids: sel })}>Mark completed…</button>
+              <button type="button" className="pulse-btn-secondary lnd-btn-sm" onClick={() => bulk('in_progress')}>Attending</button>
+              <button type="button" className="pulse-btn-secondary lnd-btn-sm" onClick={() => bulk('no_show')}>No-show</button>
+            </>)}
+            <button type="button" className="lnd-link" style={{ marginLeft: 'auto' }} onClick={() => downloadCsv(people, `training-${p.id}-participants`, [
+              { key: 'employee_name', label: 'Employee' }, { key: 'office_id', label: 'Code' }, { key: 'department', label: 'Department' },
+              { key: 'status', label: 'Status' }, { key: 'score', label: 'Score' }, { key: 'completion_date', label: 'Completed' }, { key: 'feedback_rating', label: 'Feedback' }])}>Export CSV</button>
+          </div>
+          {people.length ? (
+            <div className="lnd-table-wrap"><table className="lnd-table">
+              <thead><tr><th><input type="checkbox" aria-label="Select all" checked={people.filter(e => e.status !== 'withdrawn' && e.status !== 'completed').every(e => sel.includes(e.id)) && sel.length > 0}
+                onChange={e => setSel(e.target.checked ? people.filter(x => x.status !== 'withdrawn' && x.status !== 'completed').map(x => x.id) : [])} /></th>
+                <th>Employee</th><th>Department</th><th>Status</th><th className="num">Attendance</th><th className="num">Score</th><th>Completed</th><th>Feedback</th><th /></tr></thead>
+              <tbody>{people.map(e => (
+                <tr key={e.id}>
+                  <td>{!['withdrawn', 'completed'].includes(e.status) && <input type="checkbox" checked={sel.includes(e.id)} onChange={() => setSel(s => s.includes(e.id) ? s.filter(x => x !== e.id) : [...s, e.id])} />}</td>
+                  <td>{e.employee_name}<div className="lnd-muted">{e.office_id} · {e.designation}</div></td>
+                  <td>{e.department}</td>
+                  <td><Pill status={e.status} />{e.enrolled_via !== 'hr' && <div className="lnd-muted">via {e.enrolled_via}</div>}</td>
+                  <td className="num">{e.sessions_marked ? `${e.sessions_present}/${e.sessions_marked}` : '—'}</td>
+                  <td className="num">{e.score != null ? `${Number(e.score)}%` : '—'}</td>
+                  <td>{fmtDate(e.completion_date)}</td>
+                  <td title={e.feedback_comments || ''}>{e.feedback_rating ? stars(e.feedback_rating) : '—'}</td>
+                  <td><div className="lnd-actions">
+                    {!['completed', 'withdrawn'].includes(e.status) && <button type="button" className="lnd-link" onClick={() => setDlg({ type: 'complete', ids: [e.id] })}>Complete</button>}
+                    {e.status === 'withdrawn' && !closed && <button type="button" className="lnd-link" onClick={() => act(() => api.post(`/training/programs/${p.id}/enroll`, { employee_ids: [e.employee_id] }), 'Re-enrolled')}>Re-enrol</button>}
+                    {e.status === 'completed' && (e.certificate_url
+                      ? <button type="button" className="lnd-link" onClick={() => openEmployeeFile(e.certificate_url)}>Certificate</button>
+                      : <label className="lnd-link" style={{ cursor: 'pointer' }}>Upload certificate<input type="file" hidden accept=".pdf,image/*" onChange={ev => {
+                          const file = ev.target.files?.[0]; if (!file) return; const fd = new FormData(); fd.append('file', file);
+                          act(() => api.post(`/training/enrollments/${e.id}/certificate`, fd), 'Certificate attached');
+                        }} /></label>)}
+                    {!['completed', 'withdrawn'].includes(e.status) && <button type="button" className="lnd-link is-danger" onClick={() => act(() => api.delete(`/training/enrollments/${e.id}`), 'Withdrawn')}>Withdraw</button>}
+                  </div></td>
+                </tr>
+              ))}</tbody></table></div>
+          ) : <Empty>No participants yet.</Empty>}
+        </>)}
+
+        {tab === 'sessions' && (<>
+          <div className="lnd-actions" style={{ marginBottom: 10 }}><button type="button" className="pulse-btn-primary lnd-btn-sm" onClick={() => setDlg({ type: 'session' })}>+ Add session</button>
+            <span className="lnd-muted">Use sessions for multi-day or multi-slot trainings; attendance per session shows on each participant.</span></div>
+          {p.sessions.length ? (
+            <table className="lnd-table"><thead><tr><th>Date</th><th>Time</th><th>Trainer</th><th>Venue / link</th><th>Status</th><th className="num">Present</th><th /></tr></thead>
+              <tbody>{p.sessions.map(s => (
+                <tr key={s.id}><td>{fmtDate(s.session_date)}</td><td>{s.start_time ? `${s.start_time.slice(0, 5)}–${(s.end_time || '').slice(0, 5)}` : '—'}</td>
+                  <td>{s.trainer_name || '—'}</td><td>{s.venue || s.online_link || '—'}</td><td><Pill status={s.status} /></td>
+                  <td className="num">{s.present_count} / {active.length}</td>
+                  <td><div className="lnd-actions"><button type="button" className="lnd-link" onClick={() => setDlg({ type: 'attendance', session: s })}>Attendance</button>
+                    <button type="button" className="lnd-link" onClick={() => setDlg({ type: 'session', session: s })}>Edit</button>
+                    <button type="button" className="lnd-link is-danger" onClick={() => setDlg({ type: 'confirm', title: 'Remove session', msg: 'Remove this session and its attendance?', run: () => api.delete(`/training/sessions/${s.id}`) })}>Remove</button></div></td></tr>
+              ))}</tbody></table>
+          ) : <Empty>No sessions. A one-off training does not need any.</Empty>}
+        </>)}
+
+        {tab === 'costs' && (<>
+          <div className="lnd-actions" style={{ marginBottom: 10 }}><button type="button" className="pulse-btn-primary lnd-btn-sm" onClick={() => setDlg({ type: 'cost' })}>+ Add cost</button>
+            <strong style={{ marginLeft: 'auto' }}>Total {fmtINR(totalCost)}{p.budget ? ` · Budget ${fmtINR(p.budget)} · ${totalCost > p.budget ? 'over by ' + fmtINR(totalCost - p.budget) : 'remaining ' + fmtINR(p.budget - totalCost)}` : ''}</strong></div>
+          {p.costs.length ? (
+            <table className="lnd-table"><thead><tr><th>Date</th><th>Type</th><th>Description</th><th className="num">Amount</th><th /></tr></thead>
+              <tbody>{p.costs.map(c => (
+                <tr key={c.id}><td>{fmtDate(c.cost_date)}</td><td>{statusLabel(c.cost_type)}</td><td>{c.description || '—'}</td><td className="num">{fmtINR(c.amount)}</td>
+                  <td><div className="lnd-actions"><button type="button" className="lnd-link" onClick={() => setDlg({ type: 'cost', cost: c })}>Edit</button>
+                    <button type="button" className="lnd-link is-danger" onClick={() => setDlg({ type: 'confirm', title: 'Remove cost', msg: 'Remove this cost line?', run: () => api.delete(`/training/costs/${c.id}`) })}>Remove</button></div></td></tr>
+              ))}</tbody></table>
+          ) : <Empty>No costs recorded.</Empty>}
+        </>)}
+
+        {tab === 'rounds' && (
+          <table className="lnd-table"><thead><tr><th>#</th><th>Date</th><th>Status</th><th /></tr></thead>
+            <tbody>{p.rounds.map((r, i) => (
+              <tr key={r.id}><td>{i + 1}</td><td>{fmtDate(r.scheduled_date)}</td><td><Pill status={r.status} /></td>
+                <td>{r.id === p.id ? <span className="lnd-muted">this round</span> : <button type="button" className="lnd-link" onClick={() => onChanged?.(r.id)}>Open</button>}</td></tr>
+            ))}</tbody></table>
+        )}
+      </div>
+
+      {dlg?.type === 'edit' && <ProgramForm initial={p} onClose={() => setDlg(null)} onSaved={() => { setDlg(null); load(); onChanged?.(); }} />}
+      {dlg?.type === 'enrol' && <EnrolDialog program={p} onClose={() => setDlg(null)} onDone={() => { setDlg(null); load(); onChanged?.(); }} />}
+      {dlg?.type === 'complete' && <CompleteDialog ids={dlg.ids} onClose={() => setDlg(null)} onDone={() => { setDlg(null); setSel([]); load(); onChanged?.(); }} />}
+      {dlg?.type === 'session' && <SessionDialog program={p} session={dlg.session} trainers={o.trainers} onClose={() => setDlg(null)} onDone={() => { setDlg(null); load(); }} />}
+      {dlg?.type === 'attendance' && <AttendanceDialog session={dlg.session} onClose={() => setDlg(null)} onDone={() => { setDlg(null); load(); }} />}
+      {dlg?.type === 'cost' && <CostDialog program={p} cost={dlg.cost} types={o.cost_types} onClose={() => setDlg(null)} onDone={() => { setDlg(null); load(); onChanged?.(); }} />}
+      {dlg?.type === 'round' && <RoundDialog program={p} onClose={() => setDlg(null)} onDone={(nid) => { setDlg(null); onChanged?.(nid); }} />}
+      {dlg?.type === 'cancel' && <CancelDialog program={p} onClose={() => setDlg(null)} onDone={() => { setDlg(null); load(); onChanged?.(); }} />}
+      <ConfirmDialog open={dlg?.type === 'confirm'} title={dlg?.title} message={dlg?.msg} confirmLabel="Remove" variant="danger"
+        onConfirm={() => { const run = dlg.run; setDlg(null); act(run, 'Removed'); }} onCancel={() => setDlg(null)} />
+    </div>
+  );
+}
+
+function EnrolDialog({ program, onClose, onDone }) {
+  const toast = useToast();
+  const [ids, setIds] = useState([]);
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+  const taken = program.enrollments.filter(e => e.status !== 'withdrawn').map(e => e.employee_id);
+  const room = program.max_participants - taken.length;
+  const save = async () => {
+    setBusy(true); setErr('');
+    try {
+      const r = await api.post(`/training/programs/${program.id}/enroll`, { employee_ids: ids });
+      toast.success(r.data.message);
+      if (r.data.skipped?.length) toast.error(r.data.skipped.map(s => s.reason).filter((v, i, a) => a.indexOf(v) === i).join('; '));
+      onDone();
+    } catch (e) { setErr(errText(e)); } finally { setBusy(false); }
+  };
+  return (
+    <LndDialog title={`Enrol — ${program.title}`} onClose={onClose} width={620} error={err}
+      footer={<><span className="lnd-muted" style={{ marginRight: 'auto' }}>{room} seat(s) left</span><button type="button" className="pulse-btn-secondary" onClick={onClose}>Cancel</button>
+        <button type="button" className="pulse-btn-primary" disabled={!ids.length || busy} onClick={save}>{busy ? 'Enrolling…' : `Enrol ${ids.length || ''}`}</button></>}>
+      <EmployeePicker value={ids} onChange={setIds} exclude={taken} />
+      <p className="lnd-muted" style={{ marginTop: 8 }}>Each person gets a notification. Anyone beyond the seat limit is skipped.</p>
+    </LndDialog>
+  );
+}
+
+function CompleteDialog({ ids, onClose, onDone }) {
+  const toast = useToast();
+  const [score, setScore] = useState('');
+  const [err, setErr] = useState('');
+  const save = async () => {
+    try {
+      if (ids.length === 1) await api.put(`/training/enrollments/${ids[0]}`, { status: 'completed', score: score === '' ? null : score });
+      else await api.post('/training/enrollments/bulk', { ids, status: 'completed', score: score === '' ? null : score });
+      toast.success('Marked completed'); onDone();
+    } catch (e) { setErr(errText(e)); }
+  };
+  return (
+    <LndDialog title={`Mark ${ids.length} completed`} onClose={onClose} width={420} error={err}
+      footer={<><button type="button" className="pulse-btn-secondary" onClick={onClose}>Cancel</button><button type="button" className="pulse-btn-primary" onClick={save}>Mark completed</button></>}>
+      <div className="lnd-form"><label className="full">Score % (optional)<input type="number" min="0" max="100" value={score} onChange={e => setScore(e.target.value)} />
+        <span className="hint">Completion raises the linked skill rating. A path prerequisite that is not yet done blocks completion.</span></label></div>
+    </LndDialog>
+  );
+}
+
+function SessionDialog({ program, session, trainers, onClose, onDone }) {
+  const [f, setF] = useState({ session_date: session?.session_date || program.scheduled_date?.slice(0, 10) || '', start_time: session?.start_time?.slice(0, 5) || '',
+    end_time: session?.end_time?.slice(0, 5) || '', trainer_id: session?.trainer_id || program.trainer_id || '', venue: session?.venue || program.venue || '',
+    online_link: session?.online_link || '', status: session?.status || 'scheduled', notes: session?.notes || '' });
+  const [err, setErr] = useState('');
+  const set = (k) => (e) => setF(p => ({ ...p, [k]: e.target.value }));
+  const save = async (e) => {
+    e.preventDefault();
+    try { session ? await api.put(`/training/sessions/${session.id}`, f) : await api.post(`/training/programs/${program.id}/sessions`, f); onDone(); }
+    catch (x) { setErr(errText(x)); }
+  };
+  return (
+    <LndDialog title={session ? 'Edit session' : 'Add session'} onClose={onClose} width={560} error={err}
+      footer={<><button type="button" className="pulse-btn-secondary" onClick={onClose}>Cancel</button><button type="submit" form="lnd-sess" className="pulse-btn-primary">Save</button></>}>
+      <form id="lnd-sess" className="lnd-form" onSubmit={save}>
+        <label>Date *<input type="date" required value={f.session_date} onChange={set('session_date')} /></label>
+        <label>Start<input type="time" value={f.start_time} onChange={set('start_time')} /></label>
+        <label>End<input type="time" value={f.end_time} onChange={set('end_time')} /></label>
+        <label>Trainer<select value={f.trainer_id || ''} onChange={set('trainer_id')}><option value="">—</option>{trainers.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}</select></label>
+        <label>Venue<input value={f.venue} onChange={set('venue')} /></label>
+        <label>Online link<input value={f.online_link} onChange={set('online_link')} /></label>
+        <label>Status<select value={f.status} onChange={set('status')}>{['scheduled', 'completed', 'cancelled'].map(s => <option key={s} value={s}>{statusLabel(s)}</option>)}</select></label>
+        <label className="full">Notes<textarea value={f.notes} onChange={set('notes')} /></label>
+      </form>
+    </LndDialog>
+  );
+}
+
+function AttendanceDialog({ session, onClose, onDone }) {
+  const toast = useToast();
+  const [rows, setRows] = useState(null);
+  const [err, setErr] = useState('');
+  useEffect(() => { api.get(`/training/sessions/${session.id}/attendance`).then(r => setRows(r.data.map(x => ({ ...x, present: x.present ?? false })))).catch(e => setErr(errText(e))); }, [session.id]);
+  const save = async () => {
+    try { await api.put(`/training/sessions/${session.id}/attendance`, { records: rows.map(r => ({ employee_id: r.employee_id, present: r.present, notes: r.notes })) }); toast.success('Attendance saved'); onDone(); }
+    catch (e) { setErr(errText(e)); }
+  };
+  return (
+    <LndDialog title={`Attendance — ${fmtDate(session.session_date)}`} onClose={onClose} width={560} error={err}
+      footer={<><button type="button" className="lnd-link" style={{ marginRight: 'auto' }} onClick={() => setRows(r => r.map(x => ({ ...x, present: true })))}>All present</button>
+        <button type="button" className="pulse-btn-secondary" onClick={onClose}>Cancel</button><button type="button" className="pulse-btn-primary" disabled={!rows} onClick={save}>Save</button></>}>
+      {!rows ? <Empty>Loading…</Empty> : rows.length ? (
+        <table className="lnd-table" style={{ width: '100%' }}><thead><tr><th>Employee</th><th>Present</th></tr></thead>
+          <tbody>{rows.map((r, i) => (
+            <tr key={r.employee_id}><td>{r.employee_name}<div className="lnd-muted">{r.office_id} · {r.department}</div></td>
+              <td><input type="checkbox" checked={!!r.present} onChange={e => setRows(rs => rs.map((x, j) => j === i ? { ...x, present: e.target.checked } : x))} /></td></tr>
+          ))}</tbody></table>
+      ) : <Empty>Enrol people first.</Empty>}
+    </LndDialog>
+  );
+}
+
+function CostDialog({ program, cost, types, onClose, onDone }) {
+  const [f, setF] = useState({ cost_type: cost?.cost_type || 'trainer_fee', amount: cost?.amount ?? '', description: cost?.description || '', cost_date: cost?.cost_date || today() });
+  const [err, setErr] = useState('');
+  const set = (k) => (e) => setF(p => ({ ...p, [k]: e.target.value }));
+  const save = async (e) => {
+    e.preventDefault();
+    try { cost ? await api.put(`/training/costs/${cost.id}`, f) : await api.post(`/training/programs/${program.id}/costs`, f); onDone(); }
+    catch (x) { setErr(errText(x)); }
+  };
+  return (
+    <LndDialog title={cost ? 'Edit cost' : 'Add cost'} onClose={onClose} width={480} error={err}
+      footer={<><button type="button" className="pulse-btn-secondary" onClick={onClose}>Cancel</button><button type="submit" form="lnd-cost" className="pulse-btn-primary">Save</button></>}>
+      <form id="lnd-cost" className="lnd-form" onSubmit={save}>
+        <label>Type<select value={f.cost_type} onChange={set('cost_type')}>{(types?.length ? types : ['trainer_fee', 'venue', 'materials', 'travel', 'food', 'certification', 'other']).map(t => <option key={t} value={t}>{statusLabel(t)}</option>)}</select></label>
+        <label>Amount (₹) *<input type="number" min="0" step="0.01" required value={f.amount} onChange={set('amount')} /></label>
+        <label>Date<input type="date" value={f.cost_date} onChange={set('cost_date')} /></label>
+        <label className="full">Description<input value={f.description} onChange={set('description')} /></label>
+      </form>
+    </LndDialog>
+  );
+}
+
+function RoundDialog({ program, onClose, onDone }) {
+  const toast = useToast();
+  const suggest = () => {
+    if (!program.scheduled_date) return '';
+    const d = new Date(program.scheduled_date); d.setMonth(d.getMonth() + (program.refresher_months || 6));
+    return d.toISOString().slice(0, 10);
+  };
+  const [f, setF] = useState({ scheduled_date: suggest(), end_date: '', enroll_previous: true });
+  const [err, setErr] = useState('');
+  const save = async () => {
+    try { const r = await api.post(`/training/programs/${program.id}/next-round`, f); toast.success(`Next round scheduled${r.data.enrolled_previous ? ` — ${r.data.enrolled_previous} re-enrolled` : ''}`); onDone(r.data.id); }
+    catch (e) { setErr(errText(e)); }
+  };
+  return (
+    <LndDialog title="Schedule the next round" onClose={onClose} width={460} error={err}
+      footer={<><button type="button" className="pulse-btn-secondary" onClick={onClose}>Cancel</button><button type="button" className="pulse-btn-primary" onClick={save}>Schedule</button></>}>
+      <div className="lnd-form">
+        <label>Start date *<input type="date" value={f.scheduled_date} onChange={e => setF(v => ({ ...v, scheduled_date: e.target.value }))} /></label>
+        <label>End date<input type="date" value={f.end_date} min={f.scheduled_date} onChange={e => setF(v => ({ ...v, end_date: e.target.value }))} /></label>
+        <label className="lnd-inline full"><input type="checkbox" checked={f.enroll_previous} onChange={e => setF(v => ({ ...v, enroll_previous: e.target.checked }))} /> Enrol this round's participants again</label>
+        <p className="hint full" style={{ margin: 0 }}>The new round copies every detail and stays in the same series, so compliance counts the latest completion.</p>
+      </div>
+    </LndDialog>
+  );
+}
+
+function CancelDialog({ program, onClose, onDone }) {
+  const [reason, setReason] = useState('');
+  const [err, setErr] = useState('');
+  const save = async () => {
+    try { await api.post(`/training/programs/${program.id}/status`, { status: 'cancelled', cancel_reason: reason }); onDone(); }
+    catch (e) { setErr(errText(e)); }
+  };
+  return (
+    <LndDialog title="Cancel training" onClose={onClose} width={460} error={err}
+      footer={<><button type="button" className="pulse-btn-secondary" onClick={onClose}>Keep it</button><button type="button" className="pulse-btn-primary" disabled={!reason.trim()} onClick={save}>Cancel training</button></>}>
+      <div className="lnd-form"><label className="full">Reason *<textarea value={reason} onChange={e => setReason(e.target.value)} /><span className="hint">Enrolled people are notified with this reason.</span></label></div>
+    </LndDialog>
+  );
+}
+
+/* ── before / after self-review ────────────────────────────────── */
+const change = (v) => (v == null ? '—' : <span style={{ fontWeight: 700, color: v > 0 ? 'var(--color-success)' : v < 0 ? 'var(--color-danger)' : '#6b7280' }}>{v > 0 ? '+' : ''}{v}</span>);
+function SelfReviewTab({ data, title, id }) {
+  if (!data?.enabled) return <Empty>Before / after self-review is switched off for this training (Edit → Before / after self-review).</Empty>;
+  const s = data.summary;
+  return (<>
+    <div className="lnd-kpis">
+      <div className="lnd-kpi"><div className="lnd-kpi-value">{s.pre_done} / {s.enrolled}</div><div className="lnd-kpi-label">Rated before</div></div>
+      <div className="lnd-kpi"><div className="lnd-kpi-value">{s.post_done} / {s.enrolled}</div><div className="lnd-kpi-label">Rated after</div></div>
+      <div className="lnd-kpi"><div className="lnd-kpi-value">{s.knowledge.before ?? '—'} → {s.knowledge.after ?? '—'}</div><div className="lnd-kpi-label">Knowledge (avg, 1–5) {change(s.knowledge.change)}</div><div className="lnd-kpi-sub">people who did both: {s.both_done}</div></div>
+      <div className="lnd-kpi"><div className="lnd-kpi-value">{s.confidence.before ?? '—'} → {s.confidence.after ?? '—'}</div><div className="lnd-kpi-label">Confidence (avg, 1–5) {change(s.confidence.change)}</div></div>
+    </div>
+    {s.items.length > 0 && (
+      <table className="lnd-table" style={{ width: '100%', marginBottom: 12 }}><thead><tr><th>Statement</th><th className="num">Before</th><th className="num">After</th><th className="num">Change</th></tr></thead>
+        <tbody>{s.items.map(it => <tr key={it.item}><td>{it.item}</td><td className="num">{it.before ?? '—'}</td><td className="num">{it.after ?? '—'}</td><td className="num">{change(it.change)}</td></tr>)}</tbody></table>
+    )}
+    <div className="lnd-actions" style={{ marginBottom: 8 }}>
+      <span className="lnd-muted">Participants rate themselves in Self Service → My Learning. The after-review opens when you mark them completed.</span>
+      <button type="button" className="lnd-link" style={{ marginLeft: 'auto' }} onClick={() => downloadCsv(data.people.map(p => ({
+        employee: p.employee_name, department: p.department, status: p.status, knowledge_before: p.pre_knowledge, knowledge_after: p.post_knowledge,
+        knowledge_change: p.knowledge_change, confidence_before: p.pre_confidence, confidence_after: p.post_confidence, confidence_change: p.confidence_change,
+        ...Object.fromEntries(data.items.flatMap(it => [[`${it} (before)`, p.pre_items?.[it] ?? ''], [`${it} (after)`, p.post_items?.[it] ?? '']])),
+        comments_after: p.post_comments || '' })), `training-${id}-before-after`)}>Export CSV</button>
+    </div>
+    {data.people.length ? (
+      <div className="lnd-table-wrap"><table className="lnd-table">
+        <thead><tr><th>Employee</th><th>Status</th><th className="num">Knowledge before</th><th className="num">after</th><th className="num">change</th>
+          <th className="num">Confidence before</th><th className="num">after</th><th className="num">change</th><th>Comments after</th></tr></thead>
+        <tbody>{data.people.map(p => (
+          <tr key={p.enrollment_id}><td>{p.employee_name}<div className="lnd-muted">{p.department}</div></td><td><Pill status={p.status} /></td>
+            <td className="num">{p.pre_knowledge ?? '—'}</td><td className="num">{p.post_knowledge ?? '—'}</td><td className="num">{change(p.knowledge_change)}</td>
+            <td className="num">{p.pre_confidence ?? '—'}</td><td className="num">{p.post_confidence ?? '—'}</td><td className="num">{change(p.confidence_change)}</td>
+            <td title={p.pre_comments ? `Before: ${p.pre_comments}` : ''}>{p.post_comments || <span className="lnd-muted">—</span>}</td></tr>
+        ))}</tbody></table></div>
+    ) : <Empty>No participants yet for {title}.</Empty>}
+  </>);
+}
+
+/* ── page ──────────────────────────────────────────────────────── */
+export default function LearningDevelopment() {
+  const toast = useToast();
+  const [sp, setSp] = useSearchParams();
+  const openId = sp.get('program');
+  const [f, setF] = useState(DEFAULT);
+  const [view, setView] = useState('calendar');
+  const [month, setMonth] = useState(new Date());
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [form, setForm] = useState(null);
+  const [del, setDel] = useState(null);
+
+  const query = useMemo(() => {
+    // The calendar shows its whole month; the list honours the period filter.
+    if (view === 'calendar') {
+      const y = month.getFullYear(); const mm = String(month.getMonth() + 1).padStart(2, '0');
+      const last = new Date(y, month.getMonth() + 1, 0).getDate();
+      return toQuery({ ...f, period: 'custom', from: `${y}-${mm}-01`, to: `${y}-${mm}-${String(last).padStart(2, '0')}` });
+    }
+    return toQuery(f);
+  }, [f, view, month]);
 
   const load = useCallback(async () => {
-
-    const [pRes, mRes, dRes, cmRes, ctRes] = await Promise.allSettled([
-      api.get('/training/programs'),
-      api.get('/training/skills/matrix'),
-      api.get('/training/dashboard'),
-      api.get('/training/cost-trend'),
-      api.get('/training/cost-by-type'),
-    ]);
-    if (pRes.status === 'fulfilled' && pRes.value.data?.length) setPrograms(pRes.value.data);
-    if (mRes.status === 'fulfilled') {
-      const m = mRes.value.data;
-      if (m.employees?.length)  setMatrixEmps(m.employees);
-      if (m.gaps?.length)       setSkillGaps(m.gaps);
-      const flatData = [];
-      if (m.employees && m.skills) {
-        m.employees.forEach(emp => { m.skills.forEach(skill => { flatData.push({ employee_id: emp.employee_id, employee_name: emp.employee_name, department: emp.department, skill_name: skill, proficiency_level: emp.skills[skill]?.proficiency || 0 }); }); });
-      }
-      if (flatData.length) setMatrixData(flatData);
-    }
-    if (dRes.status === 'fulfilled') setDashboard(dRes.value.data);
-    if (cmRes.status === 'fulfilled' && Array.isArray(cmRes.value.data)) setCostMonthly(cmRes.value.data);
-    if (ctRes.status === 'fulfilled' && Array.isArray(ctRes.value.data)) setCostByType(ctRes.value.data);
-    setLoading(false);
-  }, []);
+    setLoading(true);
+    try { setRows((await api.get(`/training/programs${query}`)).data); }
+    catch (e) { toast.error(errText(e, 'Could not load trainings')); }
+    finally { setLoading(false); }
+  }, [query]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { load(); }, [load]);
 
-  const loadEmpHistory = async (empId) => {
-    try {
-      const r = await api.get(`/training/employee/${empId}/history`);
-      setEmpHistory(r.data || []);
-    } catch { setEmpHistory([]); }
+  const open = (id) => { const n = new URLSearchParams(sp); if (id) n.set('program', String(id)); else n.delete('program'); setSp(n); };
+  const remove = async () => {
+    const id = del; setDel(null);
+    try { await api.delete(`/training/programs/${id}`); toast.success('Training deleted'); load(); }
+    catch (e) { toast.error(errText(e)); }
   };
-  useEffect(() => { if (tab === 'tracker') loadEmpHistory(selEmpId); }, [tab, selEmpId]);
-
-  const saveProgram = async (e) => {
-    e.preventDefault();
-
-    try {
-      await api.post('/training/programs', progForm);
-      flash('Training program scheduled'); setShowProgForm(false); load();
-    } catch (err) { flash(err.response?.data?.message || 'Failed', 'error'); }
-    finally { setLoading(false); }
-  };
-
-  const handleEnroll = async (program) => {
-    const empId = user?.employee_id;
-    if (!empId) { flash('No employee profile linked to your account', 'error'); return; }
-    try {
-      const res = await api.post(`/training/programs/${program.id}/enroll`, { employee_ids: [empId] });
-      flash(`Enrolled in "${program.title}" — ${res.data?.message || ''}`);
-      load();
-    } catch (err) { flash(err.response?.data?.error || 'Enrollment failed', 'error'); }
-  };
-
-  const handleComplete = async (program) => {
-    try {
-      const detail = await api.get(`/training/programs/${program.id}`);
-      const empId = user?.employee_id;
-      const enrollment = detail.data?.enrollments?.find(e => e.employee_id === empId);
-      if (!enrollment) { flash('No enrollment found for your account', 'error'); return; }
-      await api.put(`/training/enrollments/${enrollment.id}/complete`);
-      flash(`"${program.title}" marked as complete`);
-      load();
-    } catch (err) { flash(err.response?.data?.error || 'Could not mark complete', 'error'); }
-  };
-
-  const completionData = [{ name: 'Completed', value: Math.round(dashboard.completion_rate_pct) }, { name: 'Pending', value: 100 - Math.round(dashboard.completion_rate_pct) }];
-  const costByProgram  = programs.slice(0, 5).map(p => ({ name: p.title.split(' ').slice(0, 3).join(' '), cost: parseFloat(p.total_cost) || 0 }));
-  const allSkills      = [...new Set(matrixData.map(r => r.skill_name))].sort();
 
   return (
-    <PageShell dock={
-      <PageHero
-        icon={GraduationCap}
-        eyebrow="Human Resources"
-        title="🎓 Learning & Development"
-        subtitle="Training programs, skill matrix, certifications and cost analytics"
-      />
-    }>
-
-
-      {/* KPI cards */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(160px,1fr))', gap: 12, marginBottom: 20 }}>
-        {[
-          { label:'Trainings This Month', value: dashboard.trainings_this_month, icon:'📅', color:'#6B3FDB' },
-          { label:'Completion Rate',      value: `${dashboard.completion_rate_pct}%`, icon:'✅', color:'#16a34a' },
-          { label:'Total Training Cost',  value: fmtINR(dashboard.total_training_cost), icon:'💰', color:'#6d28d9' },
-          { label:'Employees Trained',    value: dashboard.employees_trained, icon:'👥', color:'#2563eb' },
-          { label:'Skill Gaps (avg<3)',   value: dashboard.skill_gap_count, icon:'⚠️', color:'#dc2626' },
-          { label:'Mandatory Pending',    value: dashboard.mandatory_pending, icon:'🔴', color:'#dc2626' },
-          { label:'Certs Expiring 30d',   value: dashboard.certs_expiring_30d, icon:'📋', color:'#7c5cf0' },
-        ].map(k => (
-          <div key={k.label} style={{ background: '#fff', border: '1px solid #e9e4ff', borderRadius: 10, padding: '14px 16px' }}>
-            <div style={{ fontSize: 20 }}>{k.icon}</div>
-            <div style={{ fontSize: 20, fontWeight: 800, color: k.color, marginTop: 4 }}>{k.value}</div>
-            <div style={{ fontSize: 11, color: '#6b7280', marginTop: 2 }}>{k.label}</div>
-          </div>
-        ))}
-      </div>
-
-      {msg.text && <div style={{ marginBottom: 12, padding: '10px 16px', borderRadius: 8, fontWeight: 500, fontSize: 14, background: msg.type === 'error' ? '#fef2f2' : '#f0fdf4', color: msg.type === 'error' ? '#dc2626' : '#16a34a', border: `1px solid ${msg.type === 'error' ? '#fecaca' : '#bbf7d0'}` }}>{msg.text}</div>}
-
-      <div style={{ display: 'flex', gap: 4, borderBottom: '2px solid #e9e4ff', flexWrap: 'wrap' }}>
-        {[['calendar','Training Calendar'],['matrix','Skill Matrix'],['tracker','Course Tracker'],['costs','Training Costs']].map(([k,l]) => (
-          <button key={k} style={tabStyle(tab===k)} onClick={() => setTab(k)}>{l}</button>
-        ))}
-      </div>
-
-      <div style={{ background: '#fff', border: '1px solid #e9e4ff', borderTop: 'none', borderRadius: '0 8px 8px 8px', padding: 20 }}>
-
-        {/* ── CALENDAR TAB ── */}
-        {tab === 'calendar' && (
-          <div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 10 }}>
-              <h3 style={{ margin: 0, color: '#4c1d95' }}>Training Schedule</h3>
-              <button onClick={() => setShowProgForm(f => !f)}
-                style={{ background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 8, padding: '8px 18px', cursor: 'pointer', fontWeight: 600 }}>
-                {showProgForm ? '✕ Cancel' : '+ Schedule Training'}
-              </button>
-            </div>
-
-            {showProgForm && (
-              <form onSubmit={saveProgram} style={{ background: '#f5f3ff', borderRadius: 10, padding: 16, marginBottom: 20, border: '1px solid #e9e4ff' }}>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(180px,1fr))', gap: 12 }}>
-                  <div style={{ gridColumn: '1/-1' }}>
-                    <label style={{ fontSize: 12, fontWeight: 600, color: '#4c1d95', display: 'block', marginBottom: 4 }}>Training Title *</label>
-                    <input value={progForm.title} required onChange={e => setProgForm(f => ({ ...f, title: e.target.value }))}
-                      style={{ width: '100%', boxSizing: 'border-box', padding: '8px 10px', border: '1px solid #e9e4ff', borderRadius: 7, fontSize: 13 }} />
-                  </div>
-                  {[['category','Category',['Technical','Soft Skills','Compliance','Safety','Leadership','Other']],
-                    ['mode','Mode',['online','offline','hybrid']],
-                  ].map(([key, label, opts]) => (
-                    <div key={key}>
-                      <label style={{ fontSize: 12, fontWeight: 600, color: '#4c1d95', display: 'block', marginBottom: 4 }}>{label}</label>
-                      <select value={progForm[key]} onChange={e => setProgForm(f => ({ ...f, [key]: e.target.value }))}
-                        style={{ width: '100%', padding: '8px 10px', border: '1px solid #e9e4ff', borderRadius: 7, fontSize: 13 }}>
-                        {opts.map(o => <option key={o} value={o}>{o}</option>)}
-                      </select>
-                    </div>
-                  ))}
-                  {[['trainer','Trainer Name','text'],['duration_hours','Duration (hrs)','number'],['cost_per_participant','Cost/participant (₹)','number'],['max_participants','Max Participants','number'],['scheduled_date','Scheduled Date','date']].map(([key, label, type]) => (
-                    <div key={key}>
-                      <label style={{ fontSize: 12, fontWeight: 600, color: '#4c1d95', display: 'block', marginBottom: 4 }}>{label}</label>
-                      <input type={type} value={progForm[key]} onChange={e => setProgForm(f => ({ ...f, [key]: e.target.value }))}
-                        style={{ width: '100%', boxSizing: 'border-box', padding: '8px 10px', border: '1px solid #e9e4ff', borderRadius: 7, fontSize: 13 }} />
-                    </div>
-                  ))}
-                </div>
-                <button type="submit" disabled={loading} style={{ marginTop: 14, background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 8, padding: '8px 20px', cursor: 'pointer', fontWeight: 600 }}>
-                  {loading ? 'Saving…' : 'Schedule Training'}
-                </button>
-              </form>
-            )}
-
-            <TrainingCalendar programs={programs} onEnroll={handleEnroll} onComplete={handleComplete} />
-
-            {/* list below calendar */}
-            <div style={{ marginTop: 24 }}>
-              <h4 style={{ color: '#4c1d95', margin: '0 0 12px' }}>All Programs</h4>
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-                <thead><tr style={{ background: '#f5f3ff' }}>
-                  {['Title','Category','Trainer','Mode','Date','Enrolled','Status'].map(h => (
-                    <th key={h} style={{ padding: '8px 12px', textAlign: 'left', borderBottom: '1px solid #e9e4ff', color: '#4c1d95', fontWeight: 600 }}>{h}</th>
-                  ))}
-                </tr></thead>
-                <tbody>
-                  {programs.map(p => (
-                    <tr key={p.id} style={{ borderBottom: '1px solid #f0ebff' }}>
-                      <td style={{ padding: '8px 12px', fontWeight: 600 }}>{p.title}</td>
-                      <td style={{ padding: '8px 12px', color: '#6b7280' }}>{p.category}</td>
-                      <td style={{ padding: '8px 12px', color: '#6b7280' }}>{p.trainer}</td>
-                      <td style={{ padding: '8px 12px' }}>
-                        <span style={{ padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 600, background: MODE_COLORS[p.mode] + '20', color: MODE_COLORS[p.mode] }}>{p.mode}</span>
-                      </td>
-                      <td style={{ padding: '8px 12px', whiteSpace: 'nowrap' }}>{p.scheduled_date}</td>
-                      <td style={{ padding: '8px 12px' }}>{p.enrolled_count}/{p.max_participants}</td>
-                      <td style={{ padding: '8px 12px' }}>
-                        <span style={{ padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 600, background: STATUS_COLORS[p.status] + '20', color: STATUS_COLORS[p.status] }}>{p.status}</span>
-                      </td>
+    <PageShell dock={<PageHero icon={GraduationCap} eyebrow="Learning Center" title="Trainings" subtitle="Schedule, enrol, take attendance, close and repeat trainings"
+      actions={<button type="button" className="plh-cta" onClick={() => setForm({})}>+ Schedule training</button>} />}>
+      {openId ? (
+        <ProgramDetail id={openId} onBack={() => open(null)} onChanged={(nid) => { load(); resetLndOptions(); if (nid) open(nid); }} />
+      ) : (
+        <div className="lnd">
+          <Filters value={f} onChange={setF} fields={view === 'calendar' ? ['department', 'category', 'status', 'trainer', 'mode', 'mandatory', 'cost', 'q'] : ['period', 'department', 'category', 'status', 'trainer', 'mode', 'mandatory', 'cost', 'q']}
+            statusOptions={['planned', 'ongoing', 'completed', 'cancelled']} onReset={() => setF(DEFAULT)}
+            extra={<label>View<select value={view} onChange={e => setView(e.target.value)}><option value="calendar">Calendar</option><option value="list">List</option></select></label>} />
+          {view === 'calendar' ? <Calendar programs={rows} month={month} setMonth={setMonth} onOpen={open} /> : (
+            <div className="lnd-card">
+              <div className="lnd-card-title"><span>{rows.length} training(s)</span>
+                <button type="button" className="lnd-link" onClick={() => downloadCsv(rows, 'trainings', [
+                  { key: 'title', label: 'Title' }, { key: 'category', label: 'Category' }, { key: 'scheduled_date', label: 'Date' }, { key: 'trainer_name', label: 'Trainer' },
+                  { key: 'status', label: 'Status' }, { key: 'enrolled_count', label: 'Enrolled' }, { key: 'completed_count', label: 'Completed' }, { key: 'total_cost', label: 'Cost' }])}>Export CSV</button></div>
+              {loading ? <Empty>Loading…</Empty> : rows.length ? (
+                <div className="lnd-table-wrap"><table className="lnd-table">
+                  <thead><tr><th>Date</th><th>Training</th><th>Category</th><th>Trainer</th><th>Mode</th><th className="num">Seats</th><th className="num">Done</th><th className="num">Cost</th><th>Status</th><th /></tr></thead>
+                  <tbody>{rows.map(p => (
+                    <tr key={p.id} className="is-click" onClick={() => open(p.id)}>
+                      <td>{fmtDate(p.scheduled_date)}</td>
+                      <td>{p.title} {p.is_mandatory && <Pill tone="bad">Mandatory</Pill>}{p.refresher_months ? <div className="lnd-muted">repeats every {p.refresher_months} mo{p.rounds_in_series > 1 ? ` · ${p.rounds_in_series} rounds` : ''}</div> : null}</td>
+                      <td>{p.category || '—'}</td><td>{p.trainer_name || '—'}</td><td>{statusLabel(p.mode)}</td>
+                      <td className="num">{p.enrolled_count} / {p.max_participants}</td><td className="num">{p.completed_count}</td>
+                      <td className="num">{fmtINR(p.total_cost)}</td><td><Pill status={p.status} /></td>
+                      <td onClick={e => e.stopPropagation()}><button type="button" className="lnd-link is-danger" onClick={() => setDel(p.id)}>Delete</button></td>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  ))}</tbody></table></div>
+              ) : <Empty>No trainings match these filters.</Empty>}
             </div>
-          </div>
-        )}
-
-        {/* ── SKILL MATRIX TAB ── */}
-        {tab === 'matrix' && (
-          <div>
-            <h3 style={{ color: '#4c1d95', margin: '0 0 16px' }}>Team Skill Heatmap</h3>
-            <SkillMatrixHeatmap data={matrixData} employees={matrixEmployees} skills={allSkills} gaps={skillGaps} />
-          </div>
-        )}
-
-        {/* ── COURSE TRACKER TAB ── */}
-        {tab === 'tracker' && (
-          <div>
-            <div style={{ display: 'flex', gap: 14, alignItems: 'center', marginBottom: 20, flexWrap: 'wrap' }}>
-              <div>
-                <label style={{ fontSize: 12, fontWeight: 600, color: '#4c1d95', display: 'block', marginBottom: 4 }}>Select Employee</label>
-                <select value={selEmpId} onChange={e => { setSelEmpId(e.target.value); loadEmpHistory(e.target.value); }}
-                  style={{ padding: '8px 12px', border: '1px solid #e9e4ff', borderRadius: 7, fontSize: 13, minWidth: 200 }}>
-                  {matrixEmployees.map(e => <option key={e.employee_id} value={e.employee_id}>{e.employee_name}</option>)}
-                </select>
-              </div>
-            </div>
-
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 20, alignItems: 'start' }}>
-              <div>
-                {empHistory.length === 0 ? (
-                  <div style={{ textAlign: 'center', padding: 40, color: '#9ca3af' }}>No training history found. API may be unavailable.</div>
-                ) : (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                    {empHistory.map(h => (
-                      <div key={h.id} style={{ background: '#f5f3ff', borderRadius: 10, padding: 16, border: '1px solid #e9e4ff' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
-                          <div>
-                            <div style={{ fontWeight: 700, color: '#1f2937', fontSize: 14 }}>{h.title}</div>
-                            <div style={{ fontSize: 12, color: '#6b7280', marginTop: 2 }}>{h.category} · {h.mode} · {h.duration_hours}h</div>
-                          </div>
-                          <span style={{ padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 600, background: STATUS_COLORS[h.status] + '20', color: STATUS_COLORS[h.status] }}>{h.status}</span>
-                        </div>
-                        {h.status === 'completed' && (
-                          <div style={{ display: 'flex', gap: 16, fontSize: 12, color: '#6b7280' }}>
-                            <span>Completed: <strong>{h.completion_date}</strong></span>
-                            {h.score && <span>Score: <strong style={{ color: '#6B3FDB' }}>{h.score}%</strong></span>}
-                            {h.feedback_rating && <span>Rating: <strong>{'⭐'.repeat(h.feedback_rating)}</strong></span>}
-                            {h.certificate_url && <a href={h.certificate_url} target="_blank" rel="noreferrer" style={{ color: '#6B3FDB', fontWeight: 600 }}>📜 Certificate</a>}
-                          </div>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              {/* donut completion rate */}
-              <div style={{ background: '#f5f3ff', borderRadius: 10, padding: 16, border: '1px solid #e9e4ff', minWidth: 200 }}>
-                <h4 style={{ margin: '0 0 12px', color: '#4c1d95', fontSize: 13 }}>Completion Rate</h4>
-                <div style={{ height: 160 }}>
-                  <ResponsiveContainer width="100%" height="100%">
-                    <PieChart>
-                      <Pie data={completionData} cx="50%" cy="50%" innerRadius={45} outerRadius={70} dataKey="value">
-                        <Cell fill="#6B3FDB" />
-                        <Cell fill="#e9e4ff" />
-                      </Pie>
-                      <Tooltip />
-                    </PieChart>
-                  </ResponsiveContainer>
-                </div>
-                <div style={{ textAlign: 'center', fontSize: 20, fontWeight: 800, color: '#6B3FDB' }}>{dashboard.completion_rate_pct}%</div>
-                <div style={{ textAlign: 'center', fontSize: 12, color: '#6b7280' }}>Overall Completion</div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* ── COSTS TAB ── */}
-        {tab === 'costs' && (
-          <div>
-            <h3 style={{ color: '#4c1d95', margin: '0 0 20px' }}>Training Cost Analytics</h3>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, marginBottom: 24 }}>
-              <div style={{ background: '#f5f3ff', borderRadius: 10, padding: 16, border: '1px solid #e9e4ff' }}>
-                <h4 style={{ margin: '0 0 12px', color: '#4c1d95', fontSize: 14 }}>Cost by Program (₹)</h4>
-                <div style={{ height: 200 }}>
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={costByProgram} margin={{ top: 4, right: 12, left: 0, bottom: 40 }}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#e9e4ff" />
-                      <XAxis dataKey="name" tick={{ fontSize: 10 }} angle={-25} textAnchor="end" />
-                      <YAxis tick={{ fontSize: 10 }} tickFormatter={v => `₹${(v/1000).toFixed(0)}K`} />
-                      <Tooltip formatter={v => [fmtINR(v), 'Cost']} />
-                      <Bar dataKey="cost" fill="#6B3FDB" radius={[4,4,0,0]} name="Total Cost" />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              </div>
-              <div style={{ background: '#f5f3ff', borderRadius: 10, padding: 16, border: '1px solid #e9e4ff' }}>
-                <h4 style={{ margin: '0 0 12px', color: '#4c1d95', fontSize: 14 }}>Cost by Type</h4>
-                <div style={{ height: 200 }}>
-                  {costByType.length === 0 ? (
-                    <EmptyState icon={PieChartIcon} title="No cost breakdown" sub="Training costs will appear here" />
-                  ) : (
-                  <ResponsiveContainer width="100%" height="100%">
-                    <PieChart>
-                      <Pie data={costByType} cx="50%" cy="50%" outerRadius={75} dataKey="value" label={({ name, percent }) => `${name} ${(percent*100).toFixed(0)}%`} labelLine={false}>
-                        {costByType.map((_, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
-                      </Pie>
-                      <Tooltip formatter={v => [fmtINR(v), '']} />
-                    </PieChart>
-                  </ResponsiveContainer>
-                  )}
-                </div>
-              </div>
-            </div>
-            <div style={{ background: '#f5f3ff', borderRadius: 10, padding: 16, border: '1px solid #e9e4ff' }}>
-              <h4 style={{ margin: '0 0 12px', color: '#4c1d95', fontSize: 14 }}>Monthly Training Spend (₹)</h4>
-              <div style={{ height: 200 }}>
-                {costMonthly.length === 0 ? (
-                  <EmptyState icon={TrendingUp} title="No monthly trend" sub="Monthly cost data will appear here" />
-                ) : (
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={costMonthly} margin={{ top: 4, right: 20, left: 0, bottom: 4 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#e9e4ff" />
-                    <XAxis dataKey="month" tick={{ fontSize: 11 }} />
-                    <YAxis tick={{ fontSize: 11 }} tickFormatter={v => `₹${(v/1000).toFixed(0)}K`} />
-                    <Tooltip formatter={v => [fmtINR(v), 'Spend']} />
-                    <Line type="monotone" dataKey="cost" stroke="#6B3FDB" strokeWidth={2} dot={{ r: 4 }} name="Training Spend" />
-                  </LineChart>
-                </ResponsiveContainer>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
+          )}
+        </div>
+      )}
+      {form && <ProgramForm initial={null} onClose={() => setForm(null)} onSaved={(p) => { setForm(null); load(); open(p.id); }} />}
+      <ConfirmDialog open={!!del} title="Delete training" message="Delete this training? One with completion records must be cancelled instead." confirmLabel="Delete" variant="danger" onConfirm={remove} onCancel={() => setDel(null)} />
     </PageShell>
   );
 }

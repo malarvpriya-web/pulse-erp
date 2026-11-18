@@ -91,7 +91,7 @@ describe('employee self-service pages inside the shared menus', () => {
     .map(s => s.page);
 
   it.each([
-    ['HR',          ['EmployeeDashboard', 'MyEmployeeRecord', 'MyGatePasses']],
+    ['HR',          ['EmployeeDashboard', 'MyEmployeeRecord', 'MyGatePasses', 'MyLearning']],
     ['Attendance',  ['AttendanceDashboard']],
     ['Leaves',      ['MyLeaves', 'ApplyLeave', 'HolidayCalendar']],
     ['Timesheets',  ['MyTimesheet']],

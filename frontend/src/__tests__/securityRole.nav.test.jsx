@@ -19,7 +19,7 @@ describe('the security role', () => {
   });
 
   it('opens the gate register and its own pages, not the rest of HR', () => {
-    expect([...SECURITY_HR_SCOPED_PAGES].sort()).toEqual(['EmployeeDashboard', 'GatePassVisitors', 'MyEmployeeRecord', 'MyGatePasses']);
+    expect([...SECURITY_HR_SCOPED_PAGES].sort()).toEqual(['EmployeeDashboard', 'GatePassVisitors', 'MyEmployeeRecord', 'MyGatePasses', 'MyLearning']);
     expect(canSecurityAccessPage('GatePassVisitors')).toBe(true);
     for (const page of ['PayrollCenter', 'Probation', 'ExitCenter', 'EmployeeRecords', 'DepartmentHeads', 'SuccessionCenter']) {
       expect(canSecurityAccessPage(page), page).toBe(false);

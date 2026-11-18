@@ -1,218 +1,99 @@
 // frontend/src/features/hr/pages/TrainerManagement.jsx
-import { useState, useEffect, useCallback } from 'react';
+// Trainers (2026-11-18) — a tab of L&D Setup. The list a training's trainer is
+// chosen from; internal trainers are picked employees. Programme counts,
+// people trained and ratings are computed from real trainings.
+import { useCallback, useEffect, useState } from 'react';
 import { Users } from 'lucide-react';
-import { useToast } from '@/context/ToastContext';
 import api from '@/services/api/client';
+import { useToast } from '@/context/ToastContext';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import { Pill, Empty, LndDialog, EmployeeSelect, resetLndOptions, fmtDate, toQuery, errText, downloadCsv } from '@/features/hr/learning/lndUi';
 
-const inputStyle = { width:'100%', boxSizing:'border-box', padding:'8px 10px', border:'1px solid #e9e4ff', borderRadius:7, fontSize:13 };
-
-function Modal({ title, onClose, children }) {
+function TrainerForm({ trainer, onClose, onSaved }) {
+  const [f, setF] = useState({ name: trainer?.name || '', trainer_type: trainer?.trainer_type || 'internal', employee_id: trainer?.employee_id || '',
+    email: trainer?.email || '', phone: trainer?.phone || '', specialization: trainer?.specialization || '', is_active: trainer?.is_active ?? true });
+  const [err, setErr] = useState('');
+  const set = (k) => (e) => setF(p => ({ ...p, [k]: e.target.type === 'checkbox' ? e.target.checked : e.target.value }));
+  const save = async (e) => {
+    e.preventDefault();
+    try { trainer ? await api.put(`/trainers/${trainer.id}`, f) : await api.post('/trainers', f); resetLndOptions(); onSaved(); }
+    catch (x) { setErr(errText(x)); }
+  };
   return (
-    <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.45)', zIndex:1000, display:'flex', alignItems:'center', justifyContent:'center', padding:16 }}>
-      <div style={{ background:'#fff', borderRadius:12, padding:24, width:'100%', maxWidth:520, maxHeight:'85vh', overflowY:'auto' }}>
-        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:16 }}>
-          <h3 style={{ margin:0, color:'#4c1d95', fontSize:16 }}>{title}</h3>
-          <button onClick={onClose} style={{ background:'none', border:'none', cursor:'pointer', fontSize:20, color:'#6b7280' }}>✕</button>
-        </div>
-        {children}
+    <LndDialog title={trainer ? 'Edit trainer' : 'Add trainer'} onClose={onClose} width={560} error={err}
+      footer={<><button type="button" className="pulse-btn-secondary" onClick={onClose}>Cancel</button><button type="submit" form="lnd-trn" className="pulse-btn-primary">Save</button></>}>
+      <form id="lnd-trn" className="lnd-form" onSubmit={save}>
+        <label>Type<select value={f.trainer_type} onChange={set('trainer_type')}><option value="internal">Internal (employee)</option><option value="external">External</option></select></label>
+        {f.trainer_type === 'internal'
+          ? <label>Employee *<EmployeeSelect value={f.employee_id} onChange={v => setF(p => ({ ...p, employee_id: v }))} required /></label>
+          : <label>Name *<input required value={f.name} onChange={set('name')} /></label>}
+        {f.trainer_type === 'internal' && <label>Display name<input value={f.name} onChange={set('name')} placeholder="Blank = employee name" /></label>}
+        <label>Email<input type="email" value={f.email} onChange={set('email')} /></label>
+        <label>Phone<input value={f.phone} onChange={set('phone')} /></label>
+        <label className="full">Specialisation<input value={f.specialization} onChange={set('specialization')} placeholder="e.g. Fire safety, PLC programming" /></label>
+        {trainer && <label className="lnd-inline"><input type="checkbox" checked={f.is_active} onChange={set('is_active')} /> Active</label>}
+      </form>
+    </LndDialog>
+  );
+}
+
+function TrainerPrograms({ trainer, onClose }) {
+  const [rows, setRows] = useState(null);
+  useEffect(() => { api.get(`/trainers/${trainer.id}/programs`).then(r => setRows(r.data)).catch(() => setRows([])); }, [trainer.id]);
+  return (
+    <LndDialog title={`Trainings by ${trainer.name}`} onClose={onClose} width={720}>
+      {!rows ? <Empty>Loading…</Empty> : rows.length ? (
+        <table className="lnd-table" style={{ width: '100%' }}><thead><tr><th>Date</th><th>Training</th><th>Status</th><th className="num">Enrolled</th><th className="num">Done</th><th className="num">Rating</th></tr></thead>
+          <tbody>{rows.map(p => <tr key={p.id}><td>{fmtDate(p.scheduled_date)}</td><td>{p.title}</td><td><Pill status={p.status} /></td>
+            <td className="num">{p.enrolled_count}</td><td className="num">{p.completed_count}</td><td className="num">{p.avg_rating ?? '—'}</td></tr>)}</tbody></table>
+      ) : <Empty>No trainings yet.</Empty>}
+    </LndDialog>
+  );
+}
+
+export function TrainersPanel() {
+  const toast = useToast();
+  const [f, setF] = useState({ status: 'active', trainer_type: '', q: '' });
+  const [rows, setRows] = useState(null);
+  const [dlg, setDlg] = useState(null);
+  const load = useCallback(() => api.get(`/trainers${toQuery(f)}`).then(r => setRows(r.data)).catch(e => { toast.error(errText(e)); setRows([]); }), [f]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, [load]);
+  const deactivate = async () => {
+    const id = dlg.id; setDlg(null);
+    try { await api.delete(`/trainers/${id}`); toast.success('Deactivated'); resetLndOptions(); load(); } catch (e) { toast.error(errText(e)); }
+  };
+  return (
+    <div className="lnd">
+      <div className="lnd-filters">
+        <label>Type<select value={f.trainer_type} onChange={e => setF(v => ({ ...v, trainer_type: e.target.value }))}><option value="">All</option><option value="internal">Internal</option><option value="external">External</option></select></label>
+        <label>Status<select value={f.status} onChange={e => setF(v => ({ ...v, status: e.target.value }))}><option value="active">Active</option><option value="inactive">Inactive</option><option value="all">All</option></select></label>
+        <label>Search<input type="search" value={f.q} onChange={e => setF(v => ({ ...v, q: e.target.value }))} placeholder="Name, specialisation, email" /></label>
+        <button type="button" className="pulse-btn-primary lnd-btn-sm" style={{ marginLeft: 'auto' }} onClick={() => setDlg({ type: 'form' })}>+ Add trainer</button>
       </div>
+      <div className="lnd-card">
+        <div className="lnd-card-title"><span>{rows?.length ?? 0} trainer(s)</span>{rows?.length > 0 && <button type="button" className="lnd-link" onClick={() => downloadCsv(rows, 'trainers')}>Export CSV</button>}</div>
+        {!rows ? <Empty>Loading…</Empty> : rows.length ? (
+          <div className="lnd-table-wrap"><table className="lnd-table"><thead><tr><th>Trainer</th><th>Type</th><th>Specialisation</th><th>Contact</th><th className="num">Trainings</th><th className="num">People trained</th><th className="num">Rating</th><th>Last</th><th /></tr></thead>
+            <tbody>{rows.map(t => (
+              <tr key={t.id}><td>{t.name} {!t.is_active && <Pill>Inactive</Pill>}{t.trainer_type === 'internal' && t.office_id && <div className="lnd-muted">{t.office_id} · {t.department}</div>}</td>
+                <td><Pill tone={t.trainer_type === 'internal' ? 'brand' : 'info'}>{t.trainer_type}</Pill></td><td>{t.specialization || '—'}</td>
+                <td>{[t.email, t.phone].filter(Boolean).join(' · ') || '—'}</td><td className="num">{t.programs_count}</td><td className="num">{t.employees_trained}</td>
+                <td className="num">{t.avg_rating ?? '—'}</td><td>{fmtDate(t.last_program_date)}</td>
+                <td><div className="lnd-actions"><button type="button" className="lnd-link" onClick={() => setDlg({ type: 'programs', trainer: t })}>Trainings</button>
+                  <button type="button" className="lnd-link" onClick={() => setDlg({ type: 'form', trainer: t })}>Edit</button>
+                  {t.is_active && <button type="button" className="lnd-link is-danger" onClick={() => setDlg({ type: 'off', id: t.id })}>Deactivate</button>}</div></td></tr>
+            ))}</tbody></table></div>
+        ) : <Empty>No trainers yet.</Empty>}
+      </div>
+      {dlg?.type === 'form' && <TrainerForm trainer={dlg.trainer} onClose={() => setDlg(null)} onSaved={() => { setDlg(null); toast.success('Saved'); load(); }} />}
+      {dlg?.type === 'programs' && <TrainerPrograms trainer={dlg.trainer} onClose={() => setDlg(null)} />}
+      <ConfirmDialog open={dlg?.type === 'off'} title="Deactivate trainer" message="Deactivate this trainer? Past trainings keep their name; new trainings cannot choose them." confirmLabel="Deactivate" variant="warning" onConfirm={deactivate} onCancel={() => setDlg(null)} />
     </div>
   );
 }
 
-export default function TrainerManagement() {
-  const toast = useToast();
-  const [trainers, setTrainers] = useState([]);
-  const [selectedTrainer, setSelectedTrainer] = useState(null);
-  const [trainerPrograms, setTrainerPrograms] = useState([]);
-  const [showForm, setShowForm] = useState(false);
-  const [editTrainer, setEditTrainer] = useState(null);
-  const [showPrograms, setShowPrograms] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [search, setSearch] = useState('');
-  const [form, setForm] = useState({ name:'', trainer_type:'internal', employee_id:'', email:'', phone:'', specialization:'' });
-  const [pendingDeactivate, setPendingDeactivate] = useState(null);
-
-  const load = useCallback(async () => {
-    try {
-      const r = await api.get('/trainers');
-      setTrainers(r.data || []);
-    } catch { setTrainers([]); }
-  }, []);
-
-  useEffect(() => { load(); }, [load]);
-
-  const saveTrainer = async (e) => {
-    e.preventDefault();
-    setLoading(true);
-    try {
-      if (editTrainer) {
-        await api.put(`/trainers/${editTrainer.id}`, form);
-        toast.success('Trainer updated');
-      } else {
-        await api.post('/trainers', form);
-        toast.success('Trainer added');
-      }
-      setShowForm(false); setEditTrainer(null);
-      setForm({ name:'', trainer_type:'internal', employee_id:'', email:'', phone:'', specialization:'' });
-      load();
-    } catch (err) { toast.error(err?.response?.data?.error || 'Failed'); }
-    finally { setLoading(false); }
-  };
-
-  const deactivate = async () => {
-    if (!pendingDeactivate) return;
-    const id = pendingDeactivate;
-    setPendingDeactivate(null);
-    try { await api.delete(`/trainers/${id}`); toast.success('Deactivated'); load(); }
-    catch (err) { toast.error(err?.response?.data?.error || 'Failed'); }
-  };
-
-  const openPrograms = async (trainer) => {
-    setSelectedTrainer(trainer);
-    try {
-      const r = await api.get(`/trainers/${trainer.id}/programs`);
-      setTrainerPrograms(r.data || []);
-    } catch { setTrainerPrograms([]); }
-    setShowPrograms(true);
-  };
-
-  const filtered = trainers.filter(t =>
-    t.name.toLowerCase().includes(search.toLowerCase()) ||
-    (t.specialization || '').toLowerCase().includes(search.toLowerCase())
-  );
-
-  return (
-    <PageShell dock={
-      <PageHero
-        icon={Users}
-        eyebrow="Human Resources"
-        title="👨‍🏫 Trainer Management"
-        subtitle="Internal and external trainers, programs delivered, ratings"
-        actions={<button className="plh-cta" onClick={() => { setShowForm(true); setEditTrainer(null); setForm({ name:'', trainer_type:'internal', employee_id:'', email:'', phone:'', specialization:'' }); }}>
-          + Add Trainer
-        </button>}
-      />
-    }>
-      <ConfirmDialog
-        open={!!pendingDeactivate}
-        title="Deactivate Trainer"
-        message="Deactivate this trainer? They will be removed from future training programs."
-        confirmLabel="Deactivate"
-        variant="warning"
-        onConfirm={deactivate}
-        onCancel={() => setPendingDeactivate(null)}
-      />
-
-
-      <div style={{ marginBottom:16, maxWidth:400 }}>
-        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search by name or specialization…" style={inputStyle} />
-      </div>
-
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))', gap:16 }}>
-        {filtered.map(t => (
-          <div key={t.id} style={{ background:'#fff', border:'1px solid #e9e4ff', borderRadius:12, padding:20 }}>
-            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:8 }}>
-              <div>
-                <div style={{ fontWeight:700, color:'#1f2937', fontSize:15 }}>{t.name}</div>
-                {t.employee_full_name && t.employee_full_name !== t.name && (
-                  <div style={{ fontSize:11, color:'#9ca3af', marginTop:1 }}>({t.employee_full_name})</div>
-                )}
-              </div>
-              <span style={{ fontSize:11, padding:'2px 8px', borderRadius:10, fontWeight:600, background: t.trainer_type==='internal' ? '#e9e4ff' : '#ede9fe', color: t.trainer_type==='internal' ? '#6B3FDB' : '#6d28d9' }}>
-                {t.trainer_type}
-              </span>
-            </div>
-            {t.specialization && <p style={{ fontSize:12, color:'#6b7280', margin:'0 0 10px' }}>Specialization: {t.specialization}</p>}
-            <div style={{ display:'flex', gap:16, fontSize:12, color:'#6b7280', marginBottom:12, flexWrap:'wrap' }}>
-              {t.email && <span>✉ {t.email}</span>}
-              {t.phone && <span>📞 {t.phone}</span>}
-              <span>Programs: <strong>{t.programs_count || 0}</strong></span>
-            </div>
-            <div style={{ display:'flex', gap:6 }}>
-              <button onClick={() => openPrograms(t)} style={{ padding:'5px 12px', background:'#e9e4ff', color:'#6B3FDB', border:'none', borderRadius:6, cursor:'pointer', fontWeight:600, fontSize:12 }}>Programs</button>
-              <button onClick={() => { setEditTrainer(t); setForm({ name:t.name, trainer_type:t.trainer_type, employee_id:t.employee_id||'', email:t.email||'', phone:t.phone||'', specialization:t.specialization||'' }); setShowForm(true); }} style={{ padding:'5px 12px', background:'#f5f3ff', color:'#6b7280', border:'none', borderRadius:6, cursor:'pointer', fontWeight:600, fontSize:12 }}>Edit</button>
-              <button onClick={() => setPendingDeactivate(t.id)} style={{ padding:'5px 12px', background:'#fef2f2', color:'#dc2626', border:'none', borderRadius:6, cursor:'pointer', fontWeight:600, fontSize:12 }}>Deactivate</button>
-            </div>
-          </div>
-        ))}
-        {filtered.length === 0 && (
-          <div style={{ gridColumn:'1/-1', textAlign:'center', padding:'48px 0', color:'#9ca3af' }}>No trainers found</div>
-        )}
-      </div>
-
-      {/* Add/Edit modal */}
-      {showForm && (
-        <Modal title={editTrainer ? 'Edit Trainer' : 'Add Trainer'} onClose={() => { setShowForm(false); setEditTrainer(null); }}>
-          <form onSubmit={saveTrainer}>
-            <div style={{ marginBottom:12 }}>
-              <label style={{ fontSize:12, fontWeight:600, color:'#4c1d95', display:'block', marginBottom:4 }}>Full Name *</label>
-              <input required value={form.name} onChange={e => setForm(f => ({...f, name:e.target.value}))} style={inputStyle} />
-            </div>
-            <div style={{ marginBottom:12 }}>
-              <label style={{ fontSize:12, fontWeight:600, color:'#4c1d95', display:'block', marginBottom:4 }}>Type</label>
-              <select value={form.trainer_type} onChange={e => setForm(f => ({...f, trainer_type:e.target.value}))} style={inputStyle}>
-                <option value="internal">Internal</option>
-                <option value="external">External</option>
-              </select>
-            </div>
-            {form.trainer_type === 'internal' && (
-              <div style={{ marginBottom:12 }}>
-                <label style={{ fontSize:12, fontWeight:600, color:'#4c1d95', display:'block', marginBottom:4 }}>Employee ID</label>
-                <input value={form.employee_id} onChange={e => setForm(f => ({...f, employee_id:e.target.value}))} style={inputStyle} placeholder="Link to employee record" />
-              </div>
-            )}
-            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginBottom:12 }}>
-              <div>
-                <label style={{ fontSize:12, fontWeight:600, color:'#4c1d95', display:'block', marginBottom:4 }}>Email</label>
-                <input type="email" value={form.email} onChange={e => setForm(f => ({...f, email:e.target.value}))} style={inputStyle} />
-              </div>
-              <div>
-                <label style={{ fontSize:12, fontWeight:600, color:'#4c1d95', display:'block', marginBottom:4 }}>Phone</label>
-                <input value={form.phone} onChange={e => setForm(f => ({...f, phone:e.target.value}))} style={inputStyle} />
-              </div>
-            </div>
-            <div style={{ marginBottom:16 }}>
-              <label style={{ fontSize:12, fontWeight:600, color:'#4c1d95', display:'block', marginBottom:4 }}>Specialization</label>
-              <input value={form.specialization} onChange={e => setForm(f => ({...f, specialization:e.target.value}))} style={inputStyle} placeholder="e.g. Safety, Six Sigma, Leadership" />
-            </div>
-            <div style={{ display:'flex', gap:10 }}>
-              <button type="submit" disabled={loading} style={{ flex:1, background:'#6B3FDB', color:'#fff', border:'none', borderRadius:8, padding:'9px 0', cursor:'pointer', fontWeight:600 }}>
-                {loading ? 'Saving…' : editTrainer ? 'Update' : 'Add Trainer'}
-              </button>
-              <button type="button" onClick={() => { setShowForm(false); setEditTrainer(null); }} style={{ flex:1, background:'#e9e4ff', color:'#6B3FDB', border:'none', borderRadius:8, padding:'9px 0', cursor:'pointer', fontWeight:600 }}>Cancel</button>
-            </div>
-          </form>
-        </Modal>
-      )}
-
-      {/* Programs modal */}
-      {showPrograms && selectedTrainer && (
-        <Modal title={`Programs by ${selectedTrainer.name}`} onClose={() => setShowPrograms(false)}>
-          <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
-            <thead><tr style={{ background:'#f5f3ff' }}>
-              {['Program','Category','Date','Enrolled','Completed','Avg Rating'].map(h => (
-                <th key={h} style={{ padding:'8px 10px', textAlign:'left', borderBottom:'1px solid #e9e4ff', color:'#4c1d95', fontWeight:600, fontSize:12 }}>{h}</th>
-              ))}
-            </tr></thead>
-            <tbody>
-              {trainerPrograms.map(p => (
-                <tr key={p.id} style={{ borderBottom:'1px solid #f0ebff' }}>
-                  <td style={{ padding:'8px 10px', fontWeight:600, fontSize:12 }}>{p.title}</td>
-                  <td style={{ padding:'8px 10px', color:'#6b7280', fontSize:12 }}>{p.category}</td>
-                  <td style={{ padding:'8px 10px', fontSize:12 }}>{p.scheduled_date || '—'}</td>
-                  <td style={{ padding:'8px 10px', fontSize:12 }}>{p.enrolled_count || 0}</td>
-                  <td style={{ padding:'8px 10px', fontSize:12 }}>{p.completed_count || 0}</td>
-                  <td style={{ padding:'8px 10px', fontWeight:700, color:'#6d28d9', fontSize:12 }}>{p.avg_rating ? `${p.avg_rating} ⭐` : '—'}</td>
-                </tr>
-              ))}
-              {trainerPrograms.length === 0 && <tr><td colSpan={6} style={{ padding:'24px', textAlign:'center', color:'#9ca3af' }}>No programs delivered yet</td></tr>}
-            </tbody>
-          </table>
-        </Modal>
-      )}
-    </PageShell>
-  );
+export default function TrainerManagement({ embedded }) {
+  if (embedded) return <TrainersPanel />;
+  return <PageShell dock={<PageHero icon={Users} eyebrow="Learning Center" title="Trainers" subtitle="Internal and external trainers" />}><TrainersPanel /></PageShell>;
 }

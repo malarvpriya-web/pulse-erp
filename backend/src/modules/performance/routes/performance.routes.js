@@ -1,4 +1,5 @@
 import express from 'express';
+import { upsertRating } from '../../hr/lnd/lndShared.js';
 import performanceRepository from '../repositories/performance.repository.js';
 import pool from '../../shared/db.js';
 import { logAudit } from '../../../services/AuditService.js';
@@ -136,11 +137,15 @@ router.get('/competencies', async (req, res) => {
     const companyId = cid(req);
     const params = [];
     let q = `SELECT pc.*,
-               COALESCE(cd.competency_type, 'general') AS competency_type,
-               COALESCE(cd.expected_score, 3) AS expected_score
+               COALESCE(cf.category, 'general') AS competency_type,
+               COALESCE(rc.required_level, cf.expected_level, 3) AS expected_score
              FROM performance_competencies pc
-             LEFT JOIN competency_definitions cd ON cd.name = pc.competency_name
-               AND cd.company_id = pc.company_id
+             -- One competency library, shared with the Learning Center (2026-11-18).
+             LEFT JOIN competency_framework cf ON cf.id = pc.definition_id
+               OR (pc.definition_id IS NULL AND LOWER(cf.name) = LOWER(pc.competency_name) AND cf.company_id = pc.company_id)
+             LEFT JOIN employees pe ON pe.id = pc.employee_id
+             LEFT JOIN role_competencies rc ON rc.competency_id = cf.id AND LOWER(rc.role_title) = LOWER(pe.designation)
+               AND rc.company_id IS NOT DISTINCT FROM cf.company_id
              WHERE TRUE`;
     if (companyId)   { params.push(companyId);   q += ` AND pc.company_id = $${params.length}`; }
     if (review_id)   { params.push(review_id);   q += ` AND pc.review_id = $${params.length}`; }
@@ -217,6 +222,18 @@ router.post('/competencies/manager', async (req, res) => {
          DO UPDATE SET manager_score=$4, updated_at=NOW()`,
         [review_id, employee_id, s.competency_name, s.manager_score, companyId]
       );
+      // The manager's review score is the employee's current rating in the
+      // shared Skills & Competencies library (Learning Center).
+      const { rows: [lib] } = await pool.query(
+        `SELECT id FROM competency_framework WHERE LOWER(name) = LOWER($1) AND company_id IS NOT DISTINCT FROM $2 AND is_active`,
+        [s.competency_name, companyId]);
+      const lvl = Math.round(Number(s.manager_score));
+      if (lib && lvl >= 1 && lvl <= 5) {
+        await upsertRating(pool, { employeeId: employee_id, competencyId: lib.id, level: lvl, source: 'performance',
+          companyId, assessedBy: await employeeOf(req, pool), assessedByUser: req.user?.userId ?? req.user?.id ?? null,
+          notes: `Performance review #${review_id}` });
+        await pool.query(`UPDATE performance_competencies SET definition_id = $1 WHERE review_id = $2 AND competency_name = $3`, [lib.id, review_id, s.competency_name]);
+      }
     }
     res.json({ success: true });
   } catch (err) {

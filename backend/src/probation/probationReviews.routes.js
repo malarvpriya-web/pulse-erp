@@ -1,5 +1,8 @@
 import express from "express";
-import { verifyToken, requirePermission } from "../middlewares/auth.middleware.js";
+import { verifyToken, requirePermission, can } from "../middlewares/auth.middleware.js";
+import pool from "../config/db.js";
+import { employeeOf } from "../shared/scope.js";
+import { learningSnapshot } from "../modules/hr/lnd/lndSnapshot.js";
 import { requireCompany, ProbationError } from "./probation.service.js";
 import { companyOf } from "../shared/scope.js";
 import { buildProbationLetterPdf } from "../utils/probationLetterPdf.js";
@@ -85,6 +88,32 @@ router.get("/:reviewId/letter", verifyToken, requirePermission('hr', 'view'), as
     if (err instanceof ProbationError) return res.status(err.status).json({ error: err.message });
     console.error('[ProbationReviews] letter', err);
     res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /probation-reviews/:reviewId/learning — the employee's learning during
+ * the probation period (trainings, tests, mandatory status, certificates,
+ * skills, before/after self-review) beside the review (Learning Center,
+ * 2026-11-18). HR (hr:view) or the review's assigned reviewer only.
+ */
+router.get("/:reviewId/learning", verifyToken, async (req, res) => {
+  try {
+    const companyId = requireCompany(req);
+    const { rows: [r] } = await pool.query(
+      `SELECT r.employee_id, r.reviewer_employee_id, r.period_start::text AS period_start, e.joining_date::text AS joining_date
+         FROM probation_reviews r JOIN employees e ON e.id = r.employee_id
+        WHERE r.id = $1 AND r.company_id = $2`, [req.params.reviewId, companyId]);
+    if (!r) return res.status(404).json({ error: 'Review not found' });
+    const me = await employeeOf(req, pool);
+    if (!(await can(req, 'hr', 'view')) && (me == null || me !== r.reviewer_employee_id)) {
+      return res.status(403).json({ error: 'Only HR or the assigned reviewer can see this.' });
+    }
+    res.json(await learningSnapshot(pool, companyId, r.employee_id, { since: r.period_start || r.joining_date }));
+  } catch (err) {
+    if (err instanceof ProbationError) return res.status(err.status).json({ error: err.message });
+    console.error('[ProbationReviews] learning', err);
+    res.status(500).json({ error: 'Could not load the learning record' });
   }
 });
 

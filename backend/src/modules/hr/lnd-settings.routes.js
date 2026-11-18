@@ -1,99 +1,68 @@
 // backend/src/modules/hr/lnd-settings.routes.js
+//
+// L&D settings — every field here is read by the code (2026-11-18):
+//   training_categories        category list on trainings + certifications
+//   default_pass_score / default_max_attempts   new tests
+//   default_refresher_months   new mandatory trainings
+//   reminder_days_before       daily job: upcoming-training reminder
+//   cert_expiry_reminder_days  daily job: certificate expiry reminder
+//   enable_email_notifications mail beside in-app (needs SMTP)
+//   enable_manager_notifications  managers hear about their team's overdue items
+//   feedback_required / min_feedback_chars   My Learning feedback
+//   allow_self_enrollment / max_concurrent_enrollments   My Learning enrolment
+// Save used to fail outright (a JSON string into a text[] column).
 import express from 'express';
 import pool from '../../config/db.js';
+import { requirePermission } from '../../middlewares/auth.middleware.js';
+import { requireCompanyScope } from '../../shared/scope.js';
+import { cid, getSettings, sendError, httpError, SETTINGS_DEFAULTS } from './lnd/lndShared.js';
 
 const router = express.Router();
-const cid  = req => req.scope?.company_id ?? null;
-const role = req => req.user?.role ?? '';
-const HR   = ['admin','super_admin','hr','hr_manager','lnd_admin','HR','Admin','SuperAdmin'];
+router.use(requireCompanyScope);
 
-/* ── GET /lnd-settings ──────────────────────────────────────── */
-router.get('/', async (req, res) => {
-  const companyId = cid(req);
-  try {
-    const { rows } = await pool.query(
-      `SELECT * FROM lnd_settings WHERE company_id IS NOT DISTINCT FROM $1 LIMIT 1`,
-      [companyId]
-    );
-    if (!rows.length) {
-      // Return defaults if not configured yet
-      return res.json({
-        company_id: companyId,
-        training_categories: ['Technical','Soft Skills','Safety','Compliance','Leadership','Onboarding'],
-        default_pass_score: 70,
-        reminder_days_before: 7,
-        cert_expiry_reminder_days: 30,
-        enable_email_notifications: true,
-        enable_manager_notifications: true,
-        mandatory_training_freq_days: 365,
-        feedback_required: true,
-        min_feedback_chars: 10,
-        allow_self_enrollment: true,
-        max_concurrent_enrollments: 5,
-      });
-    }
-    res.json(rows[0]);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+router.get('/', requirePermission('training', 'view'), async (req, res) => {
+  try { res.json({ company_id: cid(req), ...(await getSettings(cid(req))) }); }
+  catch (err) { sendError(res, err, 'Could not load settings'); }
 });
 
-/* ── PUT /lnd-settings ──────────────────────────────────────── */
-router.put('/', async (req, res) => {
-  if (!HR.includes(role(req))) return res.status(403).json({ error: 'Forbidden' });
+const INT_RANGES = {
+  default_pass_score: [1, 100], default_max_attempts: [1, 20], reminder_days_before: [0, 60],
+  cert_expiry_reminder_days: [1, 365], default_refresher_months: [1, 60], min_feedback_chars: [0, 2000],
+  max_concurrent_enrollments: [1, 50],
+};
+const BOOLS = ['enable_email_notifications', 'enable_manager_notifications', 'feedback_required', 'allow_self_enrollment'];
+
+router.put('/', requirePermission('training', 'edit'), async (req, res) => {
   const companyId = cid(req);
-  const {
-    training_categories,
-    default_pass_score,
-    reminder_days_before,
-    cert_expiry_reminder_days,
-    enable_email_notifications,
-    enable_manager_notifications,
-    mandatory_training_freq_days,
-    feedback_required,
-    min_feedback_chars,
-    allow_self_enrollment,
-    max_concurrent_enrollments,
-  } = req.body;
-
-  // Settings singleton — no :id for captureBefore() to key on; the company is
-  // the key. "Who dropped the pass score, and from what" is the question.
+  const b = req.body || {};
   try {
-    const { rows: prior } = await pool.query(
-      `SELECT * FROM lnd_settings WHERE company_id=$1`, [companyId]);
+    const cur = await getSettings(companyId);
+    const next = { ...cur };
+    if (b.training_categories !== undefined) {
+      if (!Array.isArray(b.training_categories)) throw httpError(400, 'Categories must be a list');
+      const cats = [...new Set(b.training_categories.map(c => String(c).trim()).filter(Boolean))];
+      if (!cats.length) throw httpError(400, 'Keep at least one training category');
+      if (cats.some(c => c.length > 60)) throw httpError(400, 'A category name is too long');
+      next.training_categories = cats;
+    }
+    for (const [k, [lo, hi]] of Object.entries(INT_RANGES)) {
+      if (b[k] === undefined) continue;
+      const v = Number(b[k]);
+      if (!Number.isInteger(v) || v < lo || v > hi) throw httpError(400, `${k.replace(/_/g, ' ')} must be a whole number from ${lo} to ${hi}`);
+      next[k] = v;
+    }
+    for (const k of BOOLS) if (b[k] !== undefined) next[k] = !!b[k];
+    const { rows: prior } = await pool.query(`SELECT * FROM lnd_settings WHERE company_id IS NOT DISTINCT FROM $1::int`, [companyId]);
     req._auditBefore = prior[0] ?? null;
-  } catch { /* no before-image is a worse audit entry; a 500 is a worse product */ }
-
-  try {
-    const { rows } = await pool.query(`
-      INSERT INTO lnd_settings (
-        company_id, training_categories, default_pass_score,
-        reminder_days_before, cert_expiry_reminder_days,
-        enable_email_notifications, enable_manager_notifications,
-        mandatory_training_freq_days, feedback_required,
-        min_feedback_chars, allow_self_enrollment, max_concurrent_enrollments
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
-      ON CONFLICT (company_id) DO UPDATE SET
-        training_categories          = COALESCE($2, lnd_settings.training_categories),
-        default_pass_score           = COALESCE($3, lnd_settings.default_pass_score),
-        reminder_days_before         = COALESCE($4, lnd_settings.reminder_days_before),
-        cert_expiry_reminder_days    = COALESCE($5, lnd_settings.cert_expiry_reminder_days),
-        enable_email_notifications   = COALESCE($6, lnd_settings.enable_email_notifications),
-        enable_manager_notifications = COALESCE($7, lnd_settings.enable_manager_notifications),
-        mandatory_training_freq_days = COALESCE($8, lnd_settings.mandatory_training_freq_days),
-        feedback_required            = COALESCE($9, lnd_settings.feedback_required),
-        min_feedback_chars           = COALESCE($10, lnd_settings.min_feedback_chars),
-        allow_self_enrollment        = COALESCE($11, lnd_settings.allow_self_enrollment),
-        max_concurrent_enrollments   = COALESCE($12, lnd_settings.max_concurrent_enrollments),
-        updated_at                   = NOW()
-      RETURNING *`,
-      [companyId,
-       training_categories ? JSON.stringify(training_categories) : null,
-       default_pass_score, reminder_days_before, cert_expiry_reminder_days,
-       enable_email_notifications, enable_manager_notifications,
-       mandatory_training_freq_days, feedback_required,
-       min_feedback_chars, allow_self_enrollment, max_concurrent_enrollments]
-    );
+    const keys = Object.keys(SETTINGS_DEFAULTS);
+    const vals = keys.map(k => next[k]);
+    const ph = keys.map((k, i) => (k === 'training_categories' ? `$${i + 2}::text[]` : `$${i + 2}`));
+    const { rows } = await pool.query(
+      `INSERT INTO lnd_settings (company_id, ${keys.join(', ')}) VALUES ($1, ${ph.join(', ')})
+       ON CONFLICT (company_id) DO UPDATE SET ${keys.map(k => `${k} = EXCLUDED.${k}`).join(', ')}, updated_at = NOW()
+       RETURNING *`, [companyId, ...vals]);
     res.json(rows[0]);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { sendError(res, err, 'Settings were not saved'); }
 });
 
 export default router;

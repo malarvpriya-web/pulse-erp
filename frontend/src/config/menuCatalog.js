@@ -94,6 +94,8 @@ export const EMPLOYEE_SELF_SERVICE_PAGES = new Set([
   'MyEmployeeRecord',
   // My Gate Passes (2026-11-12, §272): own passes and own visitors only.
   'MyGatePasses',
+  // My Learning (2026-11-18): own trainings, tests, certificates; /my-learning is caller-scoped.
+  'MyLearning',
   // EmployeeDocuments is NOT here (§207): it is HR's register, gated on
   // employee_documents; HR files an employee's documents there.
   // Employee Records (EmployeeRecords hub + its EmployeeAssets / Policies /
@@ -257,12 +259,12 @@ export const MANAGER_ANALYTICS_SCOPED_PAGES = new Set(['ExecutiveDashboard']);
 // is now its own section, so this scoping no longer needs to name it.)
 // ('EmployeeSelfService' was the other entry until the page was removed on
 // 2026-11-11 — HR and Finance now make those changes for the employee.)
-export const MANAGER_HR_SCOPED_PAGES = new Set(['EmployeeDashboard', 'MyEmployeeRecord', 'MyGatePasses']);
+export const MANAGER_HR_SCOPED_PAGES = new Set(['EmployeeDashboard', 'MyEmployeeRecord', 'MyGatePasses', 'MyLearning']);
 
 // ── Security / Gate Desk (§273, migration 20261112000004) ─────────────────
 // The role holds the 'HR' section ONLY for the gate register and its own
 // self-service rows — never Payroll, Probation, Exit or the HR registers.
-export const SECURITY_HR_SCOPED_PAGES = new Set(['GatePassVisitors', 'EmployeeDashboard', 'MyEmployeeRecord', 'MyGatePasses']);
+export const SECURITY_HR_SCOPED_PAGES = new Set(['GatePassVisitors', 'EmployeeDashboard', 'MyEmployeeRecord', 'MyGatePasses', 'MyLearning']);
 export function canSecurityAccessPage(page) {
   return getSectionForPage(page) !== 'HR' || SECURITY_HR_SCOPED_PAGES.has(page);
 }
@@ -740,6 +742,8 @@ export const PERSONAL_PAGES = new Set([
   // My Gate Passes (§272): the gate-pass notifications link here for every
   // role; the API returns only the caller's own passes and visitors.
   'MyGatePasses',
+  // My Learning (2026-11-18): every employee's own learning, any role.
+  'MyLearning',
   // (EmployeeSelfService was never here and is gone since 2026-11-11.)
   // A mentor can sit in any department and any role. The route is open to every
   // role; the API admits only the intern's current mentor, and the page tells

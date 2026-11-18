@@ -121,7 +121,7 @@ const TABLE_CHECKS = [
   { table: 'fnf_settlements',          minExpected: 0,   module: 'HR' },
   { table: 'training_programs',        minExpected: 0,   module: 'HR' },
   { table: 'training_enrollments',     minExpected: 0,   module: 'HR' },
-  { table: 'skill_matrix',             minExpected: 0,   module: 'HR' },
+  { table: 'employee_competency_assessments', minExpected: 0, module: 'HR' },
   { table: 'succession_assessments',   minExpected: 0,   module: 'HR - Talent' },
   { table: 'critical_roles',           minExpected: 0,   module: 'HR - Talent' },
   { table: 'talent_assessments',       minExpected: 0,   module: 'HR - Talent' },

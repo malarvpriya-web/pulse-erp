@@ -1,4 +1,5 @@
 import * as service from "./employee.service.js";
+import { autoAssignJoinerPaths } from '../modules/hr/learning-paths.routes.js';
 import { uploadFile } from "../services/StorageService.js";
 import { logAudit } from "../services/AuditService.js";
 import { rolesOf, permissionFor, can } from "../middlewares/auth.middleware.js";
@@ -260,6 +261,8 @@ export const addEmployee = async (req, res) => {
     }
     // `login` stays — { email, created } is what Add Employee shows HR — but
     // nothing credential-shaped leaves in this response, at any depth.
+    // Learning Center: onboarding paths marked "assign on joining" (2026-11-18). Best-effort.
+    if (emp?.id) autoAssignJoinerPaths(emp.id).catch(() => {});
     res.json({ ...(await withSalaryMasking(req, withoutCredentials(emp))), ...(bankRequest ? { bank_change_request: bankRequest } : {}) });
   } catch (err) {
     respondError(res, err);

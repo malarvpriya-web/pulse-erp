@@ -5,6 +5,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent, within } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 
 // ── API mock ──────────────────────────────────────────────────────────────────
 vi.mock('../services/api/client', () => ({
@@ -279,94 +280,52 @@ describe('CRMEmail — dead button fixes', () => {
   });
 });
 
-// ── 4. LearningDevelopment — Enroll & Complete buttons ───────────────────────
-// The TrainingCalendar uses new Date() for the initial view month.
-// Schedule mock training on day 15 of the current month to match.
-describe('LearningDevelopment — Enroll and Complete buttons', () => {
+// ── 4. Trainings (LearningDevelopment) — open a training, enrol, complete ──
+// Rewritten 2026-11-18 with the Learning Center consolidation: HR enrols the
+// people they pick (not themselves) and completion goes through a dialog.
+describe('Trainings — open, enrol and complete', () => {
   const _now = new Date();
-  const _TRAINING_MONTH = `${_now.getFullYear()}-${String(_now.getMonth() + 1).padStart(2, '0')}`;
-  const TRAINING_DAY = 15;
-  const mockPrograms = [
-    {
-      id: 5, title: 'React Workshop', category: 'Technical', trainer: 'Alice',
-      mode: 'online', duration_hours: 8, cost_per_participant: 2500,
-      max_participants: 20, scheduled_date: `${_TRAINING_MONTH}-15`,
-      status: 'ongoing', enrolled_count: 3, total_cost: 7500,
-    },
-  ];
+  const month = `${_now.getFullYear()}-${String(_now.getMonth() + 1).padStart(2, '0')}`;
+  const program = {
+    id: 5, title: 'React Workshop', category: 'Technical', trainer_name: 'Alice', mode: 'online', duration_hours: 8,
+    max_participants: 20, scheduled_date: `${month}-15`, end_date: null, status: 'ongoing', enrolled_count: 1, completed_count: 0, total_cost: 0,
+  };
+  const detail = { ...program, enrollments: [{ id: 99, employee_id: 8, employee_name: 'Bala', status: 'enrolled', enrolled_via: 'hr' }],
+    costs: [], sessions: [], rounds: [{ id: 5, status: 'ongoing', scheduled_date: program.scheduled_date }], assessments: [] };
 
   beforeEach(() => {
     api.get.mockImplementation((url) => {
-      if (url === '/training/programs') return Promise.resolve({ data: mockPrograms });
-      if (url === '/training/skills/matrix') return Promise.resolve({ data: { employees: [], skills: [], gaps: [] } });
-      if (url === '/training/dashboard') return Promise.resolve({ data: { trainings_this_month: 1, completion_rate_pct: 80, total_training_cost: 50000, employees_trained: 5, skill_gap_count: 2 } });
-      if (url.includes('/training/programs/5')) return Promise.resolve({ data: { ...mockPrograms[0], enrollments: [{ id: 99, employee_id: 7, status: 'ongoing' }] } });
+      if (url.startsWith('/training/programs/5')) return Promise.resolve({ data: detail });
+      if (url.startsWith('/training/programs')) return Promise.resolve({ data: [program] });
+      if (url === '/training/employees') return Promise.resolve({ data: [{ id: 7, name: 'Asha' }, { id: 8, name: 'Bala' }] });
       return Promise.resolve({ data: [] });
     });
   });
+  const renderPage = (path = '/LearningDevelopment') => render(<MemoryRouter initialEntries={[path]}><LearningDevelopment /></MemoryRouter>);
 
-  it('renders without crashing', () => {
-    render(<LearningDevelopment />);
-    expect(document.body.firstChild).not.toBeNull();
+  it('renders the Trainings page with the training on the calendar', async () => {
+    renderPage();
+    expect(screen.getByText('Trainings')).toBeDefined();
+    await waitFor(() => expect(screen.getByTitle('React Workshop')).toBeDefined());
   });
 
-  it('shows "Learning & Development" heading', () => {
-    render(<LearningDevelopment />);
-    expect(screen.getByText('🎓 Learning & Development')).toBeDefined();
+  it('opening a training and enrolling picked employees posts their ids', async () => {
+    api.post.mockResolvedValue({ data: { enrolled: [7], skipped: [], message: '1 enrolled' } });
+    renderPage('/LearningDevelopment?program=5');
+    await waitFor(() => expect(screen.getByText('+ Enrol employees')).toBeDefined());
+    fireEvent.click(screen.getByText('+ Enrol employees'));
+    await waitFor(() => expect(screen.getByText('Asha')).toBeDefined());
+    fireEvent.click(screen.getByText('Asha'));
+    fireEvent.click(screen.getByText(/^Enrol 1/));
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/training/programs/5/enroll', { employee_ids: [7] }));
   });
 
-  async function openTrainingDetail() {
-    // Wait for programs to load into calendar (day 15 cell becomes clickable)
-    await waitFor(() => {
-      const cells = screen.getAllByText(String(TRAINING_DAY));
-      expect(cells.length).toBeGreaterThan(0);
-    });
-    fireEvent.click(screen.getAllByText(String(TRAINING_DAY))[0]);
-    // Wait for the detail drawer to open. NOT 'React Workshop' — the calendar
-    // cell itself previews the first two words of the title
-    // (LearningDevelopment.jsx: `p.title.split(' ').slice(0, 2).join(' ')`),
-    // and "React Workshop" is exactly two words, so that text is already in
-    // the DOM before the click even fires. That wait was a false positive:
-    // it passed immediately regardless of whether the drawer had opened,
-    // which is exactly why the Enroll/Complete assertions right after it
-    // flaked under CI's timing (run #8 Complete, run #9 Enroll) while
-    // passing locally by scheduling luck. 'Enroll' only renders inside the
-    // opened drawer (unconditional there, unlike Complete's ongoing-only
-    // gate), so it's the correct exclusive signal.
-    await waitFor(() => expect(screen.getByText('Enroll')).toBeDefined());
-  }
-
-  it('clicking calendar day 15 reveals Enroll button', async () => {
-    render(<LearningDevelopment />);
-    await openTrainingDetail();
-    expect(screen.getByText('Enroll')).toBeDefined();
-  });
-
-  it('clicking Enroll calls POST /training/programs/:id/enroll', async () => {
-    api.post.mockResolvedValue({ data: { enrolled: 1, message: '1 employee(s) enrolled' } });
-    render(<LearningDevelopment />);
-    await openTrainingDetail();
-    fireEvent.click(screen.getByText('Enroll'));
-    await waitFor(() =>
-      expect(api.post).toHaveBeenCalledWith(
-        '/training/programs/5/enroll',
-        expect.objectContaining({ employee_ids: [7] })
-      )
-    );
-  });
-
-  it('Complete button is visible for ongoing programs and calls PUT on click', async () => {
+  it('Complete marks the participant completed', async () => {
     api.put.mockResolvedValue({ data: {} });
-    render(<LearningDevelopment />);
-    await openTrainingDetail();
-    // Complete renders in the same synchronous update as the 'React Workshop'
-    // title openTrainingDetail() already waited for — but under CI's runner
-    // (slower, different scheduling than local) that update can still land a
-    // tick later, so this needs the same waitFor rather than a bare getByText.
+    renderPage('/LearningDevelopment?program=5');
     await waitFor(() => expect(screen.getByText('Complete')).toBeDefined());
     fireEvent.click(screen.getByText('Complete'));
-    await waitFor(() =>
-      expect(api.put).toHaveBeenCalledWith('/training/enrollments/99/complete')
-    );
+    fireEvent.click(screen.getByText('Mark completed'));
+    await waitFor(() => expect(api.put).toHaveBeenCalledWith('/training/enrollments/99', { status: 'completed', score: null }));
   });
 });

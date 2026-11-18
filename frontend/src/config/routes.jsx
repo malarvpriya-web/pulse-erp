@@ -232,15 +232,21 @@ export const ROUTES = {
   SettlementReview:      { module: 'fnf', component: lazy(() => import('@/features/hr/pages/SettlementReview')), props: ctx => ({ setPage: ctx.setPage }) },
   ExitManagement:        { module: 'exit', component: lazy(() => import('@/features/hr/pages/ExitManagement')), props: ctx => ({ setPage: ctx.setPage }) },
   HolidayCalendar:       { component: lazy(() => import('@/features/hr/pages/HolidayCalendar')) },
-  LearningDevelopment:   { component: lazy(() => import('@/features/hr/pages/LearningDevelopment')) },
-  LearningDashboard:     { component: lazy(() => import('@/features/hr/pages/LearningDashboard')) },
-  CertificationManagement: { component: lazy(() => import('@/features/hr/pages/CertificationManagement')) },
-  LearningPaths:         { component: lazy(() => import('@/features/hr/pages/LearningPaths')) },
-  AssessmentCenter:      { component: lazy(() => import('@/features/hr/pages/AssessmentCenter')) },
-  TrainerManagement:     { component: lazy(() => import('@/features/hr/pages/TrainerManagement')) },
-  TrainingReports:       { component: lazy(() => import('@/features/hr/pages/TrainingReports')) },
-  CompetencyFramework:   { component: lazy(() => import('@/features/hr/pages/CompetencyFramework')) },
-  LNDSettings:           { component: lazy(() => import('@/features/hr/pages/LNDSettings')), props: ctx => ({ setPage: ctx.setPage }) },
+  // Learning Center (consolidated 2026-11-18): HR pages gated on the `training` module.
+  LearningDevelopment:   { module: 'training', component: lazy(() => import('@/features/hr/pages/LearningDevelopment')) },
+  LearningDashboard:     { module: 'training', component: lazy(() => import('@/features/hr/pages/LearningDashboard')), props: ctx => ({ setPage: ctx.setPage }) },
+  CertificationManagement: { module: 'training', component: lazy(() => import('@/features/hr/pages/CertificationManagement')) },
+  LearningPaths:         { module: 'training', component: lazy(() => import('@/features/hr/pages/LearningPaths')) },
+  AssessmentCenter:      { module: 'training', component: lazy(() => import('@/features/hr/pages/AssessmentCenter')) },
+  // Trainers is a tab of L&D Setup; the key stays so bookmarks and grants resolve.
+  TrainerManagement:     { module: 'training', component: () => <Navigate to="/LNDSettings?tab=trainers" replace /> },
+  TrainingReports:       { module: 'training', component: lazy(() => import('@/features/hr/pages/TrainingReports')) },
+  // Skill Matrix + Competency Framework kept two skill registers; one page now.
+  SkillsCompetencies:    { module: 'training', component: lazy(() => import('@/features/hr/pages/SkillsCompetencies')) },
+  CompetencyFramework:   { module: 'training', component: () => <Navigate to="/SkillsCompetencies" replace /> },
+  // Every employee's own learning — scoped to the caller by /my-learning.
+  MyLearning:            { component: lazy(() => import('@/features/hr/pages/MyLearning')) },
+  LNDSettings:           { module: 'training', component: lazy(() => import('@/features/hr/pages/LNDSettings')), props: ctx => ({ setPage: ctx.setPage }) },
   // `exit` like its hub (exit review 2026-11-17): the URL had no module gate, and the API now checks exit:view/edit too.
   Offboarding:           { module: 'exit', component: lazy(() => import('@/features/hr/pages/Offboarding')), props: ctx => ({ setPage: ctx.setPage }) },
   Payroll:               { module: 'payroll', component: lazy(() => import('@/features/hr/pages/Payroll')), props: ctx => ({ setPage: ctx.setPage }) },
@@ -260,7 +266,7 @@ export const ROUTES = {
   EmployeeSuccessionPools:   { module: 'succession', component: () => <Navigate to="/SuccessionCenter?tab=pools" replace /> },
   SuccessionReports:         { module: 'succession', component: () => <Navigate to="/SuccessionCenter?tab=reports" replace /> },
   SuccessionSettings:        { module: 'succession', component: () => <Navigate to="/SuccessionCenter?tab=settings" replace /> },
-  SkillMatrix:               { component: lazy(() => import('@/features/hr/pages/SkillMatrix')), props: ctx => ({ setPage: ctx.setPage }) },
+  SkillMatrix:               { module: 'training', component: () => <Navigate to="/SkillsCompetencies" replace /> },
   // hr:view — every number on the page comes from GET /analytics/workforce, which
   // requires it. Drill-through additionally checks employees:view in the page.
   EmployeeReports:       { module: 'hr', component: lazy(() => import('@/features/hr/pages/EmployeeReports')), props: ctx => ({ setPage: ctx.setPage }) },
@@ -1249,6 +1255,8 @@ export const NAV_ITEMS = [
     { name: 'My Details',                page: 'MyEmployeeRecord', employeeLinkOnly: true },
     // Request a gate pass / material pass, pre-register visitors (§272).
     { name: 'My Gate Passes',            page: 'MyGatePasses', employeeLinkOnly: true },
+    // Own trainings, tests, certificates and skills (Learning Center, 2026-11-18).
+    { name: 'My Learning',               page: 'MyLearning', employeeLinkOnly: true },
     { name: 'Employee Records',          page: 'EmployeeRecords' },   // Assets·Policies·HR Documents
     // Who heads each department: probation reviewer, first gate-pass approver
     // and manager access to the department's records. Was a panel inside
@@ -1367,19 +1375,22 @@ export const NAV_ITEMS = [
     { name: 'CareersPageAdmin',          page: 'CareersPageAdmin', inHub: 'Jobs' },   // Careers Website tab (11-17)
   ]},
 
+  // Learning Center consolidated 2026-11-18 (10 rows → 8). Skill Matrix and
+  // Competency Framework are one page; Trainer Management is a tab of L&D
+  // Setup (inHub row below). SkillMatrix / CompetencyFramework are redirect-only
+  // routes, gated on `training`, to the one Skills & Competencies page.
   { name: 'Learning Center', icon: <FaGraduationCap />, submenu: [
-    { name: 'L&D Command Centre',  page: 'LearningDashboard' },
-    { name: 'Training Calendar',   page: 'LearningDevelopment' },
+    { name: 'L&D Dashboard',       page: 'LearningDashboard' },
+    { name: 'Trainings',           page: 'LearningDevelopment' },
     { name: 'Learning Paths',      page: 'LearningPaths' },
     { name: 'Assessments',         page: 'AssessmentCenter' },
-    { name: 'Certifications',      page: 'CertificationManagement' },
     { name: 'Capability',          separator: true },
-    { name: 'Skill Matrix',        page: 'SkillMatrix' },
-    { name: 'Competency Framework',page: 'CompetencyFramework' },
+    { name: 'Skills & Competencies', page: 'SkillsCompetencies' },
+    { name: 'Certifications',      page: 'CertificationManagement' },
     { name: 'Administration',      separator: true },
-    { name: 'Trainer Management',  page: 'TrainerManagement' },
-    { name: 'Training Reports',    page: 'TrainingReports' },
-    { name: 'Settings',            page: 'LNDSettings' },
+    { name: 'Reports',             page: 'TrainingReports' },
+    { name: 'L&D Setup',           page: 'LNDSettings' },
+    { name: 'TrainerManagement',   page: 'TrainerManagement', inHub: 'LNDSettings' },
   ]},
 
   { name: 'Attendance', icon: <FaCalendarCheck />, module: 'attendance', submenu: [

@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import LearningSnapshot from '@/features/hr/learning/LearningSnapshot';
 import { useSearchParams } from 'react-router-dom';
 import { ClipboardCheck } from 'lucide-react';
 import api from '@/services/api/client';
@@ -91,6 +92,9 @@ function ReviewCard({ review, recommendations, highlighted, onSubmitted }) {
         <div><dt>Requested</dt><dd>{fmt(review.requested_at)}{review.requested_by ? ` by ${review.requested_by}` : ''}</dd></div>
         {review.cycle_no > 1 && <div><dt>Review cycle</dt><dd>{review.cycle_no}</dd></div>}
       </dl>
+
+      {/* Learning Center (2026-11-18): trainings, tests and mandatory status during the probation period. */}
+      <LearningSnapshot url={`/probation-reviews/${review.id}/learning`} />
 
       {open ? (
         <div className="mpr-form">

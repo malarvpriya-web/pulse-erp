@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import LearningSnapshot from '@/features/hr/learning/LearningSnapshot';
 import {
   RefreshCw, Search, Bell, Clock, AlertTriangle, CheckCircle,
   Users, ChevronDown, ChevronUp, Send, X, Star, History, ClipboardCheck, Download,
@@ -1094,6 +1095,8 @@ export default function Probation({ setPage } = {}) {
                 <div><strong>Recommends:</strong> {RECOMMENDATION_LABEL[decReview.recommendation] || decReview.recommendation}</div>
                 {decReview.comments && <p className="prob-dec-comments">{decReview.comments}</p>}
               </div>
+
+              <LearningSnapshot url={`/probation-reviews/${decReview.id}/learning`} />
 
               <div className="prob-field">
                 <label htmlFor="prob-dec-decision">Decision *</label>

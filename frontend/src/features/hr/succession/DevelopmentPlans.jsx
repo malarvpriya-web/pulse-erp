@@ -28,7 +28,14 @@ function ProgressBar({ value }) {
 }
 
 const PLAN_DEFAULT   = { employee_id: '', critical_role_id: '', plan_title: '', start_date: '', target_date: '', notes: '' };
-const ACTION_DEFAULT = { action_type: 'task', title: '', description: '', due_date: '', owner_employee_id: '', linked_skill: '' };
+const ACTION_DEFAULT = { action_type: 'task', title: '', description: '', due_date: '', owner_employee_id: '', linked_skill: '', linked_training_id: '' };
+
+/* Trainings a training / certification action can link to (Learning Center, 2026-11-18). */
+function useTrainings() {
+  const [list, setList] = useState([]);
+  useEffect(() => { api.get('/training/programs?status=planned,ongoing,completed').then(r => setList(r.data || [])).catch(() => setList([])); }, []);
+  return list;
+}
 const SESSION_DEFAULT = { session_date: '', duration_minutes: '', topic: '', notes: '', next_session_date: '' };
 
 /* ── Plan form (create and edit) ── */
@@ -86,6 +93,8 @@ function PlanForm({ initial, editing, employees, critRoles, saving, onSubmit, on
 /* ── Action form (add and edit) ── */
 function ActionForm({ initial, editing, employees, saving, onSubmit, onCancel }) {
   const [f, setF] = useState(initial);
+  const trainings = useTrainings();
+  const canLink = ['training', 'certification'].includes(f.action_type);
   const set = (k) => (e) => setF(x => ({ ...x, [k]: e.target.value }));
   return (
     <form onSubmit={(e) => { e.preventDefault(); onSubmit(f); }}
@@ -122,6 +131,17 @@ function ActionForm({ initial, editing, employees, saving, onSubmit, onCancel })
           <input id="ac-skill" maxLength={200} value={f.linked_skill} onChange={set('linked_skill')}
                  placeholder="e.g. Financial Analysis" style={INP} />
         </div>
+        {canLink && (
+          <div style={{ gridColumn: '1/-1' }}>
+            <label style={LBL} htmlFor="ac-training">Linked training (Learning Center)</label>
+            <select id="ac-training" value={f.linked_training_id || ''} style={INP}
+              onChange={e => { const t = trainings.find(x => x.id === Number(e.target.value)); setF(x => ({ ...x, linked_training_id: e.target.value, title: x.title || (t ? t.title : '') })); }}>
+              <option value="">— None —</option>
+              {trainings.map(t => <option key={t.id} value={t.id}>{t.title} — {fmtDate(t.scheduled_date)} ({titleCase(t.status)})</option>)}
+            </select>
+            <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 3 }}>The plan's employee is enrolled; completing the training completes this action.</div>
+          </div>
+        )}
         <div style={{ gridColumn: '1/-1' }}>
           <label style={LBL} htmlFor="ac-desc">Description</label>
           <input id="ac-desc" maxLength={2000} value={f.description} onChange={set('description')}
@@ -263,6 +283,7 @@ export default function DevelopmentPlans() {
         action_type: f.action_type, title: f.title.trim(), description: f.description || null,
         due_date: f.due_date || null, linked_skill: f.linked_skill || null,
         owner_employee_id: f.owner_employee_id ? Number(f.owner_employee_id) : null,
+        linked_training_id: ['training', 'certification'].includes(f.action_type) && f.linked_training_id ? Number(f.linked_training_id) : null,
       };
       if (actionForm?.id) {
         await api.patch(`/succession/development-plans/${selPlan.id}/actions/${actionForm.id}`, payload);
@@ -553,7 +574,7 @@ export default function DevelopmentPlans() {
                             <button type="button" onClick={() => setActionForm({ id: action.id, initial: {
                                 action_type: action.action_type || 'task', title: action.title || '', description: action.description || '',
                                 due_date: action.due_date?.split('T')[0] || '', owner_employee_id: action.owner_employee_id ? String(action.owner_employee_id) : '',
-                                owner_name: action.owner_name, linked_skill: action.linked_skill || '' } })}
+                                owner_name: action.owner_name, linked_skill: action.linked_skill || '', linked_training_id: action.linked_training_id ? String(action.linked_training_id) : '' } })}
                               style={{ ...BTN('outline', true), fontSize: 11, padding: '2px 8px' }}>
                               Edit
                             </button>
@@ -569,6 +590,7 @@ export default function DevelopmentPlans() {
                           {action.completion_date && <span>Done: {fmtDate(action.completion_date)}</span>}
                           {action.owner_name && <span style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }}>Owner: {action.owner_name} <PhaseBadge phase={action.owner_phase} /></span>}
                           {action.linked_skill && <span>Skill: {action.linked_skill}</span>}
+                          {action.training_title && <span>Training: {action.training_title} · {fmtDate(action.training_date)} · {titleCase(action.training_enrolment_status || 'not enrolled')}</span>}
                         </div>
                         {action.description && <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 4 }}>{action.description}</div>}
                       </div>

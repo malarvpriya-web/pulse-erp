@@ -167,6 +167,8 @@ const PAGE_DISPLAY_NAMES = {
   BiometricAccess:        'Gate Pass & Visitors',
   GatePassVisitors:       'Gate Pass & Visitors',
   MyGatePasses:           'My Gate Passes',
+  MyLearning:             'My Learning',
+  SkillsCompetencies:     'Skills & Competencies',
   PunchImport:            'Punch Import',
   AdminDashboard:         'Operations Dashboard',
   EmployeeDashboard:      'My Dashboard',

@@ -1,353 +1,206 @@
 // frontend/src/features/hr/pages/CertificationManagement.jsx
-import { useState, useEffect, useCallback } from 'react';
-import { GraduationCap } from 'lucide-react';
-import { useToast } from '@/context/ToastContext';
+// Certifications (2026-11-18) — the one register of who holds which
+// certificate. Employee picked from a list (was a typed id), file uploaded,
+// records editable / renewable / deletable, expiry real (status turns Expired
+// by itself), mandatory coverage shows who is missing one.
+import { useCallback, useEffect, useState } from 'react';
+import { Award } from 'lucide-react';
 import api from '@/services/api/client';
+import { useToast } from '@/context/ToastContext';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
+import { openEmployeeFile } from '@/features/employees/shared/employeeFiles';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import { Filters, Pill, Empty, Tabs, Kpi, LndDialog, EmployeeSelect, useLndOptions, fmtDate, toQuery, errText, downloadCsv, today } from '@/features/hr/learning/lndUi';
 
-const STATUS_COLORS = { active: '#16a34a', expired: '#dc2626', renewed: '#6d28d9' };
-
-function Modal({ title, onClose, children }) {
+function MasterForm({ cert, onClose, onSaved }) {
+  const o = useLndOptions();
+  const [f, setF] = useState({ name: cert?.name || '', code: cert?.code || '', issuing_body: cert?.issuing_body || '', category: cert?.category || '',
+    validity_months: cert?.validity_months ?? 12, is_mandatory: !!cert?.is_mandatory, competency_id: cert?.competency_id || '', description: cert?.description || '', is_active: cert?.is_active ?? true });
+  const [err, setErr] = useState('');
+  const set = (k) => (e) => setF(p => ({ ...p, [k]: e.target.type === 'checkbox' ? e.target.checked : e.target.value }));
+  const save = async (e) => {
+    e.preventDefault();
+    try { cert ? await api.put(`/certifications/master/${cert.id}`, f) : await api.post('/certifications/master', f); onSaved(); }
+    catch (x) { setErr(errText(x)); }
+  };
   return (
-    <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.45)', zIndex:1000, display:'flex', alignItems:'center', justifyContent:'center', padding:16 }}>
-      <div style={{ background:'#fff', borderRadius:12, padding:24, width:'100%', maxWidth:540, maxHeight:'85vh', overflowY:'auto' }}>
-        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:16 }}>
-          <h3 style={{ margin:0, color:'#4c1d95', fontSize:16 }}>{title}</h3>
-          <button onClick={onClose} style={{ background:'none', border:'none', cursor:'pointer', fontSize:20, color:'#6b7280' }}>✕</button>
-        </div>
-        {children}
-      </div>
-    </div>
+    <LndDialog title={cert ? 'Edit certification' : 'Add certification'} onClose={onClose} width={620} error={err}
+      footer={<><button type="button" className="pulse-btn-secondary" onClick={onClose}>Cancel</button><button type="submit" form="lnd-cert" className="pulse-btn-primary">Save</button></>}>
+      <form id="lnd-cert" className="lnd-form" onSubmit={save}>
+        <label className="full">Name *<input required value={f.name} onChange={set('name')} /></label>
+        <label>Code<input value={f.code} onChange={set('code')} /></label>
+        <label>Issuing body<input value={f.issuing_body} onChange={set('issuing_body')} /></label>
+        <label>Category<select value={f.category} onChange={set('category')}><option value="">—</option>{o.categories.map(c => <option key={c}>{c}</option>)}</select></label>
+        <label>Valid for (months)<input type="number" min="0" max="600" value={f.validity_months} onChange={set('validity_months')} /><span className="hint">0 = never expires</span></label>
+        <label>Proves skill<select value={f.competency_id} onChange={set('competency_id')}><option value="">—</option>{o.competencies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></label>
+        <label className="lnd-inline"><input type="checkbox" checked={f.is_mandatory} onChange={set('is_mandatory')} /> Mandatory for every active employee</label>
+        {cert && <label className="lnd-inline"><input type="checkbox" checked={f.is_active} onChange={set('is_active')} /> Active</label>}
+        <label className="full">Description<textarea value={f.description} onChange={set('description')} /></label>
+      </form>
+    </LndDialog>
   );
 }
 
-function Field({ label, children }) {
+function RecordForm({ record, masters, mode, onClose, onSaved }) {
+  // mode: 'new' | 'edit' | 'renew'
+  const [f, setF] = useState({ employee_id: record?.employee_id || '', certification_id: record?.certification_id || '',
+    certificate_number: mode === 'renew' ? '' : record?.certificate_number || '', issue_date: mode === 'edit' ? record?.issue_date || '' : today(),
+    expiry_date: mode === 'edit' ? record?.expiry_date || '' : '', issued_by: record?.issued_by || '', notes: mode === 'renew' ? '' : record?.notes || '', status: record?.status || 'active' });
+  const [file, setFile] = useState(null);
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+  const set = (k) => (e) => setF(p => ({ ...p, [k]: e.target.value }));
+  const cert = masters.find(m => m.id === Number(f.certification_id));
+  const save = async (e) => {
+    e.preventDefault(); setBusy(true); setErr('');
+    const fd = new FormData();
+    for (const [k, v] of Object.entries(f)) if (v !== '' && v != null) fd.append(mode === 'renew' && k === 'expiry_date' ? 'new_expiry_date' : k, v);
+    if (file) fd.append('file', file);
+    try {
+      if (mode === 'new') await api.post('/certifications/employee', fd);
+      else if (mode === 'renew') await api.post(`/certifications/employee/${record.id}/renew`, fd);
+      else await api.put(`/certifications/employee/${record.id}`, fd);
+      onSaved();
+    } catch (x) { setErr(errText(x)); } finally { setBusy(false); }
+  };
   return (
-    <div style={{ marginBottom:12 }}>
-      <label style={{ fontSize:12, fontWeight:600, color:'#4c1d95', display:'block', marginBottom:4 }}>{label}</label>
-      {children}
-    </div>
+    <LndDialog title={mode === 'new' ? 'Record a certificate' : mode === 'renew' ? `Renew — ${record.cert_name}` : `Edit — ${record.cert_name}`} onClose={onClose} width={600} error={err}
+      footer={<><button type="button" className="pulse-btn-secondary" onClick={onClose}>Cancel</button><button type="submit" form="lnd-rec" className="pulse-btn-primary" disabled={busy}>{busy ? 'Saving…' : 'Save'}</button></>}>
+      <form id="lnd-rec" className="lnd-form" onSubmit={save}>
+        {mode === 'new' ? (<>
+          <label className="full">Employee *<EmployeeSelect value={f.employee_id} onChange={v => setF(p => ({ ...p, employee_id: v }))} required /></label>
+          <label className="full">Certification *<select required value={f.certification_id} onChange={set('certification_id')}><option value="">Choose…</option>
+            {masters.filter(m => m.is_active).map(m => <option key={m.id} value={m.id}>{m.name}{m.issuing_body ? ` — ${m.issuing_body}` : ''}</option>)}</select></label>
+        </>) : <p className="full" style={{ margin: 0 }}><strong>{record.employee_name}</strong> · {record.cert_name}</p>}
+        <label>{mode === 'renew' ? 'New issue date *' : 'Issue date *'}<input type="date" required value={f.issue_date} onChange={set('issue_date')} /></label>
+        <label>Expiry date<input type="date" value={f.expiry_date} min={f.issue_date} onChange={set('expiry_date')} />
+          <span className="hint">{cert?.validity_months || record?.validity_months ? `Blank = issue date + ${cert?.validity_months || record?.validity_months} months` : 'Blank = never expires'}</span></label>
+        <label>Certificate number<input value={f.certificate_number} onChange={set('certificate_number')} /></label>
+        <label>Issued by<input value={f.issued_by} onChange={set('issued_by')} /></label>
+        {mode === 'edit' && <label>Status<select value={f.status} onChange={set('status')}><option value="active">Active</option><option value="expired">Expired</option><option value="revoked">Revoked</option></select></label>}
+        <label className="full">Certificate file (PDF / image, 5 MB)<input type="file" accept=".pdf,image/*" onChange={e => setFile(e.target.files?.[0] || null)} />
+          {mode === 'edit' && record.certificate_url && <span className="hint">A file is attached — choosing a new one replaces it.</span>}</label>
+        <label className="full">Notes<textarea value={f.notes} onChange={set('notes')} /></label>
+      </form>
+    </LndDialog>
   );
 }
-
-const inputStyle = { width:'100%', boxSizing:'border-box', padding:'8px 10px', border:'1px solid #e9e4ff', borderRadius:7, fontSize:13 };
 
 export default function CertificationManagement() {
   const toast = useToast();
-  const [tab, setTab] = useState('master');
-  const [masterCerts, setMasterCerts] = useState([]);
-  const [empCerts, setEmpCerts] = useState([]);
-  const [expiry, setExpiry] = useState({});
-  const [showForm, setShowForm] = useState(false);
-  const [editRecord, setEditRecord] = useState(null);
-  const [renewRecord, setRenewRecord] = useState(null);
-  const [renewDate, setRenewDate] = useState('');
-  const [form, setForm] = useState({ name:'', code:'', issuing_body:'', category:'', validity_months:12, is_mandatory:false, description:'' });
-  const [empForm, setEmpForm] = useState({ employee_id:'', certification_id:'', certificate_number:'', issue_date:'', notes:'' });
-  const [showEmpForm, setShowEmpForm] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [filterStatus, setFilterStatus] = useState('');
-  const [pendingDeleteMaster, setPendingDeleteMaster] = useState(null);
+  const [tab, setTab] = useState('employee');
+  const [masters, setMasters] = useState([]);
+  const [records, setRecords] = useState(null);
+  const [cov, setCov] = useState(null);
+  const [k, setK] = useState({});
+  const [mf, setMf] = useState({ status: 'active', category: '', mandatory: '', q: '' });
+  const [ef, setEf] = useState({ status: '', department: '', category: '', mandatory: '', certification_id: '', expiring_days: '', q: '' });
+  const [cf, setCf] = useState({ department: '', status: '', certification_id: '' });
+  const [dlg, setDlg] = useState(null);
 
-  const load = useCallback(async () => {
-    const [mRes, eRes, xRes] = await Promise.allSettled([
-      api.get('/certifications/master'),
-      api.get('/certifications/employee' + (filterStatus ? `?status=${filterStatus}` : '')),
-      api.get('/certifications/expiry-dashboard'),
-    ]);
-    if (mRes.status === 'fulfilled') setMasterCerts(mRes.value.data || []);
-    if (eRes.status === 'fulfilled') setEmpCerts(eRes.value.data || []);
-    if (xRes.status === 'fulfilled') setExpiry(xRes.value.data || {});
-  }, [filterStatus]);
+  const loadMasters = useCallback(() => api.get(`/certifications/master${toQuery(mf)}`).then(r => setMasters(r.data)).catch(e => toast.error(errText(e))), [mf]); // eslint-disable-line react-hooks/exhaustive-deps
+  const loadRecords = useCallback(() => { setRecords(null); return api.get(`/certifications/employee${toQuery(ef)}`).then(r => setRecords(r.data)).catch(e => { toast.error(errText(e)); setRecords([]); }); }, [ef]); // eslint-disable-line react-hooks/exhaustive-deps
+  const loadCov = useCallback(() => api.get(`/certifications/coverage${toQuery(cf)}`).then(r => setCov(r.data)).catch(() => setCov({ rows: [], summary: {} })), [cf]);
+  const loadK = useCallback(() => api.get(`/certifications/expiry-dashboard${ef.department ? `?department=${encodeURIComponent(ef.department)}` : ''}`).then(r => setK(r.data)).catch(() => {}), [ef.department]);
+  useEffect(() => { loadMasters(); }, [loadMasters]);
+  useEffect(() => { loadRecords(); }, [loadRecords]);
+  useEffect(() => { if (tab === 'coverage') loadCov(); }, [tab, loadCov]);
+  useEffect(() => { loadK(); }, [loadK]);
+  const refresh = () => { loadMasters(); loadRecords(); loadK(); if (tab === 'coverage') loadCov(); };
 
-  useEffect(() => { load(); }, [load]);
-
-  const saveMaster = async (e) => {
-    e.preventDefault();
-    setLoading(true);
-    try {
-      if (editRecord) {
-        await api.put(`/certifications/master/${editRecord.id}`, form);
-        toast.success('Certification updated');
-      } else {
-        await api.post('/certifications/master', form);
-        toast.success('Certification created');
-      }
-      setShowForm(false); setEditRecord(null);
-      setForm({ name:'', code:'', issuing_body:'', category:'', validity_months:12, is_mandatory:false, description:'' });
-      load();
-    } catch (err) { toast.error(err?.response?.data?.error || 'Failed'); }
-    finally { setLoading(false); }
+  const confirmDelete = async () => {
+    const d = dlg; setDlg(null);
+    try { await api.delete(d.url); toast.success('Deleted'); refresh(); } catch (e) { toast.error(errText(e)); }
   };
-
-  const deleteMaster = async () => {
-    if (!pendingDeleteMaster) return;
-    const id = pendingDeleteMaster;
-    setPendingDeleteMaster(null);
-    try { await api.delete(`/certifications/master/${id}`); toast.success('Deleted'); load(); }
-    catch (err) { toast.error(err?.response?.data?.error || 'Failed'); }
-  };
-
-  const saveEmpCert = async (e) => {
-    e.preventDefault();
-    setLoading(true);
-    try {
-      await api.post('/certifications/employee', empForm);
-      toast.success('Employee certification recorded');
-      setShowEmpForm(false);
-      setEmpForm({ employee_id:'', certification_id:'', certificate_number:'', issue_date:'', notes:'' });
-      load();
-    } catch (err) { toast.error(err?.response?.data?.error || 'Failed'); }
-    finally { setLoading(false); }
-  };
-
-  const doRenew = async () => {
-    if (!renewDate) { toast.error('Enter new expiry date'); return; }
-    try {
-      await api.post(`/certifications/employee/${renewRecord.id}/renew`, { new_expiry_date: renewDate });
-      toast.success('Certification renewed');
-      setRenewRecord(null); setRenewDate('');
-      load();
-    } catch (err) { toast.error(err?.response?.data?.error || 'Failed'); }
-  };
-
-  const tabStyle = (k) => ({ padding:'8px 18px', border:'none', cursor:'pointer', borderRadius:'6px 6px 0 0', fontWeight:600, fontSize:14, background: tab===k ? '#6B3FDB' : '#e9e4ff', color: tab===k ? '#fff' : '#6B3FDB' });
+  const allMasters = masters;
 
   return (
-    <PageShell dock={
-      <PageHero
-        icon={GraduationCap}
-        eyebrow="Human Resources"
-        title="📋 Certification Management"
-        subtitle="Manage compliance certs, expiry tracking, and renewal workflows"
-      />
-    }>
+    <PageShell dock={<PageHero icon={Award} eyebrow="Learning Center" title="Certifications" subtitle="Who holds which certificate, what is expiring, who is missing a mandatory one"
+      actions={<button type="button" className="plh-cta" onClick={() => setDlg({ type: 'record', mode: 'new' })}>+ Record certificate</button>} />}>
+      <div className="lnd">
+        <div className="lnd-kpis">
+          <Kpi label="Active" value={k.active ?? 0} tone="good" onClick={() => { setTab('employee'); setEf(v => ({ ...v, status: 'active', expiring_days: '' })); }} />
+          <Kpi label="Expiring in 30 days" value={k.expiring_30d ?? 0} tone={k.expiring_30d ? 'warn' : undefined} onClick={() => { setTab('employee'); setEf(v => ({ ...v, status: '', expiring_days: '30' })); }} />
+          <Kpi label="31–60 days" value={k.expiring_60d ?? 0} onClick={() => { setTab('employee'); setEf(v => ({ ...v, status: '', expiring_days: '60' })); }} />
+          <Kpi label="61–90 days" value={k.expiring_90d ?? 0} onClick={() => { setTab('employee'); setEf(v => ({ ...v, status: '', expiring_days: '90' })); }} />
+          <Kpi label="Expired" value={k.expired ?? 0} tone={k.expired ? 'bad' : undefined} onClick={() => { setTab('employee'); setEf(v => ({ ...v, status: 'expired', expiring_days: '' })); }} />
+          <Kpi label="Mandatory coverage" value={`${k.mandatory_coverage_pct ?? 100}%`} sub={`${k.mandatory_missing ?? 0} missing or expired`} tone={k.mandatory_missing ? 'bad' : 'good'} onClick={() => setTab('coverage')} />
+        </div>
+        <Tabs value={tab} onChange={setTab} tabs={[{ id: 'employee', label: 'Employee certificates' }, { id: 'coverage', label: 'Mandatory coverage' }, { id: 'library', label: 'Certification library', count: masters.length }]} />
 
-
-      {/* Expiry KPIs */}
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(140px,1fr))', gap:12, marginBottom:20 }}>
-        {[
-          { label:'Active', value: expiry.active || 0, color:'#16a34a', icon:'✅' },
-          { label:'Expiring 30d', value: expiry.expiring_30d || 0, color:'#dc2626', icon:'⏰' },
-          { label:'Expiring 60d', value: expiry.expiring_60d || 0, color:'#7c5cf0', icon:'📅' },
-          { label:'Expiring 90d', value: expiry.expiring_90d || 0, color:'#6d28d9', icon:'📆' },
-          { label:'Expired', value: expiry.expired || 0, color:'#dc2626', icon:'❌' },
-        ].map(k => (
-          <div key={k.label} style={{ background:'#fff', border:'1px solid #e9e4ff', borderRadius:10, padding:'14px 16px' }}>
-            <div style={{ fontSize:18 }}>{k.icon}</div>
-            <div style={{ fontSize:22, fontWeight:800, color:k.color, marginTop:4 }}>{k.value}</div>
-            <div style={{ fontSize:11, color:'#6b7280', marginTop:2 }}>{k.label}</div>
-          </div>
-        ))}
-      </div>
-
-      <div style={{ display:'flex', gap:4, borderBottom:'2px solid #e9e4ff' }}>
-        {[['master','Certification Library'],['employee','Employee Certifications']].map(([k,l]) => (
-          <button key={k} style={tabStyle(k)} onClick={() => setTab(k)}>{l}</button>
-        ))}
-      </div>
-
-      <div style={{ background:'#fff', border:'1px solid #e9e4ff', borderTop:'none', borderRadius:'0 8px 8px 8px', padding:20 }}>
-
-        {/* ── MASTER TAB ── */}
-        {tab === 'master' && (
-          <div>
-            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:16 }}>
-              <h3 style={{ margin:0, color:'#4c1d95' }}>Certification Library</h3>
-              <button onClick={() => { setShowForm(true); setEditRecord(null); setForm({ name:'', code:'', issuing_body:'', category:'', validity_months:12, is_mandatory:false, description:'' }); }}
-                style={{ background:'#6B3FDB', color:'#fff', border:'none', borderRadius:8, padding:'8px 18px', cursor:'pointer', fontWeight:600 }}>
-                + Add Certification
-              </button>
-            </div>
-            <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
-              <thead><tr style={{ background:'#f5f3ff' }}>
-                {['Name','Code','Issuing Body','Category','Validity','Mandatory','Actions'].map(h => (
-                  <th key={h} style={{ padding:'8px 12px', textAlign:'left', borderBottom:'1px solid #e9e4ff', color:'#4c1d95', fontWeight:600 }}>{h}</th>
-                ))}
-              </tr></thead>
-              <tbody>
-                {masterCerts.map(c => (
-                  <tr key={c.id} style={{ borderBottom:'1px solid #f0ebff' }}>
-                    <td style={{ padding:'8px 12px', fontWeight:600 }}>{c.name}</td>
-                    <td style={{ padding:'8px 12px', color:'#6b7280' }}>{c.code || '—'}</td>
-                    <td style={{ padding:'8px 12px', color:'#6b7280' }}>{c.issuing_body || '—'}</td>
-                    <td style={{ padding:'8px 12px' }}>{c.category || '—'}</td>
-                    <td style={{ padding:'8px 12px' }}>{c.validity_months} months</td>
-                    <td style={{ padding:'8px 12px' }}>
-                      <span style={{ padding:'2px 8px', borderRadius:10, fontSize:11, fontWeight:600, background: c.is_mandatory ? '#fef2f2' : '#f0fdf4', color: c.is_mandatory ? '#dc2626' : '#16a34a' }}>
-                        {c.is_mandatory ? 'Mandatory' : 'Optional'}
-                      </span>
-                    </td>
-                    <td style={{ padding:'8px 12px' }}>
-                      <div style={{ display:'flex', gap:6 }}>
-                        <button onClick={() => { setEditRecord(c); setForm({ name:c.name, code:c.code||'', issuing_body:c.issuing_body||'', category:c.category||'', validity_months:c.validity_months, is_mandatory:c.is_mandatory, description:c.description||'' }); setShowForm(true); }}
-                          style={{ padding:'4px 10px', background:'#e9e4ff', color:'#6B3FDB', border:'none', borderRadius:6, cursor:'pointer', fontWeight:600, fontSize:12 }}>Edit</button>
-                        <button onClick={() => setPendingDeleteMaster(c.id)}
-                          style={{ padding:'4px 10px', background:'#fef2f2', color:'#dc2626', border:'none', borderRadius:6, cursor:'pointer', fontWeight:600, fontSize:12 }}>Delete</button>
-                      </div>
-                    </td>
+        {tab === 'employee' && (<>
+          <Filters value={ef} onChange={setEf} fields={['department', 'category', 'mandatory', 'q']} onReset={() => setEf({ status: '', department: '', category: '', mandatory: '', certification_id: '', expiring_days: '', q: '' })}
+            extra={<>
+              <label>Status<select value={ef.status} onChange={e => setEf(v => ({ ...v, status: e.target.value }))}><option value="">Current (not renewed)</option><option value="active">Active</option><option value="expired">Expired</option><option value="revoked">Revoked</option><option value="renewed">Renewed (history)</option></select></label>
+              <label>Certification<select value={ef.certification_id} onChange={e => setEf(v => ({ ...v, certification_id: e.target.value }))}><option value="">All</option>{allMasters.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</select></label>
+              <label>Expiring within<select value={ef.expiring_days} onChange={e => setEf(v => ({ ...v, expiring_days: e.target.value }))}><option value="">Any time</option><option value="30">30 days</option><option value="60">60 days</option><option value="90">90 days</option><option value="180">6 months</option></select></label>
+            </>} />
+          <div className="lnd-card">
+            <div className="lnd-card-title"><span>{records?.length ?? 0} record(s)</span>
+              <button type="button" className="lnd-link" onClick={() => downloadCsv(records || [], 'certificates', [{ key: 'employee_name', label: 'Employee' }, { key: 'office_id', label: 'Code' }, { key: 'department', label: 'Department' },
+                { key: 'cert_name', label: 'Certification' }, { key: 'certificate_number', label: 'Number' }, { key: 'issue_date', label: 'Issued' }, { key: 'expiry_date', label: 'Expires' }, { key: 'status', label: 'Status' }])}>Export CSV</button></div>
+            {!records ? <Empty>Loading…</Empty> : records.length ? (
+              <div className="lnd-table-wrap"><table className="lnd-table">
+                <thead><tr><th>Employee</th><th>Certification</th><th>Number</th><th>Issued</th><th>Expires</th><th className="num">Days left</th><th>Status</th><th /></tr></thead>
+                <tbody>{records.map(r => (
+                  <tr key={r.id}>
+                    <td>{r.employee_name}<div className="lnd-muted">{r.office_id} · {r.department}</div></td>
+                    <td>{r.cert_name} {r.is_mandatory && <Pill tone="bad">Mandatory</Pill>}<div className="lnd-muted">{r.issuing_body}</div></td>
+                    <td>{r.certificate_number || '—'}</td><td>{fmtDate(r.issue_date)}</td><td>{r.expiry_date ? fmtDate(r.expiry_date) : 'Never'}</td>
+                    <td className="num">{r.expiry_date ? (r.days_until_expiry < 0 ? <span style={{ color: 'var(--color-danger)' }}>{-r.days_until_expiry} late</span> : r.days_until_expiry) : '—'}</td>
+                    <td><Pill status={r.status} /></td>
+                    <td><div className="lnd-actions">
+                      {r.certificate_url && <button type="button" className="lnd-link" onClick={() => openEmployeeFile(r.certificate_url)}>File</button>}
+                      {['active', 'expired'].includes(r.status) && <button type="button" className="lnd-link" onClick={() => setDlg({ type: 'record', mode: 'renew', record: r })}>Renew</button>}
+                      <button type="button" className="lnd-link" onClick={() => setDlg({ type: 'record', mode: 'edit', record: r })}>Edit</button>
+                      <button type="button" className="lnd-link is-danger" onClick={() => setDlg({ type: 'delete', url: `/certifications/employee/${r.id}`, msg: 'Delete this certificate record?' })}>Delete</button>
+                    </div></td>
                   </tr>
-                ))}
-                {masterCerts.length === 0 && (
-                  <tr><td colSpan={7} style={{ padding:'32px 16px', textAlign:'center', color:'#9ca3af' }}>No certifications defined yet</td></tr>
-                )}
-              </tbody>
-            </table>
+                ))}</tbody></table></div>
+            ) : <Empty>No certificates match.</Empty>}
           </div>
-        )}
+        </>)}
 
-        {/* ── EMPLOYEE TAB ── */}
-        {tab === 'employee' && (
-          <div>
-            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:16, flexWrap:'wrap', gap:10 }}>
-              <h3 style={{ margin:0, color:'#4c1d95' }}>Employee Certifications</h3>
-              <div style={{ display:'flex', gap:10 }}>
-                <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)}
-                  style={{ padding:'8px 12px', border:'1px solid #e9e4ff', borderRadius:7, fontSize:13 }}>
-                  <option value="">All Status</option>
-                  <option value="active">Active</option>
-                  <option value="expired">Expired</option>
-                  <option value="renewed">Renewed</option>
-                </select>
-                <button onClick={() => setShowEmpForm(true)}
-                  style={{ background:'#6B3FDB', color:'#fff', border:'none', borderRadius:8, padding:'8px 18px', cursor:'pointer', fontWeight:600 }}>
-                  + Record Certification
-                </button>
-              </div>
-            </div>
-            <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
-              <thead><tr style={{ background:'#f5f3ff' }}>
-                {['Employee','Department','Certification','Issue Date','Expiry Date','Days Left','Status','Actions'].map(h => (
-                  <th key={h} style={{ padding:'8px 12px', textAlign:'left', borderBottom:'1px solid #e9e4ff', color:'#4c1d95', fontWeight:600 }}>{h}</th>
-                ))}
-              </tr></thead>
-              <tbody>
-                {empCerts.map(ec => {
-                  const days = parseInt(ec.days_until_expiry);
-                  const daysColor = days < 0 ? '#dc2626' : days < 30 ? '#7c5cf0' : days < 90 ? '#6d28d9' : '#16a34a';
-                  return (
-                    <tr key={ec.id} style={{ borderBottom:'1px solid #f0ebff' }}>
-                      <td style={{ padding:'8px 12px', fontWeight:600 }}>{ec.employee_name}</td>
-                      <td style={{ padding:'8px 12px', color:'#6b7280' }}>{ec.department}</td>
-                      <td style={{ padding:'8px 12px' }}>{ec.cert_name}</td>
-                      <td style={{ padding:'8px 12px' }}>{ec.issue_date || '—'}</td>
-                      <td style={{ padding:'8px 12px' }}>{ec.expiry_date || '—'}</td>
-                      <td style={{ padding:'8px 12px', fontWeight:700, color: daysColor }}>
-                        {ec.expiry_date ? (days < 0 ? `${Math.abs(days)}d overdue` : `${days}d`) : '—'}
-                      </td>
-                      <td style={{ padding:'8px 12px' }}>
-                        <span style={{ padding:'2px 8px', borderRadius:10, fontSize:11, fontWeight:600, background:(STATUS_COLORS[ec.status]||'#6b7280')+'20', color:STATUS_COLORS[ec.status]||'#6b7280' }}>
-                          {ec.status}
-                        </span>
-                      </td>
-                      <td style={{ padding:'8px 12px' }}>
-                        {ec.status === 'active' && (
-                          <button onClick={() => { setRenewRecord(ec); setRenewDate(''); }}
-                            style={{ padding:'4px 10px', background:'#e9e4ff', color:'#6B3FDB', border:'none', borderRadius:6, cursor:'pointer', fontWeight:600, fontSize:12 }}>Renew</button>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-                {empCerts.length === 0 && (
-                  <tr><td colSpan={8} style={{ padding:'32px 16px', textAlign:'center', color:'#9ca3af' }}>No employee certifications recorded</td></tr>
-                )}
-              </tbody>
-            </table>
+        {tab === 'coverage' && (<>
+          <div className="lnd-filters">
+            <label>Department<select value={cf.department} onChange={e => setCf(v => ({ ...v, department: e.target.value }))}><option value="">All</option>{[...new Set((cov?.rows || []).map(r => r.department).filter(Boolean))].map(d => <option key={d}>{d}</option>)}</select></label>
+            <label>Certification<select value={cf.certification_id} onChange={e => setCf(v => ({ ...v, certification_id: e.target.value }))}><option value="">All mandatory</option>{masters.filter(m => m.is_mandatory).map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</select></label>
+            <label>Show<select value={cf.status} onChange={e => setCf(v => ({ ...v, status: e.target.value }))}><option value="">Everyone</option><option value="missing,expired">Missing or expired</option><option value="missing">Missing</option><option value="expired">Expired</option><option value="valid">Valid</option></select></label>
+            {cov?.rows?.length > 0 && <button type="button" className="lnd-link" onClick={() => downloadCsv(cov.rows, 'mandatory-certificate-coverage')}>Export CSV</button>}
           </div>
-        )}
+          <div className="lnd-card">
+            {!cov ? <Empty>Loading…</Empty> : cov.rows.length ? (<>
+              <p className="lnd-muted" style={{ marginTop: 0 }}>{cov.summary.valid} valid · {cov.summary.expired} expired · {cov.summary.missing} missing — {cov.summary.coverage_pct}% covered</p>
+              <div className="lnd-table-wrap"><table className="lnd-table"><thead><tr><th>Employee</th><th>Department</th><th>Certification</th><th>Expiry</th><th>Status</th><th /></tr></thead>
+                <tbody>{cov.rows.map((r, i) => (
+                  <tr key={i}><td>{r.employee_name}<div className="lnd-muted">{r.office_id}</div></td><td>{r.department}</td><td>{r.cert_name}</td><td>{fmtDate(r.expiry_date)}</td><td><Pill status={r.status} /></td>
+                    <td>{r.status === 'missing' && <button type="button" className="lnd-link" onClick={() => setDlg({ type: 'record', mode: 'new', record: { employee_id: r.employee_id, certification_id: r.certification_id } })}>Record</button>}</td></tr>
+                ))}</tbody></table></div>
+            </>) : <Empty>No mandatory certifications. Tick “Mandatory” on a certification in the library to track coverage.</Empty>}
+          </div>
+        </>)}
+
+        {tab === 'library' && (<>
+          <Filters value={mf} onChange={setMf} fields={['category', 'mandatory', 'q']} onReset={() => setMf({ status: 'active', category: '', mandatory: '', q: '' })}
+            extra={<label>Status<select value={mf.status} onChange={e => setMf(v => ({ ...v, status: e.target.value }))}><option value="active">Active</option><option value="inactive">Inactive</option><option value="all">All</option></select></label>} />
+          <div className="lnd-card">
+            <div className="lnd-card-title"><span>Library</span><button type="button" className="pulse-btn-primary lnd-btn-sm" onClick={() => setDlg({ type: 'master' })}>+ Add certification</button></div>
+            {masters.length ? (
+              <div className="lnd-table-wrap"><table className="lnd-table"><thead><tr><th>Name</th><th>Code</th><th>Issuing body</th><th>Category</th><th>Validity</th><th>Proves skill</th><th className="num">Holders</th><th /></tr></thead>
+                <tbody>{masters.map(m => (
+                  <tr key={m.id}><td>{m.name} {m.is_mandatory && <Pill tone="bad">Mandatory</Pill>} {!m.is_active && <Pill>Inactive</Pill>}</td><td>{m.code || '—'}</td><td>{m.issuing_body || '—'}</td>
+                    <td>{m.category || '—'}</td><td>{m.validity_months ? `${m.validity_months} months` : 'Never expires'}</td><td>{m.competency_name || '—'}</td>
+                    <td className="num">{m.active_holders}</td>
+                    <td><div className="lnd-actions"><button type="button" className="lnd-link" onClick={() => setDlg({ type: 'master', cert: m })}>Edit</button>
+                      <button type="button" className="lnd-link is-danger" onClick={() => setDlg({ type: 'delete', url: `/certifications/master/${m.id}`, msg: m.total_records ? `${m.total_records} records use it — it cannot be deleted. Deactivate it with Edit instead.` : 'Delete this certification?' })}>Delete</button></div></td></tr>
+                ))}</tbody></table></div>
+            ) : <Empty>No certifications in the library yet.</Empty>}
+          </div>
+        </>)}
       </div>
-
-      {/* Master cert form modal */}
-      {showForm && (
-        <Modal title={editRecord ? 'Edit Certification' : 'Add Certification'} onClose={() => { setShowForm(false); setEditRecord(null); }}>
-          <form onSubmit={saveMaster}>
-            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
-              <div style={{ gridColumn:'1/-1' }}>
-                <Field label="Certification Name *">
-                  <input required value={form.name} onChange={e => setForm(f => ({...f, name:e.target.value}))} style={inputStyle} />
-                </Field>
-              </div>
-              <Field label="Code"><input value={form.code} onChange={e => setForm(f => ({...f, code:e.target.value}))} style={inputStyle} /></Field>
-              <Field label="Issuing Body"><input value={form.issuing_body} onChange={e => setForm(f => ({...f, issuing_body:e.target.value}))} style={inputStyle} /></Field>
-              <Field label="Category">
-                <select value={form.category} onChange={e => setForm(f => ({...f, category:e.target.value}))} style={inputStyle}>
-                  <option value="">-- Select Category --</option>
-                  {['Technical','Safety','Quality','Leadership','Compliance','Finance','HR','IT','Operations','Other'].map(c => <option key={c} value={c}>{c}</option>)}
-                </select>
-              </Field>
-              <Field label="Validity (months)"><input type="number" value={form.validity_months} onChange={e => setForm(f => ({...f, validity_months:parseInt(e.target.value)||12}))} style={inputStyle} /></Field>
-              <div style={{ gridColumn:'1/-1' }}>
-                <Field label="Description">
-                  <textarea value={form.description} onChange={e => setForm(f => ({...f, description:e.target.value}))} style={{...inputStyle, height:72, resize:'vertical'}} />
-                </Field>
-              </div>
-              <div style={{ gridColumn:'1/-1', display:'flex', alignItems:'center', gap:10 }}>
-                <input type="checkbox" id="mand" checked={form.is_mandatory} onChange={e => setForm(f => ({...f, is_mandatory:e.target.checked}))} />
-                <label htmlFor="mand" style={{ fontSize:13, fontWeight:600, color:'#4c1d95' }}>Mandatory certification</label>
-              </div>
-            </div>
-            <div style={{ display:'flex', gap:10, marginTop:16 }}>
-              <button type="submit" disabled={loading} style={{ flex:1, background:'#6B3FDB', color:'#fff', border:'none', borderRadius:8, padding:'9px 0', cursor:'pointer', fontWeight:600 }}>
-                {loading ? 'Saving…' : editRecord ? 'Update' : 'Create'}
-              </button>
-              <button type="button" onClick={() => { setShowForm(false); setEditRecord(null); }} style={{ flex:1, background:'#e9e4ff', color:'#6B3FDB', border:'none', borderRadius:8, padding:'9px 0', cursor:'pointer', fontWeight:600 }}>Cancel</button>
-            </div>
-          </form>
-        </Modal>
-      )}
-
-      {/* Employee cert form modal */}
-      {showEmpForm && (
-        <Modal title="Record Employee Certification" onClose={() => setShowEmpForm(false)}>
-          <form onSubmit={saveEmpCert}>
-            <Field label="Employee ID *"><input required value={empForm.employee_id} onChange={e => setEmpForm(f => ({...f, employee_id:e.target.value}))} style={inputStyle} placeholder="Employee ID" /></Field>
-            <Field label="Certification *">
-              <select required value={empForm.certification_id} onChange={e => setEmpForm(f => ({...f, certification_id:e.target.value}))} style={inputStyle}>
-                <option value="">Select certification</option>
-                {masterCerts.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-              </select>
-            </Field>
-            <Field label="Certificate Number"><input value={empForm.certificate_number} onChange={e => setEmpForm(f => ({...f, certificate_number:e.target.value}))} style={inputStyle} /></Field>
-            <Field label="Issue Date"><input type="date" value={empForm.issue_date} onChange={e => setEmpForm(f => ({...f, issue_date:e.target.value}))} style={inputStyle} /></Field>
-            <Field label="Notes"><textarea value={empForm.notes} onChange={e => setEmpForm(f => ({...f, notes:e.target.value}))} style={{...inputStyle, height:60, resize:'vertical'}} /></Field>
-            <div style={{ display:'flex', gap:10, marginTop:12 }}>
-              <button type="submit" disabled={loading} style={{ flex:1, background:'#6B3FDB', color:'#fff', border:'none', borderRadius:8, padding:'9px 0', cursor:'pointer', fontWeight:600 }}>
-                {loading ? 'Saving…' : 'Record'}
-              </button>
-              <button type="button" onClick={() => setShowEmpForm(false)} style={{ flex:1, background:'#e9e4ff', color:'#6B3FDB', border:'none', borderRadius:8, padding:'9px 0', cursor:'pointer', fontWeight:600 }}>Cancel</button>
-            </div>
-          </form>
-        </Modal>
-      )}
-
-      {/* Renew modal */}
-      {renewRecord && (
-        <Modal title={`Renew — ${renewRecord.cert_name}`} onClose={() => setRenewRecord(null)}>
-          <p style={{ fontSize:13, color:'#6b7280', margin:'0 0 16px' }}>
-            Employee: <strong>{renewRecord.employee_name}</strong><br />
-            Current expiry: <strong>{renewRecord.expiry_date || 'N/A'}</strong>
-          </p>
-          <Field label="New Expiry Date *">
-            <input type="date" value={renewDate} onChange={e => setRenewDate(e.target.value)} style={inputStyle} required />
-          </Field>
-          <div style={{ display:'flex', gap:10, marginTop:12 }}>
-            <button onClick={doRenew} style={{ flex:1, background:'#16a34a', color:'#fff', border:'none', borderRadius:8, padding:'9px 0', cursor:'pointer', fontWeight:600 }}>Renew</button>
-            <button onClick={() => setRenewRecord(null)} style={{ flex:1, background:'#e9e4ff', color:'#6B3FDB', border:'none', borderRadius:8, padding:'9px 0', cursor:'pointer', fontWeight:600 }}>Cancel</button>
-          </div>
-        </Modal>
-      )}
-
-      <ConfirmDialog
-        open={!!pendingDeleteMaster}
-        title="Delete Certification"
-        message="Delete this certification?"
-        confirmLabel="Delete"
-        variant="danger"
-        onConfirm={deleteMaster}
-        onCancel={() => setPendingDeleteMaster(null)}
-      />
+      {dlg?.type === 'master' && <MasterForm cert={dlg.cert} onClose={() => setDlg(null)} onSaved={() => { setDlg(null); toast.success('Saved'); refresh(); }} />}
+      {dlg?.type === 'record' && <RecordForm mode={dlg.mode} record={dlg.record} masters={allMasters} onClose={() => setDlg(null)} onSaved={() => { setDlg(null); toast.success('Saved'); refresh(); }} />}
+      <ConfirmDialog open={dlg?.type === 'delete'} title="Delete" message={dlg?.msg} confirmLabel="Delete" variant="danger" onConfirm={confirmDelete} onCancel={() => setDlg(null)} />
     </PageShell>
   );
 }

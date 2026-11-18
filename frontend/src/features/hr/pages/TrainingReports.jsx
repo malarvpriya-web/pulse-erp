@@ -1,177 +1,109 @@
 // frontend/src/features/hr/pages/TrainingReports.jsx
-import { useState, useEffect, useCallback } from 'react';
-import { GraduationCap } from 'lucide-react';
-import { BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, ResponsiveContainer, Cell } from 'recharts';
+// L&D Reports (2026-11-18). Every report takes the same filters — period
+// (last 3 / 6 / 12 months, quarter, FY, custom), department, category,
+// training, trainer, mandatory — and exports what is on screen.
+import { useEffect, useMemo, useState } from 'react';
+import { BarChart3 } from 'lucide-react';
+import { BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, ResponsiveContainer } from 'recharts';
 import api from '@/services/api/client';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import { Filters, Pill, Empty, EmployeeSelect, fmtDate, fmtINR, fmtNum, toQuery, errText, downloadCsv, statusLabel } from '@/features/hr/learning/lndUi';
 
 const REPORTS = [
-  { id:'training-hours',         label:'Training Hours by Dept',   icon:'⏱' },
-  { id:'completion-rates',       label:'Completion Rates',          icon:'✅' },
-  { id:'certification-status',   label:'Certification Status',      icon:'📋' },
-  { id:'skill-gap/department',   label:'Skill Gap by Department',   icon:'📊' },
-  { id:'skill-gap/role',         label:'Skill Gap by Role',         icon:'🎯' },
-  { id:'assessment-results',     label:'Assessment Results',        icon:'📝' },
-  { id:'overdue-training',       label:'Overdue Training',          icon:'🔴' },
-  { id:'budget-vs-actual',       label:'Budget vs Actual',          icon:'💰' },
-  { id:'training-roi',           label:'Training ROI',              icon:'📈' },
-  { id:'trainer-effectiveness',  label:'Trainer Effectiveness',     icon:'👨‍🏫' },
-  { id:'mandatory-compliance',   label:'Mandatory Compliance',      icon:'🔒' },
-  { id:'feedback-analysis',      label:'Feedback & Satisfaction',   icon:'⭐' },
-  { id:'learning-path-completion', label:'Learning Path Completion', icon:'🛤️' },
-  { id:'competency-gaps',        label:'Competency Gaps',           icon:'🧠' },
+  { id: 'mandatory-compliance', label: 'Mandatory compliance', chart: ['training', 'compliance_pct'], filters: ['department', 'category'] },
+  { id: 'refresher-due', label: 'Refreshers due', filters: ['department', 'category'] },
+  { id: 'completion-rates', label: 'Completion by training', chart: ['training', 'completion_pct'] },
+  { id: 'overdue-training', label: 'Overdue training' },
+  { id: 'attendance', label: 'Session attendance', chart: ['training', 'attendance_pct'] },
+  { id: 'training-hours', label: 'Training hours by department', chart: ['department', 'total_hours'] },
+  { id: 'assessment-results', label: 'Test results', chart: ['test', 'pass_rate_pct'] },
+  { id: 'self-review-comparison', label: 'Before vs after (by training)', chart: ['training', 'knowledge_change'] },
+  { id: 'self-review-people', label: 'Before vs after (by person)' },
+  { id: 'feedback-analysis', label: 'Feedback', chart: ['training', 'avg_rating'] },
+  { id: 'trainer-effectiveness', label: 'Trainer effectiveness', chart: ['trainer', 'avg_rating'] },
+  { id: 'budget-vs-actual', label: 'Budget vs actual', chart: ['category', 'actual'] },
+  { id: 'training-cost', label: 'Cost per training' },
+  { id: 'certification-status', label: 'Certificate status', filters: ['department', 'category', 'mandatory'] },
+  { id: 'certification-coverage', label: 'Missing / expired mandatory certificates', filters: ['department'] },
+  { id: 'competency-gaps', label: 'Skill gaps', filters: ['department'], group: true },
+  { id: 'learning-path-completion', label: 'Learning path completion', chart: ['path', 'completion_pct'], filters: ['department'] },
+  { id: 'employee-history', label: 'One employee’s training record', employee: true },
 ];
+const DEFAULT = { period: 'fytd', department: '', category: '', trainer_id: '', mandatory: '', program_id: '', employee_id: '', group: 'department', cost_min: '', cost_max: '' };
+const COST_REPORTS = ['budget-vs-actual', 'training-cost', 'self-review-comparison'];
 
-function exportCSV(data, filename) {
-  if (!data?.length) return;
-  const keys = Object.keys(data[0]);
-  const rows = [keys.join(','), ...data.map(r => keys.map(k => JSON.stringify(r[k] ?? '')).join(','))];
-  const blob = new Blob([rows.join('\n')], { type:'text/csv' });
-  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = filename + '.csv'; a.click();
-}
-
-function DataTable({ data }) {
-  if (!data?.length) return <p style={{ color:'#9ca3af', textAlign:'center', padding:'24px 0' }}>No data available</p>;
-  const keys = Object.keys(data[0]);
-  return (
-    <div style={{ overflowX:'auto' }}>
-      <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
-        <thead><tr style={{ background:'#f5f3ff' }}>
-          {keys.map(k => <th key={k} style={{ padding:'8px 12px', textAlign:'left', borderBottom:'1px solid #e9e4ff', color:'#4c1d95', fontWeight:600, whiteSpace:'nowrap' }}>{k.replace(/_/g,' ').toUpperCase()}</th>)}
-        </tr></thead>
-        <tbody>
-          {data.map((row, i) => (
-            <tr key={i} style={{ borderBottom:'1px solid #f0ebff' }}>
-              {keys.map(k => (
-                <td key={k} style={{ padding:'7px 12px', color: typeof row[k] === 'number' ? '#6B3FDB' : '#374151', fontWeight: typeof row[k] === 'number' ? 700 : 400, whiteSpace:'nowrap' }}>
-                  {row[k] === null || row[k] === undefined ? '—' : String(row[k])}
-                </td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
+const MONEY = /cost|budget|actual|variance/;
+const DATE = /(^|_)(date|completed_on|last_completed|valid_until|next_scheduled|session_date|expiry_date)$/;
+function cell(k, v) {
+  if (v == null || v === '') return '—';
+  if (typeof v === 'boolean') return v ? 'Yes' : 'No';
+  if (k === 'status') return <Pill status={v} />;
+  if (DATE.test(k)) return fmtDate(v);
+  if (/_pct$/.test(k)) return `${fmtNum(v)}%`;
+  if (MONEY.test(k) && typeof v === 'number') return fmtINR(v);
+  if (typeof v === 'number') return fmtNum(v, 2);
+  return String(v);
 }
 
 export default function TrainingReports() {
-  const [activeReport, setActiveReport] = useState(REPORTS[0].id);
-  const [data, setData] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [fyStart, setFyStart] = useState('');
-  const [fyEnd, setFyEnd] = useState('');
-  const [department, setDepartment] = useState('');
-  const [deptList, setDeptList] = useState([]);
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    setData([]);
-    try {
-      let url = `/lnd-reports/${activeReport}`;
-      const params = [];
-      if (fyStart) params.push(`fy_start=${fyStart}`);
-      if (fyEnd) params.push(`fy_end=${fyEnd}`);
-      if (department && activeReport === 'skill-gap/department') params.push(`department=${encodeURIComponent(department)}`);
-      if (params.length) url += '?' + params.join('&');
-      const r = await api.get(url);
-      setData(r.data || []);
-    } catch { setData([]); }
-    finally { setLoading(false); }
-  }, [activeReport, fyStart, fyEnd, department]);
-
-  useEffect(() => { load(); }, [load]);
+  const [rid, setRid] = useState(REPORTS[0].id);
+  const [f, setF] = useState(DEFAULT);
+  const [rows, setRows] = useState(null);
+  const [err, setErr] = useState('');
+  const [programs, setPrograms] = useState([]);
+  const rep = REPORTS.find(r => r.id === rid);
+  useEffect(() => { api.get('/training/programs').then(r => setPrograms(r.data)).catch(() => {}); }, []);
   useEffect(() => {
-    api.get('/admin/config/departments')
-      .then(r => setDeptList(Array.isArray(r.data) ? r.data.map(d => d.name || d) : []))
-      .catch(() => setDeptList([]));
-  }, []);
-
-  const activeLabel = REPORTS.find(r => r.id === activeReport)?.label || '';
-
-  // Determine best numeric key for chart
-  const numericKeys = data.length ? Object.keys(data[0]).filter(k => typeof data[0][k] === 'number') : [];
-  const chartKey = numericKeys[0];
-  const labelKey = data.length ? Object.keys(data[0])[0] : null;
+    if (rep.employee && !f.employee_id) { setRows([]); return; }
+    setRows(null); setErr('');
+    api.get(`/lnd-reports/${rid}${toQuery(f)}`).then(r => setRows(r.data)).catch(e => { setErr(errText(e)); setRows([]); });
+  }, [rid, f]); // eslint-disable-line react-hooks/exhaustive-deps
+  const cols = useMemo(() => (rows?.length ? Object.keys(rows[0]) : []), [rows]);
+  const fields = [...(rep.filters || ['period', 'department', 'category', 'trainer', 'mandatory']), ...(COST_REPORTS.includes(rid) ? ['cost'] : [])];
 
   return (
-    <PageShell dock={
-      <PageHero
-        icon={GraduationCap}
-        eyebrow="Human Resources"
-        title="L&D Reports"
-        subtitle="Training completion, attendance and effectiveness across programmes"
-      />
-    }>
-      <div style={{ display:'grid', gridTemplateColumns:'220px 1fr', gap:20 }}>
-      {/* Sidebar */}
-      <div style={{ background:'#fff', border:'1px solid #e9e4ff', borderRadius:12, padding:16, alignSelf:'start', position:'sticky', top:24 }}>
-        <h3 style={{ margin:'0 0 12px', color:'#4c1d95', fontSize:14 }}>L&D Reports</h3>
-        <div style={{ display:'flex', flexDirection:'column', gap:4 }}>
+    <PageShell dock={<PageHero icon={BarChart3} eyebrow="Learning Center" title="L&D Reports" subtitle="Compliance, completion, attendance, tests, feedback, cost and skills" />}>
+      <div className="lnd" style={{ display: 'grid', gridTemplateColumns: 'minmax(200px, 240px) 1fr', gap: 14, alignItems: 'start' }}>
+        <div className="lnd-card" style={{ position: 'sticky', top: 12, padding: 8 }}>
           {REPORTS.map(r => (
-            <button key={r.id} onClick={() => setActiveReport(r.id)}
-              style={{ display:'flex', alignItems:'center', gap:8, padding:'8px 10px', background: activeReport===r.id ? '#e9e4ff' : 'none', color: activeReport===r.id ? '#6B3FDB' : '#374141', border:'none', borderRadius:7, cursor:'pointer', fontWeight: activeReport===r.id ? 700 : 500, fontSize:12, textAlign:'left' }}>
-              <span>{r.icon}</span> {r.label}
-            </button>
+            <button key={r.id} type="button" onClick={() => setRid(r.id)} className="lnd-tab"
+              style={{ display: 'block', width: '100%', textAlign: 'left', borderBottom: 'none', borderLeft: `3px solid ${r.id === rid ? 'var(--color-primary)' : 'transparent'}`, marginBottom: 2,
+                color: r.id === rid ? 'var(--color-primary)' : undefined, background: r.id === rid ? '#f5f3ff' : 'none', borderRadius: 6 }}>{r.label}</button>
           ))}
         </div>
-      </div>
-
-      {/* Main content */}
-      <div>
-        <div style={{ background:'#fff', border:'1px solid #e9e4ff', borderRadius:12, padding:20, marginBottom:16 }}>
-          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:10 }}>
-            <h3 style={{ margin:0, color:'#4c1d95', fontSize:16 }}>{activeLabel}</h3>
-            <div style={{ display:'flex', gap:10, alignItems:'center', flexWrap:'wrap' }}>
-              {(activeReport === 'budget-vs-actual' || activeReport === 'training-hours') && (
-                <>
-                  <input type="date" value={fyStart} onChange={e => setFyStart(e.target.value)} style={{ padding:'6px 10px', border:'1px solid #e9e4ff', borderRadius:6, fontSize:12 }} />
-                  <span style={{ fontSize:12, color:'#6b7280' }}>to</span>
-                  <input type="date" value={fyEnd} onChange={e => setFyEnd(e.target.value)} style={{ padding:'6px 10px', border:'1px solid #e9e4ff', borderRadius:6, fontSize:12 }} />
-                </>
-              )}
-              {activeReport === 'skill-gap/department' && (
-                <select value={department} onChange={e => setDepartment(e.target.value)} style={{ padding:'6px 10px', border:'1px solid #e9e4ff', borderRadius:6, fontSize:12, width:180, background:'#fff' }}>
-                  <option value="">All Departments</option>
-                  {deptList.map(d => <option key={d} value={d}>{d}</option>)}
-                </select>
-              )}
-              <button onClick={load} style={{ padding:'6px 14px', background:'#e9e4ff', color:'#6B3FDB', border:'none', borderRadius:6, cursor:'pointer', fontWeight:600, fontSize:12 }}>↻ Refresh</button>
-              <button onClick={() => exportCSV(data, activeLabel.replace(/\s+/g,'_'))} disabled={!data.length} style={{ padding:'6px 14px', background:'#6B3FDB', color:'#fff', border:'none', borderRadius:6, cursor:'pointer', fontWeight:600, fontSize:12, opacity: data.length ? 1 : 0.5 }}>⬇ CSV</button>
+        <div style={{ minWidth: 0 }}>
+          <Filters value={f} onChange={setF} fields={fields} onReset={() => setF(DEFAULT)} extra={<>
+            {!rep.filters && <label>Training<select value={f.program_id} onChange={e => setF(v => ({ ...v, program_id: e.target.value }))}><option value="">All</option>
+              {programs.filter(p => !p.series_id).map(p => <option key={p.id} value={p.id}>{p.title}</option>)}</select></label>}
+            {rep.group && <label>Group by<select value={f.group} onChange={e => setF(v => ({ ...v, group: e.target.value }))}><option value="department">Department</option><option value="designation">Designation</option></select></label>}
+            {rep.employee && <label>Employee<EmployeeSelect value={f.employee_id} onChange={v => setF(x => ({ ...x, employee_id: v }))} /></label>}
+          </>} />
+          {err && <div className="lnd-error">{err}</div>}
+          {rep.chart && rows?.length > 0 && (
+            <div className="lnd-card">
+              <div style={{ height: 220 }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={rows.slice(0, 20)} margin={{ top: 6, right: 10, left: 0, bottom: 40 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#eee" />
+                    <XAxis dataKey={rep.chart[0]} tick={{ fontSize: 10 }} angle={-20} textAnchor="end" interval={0} />
+                    <YAxis tick={{ fontSize: 11 }} /><Tooltip formatter={(v) => cell(rep.chart[1], v)} />
+                    <Bar dataKey={rep.chart[1]} name={statusLabel(rep.chart[1])} fill="#6B3FDB" radius={[4, 4, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
             </div>
+          )}
+          <div className="lnd-card">
+            <div className="lnd-card-title"><span>{rep.label} {rows && <span className="lnd-muted">· {rows.length} row(s)</span>}</span>
+              <button type="button" className="lnd-link" disabled={!rows?.length} onClick={() => downloadCsv(rows, rid)}>Export CSV</button></div>
+            {rep.employee && !f.employee_id ? <Empty>Choose an employee.</Empty> : !rows ? <Empty>Loading…</Empty> : rows.length ? (
+              <div className="lnd-table-wrap"><table className="lnd-table">
+                <thead><tr>{cols.map(c => <th key={c} className={typeof rows[0][c] === 'number' ? 'num' : ''}>{statusLabel(c)}</th>)}</tr></thead>
+                <tbody>{rows.map((r, i) => <tr key={i}>{cols.map(c => <td key={c} className={typeof r[c] === 'number' ? 'num' : ''}>{cell(c, r[c])}</td>)}</tr>)}</tbody>
+              </table></div>
+            ) : <Empty>No data for these filters.</Empty>}
           </div>
         </div>
-
-        {loading && <div style={{ textAlign:'center', padding:'48px 0', color:'#6B3FDB', fontWeight:600 }}>Loading…</div>}
-
-        {!loading && data.length > 0 && chartKey && labelKey && (
-          <div style={{ background:'#fff', border:'1px solid #e9e4ff', borderRadius:12, padding:20, marginBottom:16 }}>
-            <h4 style={{ margin:'0 0 12px', color:'#4c1d95', fontSize:13 }}>{chartKey.replace(/_/g,' ').toUpperCase()} Chart</h4>
-            <div style={{ height:200 }}>
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={data.slice(0,20)} margin={{ top:4, right:20, left:0, bottom:4 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e9e4ff" />
-                  <XAxis dataKey={labelKey} tick={{ fontSize:10 }} />
-                  <YAxis tick={{ fontSize:10 }} />
-                  <Tooltip />
-                  <Bar dataKey={chartKey} radius={[4,4,0,0]}>
-                    {data.slice(0,20).map((_, i) => <Cell key={i} fill={['#6B3FDB','#2563eb','#16a34a','#6d28d9','#dc2626'][i % 5]} />)}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-        )}
-
-        {!loading && (
-          <div style={{ background:'#fff', border:'1px solid #e9e4ff', borderRadius:12, padding:20 }}>
-            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12 }}>
-              <h4 style={{ margin:0, color:'#4c1d95', fontSize:13 }}>Data ({data.length} rows)</h4>
-            </div>
-            <DataTable data={data} />
-          </div>
-        )}
-      </div>
       </div>
     </PageShell>
   );
