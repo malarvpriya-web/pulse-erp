@@ -45,9 +45,16 @@ try {
   const { rows: ex } = await db.query(`SELECT id FROM training_programs WHERE title LIKE '%(Sample)' AND deleted_at IS NULL LIMIT 1`);
   if (ex.length) { console.log('Learning Center sample data already present — nothing done.'); process.exit(0); }
 
-  const HR = mint('superadmin@manifest.in');
-  const people = { malar: { id: 1, email: 'malarvpriya@gmail.com' }, natesh: { id: 2, email: 'natesh.mayavel@manifest.in' }, anu: { id: 3, email: 'anu.natesh@manifest.in' } };
-  for (const p of Object.values(people)) p.token = mint(p.email);
+  const { rows: [sa] } = await db.query(`SELECT u.email FROM users u JOIN user_roles ur ON ur.user_id = u.id JOIN roles r ON r.id = ur.role_id
+     WHERE u.is_active AND LOWER(r.code) = 'super_admin' ORDER BY u.id LIMIT 1`);
+  const HR = mint(sa.email);
+  // Logins are looked up by employee id — no e-mail address lives in this file.
+  const people = { malar: { id: 1 }, natesh: { id: 2 }, anu: { id: 3 } };
+  for (const p of Object.values(people)) {
+    const { rows: [u] } = await db.query(`SELECT email FROM users WHERE employee_id = $1 AND is_active ORDER BY id LIMIT 1`, [p.id]);
+    if (!u) throw new Error(`employee ${p.id} has no active login`);
+    p.token = mint(u.email);
+  }
   const { rows: [priya] } = await db.query(`SELECT id, designation FROM employees WHERE name LIKE '%(Sample)%' AND deleted_at IS NULL ORDER BY id LIMIT 1`);
 
   // Skills & competencies, role requirements
