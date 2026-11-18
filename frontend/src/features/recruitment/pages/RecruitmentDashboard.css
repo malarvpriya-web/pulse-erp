@@ -382,16 +382,21 @@
 @keyframes rec-fade { from { opacity:0 } to { opacity:1 } }
 .rec-drawer {
   position: fixed;
-  top: 0; right: 0;
+   
   width: 440px;
-  max-width: 100vw;
-  height: 100%;
+  
+  
   background: #fff;
   z-index: 101;
   display: flex;
   flex-direction: column;
-  animation: rec-slide 0.25s ease;
-  box-shadow: -4px 0 24px rgba(0,0,0,0.12);
+  
+  box-shadow: 0 20px 60px rgba(0,0,0,.18);
+  /* centered dialog (was a right-side drawer) */
+  top: 50%; left: 50%; transform: translate(-50%, -50%);
+  max-width: calc(100vw - 32px); max-height: calc(100vh - 48px);
+  border-radius: 12px; overflow: hidden;
+  animation: pulse-dialog-fade .18s ease-out;
 }
 .rec-drawer-wide { width: 500px; }
 @keyframes rec-slide {

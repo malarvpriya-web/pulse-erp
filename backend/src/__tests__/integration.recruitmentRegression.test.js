@@ -164,7 +164,7 @@ async function sweep() {
     await pool.query(`DELETE FROM interview_notes WHERE candidate_id IN (SELECT id FROM candidates WHERE company_id = $1)`, [companyId]);
     await pool.query(`DELETE FROM interview_schedules WHERE company_id = $1`, [companyId]);
     await pool.query(`DELETE FROM offer_letters WHERE company_id = $1`, [companyId]);
-    await pool.query(`DELETE FROM job_offers WHERE company_id = $1`, [companyId]);
+    await pool.query(`DELETE FROM recruitment_agency_fees WHERE company_id = $1`, [companyId]);
     await pool.query(`DELETE FROM recruitment_employee_creation_log WHERE company_id = $1`, [companyId]);
     await pool.query(`DELETE FROM talent_pool_members WHERE pool_id IN (SELECT id FROM talent_pools WHERE company_id = $1)`, [companyId]);
     await pool.query(`DELETE FROM talent_pools WHERE company_id = $1`, [companyId]);
@@ -302,9 +302,10 @@ afterAll(async () => { await removeRunUploads(); await sweep(); });
 // ─────────────────────────────────────────────────────────────────────────────
 describe('R-01 — /talent/* enforces the recruitment permission', () => {
   const READS = [
-    '/api/talent/resumes', '/api/talent/resumes/stats', '/api/talent/resumes/skills',
-    '/api/talent/pools', '/api/talent/agencies', '/api/talent/questions',
-    '/api/talent/questions/stats', '/api/talent/recruiter-dashboard',
+    // /resumes*, /recruiter-dashboard and /interview-questions were removed
+    // 2026-11-17 (duplicates of /recruitment/candidates and the Dashboard).
+    '/api/talent/pools', '/api/talent/agencies', '/api/talent/agencies/fees', '/api/talent/questions',
+    '/api/talent/questions/stats',
   ];
 
   it.each(READS)('refuses %s for a role with recruitment can_view = false', async (path) => {
@@ -320,7 +321,7 @@ describe('R-01 — /talent/* enforces the recruitment permission', () => {
   it('refuses writes from the ungranted role', async () => {
     expect((await request(outsiderApp).post('/api/talent/pools').send({ pool_name: `${TAG} nope` })).status).toBe(403);
     expect((await request(outsiderApp).post('/api/talent/questions').send({ question: `${TAG} nope` })).status).toBe(403);
-    expect((await request(outsiderApp).put('/api/talent/resumes/1').send({ notes: 'nope' })).status).toBe(403);
+    expect((await request(outsiderApp).put('/api/recruitment/candidates/1').send({ notes: 'nope' })).status).toBe(403);
   });
 });
 
@@ -350,12 +351,11 @@ describe('R-07 / location — candidate creation stores usable values', () => {
     expect(rows[0].location).toBe('Bengaluru');
   });
 
-  it('keeps GET /talent/resumes/skills healthy afterwards', async () => {
-    // The whole point of R-07: one badly shaped row used to 500 this for the
-    // entire company, not just for the offending candidate.
-    const res = await request(recruiterApp).get('/api/talent/resumes/skills');
+  it('keeps the skills filter healthy afterwards', async () => {
+    // The whole point of R-07: one badly shaped row used to 500 skill search for
+    // the entire company, not just for the offending candidate.
+    const res = await request(recruiterApp).get('/api/recruitment/candidates').query({ skills: 'MATLAB' });
     expect(res.status).toBe(200);
-    expect(res.body.data).toEqual(expect.arrayContaining(['Power Electronics', 'MATLAB']));
   });
 
   it('rejects a duplicate email with 409 and names the existing candidate', async () => {
@@ -442,29 +442,17 @@ describe('R-03 — talent pools are usable', () => {
     ids.pool = res.body.data.id;
   });
 
-  it('adds a member and reads it back (was 500, then always [])', async () => {
-    const add = await request(recruiterApp).post(`/api/talent/pools/${ids.pool}/members`)
-      .send({ candidate_id: ids.candidate, notes: 'strong future hire' });
-    expect(add.status).toBe(201);
-
-    const list = await request(recruiterApp).get(`/api/talent/pools/${ids.pool}/members`);
-    expect(list.status).toBe(200);
-    expect(list.body.data.map(m => m.id)).toEqual([ids.candidate]);
-  });
-
-  it('counts that member on the pool list', async () => {
+  // /talent/pools/:id/members was removed 2026-11-17 (Talent Bank merge): people
+  // are kept through /recruitment/candidates/:id/talent-bank, which also sets
+  // status, stage and history. See integration.talentBankMerge.test.js.
+  it('counts a live member on the pool list', async () => {
+    await pool.query(
+      `INSERT INTO talent_pool_members (pool_id, candidate_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+      [ids.pool, ids.candidate]
+    );
     const res = await request(recruiterApp).get('/api/talent/pools');
     const pool_ = res.body.data.find(p => p.id === ids.pool);
     expect(Number(pool_.member_count)).toBe(1);
-  });
-
-  it('refuses a candidate from another company', async () => {
-    const { rows } = await pool.query(
-      `SELECT id FROM candidates WHERE company_id IS DISTINCT FROM $1 AND deleted_at IS NULL LIMIT 1`, [ids.company]
-    );
-    if (!rows.length) return; // nothing to test against on a single-tenant database
-    const res = await request(recruiterApp).post(`/api/talent/pools/${ids.pool}/members`).send({ candidate_id: rows[0].id });
-    expect(res.status).toBe(404);
   });
 
   it('has a foreign key that makes orphan membership rows impossible', async () => {
@@ -506,9 +494,9 @@ describe('R-04 / R-09 — a partial update patches, it does not replace', () => 
   });
 
   it('keeps candidate profile fields when only notes is sent', async () => {
-    const res = await request(recruiterApp).put(`/api/talent/resumes/${ids.candidate}`).send({ notes: 'partial patch' });
+    const res = await request(recruiterApp).put(`/api/recruitment/candidates/${ids.candidate}`).send({ notes: 'partial patch' });
     expect(res.status).toBe(200);
-    const c = res.body.data;
+    const c = res.body;
     expect(c.notes).toBe('partial patch');
     expect(c.current_company).toBe('Delta Power');
     expect(Number(c.experience_years)).toBe(3);
@@ -766,6 +754,31 @@ describe('careers portal — candidates apply without an account', () => {
     expect(after.body.jobs[0]).toHaveProperty('salary_min');
 
     await request(recruiterApp).put('/api/recruitment/careers-portal').send({ show_salary_range: false }).expect(200);
+  });
+
+  it('stores the company website careers page address, refuses a bad one, and keeps it on other edits', async () => {
+    const bad = await request(recruiterApp).put('/api/recruitment/careers-portal').send({ website_url: 'www.example.com/careers' });
+    expect(bad.status).toBe(400);
+
+    const ok = await request(recruiterApp).put('/api/recruitment/careers-portal')
+      .send({ website_url: 'https://www.example.com/careers' });
+    expect(ok.status).toBe(200);
+    expect(ok.body.website_url).toBe('https://www.example.com/careers');
+
+    // A settings save that does not send the field leaves it alone.
+    const other = await request(recruiterApp).put('/api/recruitment/careers-portal').send({ max_per_hour: 60 });
+    expect(other.body.website_url).toBe('https://www.example.com/careers');
+
+    const cleared = await request(recruiterApp).put('/api/recruitment/careers-portal').send({ website_url: '' });
+    expect(cleared.body.website_url).toBeNull();
+  });
+
+  it('lists each open job with the id the website must send back when applying', async () => {
+    const res = await request(anon).get(`/api/public/careers/${portalKey}`);
+    const job = res.body.jobs.find(j => j.id === ids.opening);
+    expect(job).toBeTruthy();
+    expect(job).toHaveProperty('number_of_positions');
+    expect(job).toHaveProperty('skills_required');
   });
 
   it('excludes closed roles and roles past their closing date', async () => {

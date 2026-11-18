@@ -40,7 +40,7 @@
 import express from 'express';
 import pool from '../../shared/db.js';
 import ci from '../repositories/candidateIntelligence.repository.js';
-import { companyOf } from '../../../shared/scope.js';
+import { companyOf, employeeOf } from '../../../shared/scope.js';
 // One shared resolver, so the timeline's actor_name is produced the same way here
 // and in recruitment.routes.js rather than by two caches that can disagree.
 import { actorNameOf } from '../actorName.js';
@@ -161,7 +161,7 @@ async function resolveApplicationId(req, candidateId, explicit) {
 router.get('/meta/candidate-workbench', view, async (req, res) => {
   try {
     const companyId = cid(req);
-    const [departments, recruiters, pools, questions] = await Promise.all([
+    const [departments, recruiters, pools, questions, employees] = await Promise.all([
       ci.listDepartments(companyId),
       pool.query(
         `SELECT u.id, COALESCE(e.name, u.email) AS name, u.email
@@ -185,9 +185,19 @@ router.get('/meta/candidate-workbench', view, async (req, res) => {
         [companyId]
       ).then(r => r.rows),
       ci.listScreeningQuestions(companyId),
+      // Interviewer / panel picker. Active employees of this company only.
+      pool.query(
+        `SELECT id, COALESCE(name, TRIM(CONCAT(first_name, ' ', last_name))) AS name,
+                office_id AS emp_code, designation, department
+           FROM employees
+          WHERE company_id = $1 AND deleted_at IS NULL
+            AND COALESCE(LOWER(status), 'active') NOT IN ('exited', 'inactive', 'terminated', 'resigned', 'relieved')
+          ORDER BY 2`,
+        [companyId]
+      ).then(r => r.rows).catch(() => []),
     ]);
 
-    res.json({ departments, recruiters, pools, screening_questions: questions, vocabularies: VOCABULARIES });
+    res.json({ departments, recruiters, pools, screening_questions: questions, employees, vocabularies: VOCABULARIES });
   } catch (error) {
     respondError(res, error);
   }
@@ -198,14 +208,30 @@ router.get('/meta/candidate-workbench', view, async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════
 router.get('/work-queue', view, async (req, res) => {
   try {
-    const counts = await ci.getWorkQueue(cid(req), uid(req));
+    const { feedback_due, ...counts } = await ci.getWorkQueue(cid(req), uid(req));
     // The recontacts themselves come with the counts: §23 wants the number
     // clickable, and a recruiter who clicks "12 due for recontact" wants the
     // twelve, not a second request.
     const due = await ci.listRecontacts({
       company_id: cid(req), due_only: true, status: 'pending', limit: 25,
     });
-    res.json({ counts, recontacts_due: due, as_of: new Date().toISOString() });
+    // Interviews I am on (lead or panel) that are still scheduled, so an
+    // interviewer can act on them from here.
+    const me = await employeeOf(req, pool);
+    const { rows: myInterviews } = me ? await pool.query(
+      `SELECT s.id, s.candidate_id, s.interview_date, s.interview_time, s.interview_mode, s.interview_round,
+              s.meeting_link, s.status, c.full_name AS candidate_name, jo.job_title,
+              (s.interviewer_id = $2) AS is_lead,
+              (s.interview_date > CURRENT_DATE) AS is_future,
+              EXISTS (SELECT 1 FROM interview_notes n WHERE n.interview_id = s.id AND n.interviewer_id = $2) AS my_feedback_given
+         FROM interview_schedules s
+         JOIN candidates c ON c.id = s.candidate_id AND c.deleted_at IS NULL
+         LEFT JOIN job_openings jo ON jo.id = COALESCE(s.job_opening_id, c.applied_job_id)
+        WHERE s.company_id = $1 AND s.deleted_at IS NULL AND s.status = 'scheduled'
+          AND (s.interviewer_id = $2 OR s.panel_employee_ids @> to_jsonb($2::int))
+        ORDER BY s.interview_date, s.interview_time
+        LIMIT 25`, [cid(req), me]) : { rows: [] };
+    res.json({ counts, recontacts_due: due, feedback_due, my_interviews: myInterviews, as_of: new Date().toISOString() });
   } catch (error) {
     respondError(res, error);
   }
@@ -235,9 +261,10 @@ router.get('/talent-bank/pools', view, async (req, res) => {
     await ci.ensureStandardTalentPools(companyId).catch(() => {});
     const { rows } = await pool.query(
       `SELECT tp.id, tp.pool_name, tp.category, tp.department, tp.description, tp.is_seeded,
-              COUNT(m.candidate_id)::int AS member_count
+              COUNT(c.id)::int AS member_count
          FROM talent_pools tp
          LEFT JOIN talent_pool_members m ON m.pool_id = tp.id
+         LEFT JOIN candidates c ON c.id = m.candidate_id AND c.deleted_at IS NULL
         WHERE tp.is_active IS NOT FALSE AND ($1::int IS NULL OR tp.company_id = $1)
         GROUP BY tp.id
         ORDER BY tp.category NULLS LAST, tp.pool_name`,
@@ -281,7 +308,55 @@ router.post('/recontacts/:id/complete', edit, validateBody(recontactCompleteSche
 // ═══════════════════════════════════════════════════════════════════════════
 router.get('/screening-questions', view, async (req, res) => {
   try {
-    res.json(await ci.listScreeningQuestions(cid(req)));
+    res.json(await ci.listScreeningQuestions(cid(req), { includeInactive: String(req.query.include_inactive) === '1' }));
+  } catch (error) {
+    respondError(res, error);
+  }
+});
+
+// Edit a Stage-1 screening question for this company. The shared question
+// (company_id NULL) is never changed: a company row with the same code
+// overrides it. Scoring is on the competency ratings, not on the wording, so
+// rewording or switching a question off does not change how scores are worked out.
+router.put('/screening-questions/:code', admin, async (req, res) => {
+  try {
+    const companyId = cid(req);
+    const code = String(req.params.code || '').slice(0, 20);
+    const { rows: [base] } = await pool.query(
+      `SELECT * FROM screening_questions WHERE code = $1 AND (company_id IS NULL OR company_id = $2)
+        ORDER BY company_id NULLS LAST LIMIT 1`, [code, companyId]);
+    if (!base) return res.status(404).json({ error: 'Screening question not found' });
+    const b = req.body || {};
+    const prompt = b.prompt !== undefined ? String(b.prompt).trim() : base.prompt;
+    if (!prompt) return res.status(400).json({ error: 'The question text cannot be empty.' });
+    if (prompt.length > 1000) return res.status(400).json({ error: 'Keep the question under 1000 characters.' });
+    let options = base.options;
+    if (b.options !== undefined) {
+      if (base.answer_type !== 'single_choice') return res.status(400).json({ error: 'Only a single-choice question has options.' });
+      // Only the wording changes. Each option's value is a fixed code the
+      // screening writes into the candidate record (e.g. willing_to_relocate),
+      // so the set and order of values stay as they are.
+      const baseOpts = Array.isArray(base.options) ? base.options : [];
+      const labels = (Array.isArray(b.options) ? b.options : [])
+        .map(o => (typeof o === 'string' ? o : o?.label)).map(x => String(x || '').trim());
+      if (labels.length !== baseOpts.length || labels.some(l => !l)) {
+        return res.status(400).json({ error: `Give a label for each of the ${baseOpts.length} options, one per line.` });
+      }
+      options = baseOpts.map((o, i) => ({ ...(typeof o === 'object' ? o : { value: o }), label: labels[i] }));
+    }
+    const isActive = b.is_active !== undefined ? Boolean(b.is_active) : base.is_active;
+    const sortOrder = b.sort_order !== undefined && Number.isInteger(Number(b.sort_order)) ? Number(b.sort_order) : base.sort_order;
+    const { rows: [row] } = await pool.query(
+      `INSERT INTO screening_questions (company_id, code, prompt, answer_type, options, competency, sort_order, is_active)
+       VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8)
+       ON CONFLICT (COALESCE(company_id, 0), code)
+       DO UPDATE SET prompt = EXCLUDED.prompt, options = EXCLUDED.options,
+                     sort_order = EXCLUDED.sort_order, is_active = EXCLUDED.is_active
+       RETURNING *`,
+      [companyId, code, prompt, base.answer_type, options == null ? null : JSON.stringify(options),
+       base.competency, sortOrder, isActive]);
+    logAudit({ userId: uid(req), module: 'Recruitment', recordId: row.id, recordType: 'screening_question', action: 'update', oldData: base, newData: row, req });
+    res.json(row);
   } catch (error) {
     respondError(res, error);
   }
@@ -679,6 +754,34 @@ router.post('/candidates/:id/talent-bank', add, validateBody(talentBankSchema), 
       message: result.pools.length
         ? `${cand.full_name} kept in the Talent Bank under ${result.pools.map(p => p.pool_name).join(', ')}.`
         : `${cand.full_name} kept in the Talent Bank.`,
+    });
+  } catch (error) {
+    respondError(res, error);
+  }
+});
+
+// DELETE /candidates/:id/talent-bank[?pool_id=] — out of one category, or out
+// of the bank (memberships removed, reminders cancelled, status inactive).
+router.delete('/candidates/:id/talent-bank', edit, async (req, res) => {
+  try {
+    const cand = await candidateInScope(req, res);
+    if (!cand) return;
+    const poolId = req.query.pool_id ? parseInt(req.query.pool_id, 10) : null;
+    if (req.query.pool_id && !Number.isInteger(poolId)) return res.status(400).json({ error: 'pool_id must be a number' });
+    const ctx = await ctxOf(req);
+    const reason = req.body?.reason ? String(req.body.reason).slice(0, 500) : (req.query.reason ? String(req.query.reason).slice(0, 500) : null);
+    const result = await ci.removeFromTalentBank(cand.id, { pool_id: poolId, reason }, ctx);
+    if (!result) return res.status(404).json({ error: 'Candidate not found' });
+    logAudit({
+      userId: ctx.actor_user_id, module: 'Recruitment', recordId: cand.id,
+      recordType: 'candidate_talent_pool', action: 'delete',
+      oldData: { pools: result.pools, whole_bank: result.whole_bank }, req,
+    });
+    res.json({
+      ...result,
+      message: result.whole_bank
+        ? `${cand.full_name} removed from the Talent Bank.`
+        : `${cand.full_name} removed from ${result.pools.join(', ')}.`,
     });
   } catch (error) {
     respondError(res, error);

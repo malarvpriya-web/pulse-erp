@@ -1,6 +1,7 @@
 import React from 'react';
 import { Briefcase } from 'lucide-react';
 import ModuleSettingsPanel from '@/components/core/ModuleSettingsPanel';
+import ScreeningQuestionsEditor from '../shared/components/ScreeningQuestionsEditor';
 
 /**
  * Recruitment settings.
@@ -40,9 +41,38 @@ function buildSections() {
           key: 'offer_validity_days',
           label: 'Default Offer Validity (days)',
           type: 'number',
-          default: 7,
-          placeholder: '7',
-          helpText: 'Applied when an offer is sent. A single offer can still be given its own expiry date.',
+          // Must match DEFAULT_OFFER_VALIDITY_DAYS in backend recruitment/offerValidity.js
+          // (it said 7 here while the server applied 14 when nothing was saved).
+          default: 14,
+          placeholder: '14',
+          helpText: 'Counted from the day the offer is sent (after approval). A single offer can still be given its own "valid until" date, and a sent offer can be extended.',
+        },
+      ],
+    },
+    {
+      title: 'Offer letter',
+      description: 'Your wording on the offer letter PDF (sent with the offer e-mail). Position, CTC, joining date and the reply-by date are filled in from the offer.',
+      fields: [
+        {
+          key: 'offer_letter_conditions',
+          label: 'Conditions of the offer',
+          type: 'textarea',
+          // Keep in step with OFFER_LETTER_DEFAULTS in backend recruitment/offerLetter.js.
+          default: 'This offer is subject to satisfactory verification of your documents, references and background, and to the terms of the appointment letter you will receive on joining.',
+          helpText: 'For example probation, notice period, documents to bring. Leave a blank line between paragraphs.',
+        },
+        {
+          key: 'offer_letter_closing',
+          label: 'Closing line',
+          type: 'text',
+          default: 'We look forward to welcoming you to the team.',
+        },
+        {
+          key: 'offer_letter_signatory_title',
+          label: 'Signed as',
+          type: 'text',
+          default: 'Human Resources',
+          helpText: 'Printed under the name of the person who approved the offer.',
         },
       ],
     },
@@ -76,14 +106,18 @@ function buildSections() {
   ];
 }
 
-export default function RecruitmentSettings({ setPage }) {
+export default function RecruitmentSettings({ setPage, embedded = false }) {
   return (
-    <ModuleSettingsPanel
-      moduleName="Recruitment"
-      moduleIcon={Briefcase}
-      apiEndpoint="/settings/recruitment"
-      setPage={setPage}
-      sections={buildSections()}
-    />
+    <>
+      <ModuleSettingsPanel
+        moduleName="Recruitment"
+        moduleIcon={Briefcase}
+        apiEndpoint="/settings/recruitment"
+        setPage={setPage}
+        embedded={embedded}
+        sections={buildSections()}
+      />
+      <ScreeningQuestionsEditor />
+    </>
   );
 }

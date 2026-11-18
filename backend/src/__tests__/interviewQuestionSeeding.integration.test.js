@@ -75,7 +75,6 @@ beforeAll(async () => {
   // The companies exist BEFORE the router (and its import-time DDL) loads —
   // the exact situation a dev-server restart mid-run created.
   const talent = await import('../modules/talent/talent.routes.js');
-  await talent.talentSchemaReady;
   app = express();
   app.use(express.json());
   app.use('/api/talent', verifyToken, talent.default);

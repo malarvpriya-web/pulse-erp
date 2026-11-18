@@ -163,6 +163,8 @@ function publicJob(row, portal) {
     employment_type: row.employment_type,
     experience_min: row.experience_min,
     experience_max: row.experience_max,
+    number_of_positions: row.number_of_positions,
+    skills_required: row.skills_required,
     description: row.description,
     requirements: row.requirements,
     benefits: row.benefits,
@@ -606,6 +608,18 @@ adminRouter.put('/careers-portal', edit, async (req, res) => {
                     ? req.body.allowed_origins.split(',').map(s => s.trim()).filter(Boolean)
                     : null;
 
+    // The company's own careers page (where candidates apply). Optional; when
+    // given it must be a full http(s) address. Blank clears it.
+    const websiteGiven = req.body?.website_url !== undefined;
+    const websiteUrl = websiteGiven ? String(req.body.website_url ?? '').trim() : '';
+    if (websiteUrl) {
+      let u;
+      try { u = new URL(websiteUrl); } catch { u = null; }
+      if (!u || !['http:', 'https:'].includes(u.protocol)) {
+        return res.status(400).json({ error: 'Enter the full website address, starting with https://' });
+      }
+    }
+
     // Every column COALESCE'd — the same partial-update lesson as R-04.
     const { rows } = await pool.query(
       `UPDATE careers_portals SET
@@ -615,6 +629,7 @@ adminRouter.put('/careers-portal', edit, async (req, res) => {
          max_per_hour      = COALESCE($5, max_per_hour),
          show_salary_range = COALESCE($6, show_salary_range),
          is_active         = COALESCE($7, is_active),
+         website_url       = CASE WHEN $8::boolean THEN NULLIF($9, '') ELSE website_url END,
          updated_at        = NOW()
        WHERE company_id = $1
        RETURNING *`,
@@ -626,6 +641,8 @@ adminRouter.put('/careers-portal', edit, async (req, res) => {
         req.body?.max_per_hour ?? null,
         req.body?.show_salary_range === undefined ? null : !!req.body.show_salary_range,
         req.body?.is_active === undefined ? null : !!req.body.is_active,
+        websiteGiven,
+        websiteUrl,
       ]
     );
     if (!rows.length) return res.status(404).json({ error: 'No careers portal for this company yet.' });

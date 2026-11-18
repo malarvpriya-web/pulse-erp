@@ -1,233 +1,157 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Briefcase, CalendarClock, RefreshCw, TrendingUp, Users, IndianRupee } from 'lucide-react';
+import { Briefcase, CalendarClock, RefreshCw, TrendingUp, Users, ClipboardList } from 'lucide-react';
 import api from '@/services/api/client';
+import { exportCSV } from '@/features/_shared/exportUtils';
+import { fmtDate } from '@/utils/dateFormatter';
 import './HiringForecasts.css';
 import { PageHero, PageShell } from '@/components/pulse-ui';
 
-const toNum = (v, fallback = 0) => {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : fallback;
-};
+/**
+ * Hiring Forecasts (Recruitment → Reports & Setup).
+ *
+ * Demand per department = seats on open jobs + approved requisitions not yet
+ * posted as a job + requisitions awaiting approval (GET /recruitment/reports/
+ * forecast). Pipeline = applicants still active on those jobs.
+ *
+ * Expected hires = pipeline × conversion rate, capped at the open seats. The
+ * rate starts at the company's real interview-to-hire rate, and can be typed
+ * over to try a different assumption — that number is a what-if on this
+ * screen only and is not saved.
+ *
+ * Review 2026-11-17: it read job openings only (requisitions invisible),
+ * counted rejected applicants as pipeline, filtered by calendar quarters of
+ * the closing date while always keeping jobs with no closing date, and its
+ * "All (2026)" option included every year.
+ */
 
-const quarterFromMonth = (monthIndex) => Math.floor(monthIndex / 3) + 1;
+const WITHIN = [
+  { value: '', label: 'All open demand' },
+  { value: '30', label: 'Jobs closing within 30 days' },
+  { value: '90', label: 'Jobs closing within 90 days' },
+];
 
-const isOpenStatus = (status) => ['open', 'draft', 'pending_approval'].includes(String(status || '').toLowerCase());
+const pctText = (n) => (n == null ? '—' : `${Number(n).toFixed(1)}%`);
 
-const parseOpenings = (payload) => {
-  if (Array.isArray(payload)) return payload;
-  if (Array.isArray(payload?.openings)) return payload.openings;
-  if (Array.isArray(payload?.data)) return payload.data;
-  return [];
-};
-
-const parseMetricValue = (payload, keys) => {
-  if (Array.isArray(payload)) {
-    const first = payload[0] || {};
-    for (const key of keys) {
-      if (first[key] != null) return toNum(first[key], 0);
-    }
-    return 0;
-  }
-  if (payload && typeof payload === 'object') {
-    for (const key of keys) {
-      if (payload[key] != null) return toNum(payload[key], 0);
-    }
-  }
-  return 0;
-};
-
-const formatPct = (n) => `${Math.max(0, Math.min(100, n)).toFixed(1)}%`;
-
-export default function HiringForecasts() {
-  const [selectedQuarter, setSelectedQuarter] = useState('all');
-  const [openings, setOpenings] = useState([]);
-  const [metrics, setMetrics] = useState({ timeToHire: 0, offerAcceptance: 0, interviewToHire: 0 });
+export default function HiringForecasts({ embedded = false }) {
+  const [within, setWithin] = useState('');
+  const [data, setData] = useState({ rows: [], rates: {} });
   const [loading, setLoading] = useState(false);
-
-  const quarterOptions = useMemo(() => {
-    const year = new Date().getFullYear();
-    return [
-      { value: 'all', label: `All (${year})` },
-      { value: `${year}-Q1`, label: `Q1 ${year}` },
-      { value: `${year}-Q2`, label: `Q2 ${year}` },
-      { value: `${year}-Q3`, label: `Q3 ${year}` },
-      { value: `${year}-Q4`, label: `Q4 ${year}` },
-    ];
-  }, []);
+  const [error, setError] = useState('');
+  const [rate, setRate] = useState(''); // what-if conversion %, '' = use actual
 
   const loadData = useCallback(async () => {
     setLoading(true);
-    const [openingsRes, tthRes, offerRes, i2hRes] = await Promise.allSettled([
-      api.get('/recruitment/openings'),
-      api.get('/recruitment/analytics/time-to-hire'),
-      api.get('/recruitment/analytics/offer-acceptance-rate'),
-      api.get('/recruitment/analytics/interview-to-hire-ratio'),
-    ]);
+    try {
+      const res = await api.get('/recruitment/reports/forecast', { params: within ? { within_days: within } : {} });
+      setData({ rows: Array.isArray(res.data?.rows) ? res.data.rows : [], rates: res.data?.rates || {} });
+      setError('');
+    } catch (e) {
+      setError(e?.response?.data?.error || 'Could not load the forecast');
+    } finally { setLoading(false); }
+  }, [within]);
 
-    const incomingOpenings =
-      openingsRes.status === 'fulfilled'
-        ? parseOpenings(openingsRes.value?.data)
-        : [];
-    setOpenings(Array.isArray(incomingOpenings) ? incomingOpenings : []);
+  useEffect(() => { loadData(); }, [loadData]);
 
-    const timeToHire =
-      tthRes.status === 'fulfilled'
-        ? parseMetricValue(tthRes.value?.data, ['avg_days', 'average_days', 'days', 'time_to_hire'])
-        : 0;
-    const offerAcceptance =
-      offerRes.status === 'fulfilled'
-        ? parseMetricValue(offerRes.value?.data, ['offer_acceptance_rate', 'acceptance_rate', 'rate', 'percentage'])
-        : 0;
-    const interviewToHire =
-      i2hRes.status === 'fulfilled'
-        ? parseMetricValue(i2hRes.value?.data, ['interview_to_hire_ratio', 'ratio', 'rate', 'percentage'])
-        : 0;
+  const actualRate = data.rates.interview_to_hire_pct;
+  const usedRate = rate !== '' && Number.isFinite(Number(rate)) ? Math.min(100, Math.max(0, Number(rate))) : (actualRate ?? null);
 
-    setMetrics({
-      timeToHire,
-      offerAcceptance,
-      interviewToHire,
+  const rows = useMemo(() => {
+    const today = new Date();
+    return data.rows.map((r) => {
+      const demand = r.open_seats + r.approved_not_posted;
+      const expected = usedRate == null ? null : Math.min(r.open_seats, Math.round(r.pipeline * (usedRate / 100)));
+      const perSeat = r.open_seats ? r.pipeline / r.open_seats : null;
+      const daysLeft = r.soonest_closing ? Math.ceil((new Date(`${r.soonest_closing}T00:00:00`) - today) / 86400000) : null;
+      // Thin pipeline (under 2 active applicants per open seat), or a job
+      // closing within 14 days → High; under 4 per seat → Medium.
+      const priority = demand === 0 ? 'Low'
+        : (r.open_seats && (perSeat < 2 || (daysLeft != null && daysLeft <= 14))) || (!r.open_seats && r.approved_not_posted) ? 'High'
+        : perSeat != null && perSeat < 4 ? 'Medium' : 'Low';
+      const status = demand === 0 ? (r.awaiting_approval ? 'Awaiting approval' : 'Filled')
+        : r.approved_not_posted && !r.open_seats ? 'Not posted yet'
+        : r.pipeline < r.open_seats ? 'Pipeline risk' : 'On track';
+      return { ...r, demand, expected, priority, status, daysLeft };
     });
-    setLoading(false);
-  }, []);
+  }, [data.rows, usedRate]);
 
-  useEffect(() => {
-    loadData();
-  }, [loadData]);
+  const sum = (k) => rows.reduce((a, r) => a + (r[k] || 0), 0);
+  const expectedTotal = rows.some(r => r.expected != null) ? sum('expected') : null;
+  const maxDemand = Math.max(1, ...rows.map(r => r.demand + r.awaiting_approval));
 
-  const filteredOpenings = useMemo(() => {
-    if (selectedQuarter === 'all') return openings;
-    const [year, qPart] = selectedQuarter.split('-');
-    const q = Number(String(qPart || '').replace('Q', ''));
-    return openings.filter((o) => {
-      if (!o?.closing_date) return true;
-      const dt = new Date(o.closing_date);
-      if (Number.isNaN(dt.getTime())) return true;
-      return String(dt.getFullYear()) === String(year) && quarterFromMonth(dt.getMonth()) === q;
-    });
-  }, [openings, selectedQuarter]);
+  const exportRows = () => exportCSV(rows.map(r => ({
+    department: r.department, open_jobs: r.open_roles, open_seats: r.open_seats, approved_not_posted: r.approved_not_posted,
+    awaiting_approval: r.awaiting_approval, active_pipeline: r.pipeline, offers_out: r.offers_out,
+    expected_hires: r.expected ?? '', conversion_rate_used: usedRate ?? '', priority: r.priority, status: r.status,
+    soonest_closing: r.soonest_closing || '',
+  })), 'hiring_forecast');
 
-  const deptRows = useMemo(() => {
-    const map = new Map();
-    for (const o of filteredOpenings) {
-      if (!isOpenStatus(o.status)) continue;
-      const dept = (o.department || 'Unassigned').trim() || 'Unassigned';
-      const positions = toNum(o.number_of_positions, 1);
-      const filled = toNum(o.positions_filled, 0);
-      const openPositions = Math.max(positions - filled, 0);
-      const applicants = toNum(o.applicants_count, 0);
-      const current = map.get(dept) || { department: dept, roles: 0, openPositions: 0, pipeline: 0 };
-      current.roles += 1;
-      current.openPositions += openPositions;
-      current.pipeline += applicants;
-      map.set(dept, current);
-    }
-
-    const acceptanceRate = Math.max(0.05, Math.min(0.95, metrics.offerAcceptance / 100));
-    return [...map.values()]
-      .map((row) => {
-        const forecast = Math.round(row.openPositions * acceptanceRate);
-        const priority = row.openPositions >= 4 || row.pipeline < row.openPositions * 2 ? 'High' : row.openPositions >= 2 ? 'Medium' : 'Low';
-        const status = row.pipeline < row.openPositions ? 'Pipeline Risk' : 'On Track';
-        return { ...row, forecastHires: forecast, priority, status };
-      })
-      .sort((a, b) => b.openPositions - a.openPositions);
-  }, [filteredOpenings, metrics.offerAcceptance]);
-
-  const maxOpenPositions = useMemo(
-    () => Math.max(1, ...deptRows.map((r) => r.openPositions)),
-    [deptRows]
-  );
-
-  const summary = useMemo(() => {
-    const openRoles = deptRows.reduce((acc, r) => acc + r.roles, 0);
-    const openPositions = deptRows.reduce((acc, r) => acc + r.openPositions, 0);
-    const forecastedHires = deptRows.reduce((acc, r) => acc + r.forecastHires, 0);
-    return {
-      openRoles,
-      openPositions,
-      avgTimeToHire: metrics.timeToHire,
-      forecastedHires,
-    };
-  }, [deptRows, metrics.timeToHire]);
-
-  if (loading) {
-    return (
-      <div className="hfc-loading">
-        <div className="hfc-spinner" />
-      </div>
-    );
-  }
-
-  return (
-    <PageShell dock={
-      <PageHero
-        icon={IndianRupee}
-        eyebrow="Recruitment"
-        title="Hiring Forecasts"
-        subtitle="Recruitment demand and capacity forecast by department"
-      />
-    }>
+  const body = (
+    <>
       <div className="hfc-header">
-        <div>
-
-
-        </div>
-        <div className="hfc-actions">
-          <select
-            className="hfc-sel"
-            value={selectedQuarter}
-            onChange={(e) => setSelectedQuarter(e.target.value)}
-          >
-            {quarterOptions.map((opt) => (
-              <option key={opt.value} value={opt.value}>{opt.label}</option>
-            ))}
+        <div className="hfc-actions" style={{ flexWrap: 'wrap' }}>
+          <select className="hfc-sel" aria-label="Period" value={within} onChange={(e) => setWithin(e.target.value)}>
+            {WITHIN.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
           </select>
-          <button className="hfc-refresh-btn" onClick={loadData}>
-            <RefreshCw size={14} /> Refresh
-          </button>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#374151' }}>
+            Conversion rate
+            <input type="number" min="0" max="100" step="0.5" aria-label="Conversion rate (%)" value={rate}
+              placeholder={actualRate != null ? String(actualRate) : '—'} onChange={(e) => setRate(e.target.value)}
+              style={{ width: 80, padding: '6px 8px', border: '1px solid #e5e7eb', borderRadius: 8, fontSize: 13 }} />%
+          </label>
+          {rate !== '' && <button type="button" className="pulse-btn-secondary" onClick={() => setRate('')}>Use actual</button>}
+          <button type="button" className="hfc-refresh-btn" onClick={loadData}><RefreshCw size={14} /> Refresh</button>
+          <button type="button" className="pulse-btn-secondary" onClick={exportRows} disabled={!rows.length}>Export CSV</button>
         </div>
       </div>
+      <p style={{ fontSize: 12, color: '#6b7280', margin: '0 0 14px' }}>
+        {rate !== ''
+          ? `Expected hires use your what-if rate of ${usedRate}% (not saved). The company's actual interview-to-hire rate is ${pctText(actualRate)}.`
+          : actualRate != null
+            ? `Expected hires use the company's actual interview-to-hire rate, ${pctText(actualRate)} (${data.rates.interviewed} candidates interviewed). Type a rate to try another.`
+            : 'No one has been interviewed yet, so there is no rate to forecast with. Type an assumed rate to estimate.'}
+      </p>
+
+      {error && <div style={{ padding: 16, color: '#b91c1c', background: '#fef2f2', borderRadius: 10, marginBottom: 14 }}>{error}</div>}
 
       <div className="hfc-summary">
         <div className="hfc-sum-card">
-          <div className="hfc-sum-icon" style={{ background: '#eff6ff', color: '#2563eb' }}><Briefcase size={16} /></div>
-          <div><div className="hfc-sum-num">{summary.openRoles}</div><div className="hfc-sum-lbl">Open Roles</div></div>
+          <div className="hfc-sum-icon" style={{ background: '#ede9fe', color: '#6d28d9' }}><Briefcase size={16} /></div>
+          <div><div className="hfc-sum-num">{sum('open_seats')}</div><div className="hfc-sum-lbl">Open seats ({sum('open_roles')} jobs)</div></div>
         </div>
         <div className="hfc-sum-card">
-          <div className="hfc-sum-icon" style={{ background: '#ede9fe', color: '#6d28d9' }}><Users size={16} /></div>
-          <div><div className="hfc-sum-num">{summary.openPositions}</div><div className="hfc-sum-lbl">Open Positions</div></div>
+          <div className="hfc-sum-icon" style={{ background: '#fef3c7', color: '#92400e' }}><ClipboardList size={16} /></div>
+          <div><div className="hfc-sum-num">{sum('approved_not_posted')}</div><div className="hfc-sum-lbl">Approved, not posted · {sum('awaiting_approval')} awaiting approval</div></div>
         </div>
         <div className="hfc-sum-card">
           <div className="hfc-sum-icon" style={{ background: '#f3e8ff', color: '#7e22ce' }}><CalendarClock size={16} /></div>
-          <div><div className="hfc-sum-num">{summary.avgTimeToHire.toFixed(0)}d</div><div className="hfc-sum-lbl">Avg Time to Hire</div></div>
+          <div><div className="hfc-sum-num">{data.rates.avg_days_to_hire != null ? `${data.rates.avg_days_to_hire}d` : '—'}</div><div className="hfc-sum-lbl">Avg time to hire{data.rates.hires_measured ? ` (${data.rates.hires_measured} hires)` : ''}</div></div>
         </div>
         <div className="hfc-sum-card">
           <div className="hfc-sum-icon" style={{ background: '#dcfce7', color: '#15803d' }}><TrendingUp size={16} /></div>
-          <div><div className="hfc-sum-num">{summary.forecastedHires}</div><div className="hfc-sum-lbl">Forecasted Hires</div></div>
+          <div><div className="hfc-sum-num">{expectedTotal ?? '—'}</div><div className="hfc-sum-lbl" title="Active applicants × conversion rate, capped at open seats">Expected hires</div></div>
         </div>
       </div>
 
       <div className="hfc-chart-card">
-        <div className="hfc-card-title">Department Demand Snapshot</div>
+        <div className="hfc-card-title">Demand by department</div>
         <div className="hfc-metric-strip">
-          <span>Offer Acceptance: <strong>{formatPct(metrics.offerAcceptance)}</strong></span>
-          <span>Interview to Hire: <strong>{formatPct(metrics.interviewToHire)}</strong></span>
+          <span>Offer acceptance: <strong>{pctText(data.rates.offer_acceptance_pct)}</strong></span>
+          <span>Interview to hire: <strong>{pctText(actualRate)}</strong></span>
+          <span><Users size={12} style={{ verticalAlign: -1 }} /> Active pipeline: <strong>{sum('pipeline')}</strong></span>
         </div>
-        {deptRows.length === 0 ? (
-          <div className="hfc-empty">No open requisitions in this period.</div>
+        {loading ? <div className="hfc-empty">Loading…</div> : rows.length === 0 ? (
+          <div className="hfc-empty">No open jobs or approved requisitions{within ? ' closing in this window' : ''}.</div>
         ) : (
           <div className="hfc-bars">
-            {deptRows.map((row) => (
-              <div key={row.department} className="hfc-bar-row">
+            {rows.map((row) => (
+              <div key={row.department} className="hfc-bar-row" title={`${row.open_seats} open seats, ${row.approved_not_posted} approved not posted, ${row.awaiting_approval} awaiting approval`}>
                 <div className="hfc-bar-label">{row.department}</div>
-                <div className="hfc-bar-track">
-                  <div
-                    className="hfc-bar-fill"
-                    style={{ width: `${(row.openPositions / maxOpenPositions) * 100}%` }}
-                  />
+                <div className="hfc-bar-track" style={{ display: 'flex' }}>
+                  <div className="hfc-bar-fill" style={{ width: `${(row.open_seats / maxDemand) * 100}%` }} />
+                  <div style={{ width: `${(row.approved_not_posted / maxDemand) * 100}%`, background: '#c4b5fd' }} />
+                  <div style={{ width: `${(row.awaiting_approval / maxDemand) * 100}%`, background: '#e5e7eb' }} />
                 </div>
-                <div className="hfc-bar-val">{row.openPositions}</div>
+                <div className="hfc-bar-val">{row.demand}{row.awaiting_approval ? ` +${row.awaiting_approval}` : ''}</div>
               </div>
             ))}
           </div>
@@ -239,42 +163,48 @@ export default function HiringForecasts() {
           <thead>
             <tr>
               <th>Department</th>
-              <th className="hfc-center">Open Roles</th>
-              <th className="hfc-center">Open Positions</th>
-              <th className="hfc-center">Pipeline</th>
-              <th className="hfc-center">Forecasted Hires</th>
+              <th className="hfc-center">Open jobs</th>
+              <th className="hfc-center">Open seats</th>
+              <th className="hfc-center">Approved, not posted</th>
+              <th className="hfc-center">Awaiting approval</th>
+              <th className="hfc-center">Active pipeline</th>
+              <th className="hfc-center">Offers out</th>
+              <th className="hfc-center">Expected hires</th>
+              <th className="hfc-center">Soonest closing</th>
               <th className="hfc-center">Priority</th>
               <th className="hfc-center">Status</th>
             </tr>
           </thead>
           <tbody>
-            {deptRows.length === 0 ? (
-              <tr className="hfc-row"><td colSpan={7} className="hfc-empty">No data available.</td></tr>
-            ) : (
-              deptRows.map((row, idx) => (
-                <tr key={row.department} className="hfc-row">
-                  <td>
-                    <div className="hfc-dept-cell">
-                      <span className="hfc-dept-dot" style={{ background: ['#3b82f6', '#22c55e', '#7c5cf0', '#a855f7', '#ef4444'][idx % 5] }} />
-                      {row.department}
-                    </div>
-                  </td>
-                  <td className="hfc-center">{row.roles}</td>
-                  <td className="hfc-center">{row.openPositions}</td>
-                  <td className="hfc-center">{row.pipeline}</td>
-                  <td className="hfc-center">{row.forecastHires}</td>
-                  <td className="hfc-center hfc-priority">{row.priority}</td>
-                  <td className="hfc-center">
-                    <span className={`hfc-status-badge ${row.status === 'On Track' ? 'hfc-status-ok' : 'hfc-status-risk'}`}>
-                      {row.status}
-                    </span>
-                  </td>
-                </tr>
-              ))
-            )}
+            {rows.length === 0 ? (
+              <tr className="hfc-row"><td colSpan={11} className="hfc-empty">No data.</td></tr>
+            ) : rows.map((row) => (
+              <tr key={row.department} className="hfc-row">
+                <td><div className="hfc-dept-cell">{row.department}</div></td>
+                <td className="hfc-center">{row.open_roles}</td>
+                <td className="hfc-center">{row.open_seats}</td>
+                <td className="hfc-center">{row.approved_not_posted}</td>
+                <td className="hfc-center">{row.awaiting_approval}</td>
+                <td className="hfc-center">{row.pipeline}</td>
+                <td className="hfc-center">{row.offers_out}</td>
+                <td className="hfc-center">{row.expected ?? '—'}</td>
+                <td className="hfc-center">{row.soonest_closing ? fmtDate(row.soonest_closing) : '—'}</td>
+                <td className="hfc-center hfc-priority">{row.priority}</td>
+                <td className="hfc-center">
+                  <span className={`hfc-status-badge ${row.status === 'On track' || row.status === 'Filled' ? 'hfc-status-ok' : 'hfc-status-risk'}`}>{row.status}</span>
+                </td>
+              </tr>
+            ))}
           </tbody>
         </table>
       </div>
+    </>
+  );
+
+  if (embedded) return body;
+  return (
+    <PageShell dock={<PageHero icon={TrendingUp} eyebrow="Recruitment" title="Hiring Forecasts" subtitle="Hiring demand, pipeline and expected hires by department" />}>
+      {body}
     </PageShell>
   );
 }

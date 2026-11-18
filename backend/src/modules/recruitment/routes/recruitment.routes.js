@@ -13,10 +13,14 @@ import { logAudit } from '../../../services/AuditService.js';
 import { changeLegalHold, LegalHoldError } from '../candidateLegalHold.js';
 import { triggerEmail } from '../../../services/emailTrigger.js';
 import { companyOf, employeeOf } from '../../../shared/scope.js';
-import { createProposal, ProposalError } from '../../payroll/salaryProposals.service.js';
+import { createProposal, ProposalError, isCtcModeOn } from '../../payroll/salaryProposals.service.js';
+import { resolveConfig } from '../../integrations/integrationConfig.js';
 // Resolves the display name stored on each candidate_activity row. See
 // modules/recruitment/actorName.js for why the name is denormalised.
 import { actorNameOf } from '../actorName.js';
+import { requisitionRaiserScope, scopeAllows, raiserRefusal, canApproveRequisition, recruitmentDeptScope, recruitmentDeptFilter, canManageRecruitmentSetup } from '../requisitionAccess.js';
+import { recordDepartmentSql } from '../repositories/recruitment.repository.js';
+import { buildOfferLetterPdf } from '../offerLetter.js';
 // The activity timeline (§21). Every event a recruiter needs to account for later
 // is appended here as well as being applied, so the candidate's own page tells
 // the whole story without the reader having to visit five other screens.
@@ -58,7 +62,7 @@ const remove = requirePermission('recruitment', 'delete');
 // list could take a copy of it.
 const exportPerm = requirePermission('recruitment', 'export');
 
-const notify = (userId, module, recordId, message) => {
+const notify = (userId, module, recordId, message, type = 'info') => {
   if (!userId) return;
   notificationsRepository.create({
     user_id: userId,
@@ -66,54 +70,11 @@ const notify = (userId, module, recordId, message) => {
     message,
     module_name: module,
     reference_id: recordId,
-    notification_type: 'info',
+    notification_type: type,
   }).catch(() => {});
 };
 
 const router = express.Router();
-
-// Bootstrap: create interview_schedules and offer_letters tables if they don't exist
-//
-// candidate_id/job_opening_id were originally typed UUID here, but
-// candidates.id and job_openings.id are both `integer` — every INSERT
-// (createOffer, interview scheduling) that passed a real candidate/job id
-// would fail immediately with "invalid input syntax for type uuid", and
-// every JOIN against candidates.id (e.g. the auto-creation-trigger
-// endpoint's own offer lookup) would throw "operator does not exist: uuid =
-// integer" instead. In practice this meant offer letters and interview
-// schedules could never actually be created against a real candidate.
-pool.query(`
-  CREATE TABLE IF NOT EXISTS interview_schedules (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    candidate_id INTEGER,
-    interview_date DATE NOT NULL DEFAULT CURRENT_DATE,
-    interview_time TIME,
-    interview_mode VARCHAR(20),
-    meeting_link VARCHAR(500),
-    interviewer_id INTEGER,
-    status VARCHAR(20) DEFAULT 'scheduled',
-    notes TEXT,
-    company_id INTEGER,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    deleted_at TIMESTAMP
-  );
-  CREATE TABLE IF NOT EXISTS offer_letters (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    candidate_id INTEGER,
-    job_opening_id INTEGER,
-    offered_salary DECIMAL(15,2) DEFAULT 0,
-    joining_date DATE DEFAULT CURRENT_DATE,
-    offer_status VARCHAR(20) DEFAULT 'draft',
-    offer_sent_date DATE,
-    response_date DATE,
-    notes TEXT,
-    company_id INTEGER,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    deleted_at TIMESTAMP
-  );
-`).catch(() => {});
 
 // The UUID → INTEGER conversion of these tables' candidate_id / job_opening_id
 // used to run here, unconditionally, on every import. Against an
@@ -140,6 +101,45 @@ const upload = multer({
 
 // Helper — extract company_id strictly from JWT (never from query params — prevents spoofing)
 const cid = (req) => companyOf(req);
+
+/** 2026-11-17 → "17 Nov 2026" (dates in candidate-facing text). */
+function fmtLetterDate(d) {
+  if (!d) return '';
+  const iso = d instanceof Date
+    ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    : String(d).slice(0, 10);
+  const [y, m, day] = iso.split('-').map(Number);
+  if (!y || !m || !day) return String(d);
+  return `${day} ${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][m - 1]} ${y}`;
+}
+
+// ==================== INTERVIEW HELPERS ====================
+const ROUND_LABELS = {
+  '1st_level': '1st Level Interview',
+  '2nd_level': '2nd Level Interview',
+  technical:   'Technical Interview',
+  hr:          'HR Interview',
+  final:       'Final Interview',
+  screening:   'Screening',
+};
+
+// The browser used to send 'offline'/'online', which the API vocabulary never
+// had (audit 2026-11-17 B1): every in-person or online booking was rejected.
+function normaliseInterviewMode(req, _res, next) {
+  const MAP = { offline: 'in_person', 'in-person': 'in_person', online: 'video' };
+  if (req.body && MAP[req.body.interview_mode]) req.body.interview_mode = MAP[req.body.interview_mode];
+  next();
+}
+
+/** Error text when the interviewer or a panel member is not an active employee of this company. */
+async function interviewersOutsideCompany(body, companyId) {
+  const ids = [body.interviewer_id, ...(Array.isArray(body.panel_employee_ids) ? body.panel_employee_ids : [])]
+    .map(x => parseInt(x, 10)).filter(Number.isInteger);
+  if (!ids.length) return null;
+  const { rows } = await pool.query(
+    `SELECT id FROM employees WHERE id = ANY($1::int[]) AND company_id = $2 AND deleted_at IS NULL`, [ids, companyId]);
+  return rows.length === new Set(ids).size ? null : 'Pick the interviewer and panel from your own employees.';
+}
 
 // ==================== DASHBOARD SUMMARY ====================
 const getDashboardSummary = async (req, res) => {
@@ -178,7 +178,10 @@ router.get('/dashboard', view, getDashboardSummary);
 // ==================== PIPELINE SUMMARY ====================
 router.get('/pipeline-summary', view, async (req, res) => {
   try {
-    const rows = await recruitmentRepository.getPipelineSummary(cid(req));
+    // ?department= — the Dashboard filter bar (stage counts ignore the period).
+    const rows = await recruitmentRepository.getPipelineSummary(cid(req), null, {
+      department: dimension(req.query, 'department'),
+    });
     res.json(rows);
   } catch (error) {
     respondError(res, error);
@@ -197,6 +200,60 @@ router.get('/requisitions', view, async (req, res) => {
   }
 });
 
+/** A step on the job's timeline, by the signed-in user. Never throws. */
+const jobEvent = (req, data) => recruitmentRepository.recordJobEvent({
+  company_id: cid(req), actor_user_id: req.user?.userId ?? req.user?.id ?? null, ...data,
+});
+
+// Field → words, for "Edited: positions, budget" on the timeline.
+const FIELD_WORDS = {
+  job_title: 'title', department: 'department', employment_type: 'employment type',
+  number_of_positions: 'positions', job_description: 'description', description: 'description',
+  skills_required: 'skills', location: 'location', priority: 'priority',
+  experience_min: 'experience', experience_max: 'experience', salary_min: 'salary', salary_max: 'salary',
+  hiring_reason: 'reason for hiring', replacing_employee_id: 'employee replaced', justification: 'justification',
+  closing_date: 'closing date',
+};
+/** Names of the fields whose value really changed (blank == null; 5 == "5.00"). */
+function changedFields(before, patch) {
+  const norm = (v) => {
+    if (v === '' || v == null) return '';
+    if (v instanceof Date) return toDateText(v);
+    const s = String(v).trim();
+    return s !== '' && !Number.isNaN(Number(s)) ? String(Number(s)) : s;
+  };
+  const words = Object.keys(patch)
+    .filter(k => FIELD_WORDS[k] && norm(patch[k]) !== norm(before[k]))
+    .map(k => FIELD_WORDS[k]);
+  return [...new Set(words)];
+}
+
+// What the signed-in user may do with requisitions — the page shows only the
+// buttons the API will accept (requisitionAccess.js has the rules).
+router.get('/requisitions/access', view, async (req, res) => {
+  try {
+    const scope = await requisitionRaiserScope(req);
+    res.json({
+      can_raise: scope.any || scope.departments.length > 0,
+      any_department: scope.any,
+      departments: scope.departments,
+      can_approve: canApproveRequisition(req),
+    });
+  } catch (error) {
+    respondError(res, error);
+  }
+});
+
+router.get('/requisitions/:id/timeline', view, async (req, res) => {
+  try {
+    const requisition = await recruitmentRepository.findRequisitionById(req.params.id, cid(req));
+    if (!requisition) return res.status(404).json({ error: 'Requisition not found' });
+    res.json(await recruitmentRepository.getRequisitionTimeline(requisition.id, cid(req)));
+  } catch (error) {
+    respondError(res, error);
+  }
+});
+
 router.get('/requisitions/:id', view, async (req, res) => {
   try {
     const requisition = await recruitmentRepository.findRequisitionById(req.params.id, cid(req));
@@ -207,11 +264,96 @@ router.get('/requisitions/:id', view, async (req, res) => {
   }
 });
 
+/** min ≤ max for a pair of optional numbers; returns an error sentence or null. */
+function rangeError(min, max, what) {
+  const a = min === '' || min == null ? null : Number(min);
+  const b = max === '' || max == null ? null : Number(max);
+  return a != null && b != null && a > b ? `Minimum ${what} is more than the maximum.` : null;
+}
+
+/** YYYY-MM-DD in the business time zone (process TZ is pinned, see timezone.js). */
+function todayText() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+/** A DATE value (pg returns a local-midnight Date) or 'YYYY-MM-DD…' → 'YYYY-MM-DD' / ''. */
+function toDateText(v) {
+  if (!v) return '';
+  if (v instanceof Date) {
+    return `${v.getFullYear()}-${String(v.getMonth() + 1).padStart(2, '0')}-${String(v.getDate()).padStart(2, '0')}`;
+  }
+  return String(v).slice(0, 10);
+}
+function closingDateError(v) {
+  const d = toDateText(v);
+  return d && d < todayText() ? 'The closing date cannot be in the past.' : null;
+}
+
+/**
+ * An opening spends what its requisition approved: no more seats, no higher
+ * pay, no wider experience band than the approver saw.
+ */
+function openingAgainstRequisitionError(o, r) {
+  const n = (v) => (v === '' || v == null ? null : Number(v));
+  const approved = n(r.number_of_positions);
+  if (approved != null && n(o.number_of_positions) != null && n(o.number_of_positions) > approved) {
+    return `The requisition approved ${approved} position${approved === 1 ? '' : 's'}. Raise another requisition for more.`;
+  }
+  if (n(r.salary_max) != null && n(o.salary_max) != null && n(o.salary_max) > n(r.salary_max)) {
+    return `The salary goes above the approved budget (up to ₹${Number(r.salary_max).toLocaleString('en-IN')} per year).`;
+  }
+  if (n(r.salary_max) != null && n(o.salary_min) != null && n(o.salary_min) > n(r.salary_max)) {
+    return `The salary goes above the approved budget (up to ₹${Number(r.salary_max).toLocaleString('en-IN')} per year).`;
+  }
+  return rangeError(o.experience_min, o.experience_max, 'experience')
+      || rangeError(o.salary_min, o.salary_max, 'salary');
+}
+
+/**
+ * An open role is on the careers page the moment it is open — that is what the
+ * public endpoint serves — so the distribution tracker records it then: on
+ * create, and when a draft is published or a closed job reopened.
+ */
+function recordCareersPosting(companyId, openingId, userId) {
+  pool.query(
+    `INSERT INTO job_distributions
+       (company_id, job_opening_id, channel, status, posting_mode, posted_at, created_by)
+     SELECT $1, $2, 'careers', 'posted', 'automatic', NOW(), $3
+      WHERE EXISTS (SELECT 1 FROM careers_portals WHERE company_id = $1 AND is_active)
+     ON CONFLICT (job_opening_id, channel) DO NOTHING`,
+    [companyId, openingId, userId]
+  ).catch(err => console.warn('[Distribution] careers row failed:', err.message));
+}
+
+/** Checks a requisition's content as it will be after the change. */
+function requisitionContentError(r) {
+  const e = rangeError(r.experience_min, r.experience_max, 'experience')
+         || rangeError(r.salary_min, r.salary_max, 'salary');
+  if (e) return e;
+  if (r.hiring_reason === 'replacement' && !r.replacing_employee_id) {
+    return 'Choose the employee this hire replaces.';
+  }
+  return null;
+}
+
 router.post('/requisitions', add, validateBody(requisitionSchema), async (req, res) => {
   try {
+    // Raised by HR (any department) or a department head (their own).
+    const scope = await requisitionRaiserScope(req);
+    const dept = req.body.department ?? req.body.department_id;
+    if (!scopeAllows(scope, dept)) return res.status(403).json({ error: raiserRefusal(scope, dept) });
+    const problem = requisitionContentError(req.body);
+    if (problem) return res.status(400).json({ error: problem });
+    // requested_by is the signed-in user's employee. It was never written
+    // (the body field was ignored and the repository read a key nobody sent),
+    // so every requisition had requested_by NULL — "Requested by" showed "-"
+    // and the Approval Center's self-approval block never fired.
+    const { requested_by: _ignored, ...body } = req.body;
     const requisition = await recruitmentRepository.createRequisition({
-      ...req.body, company_id: cid(req),
+      ...body, company_id: cid(req), requested_by_employee_id: await employeeOf(req, pool),
     });
+    logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'Recruitment', recordId: requisition.id, recordType: 'requisition', action: 'create', newData: requisition, req });
+    await jobEvent(req, { requisition_id: requisition.id, event: 'raised', to_status: 'draft' });
     res.status(201).json(requisition);
   } catch (error) {
     respondError(res, error);
@@ -230,7 +372,121 @@ router.put('/requisitions/:id', edit, validatePatch(requisitionSchema), async (r
         error: 'Requisitions must be approved through the Approval Center, not edited directly.',
       });
     }
-    const requisition = await recruitmentRepository.updateRequisition(req.params.id, req.body, cid(req));
+    const current = await recruitmentRepository.findRequisitionById(req.params.id, cid(req));
+    if (!current) return res.status(404).json({ error: 'Requisition not found' });
+    // Managed by the same people who may raise it: HR, or the head of its
+    // department (and of the new department, if a draft is moved).
+    {
+      const scope = await requisitionRaiserScope(req);
+      // Super Admin (the approver) may also close, reopen, cancel or restore —
+      // a status move only; raising, editing and submitting stay with HR and
+      // department heads.
+      const onlyStatus = Object.keys(req.body).every(k => k === 'status');
+      const STATUS_MOVES = { open: ['closed'], closed: ['open'], draft: ['cancelled'], pending_approval: ['cancelled'], approved: ['cancelled'], cancelled: ['draft'] };
+      const managementMove = canApproveRequisition(req) && onlyStatus
+        && (STATUS_MOVES[current.status] || []).includes(req.body.status);
+      if (!managementMove && !scopeAllows(scope, current.department)) return res.status(403).json({ error: raiserRefusal(scope, current.department) });
+      const newDept = req.body.department ?? req.body.department_id;
+      if (newDept !== undefined && !scopeAllows(scope, newDept)) return res.status(403).json({ error: raiserRefusal(scope, newDept) });
+    }
+    // Content (title, head count, budget...) is what the approver approved, so it
+    // can only change while the requisition is still a draft, including one an
+    // approver sent back. After that, only the status moves.
+    const CONTENT = ['job_title', 'department', 'department_id', 'employment_type', 'number_of_positions',
+      'job_description', 'skills_required', 'location', 'priority',
+      'experience_min', 'experience_max', 'salary_min', 'salary_max',
+      'hiring_reason', 'replacing_employee_id', 'justification'];
+    const editsContent = CONTENT.some(k => req.body[k] !== undefined);
+    if (editsContent && current.status !== 'draft') {
+      return res.status(409).json({
+        error: `This requisition is "${current.status.replace(/_/g, ' ')}" — only a draft can be edited. Cancel it and raise a new one if the need has changed.`,
+      });
+    }
+    // Status moves allowed from the requisition screen. Approval and the open
+    // step (creating the opening) happen elsewhere.
+    if (req.body.status !== undefined && req.body.status !== current.status) {
+      const ALLOWED = {
+        draft:            ['pending_approval', 'cancelled'],
+        pending_approval: ['draft', 'cancelled'],
+        approved:         ['cancelled'],
+        open:             ['closed'],
+        // Reopen: the job comes back with it (see below).
+        closed:           ['open'],
+        // Restore a cancelled request; it must be approved again.
+        cancelled:        ['draft'],
+      };
+      if (!(ALLOWED[current.status] || []).includes(req.body.status)) {
+        return res.status(409).json({
+          error: `A requisition cannot move from "${current.status.replace(/_/g, ' ')}" to "${String(req.body.status).replace(/_/g, ' ')}".`,
+        });
+      }
+    }
+    // Reopening a closed requisition reopens its job opening. If that job was
+    // cancelled (a draft that was never published), the requisition goes back to
+    // "approved" so a job can be posted against it again.
+    let reopenJob = null;
+    if (current.status === 'closed' && req.body.status === 'open') {
+      if (current.opening_id && current.opening_status !== 'cancelled') {
+        const job = await recruitmentRepository.findOpeningById(current.opening_id, cid(req));
+        const total = Number(job?.number_of_positions || 1);
+        if (Number(job?.positions_filled || 0) >= total) {
+          return res.status(409).json({ error: `All ${total} position${total === 1 ? ' is' : 's are'} filled, so there is nothing to reopen. Raise a new requisition for more hires.` });
+        }
+        const closing = toDateText(job?.closing_date);
+        if (closing && closing < todayText()) {
+          return res.status(409).json({ error: 'The job\'s closing date has passed. Open the job under Job Openings, set a new closing date, then reopen.' });
+        }
+        reopenJob = job;
+      } else {
+        req.body.status = 'approved';
+      }
+    }
+    const { requested_by: _ignored, ...body } = req.body;
+    if (body.department === undefined && body.department_id !== undefined) body.department = body.department_id;
+    delete body.department_id;
+    const after = { ...current, ...body };
+    const problem = requisitionContentError(after);
+    if (problem) return res.status(400).json({ error: problem });
+    // An approver decides on the reason, so it has to be there before it is sent.
+    if (body.status === 'pending_approval' && !String(after.justification || '').trim()) {
+      return res.status(400).json({ error: 'Add a justification (why this hire is needed) before submitting for approval.' });
+    }
+    if (body.status === 'pending_approval' && !String(after.department || '').trim()) {
+      return res.status(400).json({ error: 'Choose the department before submitting for approval.' });
+    }
+    const requisition = await recruitmentRepository.updateRequisition(req.params.id, body, cid(req));
+    // Closing the requisition closes the job it became: the headcount is no
+    // longer authorised, so the advert must come down too.
+    if (body.status === 'closed' && current.status === 'open') {
+      await pool.query(
+        `UPDATE job_openings SET status = 'closed', updated_at = NOW()
+          WHERE requisition_id = $1 AND company_id = $2 AND deleted_at IS NULL AND status IN ('open', 'on_hold', 'draft')`,
+        [current.id, cid(req)]);
+    }
+    if (reopenJob) {
+      await pool.query(`UPDATE job_openings SET status = 'open', updated_at = NOW() WHERE id = $1 AND company_id = $2`, [reopenJob.id, cid(req)]);
+      recordCareersPosting(cid(req), reopenJob.id, req.user?.userId ?? null);
+    }
+    const edited = changedFields(current, body);
+    if (edited.length) {
+      await jobEvent(req, { requisition_id: current.id, event: 'edited', comment: `Changed: ${edited.join(', ')}` });
+    }
+    if (body.status !== undefined && body.status !== current.status) {
+      const reopened = current.status === 'closed';
+      const event = reopened ? 'reopened'
+        : current.status === 'cancelled' ? 'restored'
+        : body.status === 'draft' ? 'withdrawn'
+        : ({ pending_approval: 'submitted', cancelled: 'cancelled', closed: 'closed' }[body.status] || 'status');
+      const comment = event === 'closed' && current.opening_id ? 'Its job opening was closed too.'
+        : reopened && reopenJob ? 'Its job opening reopened too and is back on the careers page.'
+        : reopened ? 'Back to approved — post a new job opening against it.'
+        : event === 'restored' ? 'Back to draft — it must be submitted and approved again.' : null;
+      await jobEvent(req, {
+        requisition_id: current.id, job_opening_id: current.opening_id || null, event,
+        from_status: current.status, to_status: body.status, comment,
+      });
+    }
+    logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'Recruitment', recordId: requisition.id, recordType: 'requisition', action: 'update', oldData: current, newData: requisition, req });
     res.json(requisition);
   } catch (error) {
     respondError(res, error);
@@ -239,7 +495,15 @@ router.put('/requisitions/:id', edit, validatePatch(requisitionSchema), async (r
 
 router.delete('/requisitions/:id', remove, async (req, res) => {
   try {
+    const current = await recruitmentRepository.findRequisitionById(req.params.id, cid(req));
+    if (!current) return res.status(404).json({ error: 'Requisition not found' });
+    const scope = await requisitionRaiserScope(req);
+    if (!scopeAllows(scope, current.department)) return res.status(403).json({ error: raiserRefusal(scope, current.department) });
+    if (!['draft', 'cancelled'].includes(current.status)) {
+      return res.status(409).json({ error: 'Only a draft or cancelled requisition can be deleted. Cancel it first.' });
+    }
     await recruitmentRepository.deleteRequisition(req.params.id, cid(req));
+    logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'Recruitment', recordId: current.id, recordType: 'requisition', action: 'delete', oldData: current, req });
     res.json({ message: 'Requisition deleted successfully' });
   } catch (error) {
     respondError(res, error);
@@ -270,6 +534,14 @@ router.get('/openings/:id', view, async (req, res) => {
 
 router.post('/openings', add, validateBody(openingSchema), async (req, res) => {
   try {
+    // An opening is the spend a requisition approved. Without this the approval
+    // step could be skipped entirely (audit 2026-11-17 B6): every opening on the
+    // database had been created with no requisition at all.
+    if (!req.body.requisition_id) {
+      return res.status(400).json({
+        error: 'Choose the approved requisition this opening is for. Raise a requisition under Jobs → Requisitions and have it approved first.',
+      });
+    }
     // Requisitions must be approved before a job opening can be created against them.
     // createOpening() itself accepted any requisition_id (or none) with no status check and
     // unconditionally flipped the requisition to 'open' once referenced — this was the actual
@@ -281,8 +553,27 @@ router.post('/openings', add, validateBody(openingSchema), async (req, res) => {
     // race window where two concurrent requests both saw 'approved'. It now lives inside
     // createOpening()'s transaction behind a SELECT ... FOR UPDATE on the requisition row,
     // so it is enforced atomically; this route just surfaces the resulting status code.
+    const requisition = await recruitmentRepository.findRequisitionById(req.body.requisition_id, cid(req));
+    if (!requisition) return res.status(404).json({ error: 'Requisition not found.' });
+    const status = req.body.status || 'open';
+    if (!['open', 'draft'].includes(status)) {
+      return res.status(400).json({ error: 'A new job opening is either published (open) or saved as a draft.' });
+    }
+    const body = { ...req.body, status,
+      // The department and type are what was approved; the opening follows them.
+      department: requisition.department || req.body.department,
+      employment_type: requisition.employment_type || req.body.employment_type };
+    const problem = openingAgainstRequisitionError(body, requisition)
+                 || closingDateError(body.closing_date);
+    if (problem) return res.status(400).json({ error: problem });
     const opening = await recruitmentRepository.createOpening({
-      ...req.body, company_id: cid(req),
+      ...body, company_id: cid(req),
+    });
+    logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'Recruitment', recordId: opening.id, recordType: 'job_opening', action: 'create', newData: opening, req });
+    await jobEvent(req, {
+      requisition_id: requisition.id, job_opening_id: opening.id,
+      event: opening.status === 'draft' ? 'job_drafted' : 'job_posted', to_status: opening.status,
+      comment: opening.job_title !== requisition.job_title ? `Advertised as "${opening.job_title}"` : null,
     });
     // Create Google Drive folder structure async (non-blocking)
     const title = opening.job_title || req.body.job_title || 'Job';
@@ -296,14 +587,7 @@ router.post('/openings', add, validateBody(openingSchema), async (req, res) => {
     // migration backfilled; otherwise the checklist would show "Careers page:
     // draft" for a role that is already publicly advertised.
     if ((opening.status || '').toLowerCase() === 'open') {
-      pool.query(
-        `INSERT INTO job_distributions
-           (company_id, job_opening_id, channel, status, posting_mode, posted_at, created_by)
-         SELECT $1, $2, 'careers', 'posted', 'automatic', NOW(), $3
-          WHERE EXISTS (SELECT 1 FROM careers_portals WHERE company_id = $1 AND is_active)
-         ON CONFLICT (job_opening_id, channel) DO NOTHING`,
-        [cid(req), opening.id, req.user?.userId ?? null]
-      ).catch(err => console.warn('[Distribution] careers row failed:', err.message));
+      recordCareersPosting(cid(req), opening.id, req.user?.userId ?? null);
     }
     res.status(201).json(opening);
   } catch (error) {
@@ -315,21 +599,125 @@ router.post('/openings', add, validateBody(openingSchema), async (req, res) => {
 
 router.put('/openings/:id', edit, validatePatch(openingSchema), async (req, res) => {
   try {
-    // Same approval guard as POST /openings — otherwise an unapproved requisition could be
-    // linked in later via edit instead of at creation time.
-    if (req.body.requisition_id) {
-      const requisition = await recruitmentRepository.findRequisitionById(req.body.requisition_id, cid(req));
-      if (!requisition) {
-        return res.status(404).json({ error: 'Requisition not found.' });
+    const current = await recruitmentRepository.findOpeningById(req.params.id, cid(req));
+    if (!current) return res.status(404).json({ error: 'Opening not found' });
+    // The requisition an opening was raised against is fixed: moving it to
+    // another would free one approval and consume a second without either
+    // being recorded.
+    if (req.body.requisition_id !== undefined
+        && String(req.body.requisition_id || '') !== String(current.requisition_id || '')) {
+      return res.status(400).json({ error: 'The requisition of a job opening cannot be changed. Close this one and post a new job against the other requisition.' });
+    }
+    const { requisition_id: _r, positions_filled: _pf, ...body } = req.body;
+    const requisition = current.requisition_id
+      ? await recruitmentRepository.findRequisitionById(current.requisition_id, cid(req)) : null;
+    if (requisition) {
+      // Department and type are what was approved.
+      if (body.department !== undefined && requisition.department && body.department !== requisition.department) {
+        return res.status(400).json({ error: `This job was approved for ${requisition.department}. Raise a new requisition to hire for another department.` });
       }
-      if (requisition.status !== 'approved') {
-        return res.status(400).json({
-          error: 'This requisition has not been approved yet. Job openings can only be linked to an approved requisition.',
-        });
+      if (body.employment_type !== undefined && requisition.employment_type && body.employment_type !== requisition.employment_type) {
+        return res.status(400).json({ error: 'The employment type was set by the approved requisition and cannot be changed here.' });
       }
     }
-    const opening = await recruitmentRepository.updateOpening(req.params.id, req.body, cid(req));
-    res.json(opening);
+    const after = { ...current, ...body };
+    const problem = (requisition && openingAgainstRequisitionError(after, requisition))
+                 || rangeError(after.experience_min, after.experience_max, 'experience')
+                 || rangeError(after.salary_min, after.salary_max, 'salary')
+                 || (body.closing_date !== undefined && String(body.closing_date || '').slice(0, 10) !== toDateText(current.closing_date)
+                       ? closingDateError(body.closing_date) : null);
+    if (problem) return res.status(400).json({ error: problem });
+    if (body.number_of_positions != null && body.number_of_positions !== ''
+        && Number(body.number_of_positions) < Number(current.positions_filled || 0)) {
+      return res.status(400).json({ error: `${current.positions_filled} position(s) are already filled — the head count cannot go below that.` });
+    }
+
+    // Status moves.
+    const from = current.status;
+    const to = body.status;
+    if (to !== undefined && to !== from) {
+      const ALLOWED = {
+        draft:   ['open', 'cancelled'],
+        open:    ['on_hold', 'closed'],
+        on_hold: ['open', 'closed'],
+        paused:  ['open', 'closed'],
+        closed:  ['open'],
+      };
+      if (!(ALLOWED[from] || []).includes(to)) {
+        return res.status(409).json({ error: `A job opening cannot move from "${String(from).replace(/_/g, ' ')}" to "${String(to).replace(/_/g, ' ')}".` });
+      }
+      if (to === 'open') {
+        const total = Number(after.number_of_positions || 1);
+        if (Number(current.positions_filled || 0) >= total) {
+          return res.status(409).json({ error: 'Every position on this job is filled. Raise a new requisition for more hires.' });
+        }
+        const closing = toDateText(after.closing_date);
+        if (closing && closing < todayText()) {
+          return res.status(400).json({ error: 'The closing date has passed. Set a new closing date before reopening this job.' });
+        }
+      }
+    }
+
+    const opening = await recruitmentRepository.updateOpening(req.params.id, body, cid(req));
+
+    if (to !== undefined && to !== from) {
+      if (to === 'open') {
+        if (!opening.posted_date) {
+          await pool.query(`UPDATE job_openings SET posted_date = CURRENT_DATE WHERE id = $1`, [opening.id]);
+        }
+        recordCareersPosting(cid(req), opening.id, req.user?.userId ?? null);
+      }
+      // The requisition follows its job: closed with it, reopened with it.
+      if (current.requisition_id) {
+        if (['closed', 'cancelled'].includes(to)) {
+          await pool.query(`UPDATE job_requisitions SET status = 'closed', updated_at = NOW() WHERE id = $1 AND status = 'open'`, [current.requisition_id]);
+        } else if (to === 'open' && from === 'closed') {
+          await pool.query(`UPDATE job_requisitions SET status = 'open', updated_at = NOW() WHERE id = $1 AND status = 'closed'`, [current.requisition_id]);
+        }
+      }
+    }
+    if (current.requisition_id) {
+      const edited = changedFields(current, body);
+      if (edited.length) {
+        await jobEvent(req, { requisition_id: current.requisition_id, job_opening_id: opening.id, event: 'job_edited', comment: `Changed: ${edited.join(', ')}` });
+      }
+      if (to !== undefined && to !== from) {
+        const STEP = { on_hold: 'job_paused', closed: 'job_closed', cancelled: 'job_cancelled' };
+        const event = to === 'open' ? (from === 'draft' ? 'job_published' : 'job_reopened') : STEP[to] || 'job_status';
+        const req_note = ['closed', 'cancelled'].includes(to) ? 'The requisition closed with it.'
+                       : to === 'open' && from === 'closed' ? 'The requisition reopened with it.' : null;
+        await jobEvent(req, { requisition_id: current.requisition_id, job_opening_id: opening.id, event, from_status: from, to_status: to, comment: req_note });
+      }
+    }
+    logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'Recruitment', recordId: opening.id, recordType: 'job_opening', action: 'update', oldData: current, newData: opening, req });
+    res.json(await recruitmentRepository.findOpeningById(opening.id, cid(req)));
+  } catch (error) {
+    respondError(res, error);
+  }
+});
+
+// Deleting is for a posting made by mistake. Once anyone has applied, close it
+// instead: the applications and their history belong to that opening.
+router.delete('/openings/:id', remove, async (req, res) => {
+  try {
+    const opening = await recruitmentRepository.findOpeningById(req.params.id, cid(req));
+    if (!opening) return res.status(404).json({ error: 'Opening not found' });
+    const { rows: [{ n }] } = await pool.query(
+      `SELECT (SELECT COUNT(*) FROM candidate_applications WHERE job_opening_id = $1)
+            + (SELECT COUNT(*) FROM candidates WHERE applied_job_id = $1 AND deleted_at IS NULL) AS n`,
+      [opening.id]);
+    if (Number(n) > 0) {
+      return res.status(409).json({ error: 'Candidates have applied to this opening — close it instead of deleting it.' });
+    }
+    await pool.query(`UPDATE job_openings SET deleted_at = NOW(), updated_at = NOW() WHERE id = $1 AND company_id = $2`, [opening.id, cid(req)]);
+    // The requisition it consumed becomes available again.
+    if (opening.requisition_id) {
+      await pool.query(`UPDATE job_requisitions SET status = 'approved', updated_at = NOW() WHERE id = $1 AND status = 'open'`, [opening.requisition_id]);
+      await jobEvent(req, { requisition_id: opening.requisition_id, event: 'job_deleted',
+        comment: `"${opening.job_title}" was deleted. The requisition is approved and can be posted again.` });
+    }
+    logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'Recruitment', recordId: opening.id, recordType: 'job_opening', action: 'delete', oldData: opening, req });
+    res.json({ message: 'Opening deleted' });
   } catch (error) {
     respondError(res, error);
   }
@@ -513,8 +901,59 @@ router.post('/candidates/bulk', add, upload.array('resumes'), async (req, res) =
 
 router.put('/candidates/:id', edit, validatePatch(candidateSchema), async (req, res) => {
   try {
-    const candidate = await recruitmentRepository.updateCandidate(req.params.id, req.body, cid(req));
+    const before = await recruitmentRepository.findCandidateById(req.params.id, cid(req));
+    if (!before) return res.status(404).json({ error: 'Candidate not found' });
+    const body = { ...req.body };
+    // Stage and status change only through move-stage, which writes the stage
+    // history and the timeline. The résumé changes through POST …/resume.
+    for (const k of ['current_stage', 'overall_status', 'company_id', 'candidate_code', 'resume_file_url',
+                     'disposition', 'anonymised_at', 'legal_hold', 'consent_basis', 'retain_until']) delete body[k];
+    // A blank field clears the value (the old Résumé Database edit used COALESCE,
+    // so nothing could ever be removed once entered).
+    for (const k of Object.keys(body)) if (body[k] === '') body[k] = null;
+    if (body.full_name === null) return res.status(400).json({ error: 'Name cannot be empty.' });
+    const candidate = await recruitmentRepository.updateCandidate(req.params.id, body, cid(req));
+    logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'Recruitment', recordId: candidate.id, recordType: 'candidate', action: 'update', oldData: before, newData: candidate, req });
+    const changed = Object.keys(body).filter(k => String(before[k] ?? '') !== String(candidate[k] ?? ''));
+    if (changed.length) {
+      await candidateIntelligence.recordActivity({
+        company_id: cid(req), candidate_id: candidate.id, event_type: 'profile_updated',
+        summary: `Profile updated: ${changed.map(k => k.replace(/_/g, ' ')).join(', ')}`,
+        detail: { fields: changed },
+        actor_user_id: req.user?.userId ?? req.user?.id ?? null, actor_name: await actorNameOf(req),
+      }).catch(() => {});
+    }
     res.json(candidate);
+  } catch (error) {
+    respondError(res, error);
+  }
+});
+
+// Replace the résumé on an existing candidate (Candidate Detail → Edit).
+router.post('/candidates/:id/resume', edit, upload.single('resume'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'Attach a PDF or Word résumé.' });
+    const before = await recruitmentRepository.findCandidateById(req.params.id, cid(req));
+    if (!before) return res.status(404).json({ error: 'Candidate not found' });
+    const url = await uploadFile(req.file.buffer, req.file.originalname, req.file.mimetype);
+    // Re-read the text so résumé search finds the new content.
+    let text = null;
+    try { text = (await parseResume(req.file.buffer, req.file.mimetype, req.file.originalname))?.text || null; } catch { text = null; }
+    const { rows: [c] } = await pool.query(
+      `UPDATE candidates SET resume_file_url = $1, resume_text = COALESCE($2, resume_text), parsed_at = NOW(), updated_at = NOW()
+        WHERE id = $3 AND company_id = $4 RETURNING *`,
+      [url, text, before.id, cid(req)]);
+    if (c.applied_job_id) {
+      uploadResume(c.id, c.applied_job_id, req.file.buffer, req.file.originalname, req.file.mimetype)
+        .catch(err => console.warn('[Drive] uploadResume failed:', err.message));
+    }
+    await candidateIntelligence.recordActivity({
+      company_id: cid(req), candidate_id: c.id, event_type: 'resume_replaced',
+      summary: `Résumé replaced (${req.file.originalname})`,
+      actor_user_id: req.user?.userId ?? req.user?.id ?? null, actor_name: await actorNameOf(req),
+    }).catch(() => {});
+    logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'Recruitment', recordId: c.id, recordType: 'candidate', action: 'resume_replace', oldData: { resume_file_url: before.resume_file_url }, newData: { resume_file_url: url }, req });
+    res.json(c);
   } catch (error) {
     respondError(res, error);
   }
@@ -819,7 +1258,7 @@ router.post('/candidates/:id/recommend', add, validateBody(recommendSchema), asy
       return res.status(400).json({ error: 'Select at least one job opening to recommend this candidate for.' });
     }
 
-    const { candidate, created, alreadyThere } = await recruitmentRepository.recommendCandidateForJobs(
+    const { candidate, created, alreadyThere, broughtBack } = await recruitmentRepository.recommendCandidateForJobs(
       req.params.id, ids,
       {
         company_id: cid(req),
@@ -878,8 +1317,11 @@ router.post('/candidates/:id/recommend', add, validateBody(recommendSchema), asy
       candidate_name: candidate.full_name,
       created,
       already_applied: alreadyThere,
+      brought_back: Boolean(broughtBack),
       message: created.length
-        ? `${candidate.full_name} recommended for ${created.map(a => a.job_title).join(', ')}.`
+        ? (broughtBack
+            ? `${candidate.full_name} is back in hiring for ${created.map(a => a.job_title).join(', ')}.`
+            : `${candidate.full_name} recommended for ${created.map(a => a.job_title).join(', ')}.`)
         : 'Already under consideration for every opening selected — nothing to add.',
     });
   } catch (error) {
@@ -914,49 +1356,10 @@ router.get('/candidates/:id/history', view, async (req, res) => {
   }
 });
 
-// ==================== HIRE CANDIDATE ====================
-// Routed through autoCreateEmployeeFromCandidate() rather than calling
-// hireCandidate() directly. This endpoint used to be the one hire path that
-// skipped the 'hired' stage-gate and the recruitment_employee_creation_log
-// de-duplication that the other three paths (move-stage → hired, offer-accept,
-// manual auto-creation trigger) all go through — so it could mint a second
-// employee record, login and payroll enrolment for an already-hired candidate.
-// It now shares the exact same guarded, transactional path as the rest.
-router.post('/candidates/:id/hire', edit, async (req, res) => {
-  try {
-    const result = await recruitmentRepository.autoCreateEmployeeFromCandidate(
-      req.params.id, cid(req), req.user?.userId ?? req.user?.id ?? null
-    );
-    if (result.status !== 201) {
-      return res.status(result.status).json({ error: result.error, employee_code: result.employee_code });
-    }
-    const { employee, employeeId } = result;
+// POST /candidates/:id/hire was removed 2026-11-17: no screen called it, and it
+// duplicated autoCreateEmployeeFromCandidate() (accepting an offer, or Offer &
+// Onboarding → Employee Creation), which is the one hiring path.
 
-    // Move resume to Hired folder (non-blocking)
-    moveResumeOnStageChange(req.params.id, 'hired').catch(err =>
-      console.warn('[Drive] hire moveResume failed:', err.message)
-    );
-
-    logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'Recruitment', recordId: parseInt(req.params.id), recordType: 'candidate', action: 'hire', newData: { employee_id: employeeId }, req });
-    // Notify HR of new hire
-    notify(req.user?.userId ?? req.user?.id, 'recruitment', parseInt(req.params.id),
-      `${employee.first_name} ${employee.last_name} has been hired and added as employee ${employeeId}`);
-    triggerEmail('hired_welcome', {
-      candidate_email: employee.company_email || '',
-      candidate_name:  `${employee.first_name} ${employee.last_name}`,
-      employee_id:     employeeId,
-      joining_date:    employee.joining_date  || '',
-    }, cid(req));
-    res.json({ success: true, employee_id: employeeId, employee });
-  } catch (error) {
-    respondError(res, error);
-  }
-});
-
-// ==================== PIPELINE ====================
-// Per-opening board. Counts and columns both read candidate_applications, so a
-// candidate recommended onto this role appears here exactly like one who applied
-// to it directly — which is the whole point of having the table.
 router.get('/pipeline/:job_opening_id', view, async (req, res) => {
   try {
     const pipeline = await recruitmentRepository.getPipelineSummary(cid(req), req.params.job_opening_id);
@@ -980,7 +1383,21 @@ router.get('/pipeline/:job_opening_id/:stage', view, async (req, res) => {
 // ==================== INTERVIEW NOTES ====================
 router.post('/interview-notes', add, validateBody(interviewNoteSchema), async (req, res) => {
   try {
-    const note = await recruitmentRepository.createInterviewNote(req.body, cid(req));
+    const body = { ...req.body };
+    // Feedback is attributed to the person filing it unless a recruiter is
+    // recording it on someone's behalf.
+    if (!body.interviewer_id) body.interviewer_id = await employeeOf(req, pool);
+    if (body.interview_id) {
+      const { rows } = await pool.query(
+        `SELECT candidate_id, interview_round FROM interview_schedules WHERE id::text = $1 AND company_id = $2`,
+        [String(body.interview_id), cid(req)]);
+      if (!rows.length) return res.status(404).json({ error: 'Interview not found' });
+      if (String(rows[0].candidate_id) !== String(body.candidate_id)) {
+        return res.status(400).json({ error: 'That interview belongs to a different candidate.' });
+      }
+      if (!body.interview_round) body.interview_round = ROUND_LABELS[rows[0].interview_round] || rows[0].interview_round;
+    }
+    const note = await recruitmentRepository.createInterviewNote(body, cid(req));
     res.status(201).json(note);
   } catch (error) {
     respondError(res, error);
@@ -999,39 +1416,64 @@ router.get('/interview-notes/:candidate_id', view, async (req, res) => {
 // ==================== INTERVIEWS ====================
 router.get('/interviews', view, async (req, res) => {
   try {
-    const interviews = await recruitmentRepository.findInterviews({
-      ...req.query, company_id: cid(req),
-    });
+    const filters = { ...req.query, company_id: cid(req) };
+    delete filters.panel_member_id;
+    // ?mine=1 → interviews where the caller is the lead interviewer or on the panel.
+    if (String(req.query.mine) === '1') {
+      const me = await employeeOf(req, pool);
+      if (!me) return res.json([]);
+      filters.panel_member_id = me;
+    }
+    const interviews = await recruitmentRepository.findInterviews(filters);
     res.json(interviews);
   } catch (error) {
     respondError(res, error);
   }
 });
 
-router.post('/interviews', add, validateBody(interviewSchema), async (req, res) => {
+router.post('/interviews', add, normaliseInterviewMode, validateBody(interviewSchema), async (req, res) => {
   try {
+    const company_id = cid(req);
+    const cand = (await pool.query(
+      `SELECT id, current_stage, applied_job_id FROM candidates WHERE id = $1 AND company_id = $2 AND deleted_at IS NULL`,
+      [req.body.candidate_id, company_id])).rows[0];
+    if (!cand) return res.status(404).json({ error: 'Candidate not found' });
+    const bad = await interviewersOutsideCompany(req.body, company_id);
+    if (bad) return res.status(400).json({ error: bad });
+
     const interview = await recruitmentRepository.scheduleInterview({
-      ...req.body, company_id: cid(req),
+      ...req.body, company_id, job_opening_id: req.body.job_opening_id || cand.applied_job_id || null,
     });
-    // Notify interviewer
-    if (interview.interviewer_id) {
-      // employees has no user_id column — this always returned zero rows, so
-      // notify() below silently no-op'd on every interview scheduled.
-      const empRes = await pool.query('SELECT id AS user_id FROM users WHERE employee_id = $1', [interview.interviewer_id]).catch(() => ({ rows: [] }));
-      const interviewerUserId = empRes.rows[0]?.user_id;
-      // notifications.reference_id is integer — interview.id is the
-      // interview_schedules UUID PK, so passing it here threw 22P02 on every
-      // call, silently swallowed by notify()'s own .catch(). Use the
-      // candidate's integer id instead, matching every other notify() call
-      // in this file.
-      notify(interviewerUserId, 'recruitment', interview.candidate_id,
-        `Interview scheduled on ${interview.interview_date} — check your calendar`);
+
+    // Booking a 1st/2nd level round moves a candidate who is still earlier in the
+    // pipeline to that stage, so the board shows where they really are. Never
+    // backwards, never out of a parked stage.
+    const ORDER = ['applied', 'screening', 'shortlisted', 'assessment', '1st_level', '2nd_level'];
+    const target = ['1st_level', '2nd_level'].includes(interview.interview_round) ? interview.interview_round : null;
+    if (target && ORDER.includes(cand.current_stage) && ORDER.indexOf(cand.current_stage) < ORDER.indexOf(target)) {
+      await recruitmentRepository.moveCandidateStage(cand.id, target, await employeeOf(req, pool),
+        `${ROUND_LABELS[target]} scheduled for ${String(interview.interview_date).slice(0, 10)}`,
+        company_id, null, req.user?.userId ?? req.user?.id ?? null);
+    }
+
+    // Notify the lead interviewer and every panel member.
+    const panelIds = [interview.interviewer_id, ...(interview.panel_employee_ids || [])].filter(Boolean);
+    if (panelIds.length) {
+      const { rows: users } = await pool.query(
+        'SELECT id AS user_id FROM users WHERE employee_id = ANY($1::int[]) AND is_active IS NOT FALSE', [panelIds]).catch(() => ({ rows: [] }));
+      for (const u of users) {
+        notify(u.user_id, 'recruitment', interview.candidate_id,
+          `Interview with ${interview.candidate_name || 'a candidate'} on ${String(interview.interview_date).slice(0, 10)}`
+          + (interview.interview_time ? ` at ${String(interview.interview_time).slice(0, 5)}` : '') + ' — see My Interviews',
+          'interview_assigned');
+      }
     }
     triggerEmail('interview_l1_scheduled', {
       candidate_email:  interview.candidate_email || '',
       candidate_name:   interview.candidate_name  || '',
-      interview_date:   interview.interview_date  || '',
-      interview_mode:   interview.interview_mode  || '',
+      interview_date:   fmtLetterDate(interview.interview_date)
+                        + (interview.interview_time ? ` at ${String(interview.interview_time).slice(0, 5)}` : ''),
+      interview_mode:   ({ in_person: 'In person', video: 'Video call', phone: 'Phone' })[interview.interview_mode] || '',
     }, cid(req));
     await candidateIntelligence.recordActivity({
       company_id: cid(req),
@@ -1055,9 +1497,51 @@ router.post('/interviews', add, validateBody(interviewSchema), async (req, res) 
   }
 });
 
-router.put('/interviews/:id', edit, validatePatch(interviewSchema), async (req, res) => {
+router.put('/interviews/:id', edit, normaliseInterviewMode, validatePatch(interviewSchema), async (req, res) => {
   try {
-    const interview = await recruitmentRepository.updateInterview(req.params.id, req.body, cid(req));
+    const company_id = cid(req);
+    const before = (await pool.query(
+      `SELECT * FROM interview_schedules WHERE id::text = $1 AND company_id = $2 AND deleted_at IS NULL`,
+      [String(req.params.id), company_id])).rows[0];
+    if (!before) return res.status(404).json({ error: 'Interview not found' });
+    const body = { ...req.body };
+    delete body.candidate_id; // an interview never moves to another candidate
+    const onlyQuestions = Object.keys(body).every(k => k === 'question_ids');
+    if (before.status !== 'scheduled' && !onlyQuestions) {
+      return res.status(409).json({ error: `This interview is ${before.status} — it can no longer be changed.` });
+    }
+    if (body.status === 'completed') {
+      return res.status(400).json({ error: 'Record the outcome with "Complete" — that saves the feedback and moves the candidate.' });
+    }
+    const bad = await interviewersOutsideCompany({ ...body, interviewer_id: body.interviewer_id ?? null }, company_id);
+    if (bad) return res.status(400).json({ error: bad });
+    if (body.panel_employee_ids !== undefined && body.interviewer_id === undefined) body.interviewer_id = before.interviewer_id;
+
+    const interview = await recruitmentRepository.updateInterview(req.params.id, body, company_id);
+    const day = (d) => (d instanceof Date ? d.toISOString() : String(d ?? '')).slice(0, 10);
+    const moved = (body.interview_date && day(body.interview_date) !== day(before.interview_date))
+               || (body.interview_time && String(body.interview_time).slice(0, 5) !== String(before.interview_time ?? '').slice(0, 5));
+    const what = body.status === 'cancelled' ? 'cancelled' : moved ? 'rescheduled' : null;
+    if (what) {
+      await candidateIntelligence.recordActivity({
+        company_id, candidate_id: interview.candidate_id,
+        event_type: what === 'cancelled' ? 'interview_cancelled' : 'interview_rescheduled',
+        summary: what === 'cancelled'
+          ? `Interview on ${day(before.interview_date)} cancelled`
+          : `Interview moved from ${day(before.interview_date)} to ${day(interview.interview_date)}`
+            + (interview.interview_time ? ` at ${String(interview.interview_time).slice(0, 5)}` : ''),
+        detail: { interview_id: interview.id, reason: body.notes || null },
+        actor_user_id: req.user?.userId ?? req.user?.id ?? null,
+        actor_name: await actorNameOf(req),
+      }).catch(() => {});
+      const panelIds = [interview.interviewer_id, ...(interview.panel_employee_ids || [])].filter(Boolean);
+      if (panelIds.length) {
+        const { rows: users } = await pool.query(
+          'SELECT id AS user_id FROM users WHERE employee_id = ANY($1::int[])', [panelIds]).catch(() => ({ rows: [] }));
+        for (const u of users) notify(u.user_id, 'recruitment', interview.candidate_id, `An interview you are on was ${what}`, 'interview_changed');
+      }
+    }
+    logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'Recruitment', recordId: null, recordType: 'interview', action: what || 'update', oldData: before, newData: interview, req });
     res.json(interview);
   } catch (error) {
     respondError(res, error);
@@ -1113,12 +1597,10 @@ router.post('/interviews/:id/submit-feedback', edit, validateBody(submitFeedback
     const currentStage = candidate.current_stage;
 
     // 3. Map current stage to interview round label for the note
-    const ROUND_LABELS = {
-      '1st_level': '1st Level Interview',
-      '2nd_level': '2nd Level Interview',
-      'screening':  'Screening',
-    };
-    const interviewRound = ROUND_LABELS[currentStage] || currentStage;
+    // The round booked on the interview wins; older interviews fall back to the
+    // candidate's stage, which is how the round used to be guessed.
+    const round = schedule.interview_round || (['1st_level', '2nd_level'].includes(currentStage) ? currentStage : null);
+    const interviewRound = ROUND_LABELS[round] || ROUND_LABELS[currentStage] || currentStage;
 
     // 4. Save interview note
     // interviewer_id is interview_notes' FK to employees(id). It used to be taken
@@ -1128,11 +1610,11 @@ router.post('/interviews/:id/submit-feedback', edit, validateBody(submitFeedback
     // employee id and fall back to the scheduled interviewer for callers with no
     // employee record (the admin accounts), so attribution is real where it can be.
     await pool.query(
-      `INSERT INTO interview_notes (candidate_id, interviewer_id, interview_round, rating, comments, recommendation)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [schedule.candidate_id, req.user?.employee_id ?? schedule.interviewer_id, interviewRound,
+      `INSERT INTO interview_notes (candidate_id, interviewer_id, interview_round, rating, comments, recommendation, interview_id, company_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [schedule.candidate_id, (await employeeOf(req, pool)) ?? schedule.interviewer_id, interviewRound,
        rating ?? null, comments ?? null,
-       outcome === 'selected' ? 'hire' : 'reject']
+       outcome === 'selected' ? 'hire' : 'reject', schedule.id, schedule.company_id]
     );
 
     // This handler writes its note with a raw INSERT rather than through
@@ -1150,8 +1632,11 @@ router.post('/interviews/:id/submit-feedback', edit, validateBody(submitFeedback
     // 6. Determine next stage
     let nextStage = null;
     if (outcome === 'selected') {
-      if (currentStage === '1st_level') nextStage = '2nd_level';
-      else if (currentStage === '2nd_level') nextStage = 'offer';
+      // A technical or HR round records the result without moving the candidate;
+      // a 1st level pass goes to 2nd level; 2nd level or final goes to offer.
+      const effective = round || currentStage;
+      if (effective === '1st_level' && ['1st_level', 'shortlisted', 'assessment', 'screening', 'applied'].includes(currentStage)) nextStage = '2nd_level';
+      else if (['2nd_level', 'final'].includes(effective) && !['offer', 'selected', 'hired'].includes(currentStage)) nextStage = 'offer';
     } else {
       nextStage = 'not_suitable';
     }
@@ -1260,7 +1745,16 @@ router.get('/email-templates/:id', view, async (req, res) => {
   }
 });
 
-router.post('/email-templates', add, validateBody(emailTemplateSchema), async (req, res) => {
+// Email templates are recruitment set-up: HR's, not a department head's
+// (owner decision 2026-11-18). Reading stays open to the module.
+async function setupOnly(req, res, next) {
+  try {
+    if (!(await canManageRecruitmentSetup(req))) return res.status(403).json({ error: 'Email templates are managed by HR.' });
+    next();
+  } catch (e) { respondError(res, e); }
+}
+
+router.post('/email-templates', add, setupOnly, validateBody(emailTemplateSchema), async (req, res) => {
   try {
     const template = await recruitmentRepository.createEmailTemplate(req.body, cid(req));
     res.status(201).json(template);
@@ -1269,8 +1763,25 @@ router.post('/email-templates', add, validateBody(emailTemplateSchema), async (r
   }
 });
 
-router.put('/email-templates/:id', edit, validatePatch(emailTemplateSchema), async (req, res) => {
+router.put('/email-templates/:id', edit, setupOnly, validatePatch(emailTemplateSchema), async (req, res) => {
   try {
+    const current = await recruitmentRepository.findEmailTemplateById(req.params.id, null);
+    if (!current || (current.company_id != null && String(current.company_id) !== String(cid(req)))) {
+      return res.status(404).json({ error: 'Template not found' });
+    }
+    // A shared default is never edited in place (it belongs to every company):
+    // saving it makes this company's own copy, which the sender then prefers.
+    if (current.company_id == null) {
+      const copy = await recruitmentRepository.createEmailTemplate({
+        template_name: req.body.template_name ?? current.template_name ?? current.name,
+        template_type: current.stage_trigger || current.template_type,
+        subject: req.body.subject ?? current.subject,
+        body_html: req.body.body_html ?? current.body_html,
+        variables_json: current.variables_json ?? null,
+        is_active: req.body.is_active !== false,
+      }, cid(req));
+      return res.status(201).json({ ...copy, copied_from_default: current.id });
+    }
     const template = await recruitmentRepository.updateEmailTemplate(req.params.id, req.body, cid(req));
     res.json(template);
   } catch (error) {
@@ -1278,8 +1789,12 @@ router.put('/email-templates/:id', edit, validatePatch(emailTemplateSchema), asy
   }
 });
 
-router.delete('/email-templates/:id', remove, async (req, res) => {
+router.delete('/email-templates/:id', remove, setupOnly, async (req, res) => {
   try {
+    const current = await recruitmentRepository.findEmailTemplateById(req.params.id, null);
+    if (current && current.company_id == null) {
+      return res.status(409).json({ error: 'This is a shared default. Edit it to make your own version, or switch your version off.' });
+    }
     await recruitmentRepository.deleteEmailTemplate(req.params.id, cid(req));
     res.json({ message: 'Template deleted successfully' });
   } catch (error) {
@@ -1287,13 +1802,67 @@ router.delete('/email-templates/:id', remove, async (req, res) => {
   }
 });
 
+// What the recruitment screens need to know about the company's set-up, with
+// no secrets: whether e-mail can go out at all (no SMTP = every candidate
+// e-mail is silently skipped) and whether offers can become salary proposals.
+router.get('/setup-status', view, async (req, res) => {
+  try {
+    const smtp = await resolveConfig(cid(req) ?? null, 'smtp').catch(() => ({}));
+    const deptScope = await recruitmentDeptScope(req);
+    res.json({
+      email_configured: !!(smtp.SMTP_HOST && smtp.SMTP_USER),
+      ctc_mode: await isCtcModeOn(cid(req)),
+      // null = all departments; a list = a department head's own (owner, 11-18).
+      dept_scope: deptScope,
+      can_manage_setup: deptScope === null,
+    });
+  } catch (error) {
+    respondError(res, error);
+  }
+});
+
 // ==================== OFFERS ====================
+// Business-local calendar day (process TZ is pinned — shared/timezone.js);
+// toISOString() would be the UTC day, a day behind between 00:00 and 05:30 IST.
+const isoOfLocal = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+const todayIso = () => isoOfLocal(new Date());
+
+// A department head sees and acts on offers for their own department(s) only
+// (owner decision 2026-11-18). Out-of-scope offers answer 404, as if absent.
+router.use('/offers/:id', async (req, res, next) => {
+  try {
+    const scope = await recruitmentDeptScope(req);
+    if (scope === null) return next();
+    const { rows: [o] } = await pool.query(
+      `SELECT ${recordDepartmentSql('ol')} AS department FROM offer_letters ol
+        WHERE ol.id::text = $1 AND ($2::int IS NULL OR ol.company_id = $2)`, [String(req.params.id), cid(req) ?? null]);
+    if (o && !scope.includes(o.department)) return res.status(404).json({ error: 'Offer not found' });
+    next();
+  } catch (e) { respondError(res, e); }
+});
+
 router.get('/offers', view, async (req, res) => {
   try {
+    const departments = await recruitmentDeptFilter(req, req.query.department);
     const offers = await recruitmentRepository.findOffers({
-      ...req.query, company_id: cid(req),
+      ...req.query, department: undefined, departments: departments ?? undefined, company_id: cid(req),
     });
     res.json(offers);
+  } catch (error) {
+    respondError(res, error);
+  }
+});
+
+// Offer letter PDF, generated from the current terms. A draft prints "DRAFT".
+router.get('/offers/:id/letter.pdf', view, async (req, res) => {
+  try {
+    const out = await buildOfferLetterPdf(pool, {
+      companyId: cid(req), offerId: req.params.id, signatoryUserId: req.user?.userId ?? req.user?.id ?? null,
+    });
+    if (!out) return res.status(404).json({ error: 'Offer not found' });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `${req.query.download === '1' ? 'attachment' : 'inline'}; filename="${out.filename}"`);
+    res.send(out.pdf);
   } catch (error) {
     respondError(res, error);
   }
@@ -1311,6 +1880,37 @@ router.get('/offers/:id', view, async (req, res) => {
 
 router.post('/offers', add, validateBody(offerSchema), async (req, res) => {
   try {
+    // The candidate and the job must be this company's, the candidate still in
+    // the running, and no other offer of theirs may be open (one live offer per
+    // candidate — migration 20261117000008 enforces it too).
+    const { rows: [cand] } = await pool.query(
+      `SELECT id, overall_status FROM candidates WHERE id = $1 AND company_id = $2 AND deleted_at IS NULL`,
+      [req.body.candidate_id, cid(req)]);
+    if (!cand) return res.status(404).json({ error: 'Candidate not found' });
+    if (cand.overall_status && cand.overall_status !== 'active') {
+      return res.status(409).json({ error: `This candidate is "${cand.overall_status}" — an offer can only be made to an active candidate.` });
+    }
+    // Department first, so a department head learns nothing about another
+    // department's candidates (e.g. that they already hold an offer).
+    const headScope = await recruitmentDeptScope(req);
+    if (req.body.job_opening_id) {
+      const { rows: [job] } = await pool.query(
+        `SELECT id, department FROM job_openings WHERE id = $1 AND company_id = $2 AND deleted_at IS NULL`, [req.body.job_opening_id, cid(req)]);
+      if (!job) return res.status(404).json({ error: 'Job not found' });
+      if (headScope && !headScope.includes(job.department)) return res.status(403).json({ error: `You can make offers only for ${headScope.join(', ') || 'your own department'}.` });
+    } else if (headScope) {
+      return res.status(400).json({ error: 'Choose the job for this offer.' });
+    } else if (!String(req.body.designation || '').trim()) {
+      return res.status(400).json({ error: 'Choose the job, or give the designation for the letter.' });
+    }
+    const { rows: [live] } = await pool.query(
+      `SELECT offer_no, offer_status FROM offer_letters
+        WHERE candidate_id = $1 AND deleted_at IS NULL AND offer_status IN ('draft','pending_approval','sent') LIMIT 1`,
+      [req.body.candidate_id]);
+    if (live) {
+      return res.status(409).json({ error: `This candidate already has an open offer (${live.offer_no || 'no number'}, ${live.offer_status.replace(/_/g, ' ')}). Edit or withdraw it instead of drafting another.` });
+    }
+    if (!(Number(req.body.offered_salary) > 0)) return res.status(400).json({ error: 'Enter the annual CTC.' });
     const offer = await recruitmentRepository.createOffer({
       ...req.body,
       company_id: cid(req),
@@ -1353,7 +1953,80 @@ router.put('/offers/:id', edit, validatePatch(offerSchema), async (req, res) => 
         error: 'Offers must be sent through the Approval Center, not edited directly.',
       });
     }
-    const offer = await recruitmentRepository.updateOffer(req.params.id, req.body, cid(req));
+    const before = await recruitmentRepository.findOfferById(req.params.id, cid(req));
+    if (!before) return res.status(404).json({ error: 'Offer not found' });
+    // Terms are what the approver approves, so they can change only on a draft
+    // (including one sent back). candidate_id never changes.
+    const TERMS = ['job_opening_id', 'designation', 'offered_salary', 'joining_date', 'offer_expiry_date', 'notes'];
+    const body = { ...req.body };
+    delete body.candidate_id;
+    const day = (d) => (d == null ? null : (d instanceof Date ? isoOfLocal(d) : String(d).slice(0, 10)));
+    // A sent offer may have its validity EXTENDED (the candidate asked for more
+    // time) — that changes no money term, so it needs no fresh approval.
+    const onlyExtending = before.offer_status === 'sent'
+      && Object.keys(body).every(k => k === 'offer_expiry_date')
+      && body.offer_expiry_date;
+    if (onlyExtending) {
+      const cur = day(before.offer_expiry_date);
+      if (cur && body.offer_expiry_date <= cur) {
+        return res.status(400).json({ error: 'The new date must be later than the current one.' });
+      }
+      if (body.offer_expiry_date < todayIso()) {
+        return res.status(400).json({ error: 'The new date cannot be in the past.' });
+      }
+    } else if (TERMS.some(k => body[k] !== undefined) && before.offer_status !== 'draft') {
+      return res.status(409).json({ error: `This offer is "${before.offer_status.replace(/_/g, ' ')}" — only a draft offer can be edited. Withdraw it and draft a new one if the terms have changed.` });
+    }
+    if (before.offer_status === 'draft') {
+      const exp = body.offer_expiry_date !== undefined ? body.offer_expiry_date : day(before.offer_expiry_date);
+      const join = body.joining_date !== undefined ? body.joining_date : day(before.joining_date);
+      if (exp && join && exp > join) return res.status(400).json({ error: 'The offer should expire before the joining date.' });
+      if (body.offered_salary !== undefined && !(Number(body.offered_salary) > 0)) return res.status(400).json({ error: 'Enter the annual CTC.' });
+    }
+    // An accepted offer is no longer withdrawable here: accepting hires the
+    // candidate and creates the employee, and pulling the offer afterwards left
+    // an employee with a "withdrawn" offer. A joiner who does not turn up is an
+    // exit (Exit Management), not an offer change.
+    const MOVES = {
+      draft: ['pending_approval', 'withdrawn'],
+      pending_approval: ['withdrawn'],
+      sent: ['declined', 'withdrawn'],
+    };
+    const moving = body.offer_status !== undefined && body.offer_status !== before.offer_status;
+    if (moving && !(MOVES[before.offer_status] || []).includes(body.offer_status)) {
+      return res.status(409).json({ error: `An offer cannot move from "${before.offer_status.replace(/_/g, ' ')}" to "${body.offer_status.replace(/_/g, ' ')}".` });
+    }
+    if (moving && ['declined', 'withdrawn'].includes(body.offer_status)) {
+      if (!String(body.close_reason || '').trim()) {
+        return res.status(400).json({ error: body.offer_status === 'declined' ? 'Say why the candidate declined.' : 'Say why the offer is being withdrawn.' });
+      }
+      body.close_reason = String(body.close_reason).trim();
+      body.response_date = todayIso();
+    } else {
+      delete body.close_reason;
+    }
+    if (moving && body.offer_status === 'pending_approval') {
+      // What the approver approves must be complete.
+      if (!(Number(before.offered_salary) > 0)) return res.status(400).json({ error: 'Enter the annual CTC before submitting.' });
+      if (!before.joining_date) return res.status(400).json({ error: 'Enter the joining date before submitting — it goes on the letter.' });
+    }
+    const offer = await recruitmentRepository.updateOffer(req.params.id, body, cid(req));
+    logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'Recruitment', recordId: null, recordType: 'offer', action: 'update', oldData: before, newData: offer, req });
+    if (moving || onlyExtending) {
+      const what = onlyExtending ? `Offer validity extended to ${body.offer_expiry_date}`
+        : body.offer_status === 'declined' ? `Candidate declined the offer: ${body.close_reason}`
+        : body.offer_status === 'withdrawn' ? `Offer withdrawn: ${body.close_reason}`
+        : 'Offer submitted for approval';
+      await candidateIntelligence.recordActivity({
+        company_id: cid(req),
+        candidate_id: before.candidate_id,
+        event_type: onlyExtending ? 'offer_extended' : `offer_${body.offer_status}`,
+        summary: what,
+        detail: { offer_id: before.id, offer_no: before.offer_no || null },
+        actor_user_id: req.user?.userId ?? req.user?.id ?? null,
+        actor_name: await actorNameOf(req),
+      }).catch(err => console.warn('[Recruitment] offer activity failed:', err.message));
+    }
     res.json(offer);
   } catch (error) {
     respondError(res, error);
@@ -1395,6 +2068,17 @@ router.post('/offers/:id/salary-proposal', edit, async (req, res) => {
 
 router.post('/offers/:id/accept', edit, async (req, res) => {
   try {
+    // Offers never expired: a "sent" offer stayed acceptable for ever. Past its
+    // valid-until date it now needs an explicit "accept late" from the user
+    // (or the validity extended first), so lapsing is a decision, not an accident.
+    const current = await recruitmentRepository.findOfferById(req.params.id, cid(req));
+    if (!current) return res.status(404).json({ error: 'Offer not found' });
+    const exp = current.offer_expiry_date
+      ? (current.offer_expiry_date instanceof Date ? isoOfLocal(current.offer_expiry_date) : String(current.offer_expiry_date).slice(0, 10))
+      : null;
+    if (current.offer_status === 'sent' && exp && exp < todayIso() && req.body?.accept_late !== true) {
+      return res.status(409).json({ error: `This offer expired on ${exp}. Extend its validity, or confirm you are accepting it late.`, code: 'OFFER_EXPIRED', expired_on: exp });
+    }
     const offer = await recruitmentRepository.acceptOffer(req.params.id, cid(req));
     logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'Recruitment', recordId: parseInt(req.params.id), recordType: 'offer', action: 'accept', newData: offer, req });
 
@@ -1428,7 +2112,14 @@ router.post('/offers/:id/accept', edit, async (req, res) => {
 // ==================== ANALYTICS ====================
 router.get('/analytics/source', view, async (req, res) => {
   try {
-    const analytics = await recruitmentRepository.getSourceAnalytics(cid(req));
+    // Period (when candidates came in) + department — the Dashboard filter bar.
+    // Without ?period it stays all-time, as before, for any other caller.
+    const range = req.query.period
+      ? resolveRange(req.query, { defaultPeriod: 'fytd' })
+      : { from: null, to: null };
+    const analytics = await recruitmentRepository.getSourceAnalytics(cid(req), {
+      from: range.from, to: range.to, department: dimension(req.query, 'department'),
+    });
     res.json(analytics);
   } catch (error) {
     respondError(res, error);
@@ -1476,17 +2167,23 @@ router.get('/analytics/interview-to-hire-ratio', view, async (req, res) => {
 router.get('/onboarding', view, async (req, res) => {
   try {
     const company_id = cid(req);
-    const params = [company_id];
+    const params = [company_id, await recruitmentDeptFilter(req)];
     // `total` is the count of active checklist templates, matching how
     // GET /hr/onboarding/progress/:employee_id computes its denominator — progress
     // rows only exist for items someone has touched, so counting those instead
     // would report 3/3 complete for an employee with 3 done and 20 untouched.
     const query = `
       SELECT c.id, c.full_name AS name, c.email, c.phone,
-             COALESCE(jo.job_title, jr.job_title) AS designation,
-             COALESCE(jo.department, jr.department) AS department,
-             TO_CHAR(c.hired_at::date, 'YYYY-MM-DD') AS joining_date,
-             e.id AS employee_id,
+             COALESCE(e.designation, jo.job_title, jr.job_title) AS designation,
+             COALESCE(e.department, jo.department, jr.department) AS department,
+             TO_CHAR(c.hired_at::date, 'YYYY-MM-DD') AS hired_on,
+             -- The day they actually join (employee record, else the accepted
+             -- offer) — this used to show the hire date under "joining".
+             TO_CHAR(COALESCE(e.joining_date,
+               (SELECT o.joining_date FROM offer_letters o
+                 WHERE o.candidate_id = c.id AND o.offer_status = 'accepted' AND o.deleted_at IS NULL
+                 ORDER BY o.updated_at DESC NULLS LAST LIMIT 1)), 'YYYY-MM-DD') AS joining_date,
+             e.id AS employee_id, e.office_id AS employee_code,
              COALESCE(tpl.total, 0)::int AS onboarding_total,
              COALESCE(prog.done, 0)::int AS onboarding_done
       FROM candidates c
@@ -1512,6 +2209,7 @@ router.get('/onboarding', view, async (req, res) => {
         AND c.hired_at >= NOW() - INTERVAL '60 days'
         AND c.deleted_at IS NULL
         AND ($1::int IS NULL OR c.company_id = $1)
+        AND ($2::text[] IS NULL OR COALESCE(e.department, jo.department, jr.department) = ANY($2::text[]))
       ORDER BY c.hired_at DESC`;
     const result = await pool.query(query, params);
     // pct is derived here rather than in SQL so the divide-by-zero case (no templates
@@ -1532,7 +2230,8 @@ router.get('/onboarding', view, async (req, res) => {
 router.get('/reports/summary', view, async (req, res) => {
   try {
     const company_id = cid(req);
-    const { from_date, to_date, department } = req.query;
+    const { from_date, to_date } = req.query;
+    const department = await recruitmentDeptFilter(req, req.query.department);
     const data = await recruitmentRepository.getReportsSummary({ company_id, from_date, to_date, department });
     res.json(data);
   } catch (error) {
@@ -1544,7 +2243,8 @@ router.get('/reports/vacancy-aging', view, async (req, res) => {
   try {
     const company_id = cid(req);
     const { from_date, to_date } = req.query;
-    const data = await recruitmentRepository.getVacancyAging({ company_id, from_date, to_date });
+    const department = await recruitmentDeptFilter(req, req.query.department);
+    const data = await recruitmentRepository.getVacancyAging({ company_id, from_date, to_date, department });
     res.json(data);
   } catch (error) {
     respondError(res, error);
@@ -1555,7 +2255,8 @@ router.get('/reports/source-effectiveness', view, async (req, res) => {
   try {
     const company_id = cid(req);
     const { from_date, to_date } = req.query;
-    const data = await recruitmentRepository.getSourceEffectiveness({ company_id, from_date, to_date });
+    const department = await recruitmentDeptFilter(req, req.query.department);
+    const data = await recruitmentRepository.getSourceEffectiveness({ company_id, from_date, to_date, department });
     res.json(data);
   } catch (error) {
     respondError(res, error);
@@ -1566,8 +2267,31 @@ router.get('/reports/department-pipeline', view, async (req, res) => {
   try {
     const company_id = cid(req);
     const { from_date, to_date } = req.query;
-    const data = await recruitmentRepository.getDepartmentPipeline({ company_id, from_date, to_date });
+    const department = await recruitmentDeptFilter(req, req.query.department);
+    const data = await recruitmentRepository.getDepartmentPipeline({ company_id, from_date, to_date, department });
     res.json(data);
+  } catch (error) {
+    respondError(res, error);
+  }
+});
+
+// Hiring Forecasts tab: demand (requisitions + open jobs), pipeline and the
+// company's hiring rates, by department.
+router.get('/reports/forecast', view, async (req, res) => {
+  try {
+    const department = await recruitmentDeptFilter(req, req.query.department);
+    res.json(await recruitmentRepository.getHiringForecast({ company_id: cid(req), department, within_days: req.query.within_days }));
+  } catch (error) {
+    respondError(res, error);
+  }
+});
+
+// Offers made in the period: outcome, decline / withdraw reasons, days to answer.
+router.get('/reports/offers', view, async (req, res) => {
+  try {
+    const { from_date, to_date } = req.query;
+    const department = await recruitmentDeptFilter(req, req.query.department);
+    res.json(await recruitmentRepository.getOffersReport({ company_id: cid(req), from_date, to_date, department }));
   } catch (error) {
     respondError(res, error);
   }
@@ -1583,13 +2307,22 @@ router.get('/auto-creation/pending', view, async (req, res) => {
     const { rows } = await pool.query(`
       SELECT c.id, c.full_name, c.email, c.phone, c.current_stage, c.applied_job_id AS job_opening_id,
              jo.job_title, jo.department, jo.location,
-             o.offered_salary, o.joining_date,
+             o.offered_salary, o.joining_date, o.designation, o.offer_no,
              ecl.status AS creation_status, ecl.employee_code, ecl.triggered_at, ecl.error_log
         FROM candidates c
         LEFT JOIN job_openings jo ON jo.id = c.applied_job_id
-        LEFT JOIN offer_letters o ON o.candidate_id = c.id AND LOWER(COALESCE(o.offer_status, o.offer_status, '')) = 'accepted'
-        LEFT JOIN recruitment_employee_creation_log ecl ON ecl.candidate_id = c.id AND ecl.company_id = $1
-       WHERE c.company_id = $1 AND LOWER(c.current_stage) = 'hired'
+        -- LATERAL, latest row only: a plain join listed a candidate once per
+        -- accepted offer and once per creation attempt (failed, then retried).
+        LEFT JOIN LATERAL (SELECT o2.offered_salary, o2.joining_date, o2.designation, o2.offer_no
+                             FROM offer_letters o2
+                            WHERE o2.candidate_id = c.id AND o2.offer_status = 'accepted' AND o2.deleted_at IS NULL
+                            ORDER BY o2.updated_at DESC NULLS LAST LIMIT 1) o ON TRUE
+        LEFT JOIN LATERAL (SELECT l.status, l.employee_code, l.triggered_at, l.error_log
+                             FROM recruitment_employee_creation_log l
+                            WHERE l.candidate_id = c.id AND l.company_id = $1
+                            ORDER BY l.triggered_at DESC NULLS LAST, l.id DESC LIMIT 1) ecl ON TRUE
+       WHERE c.company_id = $1 AND LOWER(c.current_stage) = 'hired' AND c.deleted_at IS NULL
+         AND ($2::text[] IS NULL OR jo.department = ANY($2::text[]))
          -- "Pending" must mean pending. This returned EVERY hired candidate,
          -- including those whose employee record already exists, so the
          -- "Awaiting Creation" badge over-counted permanently and each
@@ -1603,7 +2336,7 @@ router.get('/auto-creation/pending', view, async (req, res) => {
               AND e.deleted_at IS NULL
          )
        ORDER BY o.joining_date ASC NULLS LAST, c.updated_at DESC
-    `, [cid(req)]);
+    `, [cid(req), await recruitmentDeptFilter(req)]);
     res.json(rows);
   } catch (err) {
     if (err.message?.includes('does not exist')) return res.json([]);
@@ -1620,6 +2353,13 @@ router.post('/auto-creation/:candidateId/trigger', add, async (req, res) => {
     const company_id = cid(req);
     const candidate_id = req.params.candidateId; // UUID — do NOT parseInt
     const triggered_by = req.user?.userId ?? req.user?.id ?? null;
+    const headScope = await recruitmentDeptScope(req);
+    if (headScope) {
+      const { rows: [c] } = await pool.query(
+        `SELECT jo.department FROM candidates c LEFT JOIN job_openings jo ON jo.id = c.applied_job_id
+          WHERE c.id::text = $1 AND c.company_id = $2`, [String(candidate_id), company_id]);
+      if (!c || !headScope.includes(c.department)) return res.status(404).json({ error: 'Candidate not found' });
+    }
 
     const result = await recruitmentRepository.autoCreateEmployeeFromCandidate(candidate_id, company_id, triggered_by);
     if (result.status !== 201) {
@@ -1637,7 +2377,9 @@ router.post('/auto-creation/:candidateId/trigger', add, async (req, res) => {
       employee_id: result.employee.id,
       employee_code: result.employeeId,
       candidate_name: result.candidateName,
-      next_steps: ['Configure payroll profile', 'Set up leave balance', 'Create email account', 'Add to org chart'],
+      // What was actually done and what is still open — the same list the
+      // creation log keeps (it used to be four hard-coded strings).
+      checklist: result.checklist || [],
     });
   } catch (err) { respondError(res, err); }
 });
@@ -1649,9 +2391,11 @@ router.get('/auto-creation/log', view, async (req, res) => {
       SELECT ecl.*, c.email AS candidate_email
         FROM recruitment_employee_creation_log ecl
         LEFT JOIN candidates c ON c.id = ecl.candidate_id
+        LEFT JOIN job_openings jo ON jo.id = ecl.job_opening_id
        WHERE ecl.company_id = $1
+         AND ($2::text[] IS NULL OR jo.department = ANY($2::text[]))
        ORDER BY ecl.triggered_at DESC LIMIT 100
-    `, [cid(req)]);
+    `, [cid(req), await recruitmentDeptFilter(req)]);
     res.json(rows);
   } catch (err) { respondError(res, err); }
 });

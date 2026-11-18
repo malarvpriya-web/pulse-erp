@@ -4,11 +4,11 @@ import {
   Shuffle, Archive, CalendarClock, Tag, ClipboardCheck,
 } from 'lucide-react';
 import api from '@/services/api/client';
+import { rememberCandidateSequence } from '../shared/listReturn';
 import useAppStore from '@/store/useAppStore';
 import { useToast } from '@/context/ToastContext';
 import { fmtDate } from '@/utils/dateFormatter';
 import useCandidateWorkbench, { EXPERIENCE_BANDS } from '../shared/useCandidateWorkbench';
-import CandidateQuickView from '../shared/components/CandidateQuickView';
 import {
   ConsiderOtherRolesDialog, TalentBankDialog, FutureOpportunityDialog, BulkConfirmDialog,
 } from '../shared/components/CandidateActionDialogs';
@@ -53,6 +53,16 @@ const NOTICE_OPTIONS = [
   { value: '90', label: 'Within 90 days' },
 ];
 
+// Keys match backend workQueueFilters.js QUEUE_PREDICATES.
+const QUEUE_LABELS = {
+  needs_screening: 'need screening',
+  waiting_over_3_days: 'waiting 3+ days',
+  joining_pending: 'joining pending',
+  recommended_for_other_roles: 'suited to an open role',
+  unassigned: 'unassigned',
+  live: 'in the pipeline',
+};
+
 const STALE_OPTIONS = [
   { value: 'all', label: 'Any last activity' },
   { value: '3',   label: 'No movement in 3+ days' },
@@ -74,7 +84,7 @@ const SORTS = [
   { value: 'source',           label: 'Source' },
 ];
 
-export default function CandidateWorkbench({ setPage, embedded = false, scope = 'all' }) {
+export default function CandidateWorkbench({ setPage, embedded = false, scope = 'all', onAdd }) {
   const _toast = useToast();
   const toast = useCallback((m, t = 'success') => _toast({ message: m, type: t }), [_toast]);
   const setSelectedCandidateId = useAppStore(s => s.setSelectedCandidateId);
@@ -84,11 +94,10 @@ export default function CandidateWorkbench({ setPage, embedded = false, scope = 
     filters, setFilter, resetFilters, activeFilterCount,
     rows, total, loading, error, refresh,
     page, totalPages, goToPage,
-    selected, toggleOne, toggleAll, clearSelection, neighbourOf,
+    selected, toggleOne, toggleAll, clearSelection,
   } = wb;
 
   const [showFilters, setShowFilters] = useState(false);
-  const [openId, setOpenId] = useState(null);
   const [meta, setMeta] = useState({ departments: [], recruiters: [], pools: [] });
   const [dialog, setDialog] = useState(null);      // { kind, candidate }
   const [bulkPending, setBulkPending] = useState(null);
@@ -106,11 +115,12 @@ export default function CandidateWorkbench({ setPage, embedded = false, scope = 
   }, []);
 
   const openProfile = useCallback((id) => {
+    rememberCandidateSequence(rows.map(r => r.id));
     setSelectedCandidateId(id);
     // The list's own URL params survive: setPage changes the page key, and the
     // search string is what carries the filters, so coming back restores them.
     setPage?.('CandidateDetail');
-  }, [setSelectedCandidateId, setPage]);
+  }, [rows, setSelectedCandidateId, setPage]);
 
   const openScreening = useCallback((id, applicationId) => {
     setSelectedCandidateId(id);
@@ -206,9 +216,6 @@ export default function CandidateWorkbench({ setPage, embedded = false, scope = 
     }
   };
 
-  const prevRow = openId ? neighbourOf(openId, -1) : null;
-  const nextRow = openId ? neighbourOf(openId, 1) : null;
-
   const allOnPageSelected = rows.length > 0 && selected.size === rows.length;
 
   const rangeLabel = useMemo(() => {
@@ -262,6 +269,15 @@ export default function CandidateWorkbench({ setPage, embedded = false, scope = 
           <option value="unassigned">Unassigned</option>
           {meta.recruiters?.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
         </select>
+
+        {/* Set by a My Recruitment Work tile; shown so the recruiter can see why
+            the list is narrowed and take it off. */}
+        {filters.queue !== 'all' && (
+          <select className="cwb-sel" value={filters.queue} onChange={(e) => setFilter('queue', e.target.value)} aria-label="Work queue">
+            <option value="all">No work-queue filter</option>
+            {Object.entries(QUEUE_LABELS).map(([k, l]) => <option key={k} value={k}>Work queue: {l}</option>)}
+          </select>
+        )}
 
         <button
           type="button"
@@ -477,7 +493,7 @@ export default function CandidateWorkbench({ setPage, embedded = false, scope = 
             {rows.map((r) => (
               <tr
                 key={r.id}
-                className={`cwb-tr${openId === r.id ? ' is-open' : ''}${selected.has(r.id) ? ' is-selected' : ''}`}
+                className={`cwb-tr${selected.has(r.id) ? ' is-selected' : ''}`}
               >
                 <td className="cwb-td-check">
                   <input
@@ -489,10 +505,8 @@ export default function CandidateWorkbench({ setPage, embedded = false, scope = 
                 </td>
 
                 <td>
-                  {/* The name opens the DRAWER, not the profile. That is the
-                      §8 choice: the recruiter stays on the list. The drawer offers
-                      the profile for when the résumé is what they need. */}
-                  <button type="button" className="cwb-name" onClick={() => setOpenId(r.id)}>
+                  {/* The name opens the full candidate page in place (no side drawer). */}
+                  <button type="button" className="cwb-name" onClick={() => openProfile(r.id)}>
                     {r.full_name || '—'}
                   </button>
                   <div className="cwb-sub">
@@ -631,6 +645,7 @@ export default function CandidateWorkbench({ setPage, embedded = false, scope = 
               <>
                 <p className="cwb-empty-title">No candidates yet</p>
                 <p className="cwb-empty-sub">Add candidates by hand, or open a job so applications can arrive.</p>
+                {onAdd && <button type="button" className="cwb-empty-btn" onClick={onAdd}>Add candidate</button>}
               </>
             )}
           </div>
@@ -648,24 +663,6 @@ export default function CandidateWorkbench({ setPage, embedded = false, scope = 
             <ChevronRight size={15} />
           </button>
         </div>
-      )}
-
-      {/* ── Quick view drawer (§8) ────────────────────────────────────── */}
-      {openId && (
-        <CandidateQuickView
-          candidateId={openId}
-          onClose={() => setOpenId(null)}
-          hasPrev={Boolean(prevRow)}
-          hasNext={Boolean(nextRow)}
-          onPrev={() => prevRow && setOpenId(prevRow.id)}
-          onNext={() => nextRow && setOpenId(nextRow.id)}
-          onOpenProfile={openProfile}
-          onOpenScreening={openScreening}
-          onConsiderOtherRoles={(c) => setDialog({ kind: 'roles', candidate: c })}
-          onAddToTalentBank={(c) => setDialog({ kind: 'bank', candidate: c })}
-          onFutureOpportunity={(c) => setDialog({ kind: 'future', candidate: c })}
-          onChanged={refresh}
-        />
       )}
 
       {/* ── Dialogs ───────────────────────────────────────────────────── */}

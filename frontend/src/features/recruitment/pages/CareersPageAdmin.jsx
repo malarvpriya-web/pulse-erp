@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Globe, Copy, RefreshCw, ExternalLink } from 'lucide-react';
+import { Globe, Copy, RefreshCw, ExternalLink, Code2 } from 'lucide-react';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
 import { PageHero, PageShell } from '@/components/pulse-ui';
 import { fmtDate } from '@/utils/dateFormatter';
+import { buildCareersEmbed } from '../shared/careersEmbed';
 
 /**
  * Careers page administration.
@@ -15,7 +16,14 @@ import { fmtDate } from '@/utils/dateFormatter';
  * The submission log deliberately shows REFUSED submissions alongside accepted
  * ones. A rejected row is the only evidence that a portal is being abused, or
  * that a real applicant was turned away by a rule that is set too tightly.
+ *
+ * 2026-11-17 (owner): this is the Careers Website tab of Jobs (it was under
+ * Reports & Setup). Candidates apply on the company website. The website
+ * address entered here is for sharing; what links an applicant to a job is the
+ * job id the website sends to the apply endpoint, shown in the developer card.
  */
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+const originOf = (u) => { try { return new URL(u).origin; } catch { return ''; } };
 
 const STATUS_STYLE = {
   accepted:     { bg: '#e3f3ea', color: '#12633a', label: 'Accepted' },
@@ -30,7 +38,7 @@ const label = { display: 'block', fontSize: 12, fontWeight: 600, color: '#374151
 const input = { width: '100%', padding: '8px 10px', border: '1px solid #e5e7eb', borderRadius: 6, fontSize: 13, fontFamily: 'inherit' };
 const eyebrow = { fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '.04em' };
 
-export default function CareersPageAdmin({ setPage }) {
+export default function CareersPageAdmin({ setPage, embedded = false }) {
   const _toast = useToast();
   const toast  = useCallback((msg, type = 'success') => _toast({ message: msg, type }), [_toast]);
 
@@ -40,7 +48,7 @@ export default function CareersPageAdmin({ setPage }) {
   const [saving, setSaving]           = useState(false);
   const [form, setForm]               = useState({
     display_name: '', intro_text: '', allowed_origins: '',
-    max_per_hour: 60, show_salary_range: false, is_active: true,
+    max_per_hour: 60, show_salary_range: false, is_active: true, website_url: '',
   });
 
   const load = useCallback(async () => {
@@ -60,6 +68,7 @@ export default function CareersPageAdmin({ setPage }) {
           max_per_hour: p.max_per_hour ?? 60,
           show_salary_range: !!p.show_salary_range,
           is_active: p.is_active !== false,
+          website_url: p.website_url || '',
         });
       }
       setSubmissions(sRes.status === 'fulfilled' && Array.isArray(sRes.value.data) ? sRes.value.data : []);
@@ -95,27 +104,38 @@ export default function CareersPageAdmin({ setPage }) {
   };
 
   const save = async () => {
+    const site = form.website_url.trim();
+    if (site && !/^https?:\/\//i.test(site)) {
+      toast('Enter the full website address, starting with https://', 'error');
+      return;
+    }
+    // Once the website address is known, accept applications only from that
+    // website unless somebody has already chosen the allowed addresses.
+    let origins = form.allowed_origins;
+    let lockedToSite = false;
+    if (site && !origins.trim() && originOf(site)) { origins = originOf(site); lockedToSite = true; }
     setSaving(true);
     try {
       await api.put('/recruitment/careers-portal', {
+        website_url: site,
         display_name: form.display_name,
         intro_text: form.intro_text,
-        allowed_origins: form.allowed_origins,
+        allowed_origins: origins,
         max_per_hour: Number(form.max_per_hour) || 60,
         show_salary_range: form.show_salary_range,
         is_active: form.is_active,
       });
-      toast('Saved');
+      toast(lockedToSite ? `Saved. Applications are now accepted only from ${origins}` : 'Saved');
       load();
     } catch (e) {
       toast(e?.response?.data?.error || 'Could not save', 'error');
     } finally { setSaving(false); }
   };
 
-  const copy = async () => {
+  const copy = async (text = publicUrl) => {
     try {
-      await navigator.clipboard.writeText(publicUrl);
-      toast('Link copied');
+      await navigator.clipboard.writeText(text);
+      toast('Copied');
     } catch {
       toast('Could not copy — select the link and copy it manually', 'error');
     }
@@ -123,15 +143,13 @@ export default function CareersPageAdmin({ setPage }) {
 
   if (loading) return <div style={{ padding: 24, color: '#6b7280' }}>Loading…</div>;
 
-  return (
-    <PageShell dock={
-      <PageHero
-        icon={Globe}
-        eyebrow="Recruitment"
-        title="Careers Page"
-        subtitle="The public page candidates apply through, and the log of everything it has received"
-      />
-    }>
+  const listUrl  = portal ? `${API_BASE}/v1/public/careers/${portal.portal_key}` : '';
+  const applyUrl = portal ? `${listUrl}/apply/<job id>` : '';
+  const apiIsLocal = /\/\/(localhost|127\.0\.0\.1)/.test(API_BASE);
+  const savedSite = portal?.website_url || '';
+
+  const body = (
+    <>
       {!portal ? (
         <div style={{ ...card, maxWidth: 640 }}>
           <h3 style={{ margin: 0, fontSize: 17 }}>No careers page yet</h3>
@@ -154,14 +172,98 @@ export default function CareersPageAdmin({ setPage }) {
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
 
+          {/* The company's own careers page */}
+          <div style={card}>
+            <div style={eyebrow}>Your careers page on the website</div>
+            <p style={{ fontSize: 12.5, color: '#6b7280', margin: '6px 0 10px', lineHeight: 1.5 }}>
+              The page on your website where candidates see the jobs and apply. Paste its address here
+              once it is built, then share this link. Every job you post from a requisition appears there
+              by itself, and each application comes back to that job in Pulse.
+            </p>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <input aria-label="Website careers page address" style={{ ...input, flex: '1 1 320px', width: 'auto' }}
+                     value={form.website_url} placeholder="https://www.yourcompany.com/careers"
+                     onChange={e => setForm(f => ({ ...f, website_url: e.target.value }))} />
+              <button onClick={save} disabled={saving}
+                      style={{ background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 6, padding: '8px 14px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
+                {saving ? 'Saving…' : 'Save'}
+              </button>
+              {savedSite && (
+                <>
+                  <button onClick={() => copy(savedSite)} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, background: '#f3f4f6', border: '1px solid #e5e7eb', borderRadius: 6, padding: '7px 11px', cursor: 'pointer' }}>
+                    <Copy size={12} /> Copy
+                  </button>
+                  <a href={savedSite} target="_blank" rel="noopener noreferrer"
+                     style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: '#6B3FDB', background: '#EFEAFD', border: '1px solid #ddd3fb', borderRadius: 6, padding: '7px 11px', textDecoration: 'none' }}>
+                    <ExternalLink size={12} /> Open
+                  </a>
+                </>
+              )}
+            </div>
+          </div>
+
+          {/* What the website developer needs */}
+          <div style={card}>
+            <div style={{ ...eyebrow, display: 'flex', alignItems: 'center', gap: 6 }}><Code2 size={13} /> For your website developer</div>
+            <p style={{ fontSize: 12.5, color: '#6b7280', margin: '6px 0 10px', lineHeight: 1.5 }}>
+              The website page needs two calls. The job id sent with each application is what links
+              the candidate to the right job.
+            </p>
+            {[
+              ['1. List the open jobs (GET)', listUrl],
+              ['2. Send an application (POST, multipart form)', applyUrl],
+            ].map(([lbl, url]) => (
+              <div key={lbl} style={{ marginBottom: 10 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: '#374151', marginBottom: 4 }}>{lbl}</div>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <code style={{ flex: '1 1 320px', minWidth: 0, background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: 6, padding: '8px 10px', fontSize: 12, overflowX: 'auto', whiteSpace: 'nowrap' }}>{url}</code>
+                  <button onClick={() => copy(url)} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, background: '#f3f4f6', border: '1px solid #e5e7eb', borderRadius: 6, padding: '7px 11px', cursor: 'pointer' }}>
+                    <Copy size={12} /> Copy
+                  </button>
+                </div>
+              </div>
+            ))}
+            <p style={{ fontSize: 12, color: '#6b7280', margin: 0, lineHeight: 1.55 }}>
+              Form fields: <code>full_name</code>*, <code>email</code>*, <code>phone</code>, <code>current_company</code>,{' '}
+              <code>current_designation</code>, <code>experience_years</code>, <code>notice_period_days</code>,{' '}
+              <code>expected_ctc</code>, <code>location</code>, <code>cover_note</code>, <code>resume</code> (file).
+              Also add a hidden, empty <code>website</code> field. It traps bots, so real visitors must leave it blank.
+            </p>
+            {apiIsLocal && (
+              <p style={{ fontSize: 12, color: '#9a5b06', background: '#fbf0df', borderRadius: 6, padding: '8px 10px', marginTop: 10, lineHeight: 1.5 }}>
+                These addresses point to this computer (localhost). The website can reach them only after
+                Pulse is hosted on the internet; the addresses update by themselves then.
+              </p>
+            )}
+          </div>
+
+          {/* Copy-paste careers section for the website */}
+          <div style={card}>
+            <div style={{ ...eyebrow, display: 'flex', alignItems: 'center', gap: 6 }}><Code2 size={13} /> Ready-made careers section for your website</div>
+            <p style={{ fontSize: 12.5, color: '#6b7280', margin: '6px 0 10px', lineHeight: 1.5 }}>
+              No developer work needed: paste this code into the careers page of your website. It lists every open job
+              and has the application form (with résumé upload). Applications arrive here and in Candidates, linked to
+              their job. It takes the website's own fonts.
+            </p>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <button type="button" onClick={() => copy(buildCareersEmbed({ listUrl, heading: portal.display_name || 'Open positions' }))}
+                      style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 6, padding: '8px 12px', cursor: 'pointer', fontWeight: 600 }}>
+                <Copy size={12} /> Copy website code
+              </button>
+            </div>
+          </div>
+
           {/* The link */}
           <div style={card}>
-            <div style={eyebrow}>Public link</div>
+            <div style={eyebrow}>Ready-made page in Pulse (optional)</div>
+            <p style={{ fontSize: 12, color: '#6b7280', margin: '6px 0 0', lineHeight: 1.5 }}>
+              A plain careers page Pulse hosts itself. Use it to test, or until the website page is ready.
+            </p>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8, flexWrap: 'wrap' }}>
               <code style={{ flex: '1 1 320px', minWidth: 0, background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: 6, padding: '8px 10px', fontSize: 12.5, overflowX: 'auto', whiteSpace: 'nowrap' }}>
                 {publicUrl}
               </code>
-              <button onClick={copy} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, background: '#f3f4f6', border: '1px solid #e5e7eb', borderRadius: 6, padding: '7px 11px', cursor: 'pointer' }}>
+              <button onClick={() => copy()} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, background: '#f3f4f6', border: '1px solid #e5e7eb', borderRadius: 6, padding: '7px 11px', cursor: 'pointer' }}>
                 <Copy size={12} /> Copy
               </button>
               <a href={publicUrl} target="_blank" rel="noopener noreferrer"
@@ -228,8 +330,8 @@ export default function CareersPageAdmin({ setPage }) {
                      onChange={e => setForm(f => ({ ...f, allowed_origins: e.target.value }))}
                      placeholder="https://www.example.com, https://careers.example.com" />
               <p style={{ fontSize: 11.5, color: '#9ca3af', marginTop: 5, lineHeight: 1.5 }}>
-                Comma-separated. Leave blank to accept applications from anywhere — fine while you
-                are testing, worth setting once the form is embedded in your own site.
+                Comma-separated. Filled in from your website address when you save it. Blank accepts
+                applications from anywhere, which is fine only while you are testing.
               </p>
             </div>
 
@@ -296,6 +398,20 @@ export default function CareersPageAdmin({ setPage }) {
           </div>
         </div>
       )}
+    </>
+  );
+
+  if (embedded) return body;
+  return (
+    <PageShell dock={
+      <PageHero
+        icon={Globe}
+        eyebrow="Recruitment"
+        title="Careers Website"
+        subtitle="Where candidates apply, and the log of everything it has received"
+      />
+    }>
+      {body}
     </PageShell>
   );
 }

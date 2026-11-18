@@ -53,6 +53,9 @@ const FILTERS = {
   appliedFrom:  'from',
   appliedTo:    'to',
   staleDays:    'stale',
+  // A "My Recruitment Work" tile's own rule (backend workQueueFilters.js), so the
+  // list a tile opens is the set the tile counted.
+  queue:        'queue',
   sortBy:       'sort',
   sortDir:      'dir',
   page:         'page',
@@ -74,7 +77,7 @@ const DEFAULTS = {
   department: 'all', recruiter: 'all', location: '', skills: '', tags: '',
   pool: 'all', qualification: 'all', specialisation: '', relocate: 'all',
   exp: 'all', notice: 'all', rating: 'all', resumeText: '',
-  appliedFrom: '', appliedTo: '', staleDays: 'all',
+  appliedFrom: '', appliedTo: '', staleDays: 'all', queue: 'all',
   sortBy: 'last_activity_at', sortDir: 'desc', page: '1',
 };
 
@@ -186,6 +189,7 @@ export default function useCandidateWorkbench({ scope = 'all' } = {}) {
     if (filters.notice !== 'all')      p.set('notice_period_max', filters.notice);
     if (filters.rating !== 'all')      p.set('min_rating', filters.rating);
     if (filters.staleDays !== 'all')   p.set('stale_days', filters.staleDays);
+    if (filters.queue !== 'all')       p.set('queue', filters.queue);
     if (filters.location.trim())       p.set('location', filters.location.trim());
     if (filters.skills.trim())         p.set('skills', filters.skills.trim());
     if (filters.tags.trim())           p.set('tags', filters.tags.trim());

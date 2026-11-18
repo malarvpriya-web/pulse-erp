@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import {
-  UserRound, ChevronLeft, ClipboardCheck, Shuffle, Archive, CalendarClock, Ban,
+  UserRound, ChevronLeft, ChevronRight, ClipboardCheck, Shuffle, Archive, CalendarClock, Ban,
   CalendarPlus, Pin, PinOff, Trash2, Users2, Sparkles, Check, Phone, Mail,
+  FileSignature, Upload, Star, Video, UserPlus,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import useAppStore from '@/store/useAppStore';
@@ -9,9 +10,9 @@ import { useToast } from '@/context/ToastContext';
 import { fmtDate } from '@/utils/dateFormatter';
 import { PageHero, PageShell } from '@/components/pulse-ui';
 import ResumeViewer from '../shared/components/ResumeViewer';
-import { candidateListReturnParams } from '../shared/listReturn';
+import { candidateListReturnParams, candidateSequence } from '../shared/listReturn';
 import {
-  ConsiderOtherRolesDialog, TalentBankDialog, FutureOpportunityDialog,
+  ConsiderOtherRolesDialog, TalentBankDialog, FutureOpportunityDialog, PutForwardDialog,
 } from '../shared/components/CandidateActionDialogs';
 import {
   ACTIVE_STAGES, DEADEND_STAGES, stageLabelShort, stageColor,
@@ -20,7 +21,8 @@ import {
   relocationLabel, relocationColor, relocationOptions, sourceLabel,
   decisionLabel, decisionTone, SCORE_SECTIONS, COMPETENCIES, JUDGEMENTS,
   SUITABILITY_LABELS, SUITABILITY_COLORS, activityTone,
-  CLASSIFICATION_LABELS,
+  CLASSIFICATION_LABELS, QUALIFICATIONS, SELECTABLE_SOURCES, SOURCE_LABELS,
+  interviewRoundLabel, interviewModeLabel, offerStatus,
 } from '../shared/constants';
 import './candidate-detail.css';
 
@@ -55,6 +57,7 @@ import './candidate-detail.css';
 
 const RAIL_TABS = [
   { id: 'summary',  label: 'Summary' },
+  { id: 'interviews', label: 'Interviews & offers' },
   { id: 'notes',    label: 'Notes' },
   { id: 'activity', label: 'Timeline' },
   { id: 'similar',  label: 'Similar' },
@@ -75,6 +78,10 @@ export default function CandidateDetail({ setPage }) {
   const [similar, setSimilar] = useState([]);
   const [recontacts, setRecontacts] = useState([]);
   const [meta, setMeta] = useState({ departments: [], pools: [], recruiters: [] });
+  const [interviews, setInterviews] = useState([]);
+  const [feedback, setFeedback] = useState([]);
+  const [offers, setOffers] = useState([]);
+  const [resumeBusy, setResumeBusy] = useState(false);
 
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState('summary');
@@ -89,6 +96,30 @@ export default function CandidateDetail({ setPage }) {
   const [editing, setEditing] = useState(false);
   const [profileDraft, setProfileDraft] = useState({});
 
+  // ── Previous / Next — the order of the list this profile was opened from ──
+  const sequence = useMemo(() => candidateSequence(), []);
+  const seqIndex = sequence.findIndex(id => String(id) === String(candidateId));
+  const prevId = seqIndex > 0 ? sequence[seqIndex - 1] : null;
+  const nextId = seqIndex >= 0 && seqIndex < sequence.length - 1 ? sequence[seqIndex + 1] : null;
+  const goTo = useCallback((id) => {
+    if (id == null) return;
+    useAppStore.getState().setSelectedCandidateId(id);
+    setTab('summary'); setSimilar([]); setEditing(false); setDialog(null);
+    window.scrollTo?.({ top: 0 });
+  }, []);
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+      const t = e.target;
+      if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+      if (document.querySelector('[role="dialog"]')) return;
+      if (e.key === 'ArrowLeft' && prevId != null) { e.preventDefault(); goTo(prevId); }
+      if (e.key === 'ArrowRight' && nextId != null) { e.preventDefault(); goTo(nextId); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [prevId, nextId, goTo]);
+
   const load = useCallback(async () => {
     if (!candidateId) { setLoading(false); return; }
     setLoading(true);
@@ -101,6 +132,9 @@ export default function CandidateDetail({ setPage }) {
       api.get(`/recruitment/candidates/${candidateId}/screening`),
       api.get(`/recruitment/candidates/${candidateId}/recontact`),
       api.get('/recruitment/meta/candidate-workbench'),
+      api.get('/recruitment/interviews', { params: { candidate_id: candidateId } }),
+      api.get(`/recruitment/interview-notes/${candidateId}`),
+      api.get('/recruitment/offers', { params: { candidate_id: candidateId } }),
     ]);
     const val = (i, fallback) => (results[i].status === 'fulfilled' ? results[i].value.data : fallback);
     const arr = (i) => { const v = val(i, []); return Array.isArray(v) ? v : []; };
@@ -113,6 +147,9 @@ export default function CandidateDetail({ setPage }) {
     setScreening(val(5, {})?.screening || null);
     setRecontacts(arr(6));
     setMeta(val(7, {}) || {});
+    setInterviews(arr(8));
+    setFeedback(arr(9));
+    setOffers(arr(10));
     setLoading(false);
   }, [candidateId]);
 
@@ -200,8 +237,15 @@ export default function CandidateDetail({ setPage }) {
   };
 
   const saveProfile = async () => {
+    const PROFILE = ['current_city', 'current_state', 'native_place', 'relevant_experience_years',
+      'willing_to_relocate', 'classification', 'relocation_note'];
+    const core = {};
+    const profile = {};
+    for (const [k, v] of Object.entries(profileDraft)) (PROFILE.includes(k) ? profile : core)[k] = v;
+    if (core.skills !== undefined) core.skills = String(core.skills).split(',').map(x => x.trim()).filter(Boolean);
     try {
-      await api.patch(`/recruitment/candidates/${candidate.id}/profile`, profileDraft);
+      if (Object.keys(core).length) await api.put(`/recruitment/candidates/${candidate.id}`, core);
+      if (Object.keys(profile).length) await api.patch(`/recruitment/candidates/${candidate.id}/profile`, profile);
       toast('Profile updated');
       setEditing(false);
       setProfileDraft({});
@@ -209,6 +253,20 @@ export default function CandidateDetail({ setPage }) {
     } catch (e) {
       toast(e?.response?.data?.error || 'Could not save', 'error');
     }
+  };
+
+  const replaceResume = async (file) => {
+    if (!file) return;
+    setResumeBusy(true);
+    try {
+      const fd = new FormData();
+      fd.append('resume', file);
+      await api.post(`/recruitment/candidates/${candidate.id}/resume`, fd, { headers: { 'Content-Type': 'multipart/form-data' } });
+      toast('Résumé replaced');
+      load();
+    } catch (e) {
+      toast(e?.response?.data?.error || 'Could not replace the résumé', 'error');
+    } finally { setResumeBusy(false); }
   };
 
   const putForward = async (suit, jobOpeningId) => {
@@ -282,11 +340,27 @@ export default function CandidateDetail({ setPage }) {
             <button type="button" className="plh-cta" onClick={() => setPage?.('Candidates', candidateListReturnParams())}>
               <ChevronLeft size={14} /> Candidates
             </button>
+            {seqIndex >= 0 && sequence.length > 1 && (
+              <span className="cd-seq" aria-label="Move between candidates">
+                <button type="button" className="plh-cta" disabled={prevId == null} onClick={() => goTo(prevId)} title="Previous candidate (←)">
+                  <ChevronLeft size={14} /> Previous
+                </button>
+                <span className="cd-seq-pos">{seqIndex + 1} of {sequence.length}</span>
+                <button type="button" className="plh-cta" disabled={nextId == null} onClick={() => goTo(nextId)} title="Next candidate (→)">
+                  Next <ChevronRight size={14} />
+                </button>
+              </span>
+            )}
             <button type="button" className="plh-cta" onClick={() => setPage?.('CandidateScreening')}>
               <ClipboardCheck size={14} /> Screen
             </button>
-            <button type="button" className="plh-cta" onClick={() => setDialog('roles')}>
-              <Shuffle size={14} /> Other roles
+            <button type="button" className="plh-cta" onClick={() => setDialog('forward')}
+              title="Add them to an open job (brings them back from the Talent Bank)">
+              <Shuffle size={14} /> Put forward
+            </button>
+            <button type="button" className="plh-cta" onClick={() => setDialog('roles')}
+              title="Record which departments they would suit, even with no opening">
+              <Users2 size={14} /> Other roles
             </button>
             <button type="button" className="plh-cta" onClick={() => setDialog('bank')}>
               <Archive size={14} /> Talent Bank
@@ -294,6 +368,18 @@ export default function CandidateDetail({ setPage }) {
             <button type="button" className="plh-cta" onClick={() => setDialog('future')}>
               <CalendarClock size={14} /> Future
             </button>
+            <button type="button" className="plh-cta" onClick={() => setPage?.('InterviewCenter', { tab: 'schedule', candidate: candidate.id })}>
+              <CalendarPlus size={14} /> Interview
+            </button>
+            {candidate.current_stage === 'hired' ? (
+              <button type="button" className="plh-cta" onClick={() => setPage?.('OnboardingCenter', { tab: 'create' })}>
+                <UserPlus size={14} /> Employee record
+              </button>
+            ) : (
+              <button type="button" className="plh-cta" onClick={() => setPage?.('OnboardingCenter', { tab: 'offers', candidate: candidate.id })}>
+                <FileSignature size={14} /> Offer
+              </button>
+            )}
           </>
         }
       />
@@ -368,19 +454,22 @@ export default function CandidateDetail({ setPage }) {
             {pendingRecontact.potential_role ? ` about ${pendingRecontact.potential_role}` : ''}
             {pendingRecontact.days_until_due <= 0 ? ' · due now' : ` · in ${pendingRecontact.days_until_due} days`}
           </span>
+          <button type="button" className="cd-banner-btn" onClick={() => setDialog('forward')}>
+            <Shuffle size={12} /> Put forward for a job
+          </button>
           <button
             type="button" className="cd-banner-btn"
             onClick={async () => {
               try {
                 await api.post(`/recruitment/recontacts/${pendingRecontact.id}/complete`, {
-                  status: 'done', reengage: true,
+                  status: 'done', reengage: false,
                 });
-                toast('Marked as recontacted and back in active consideration');
+                toast('Marked as contacted. They stay in the Talent Bank.');
                 load();
               } catch (e) { toast(e?.response?.data?.error || 'Could not update', 'error'); }
             }}
           >
-            <Check size={12} /> Recontacted — bring back
+            <Check size={12} /> Contacted
           </button>
         </div>
       )}
@@ -422,15 +511,39 @@ export default function CandidateDetail({ setPage }) {
               >
                 {editing ? (
                   <div className="cd-edit">
-                    <EditField label="Current city" value={profileDraft.current_city ?? candidate.current_city ?? ''}
-                               onChange={v => setProfileDraft(d => ({ ...d, current_city: v }))} />
-                    <EditField label="Current state" value={profileDraft.current_state ?? candidate.current_state ?? ''}
-                               onChange={v => setProfileDraft(d => ({ ...d, current_state: v }))} />
-                    <EditField label="Native place" value={profileDraft.native_place ?? candidate.native_place ?? ''}
-                               onChange={v => setProfileDraft(d => ({ ...d, native_place: v }))} />
-                    <EditField label="Relevant experience (yrs)" type="number"
-                               value={profileDraft.relevant_experience_years ?? candidate.relevant_experience_years ?? ''}
-                               onChange={v => setProfileDraft(d => ({ ...d, relevant_experience_years: v }))} />
+                    {[
+                      ['Full name', 'full_name'], ['Email', 'email', 'email'], ['Phone', 'phone'],
+                      ['Current company', 'current_company'], ['Current designation', 'current_designation'],
+                      ['Total experience (yrs)', 'experience_years', 'number'],
+                      ['Relevant experience (yrs)', 'relevant_experience_years', 'number'],
+                      ['Notice period (days)', 'notice_period_days', 'number'],
+                      ['Current salary (₹/yr)', 'current_salary', 'number'],
+                      ['Expected CTC (₹/yr)', 'expected_ctc', 'number'],
+                      ['Location', 'location'], ['Current city', 'current_city'], ['Current state', 'current_state'],
+                      ['Native place', 'native_place'], ['Specialisation', 'specialisation'],
+                      ['Institution', 'institution'], ['Graduation year', 'graduation_year', 'number'],
+                    ].map(([label, key, type]) => (
+                      <EditField key={key} label={label} type={type || 'text'}
+                                 value={profileDraft[key] ?? candidate[key] ?? ''}
+                                 onChange={v => setProfileDraft(d => ({ ...d, [key]: v }))} />
+                    ))}
+                    <div className="cd-edit-field">
+                      <span>Qualification</span>
+                      <select className="cd-sel cd-sel--full"
+                              value={profileDraft.qualification ?? candidate.qualification ?? ''}
+                              onChange={e => setProfileDraft(d => ({ ...d, qualification: e.target.value }))}>
+                        <option value="">Not given</option>
+                        {QUALIFICATIONS.map(q => <option key={q} value={q}>{q}</option>)}
+                      </select>
+                    </div>
+                    <div className="cd-edit-field">
+                      <span>Source</span>
+                      <select className="cd-sel cd-sel--full"
+                              value={profileDraft.source ?? candidate.source ?? 'manual'}
+                              onChange={e => setProfileDraft(d => ({ ...d, source: e.target.value }))}>
+                        {[...SELECTABLE_SOURCES, 'careers', 'resume_db'].map(v => <option key={v} value={v}>{SOURCE_LABELS[v] || v}</option>)}
+                      </select>
+                    </div>
                     <div className="cd-edit-field">
                       <span>Willing to relocate</span>
                       <select className="cd-sel cd-sel--full"
@@ -449,10 +562,24 @@ export default function CandidateDetail({ setPage }) {
                       </select>
                     </div>
                     <div className="cd-edit-field cd-edit-field--wide">
+                      <span>Skills (comma-separated)</span>
+                      <input className="cd-input"
+                             value={profileDraft.skills ?? skills.join(', ')}
+                             onChange={e => setProfileDraft(d => ({ ...d, skills: e.target.value }))} />
+                    </div>
+                    <div className="cd-edit-field cd-edit-field--wide">
                       <span>Relocation note — only what the candidate volunteered</span>
                       <textarea className="cd-textarea" rows={2}
                                 value={profileDraft.relocation_note ?? candidate.relocation_note ?? ''}
                                 onChange={e => setProfileDraft(d => ({ ...d, relocation_note: e.target.value }))} />
+                    </div>
+                    <div className="cd-edit-field cd-edit-field--wide">
+                      <span>Résumé</span>
+                      <label className="cd-mini" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer', width: 'fit-content' }}>
+                        <Upload size={12} /> {resumeBusy ? 'Uploading…' : 'Replace résumé (PDF or Word)'}
+                        <input type="file" accept=".pdf,.doc,.docx" style={{ display: 'none' }} disabled={resumeBusy}
+                               onChange={e => { replaceResume(e.target.files?.[0]); e.target.value = ''; }} />
+                      </label>
                     </div>
                   </div>
                 ) : (
@@ -646,6 +773,70 @@ export default function CandidateDetail({ setPage }) {
           )}
 
           {/* ── Notes (§9) ──────────────────────────────────────────────── */}
+          {tab === 'interviews' && (
+            <div className="cd-pane">
+              <Card title={`Interviews (${interviews.length})`}
+                    action={<button type="button" className="cd-mini cd-mini--go"
+                                    onClick={() => setPage?.('InterviewCenter', { tab: 'schedule', candidate: candidate.id })}>
+                      <CalendarPlus size={12} /> Schedule</button>}>
+                {interviews.length === 0 && <p className="cd-empty">No interviews yet.</p>}
+                {interviews.map(iv => {
+                  const notesFor = feedback.filter(f => f.interview_id === iv.id);
+                  return (
+                    <div key={iv.id} className="cd-note" style={{ marginBottom: 10 }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+                        <strong>{interviewRoundLabel(iv.interview_round) !== '—' ? interviewRoundLabel(iv.interview_round) : 'Interview'}
+                          {iv.job_title ? ` · ${iv.job_title}` : ''}</strong>
+                        <span className="cd-chip">{iv.status}</span>
+                      </div>
+                      <div style={{ fontSize: 12, color: '#6b7280', marginTop: 2 }}>
+                        {fmtDate(iv.interview_date)}{iv.interview_time ? ` at ${String(iv.interview_time).slice(0, 5)}` : ''}
+                        {' · '}{interviewModeLabel(iv.interview_mode)}
+                        {iv.interviewer_name ? ` · ${iv.interviewer_name}` : ''}
+                        {Array.isArray(iv.panel) && iv.panel.length ? ` + ${iv.panel.map(p => p.name).join(', ')}` : ''}
+                        {iv.meeting_link && <> · <a href={iv.meeting_link} target="_blank" rel="noreferrer"><Video size={11} /> link</a></>}
+                      </div>
+                      {notesFor.map(f => <FeedbackLine key={f.id} f={f} />)}
+                    </div>
+                  );
+                })}
+                {/* Feedback recorded before interviews were linked to their notes. */}
+                {feedback.filter(f => !f.interview_id).length > 0 && (
+                  <div style={{ marginTop: 8 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: '#374151', marginBottom: 4 }}>Other feedback</div>
+                    {feedback.filter(f => !f.interview_id).map(f => <FeedbackLine key={f.id} f={f} />)}
+                  </div>
+                )}
+              </Card>
+              <Card title={`Offers (${offers.length})`}
+                    action={candidate.current_stage !== 'hired' && (
+                      <button type="button" className="cd-mini cd-mini--go"
+                              onClick={() => setPage?.('OnboardingCenter', { tab: 'offers', candidate: candidate.id })}>
+                        <FileSignature size={12} /> Draft offer</button>)}>
+                {offers.length === 0 && <p className="cd-empty">No offers yet.</p>}
+                {offers.map(o => {
+                  const st = offerStatus(o.offer_status);
+                  return (
+                    <div key={o.id} className="cd-note" style={{ marginBottom: 8, display: 'flex', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+                      <div>
+                        <strong>{o.offer_no || 'Offer'}</strong> · {o.designation || o.job_title || '—'}
+                        <div style={{ fontSize: 12, color: '#6b7280' }}>
+                          ₹{Number(o.offered_salary || 0).toLocaleString('en-IN')} per year
+                          {o.joining_date ? ` · joining ${fmtDate(o.joining_date)}` : ''}
+                          {o.offer_expiry_date ? ` · valid till ${fmtDate(o.offer_expiry_date)}` : ''}
+                        </div>
+                      </div>
+                      <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                        <span className="cd-chip" style={{ background: st.bg, color: st.color }}>{st.label}</span>
+                        <OfferPdfButton offerId={o.id} />
+                      </div>
+                    </div>
+                  );
+                })}
+              </Card>
+            </div>
+          )}
+
           {tab === 'notes' && (
             <div className="cd-pane">
               <Card title="Add a note">
@@ -805,6 +996,13 @@ export default function CandidateDetail({ setPage }) {
           onSaved={load}
         />
       )}
+      {dialog === 'forward' && (
+        <PutForwardDialog
+          candidate={candidate}
+          onClose={() => setDialog(null)}
+          onSaved={load}
+        />
+      )}
       {dialog === 'future' && (
         <FutureOpportunityDialog
           candidate={candidate}
@@ -892,4 +1090,38 @@ function OpeningPicker({ department, onPick }) {
       {(openings || []).map(o => <option key={o.id} value={o.id}>{o.job_title}</option>)}
     </select>
   );
+}
+
+const RECOMMENDATION_LABELS = { strong_hire: 'Strong hire', hire: 'Hire', hold: 'Hold', reject: 'Do not hire' };
+
+function FeedbackLine({ f }) {
+  return (
+    <div style={{ borderTop: '1px dashed #e5e7eb', marginTop: 8, paddingTop: 6, fontSize: 13 }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        <strong>{f.interviewer_name || 'Interviewer'}</strong>
+        {f.interview_round && <span style={{ color: '#6b7280' }}>{f.interview_round}</span>}
+        {f.rating != null && (
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+            <Star size={12} fill="var(--color-primary, #6B3FDB)" color="var(--color-primary, #6B3FDB)" /> {Number(f.rating)}/5
+          </span>
+        )}
+        {f.recommendation && <span className="cd-chip">{RECOMMENDATION_LABELS[f.recommendation] || f.recommendation}</span>}
+        <span style={{ color: '#9ca3af', fontSize: 12 }}>{fmtDate(f.created_at)}</span>
+      </div>
+      {f.comments && <p style={{ margin: '4px 0 0', whiteSpace: 'pre-wrap' }}>{f.comments}</p>}
+    </div>
+  );
+}
+
+/** Opens the offer letter PDF (authenticated request, so not a plain link). */
+function OfferPdfButton({ offerId }) {
+  const open = async () => {
+    try {
+      const res = await api.get(`/recruitment/offers/${offerId}/letter.pdf`, { responseType: 'blob' });
+      const url = URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
+      window.open(url, '_blank', 'noopener');
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch { /* the offers list shows the error state */ }
+  };
+  return <button type="button" className="cd-mini" onClick={open}>Letter PDF</button>;
 }

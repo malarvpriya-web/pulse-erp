@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   ListChecks, ClipboardCheck, CalendarDays, MessageSquareWarning, Clock,
-  FileSignature, UserPlus, CalendarClock, Shuffle, Archive, UserCog, Inbox,
+  FileSignature, UserPlus, CalendarClock, Shuffle, Archive, UserCog, Inbox, Star, Video,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import useAppStore from '@/store/useAppStore';
@@ -12,6 +12,7 @@ import { useAuth } from '@/context/AuthContext';
 import { useToast } from '@/context/ToastContext';
 import { fmtDate } from '@/utils/dateFormatter';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import { PutForwardDialog } from '../shared/components/CandidateActionDialogs';
 import './recruitment-work-queue.css';
 
 /**
@@ -50,15 +51,16 @@ const TILES = [
     detail: 'Applied or in screening, with no completed Stage 1',
     icon: ClipboardCheck,
     tone: 'act',
-    to: { page: 'Candidates', params: { tab: 'all', stage: 'screening' } },
+    to: { page: 'Candidates', params: { tab: 'all', queue: 'needs_screening' } },
   },
   {
     key: 'interviews_today',
     label: 'interviews today',
-    detail: 'Scheduled for today and not cancelled',
+    detail: 'Still scheduled for today',
     icon: CalendarDays,
     tone: 'today',
-    to: { page: 'InterviewCenter' },
+    // `date` is filled in at click time — see go().
+    to: { page: 'InterviewCenter', params: { tab: 'schedule', status: 'scheduled', date: 'TODAY' } },
   },
   {
     key: 'feedback_pending',
@@ -66,7 +68,8 @@ const TILES = [
     detail: 'Interviews that have happened with no feedback recorded',
     icon: MessageSquareWarning,
     tone: 'warn',
-    to: { page: 'InterviewCenter' },
+    // Listed on this page (the schedule has no "no feedback" filter).
+    to: { anchor: 'wq-feedback-due' },
   },
   {
     key: 'waiting_over_3_days',
@@ -74,15 +77,15 @@ const TILES = [
     detail: 'Live candidates nobody has moved in 3+ days',
     icon: Clock,
     tone: 'warn',
-    to: { page: 'Candidates', params: { tab: 'all', stale: '3' } },
+    to: { page: 'Candidates', params: { tab: 'all', queue: 'waiting_over_3_days' } },
   },
   {
     key: 'offers_pending',
     label: 'offers pending',
-    detail: 'Drafted or sent, not yet answered',
+    detail: 'Drafted, awaiting approval or sent — not yet answered',
     icon: FileSignature,
     tone: 'act',
-    to: { page: 'OnboardingCenter' },
+    to: { page: 'OnboardingCenter', params: { tab: 'offers', status: 'unanswered' } },
   },
   {
     key: 'joining_pending',
@@ -90,7 +93,7 @@ const TILES = [
     detail: 'Selected or at offer, not yet joined',
     icon: UserPlus,
     tone: 'go',
-    to: { page: 'Candidates', params: { tab: 'all', stage: 'selected' } },
+    to: { page: 'Candidates', params: { tab: 'all', queue: 'joining_pending' } },
   },
   {
     key: 'recontact_due',
@@ -106,7 +109,7 @@ const TILES = [
     detail: 'Recorded as suiting a department that has an open vacancy right now',
     icon: Shuffle,
     tone: 'route',
-    to: { page: 'Candidates', params: { tab: 'all' } },
+    to: { page: 'Candidates', params: { tab: 'all', queue: 'recommended_for_other_roles' } },
   },
   {
     key: 'talent_bank_size',
@@ -122,7 +125,7 @@ const TILES = [
     detail: 'Live candidates with no recruiter accountable',
     icon: UserCog,
     tone: 'warn',
-    to: { page: 'Candidates', params: { tab: 'all', rec: 'unassigned' } },
+    to: { page: 'Candidates', params: { tab: 'all', queue: 'unassigned' } },
   },
 ];
 
@@ -133,14 +136,30 @@ function greeting() {
   return 'Good evening';
 }
 
+/** Browser-local YYYY-MM-DD (the business runs on IST; en-CA formats as ISO). */
+function todayIso() {
+  return new Date().toLocaleDateString('en-CA');
+}
+
+const roundLabel = (r) => (r ? String(r).replace(/_/g, ' ') : null);
+
 export default function RecruitmentWorkQueue({ setPage, embedded = false }) {
   const _toast = useToast();
   const toast = useCallback((m, t = 'success') => _toast({ message: m, type: t }), [_toast]);
-  const { user } = useAuth();
+  const { user, hasPermission } = useAuth();
+  // "Contacted — bring back" is an edit (POST /recontacts/:id/complete is gated
+  // recruitment:edit). A view-only user would otherwise click it and get a 403.
+  const canEdit = typeof hasPermission === 'function' ? hasPermission('recruitment', 'edit') : true;
   const setSelectedCandidateId = useAppStore(s => s.setSelectedCandidateId);
 
   const [counts, setCounts] = useState(null);
   const [recontacts, setRecontacts] = useState([]);
+  const [feedbackDue, setFeedbackDue] = useState([]);
+  const [myInterviews, setMyInterviews] = useState([]);
+  const [feedbackFor, setFeedbackFor] = useState(null);   // interview row
+  const [fb, setFb] = useState({ rating: '', recommendation: '', comments: '' });
+  const [savingFb, setSavingFb] = useState(false);
+  const [bringing, setBringing] = useState(null);         // recontact id in flight
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
@@ -151,6 +170,8 @@ export default function RecruitmentWorkQueue({ setPage, embedded = false }) {
       const res = await api.get('/recruitment/work-queue');
       setCounts(res.data?.counts || {});
       setRecontacts(res.data?.recontacts_due || []);
+      setFeedbackDue(res.data?.feedback_due || []);
+      setMyInterviews(res.data?.my_interviews || []);
     } catch (e) {
       if (e?.code === 'ERR_CANCELED') return;
       setError(e?.response?.data?.error || 'Could not load your work queue.');
@@ -159,10 +180,64 @@ export default function RecruitmentWorkQueue({ setPage, embedded = false }) {
 
   useEffect(() => { load(); }, [load]);
 
-  const go = (to) => {
-    if (!to?.page) return;
-    setPage?.(to.page, to.params);
+  // Escape closes the feedback dialog.
+  useEffect(() => {
+    if (!feedbackFor) return undefined;
+    const onKey = (e) => { if (e.key === 'Escape' && !savingFb) setFeedbackFor(null); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [feedbackFor, savingFb]);
+
+  const saveFeedback = async () => {
+    if (!fb.recommendation) return toast('Choose your recommendation', 'error');
+    if (fb.rating !== '' && !(Number(fb.rating) >= 1 && Number(fb.rating) <= 5)) {
+      return toast('Rating must be between 1 and 5', 'error');
+    }
+    setSavingFb(true);
+    try {
+      // The panel endpoint, not the generic /interview-notes: it checks the caller
+      // is the lead or on the panel, refuses a cancelled or future interview,
+      // updates instead of duplicating, refreshes the candidate's rating and
+      // writes the timeline + audit entries.
+      await api.post(`/my-interviews/${feedbackFor.id}/feedback`, {
+        rating: fb.rating === '' ? null : Number(fb.rating),
+        recommendation: fb.recommendation,
+        comments: fb.comments || null,
+      });
+      toast('Your feedback is saved on the candidate profile');
+      setFeedbackFor(null);
+      load();
+    } catch (e) { toast(e?.response?.data?.error || 'Could not save the feedback', 'error'); }
+    finally { setSavingFb(false); }
   };
+
+  // "Contacted" only records the call. Bringing someone back into hiring means
+  // putting them forward for an open job (PutForwardDialog), which also closes
+  // the reminder — the old "bring back" set them active with no job and left
+  // them parked in Future use.
+  const markContacted = async (rc) => {
+    setBringing(rc.id);
+    try {
+      await api.post(`/recruitment/recontacts/${rc.id}/complete`, { status: 'done', reengage: false });
+      toast(`${rc.full_name} marked as contacted`);
+      load();
+    } catch (e) { toast(e?.response?.data?.error || 'Could not update', 'error'); }
+    finally { setBringing(null); }
+  };
+  const [forwarding, setForwarding] = useState(null);
+
+  const go = (to) => {
+    if (to?.anchor) {
+      document.getElementById(to.anchor)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      return;
+    }
+    if (!to?.page) return;
+    const params = to.params ? { ...to.params } : undefined;
+    if (params?.date === 'TODAY') params.date = todayIso();
+    setPage?.(to.page, params);
+  };
+
+  const openCandidate = (id) => { setSelectedCandidateId(id); setPage?.('CandidateDetail'); };
 
   const firstName = useMemo(() => {
     // Same fallback chain Topbar.jsx uses for the avatar name, so the two agree.
@@ -190,60 +265,170 @@ export default function RecruitmentWorkQueue({ setPage, embedded = false }) {
         <h2>{greeting()}, {firstName}</h2>
         <p>
           {loading ? 'Loading your queue…'
-            : error ? error
+            : error ? 'The work queue did not load.'
             : totalActions === 0
-              ? 'Nothing is waiting on you. Good place to be.'
-              : `${totalActions} thing${totalActions === 1 ? '' : 's'} waiting on you.`}
+              ? 'Nothing is waiting on the recruiting team. Good place to be.'
+              : `${totalActions} thing${totalActions === 1 ? '' : 's'} waiting on the recruiting team.`}
         </p>
       </header>
 
-      {/* ── §23's clickable numbers ───────────────────────────────────────── */}
-      <div className="wq-tiles">
-        {visible.map(({ key, label, detail, icon: Icon, tone, to }) => {
-          const n = counts?.[key] ?? 0;
-          return (
-            <button
-              key={key}
-              type="button"
-              className={`wq-tile wq-tile--${tone}${n === 0 ? ' is-zero' : ''}`}
-              onClick={() => go(to)}
-            >
-              <Icon size={16} className="wq-tile-icon" />
-              <span className="wq-tile-n">{loading ? '·' : n}</span>
-              <span className="wq-tile-label">{label}</span>
-              <span className="wq-tile-detail">{detail}</span>
-            </button>
-          );
-        })}
-      </div>
-
-      {/* Everything at zero is collapsed into one honest line rather than hidden
-          entirely — a recruiter should be able to tell "nothing pending" from
-          "this panel is broken". */}
-      {!loading && quietTiles.length > 0 && (
-        <p className="wq-quiet">
-          Nothing pending in: {quietTiles.map(t => t.label).join(', ')}.
-        </p>
+      {/* On a failed load, say so and offer a retry — never a grid of zeros and a
+          "Nothing pending" line, which reads as an all-clear. */}
+      {error && !loading && (
+        <div className="wq-error" role="alert">
+          <span>{error}</span>
+          <button type="button" className="pulse-btn-secondary" onClick={load}>Try again</button>
+        </div>
       )}
 
-      {/* ── My own work ─────────────────────────────────────────────────── */}
-      <div className="wq-mine">
-        <button type="button" className="wq-mine-btn"
-                onClick={() => go({ page: 'Candidates', params: { tab: 'all', rec: 'me' } })}>
-          <Inbox size={14} />
-          <strong>{counts?.assigned_to_me ?? 0}</strong> assigned to me
-        </button>
-        <button type="button" className="wq-mine-btn"
-                onClick={() => go({ page: 'Candidates', params: { tab: 'all' } })}>
-          <ListChecks size={14} />
-          Open the full candidate list
-        </button>
-        {(counts?.my_draft_screenings ?? 0) > 0 && (
-          <span className="wq-mine-note">
-            You have {counts.my_draft_screenings} screening{counts.my_draft_screenings === 1 ? '' : 's'} saved as a draft.
-          </span>
-        )}
-      </div>
+      {!error && (
+        <>
+          {/* ── §23's clickable numbers (whole company) ───────────────────── */}
+          <div className="wq-tiles">
+            {visible.map(({ key, label, detail, icon: Icon, tone, to }) => {
+              const n = counts?.[key] ?? 0;
+              return (
+                <button
+                  key={key}
+                  type="button"
+                  className={`wq-tile wq-tile--${tone}${n === 0 ? ' is-zero' : ''}`}
+                  onClick={() => go(to)}
+                  disabled={loading}
+                >
+                  <Icon size={16} className="wq-tile-icon" />
+                  <span className="wq-tile-n">{loading ? '·' : n}</span>
+                  <span className="wq-tile-label">{label}</span>
+                  <span className="wq-tile-detail">{detail}</span>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Everything at zero is collapsed into one honest line rather than hidden
+              entirely — a recruiter should be able to tell "nothing pending" from
+              "this panel is broken". */}
+          {!loading && quietTiles.length > 0 && (
+            <p className="wq-quiet">
+              Nothing pending in: {quietTiles.map(t => t.label).join(', ')}.
+            </p>
+          )}
+
+          {/* ── My own work ─────────────────────────────────────────────── */}
+          <div className="wq-mine">
+            <button type="button" className="wq-mine-btn"
+                    onClick={() => go({ page: 'Candidates', params: { tab: 'all', rec: 'me', queue: 'live' } })}>
+              <Inbox size={14} />
+              <strong>{counts?.assigned_to_me ?? 0}</strong> in the pipeline, assigned to me
+            </button>
+            <button type="button" className="wq-mine-btn"
+                    onClick={() => go({ page: 'Candidates', params: { tab: 'all' } })}>
+              <ListChecks size={14} />
+              Open the full candidate list
+            </button>
+            {(counts?.my_draft_screenings ?? 0) > 0 && (
+              <span className="wq-mine-note">
+                You have {counts.my_draft_screenings} screening{counts.my_draft_screenings === 1 ? '' : 's'} saved as a draft.
+              </span>
+            )}
+          </div>
+        </>
+      )}
+
+      {/* ── Interviews I am on (lead or panel) ─────────────────────────────── */}
+      {myInterviews.length > 0 && (
+        <section className="wq-panel">
+          <header className="wq-panel-head">
+            <CalendarDays size={15} />
+            <h3>My interviews</h3>
+            <button type="button" className="wq-panel-link" onClick={() => go({ page: 'MyInterviews' })}>All my interviews</button>
+          </header>
+          <div className="wq-rows">
+            {myInterviews.map(iv => (
+              <div key={iv.id} className="wq-row">
+                <div className="wq-row-main">
+                  <button type="button" className="wq-row-name" onClick={() => openCandidate(iv.candidate_id)}>
+                    {iv.candidate_name}
+                  </button>
+                  <span className="wq-row-sub">
+                    {[iv.job_title, roundLabel(iv.interview_round)].filter(Boolean).join(' · ')}
+                    {' · '}{fmtDate(iv.interview_date)}{iv.interview_time ? ` ${String(iv.interview_time).slice(0, 5)}` : ''}
+                    {iv.is_lead ? ' · you lead' : ' · panel'}
+                  </span>
+                </div>
+                <div className="wq-row-acts">
+                  {iv.meeting_link && /^https?:\/\//i.test(iv.meeting_link) && (
+                    <a className="wq-row-link" href={iv.meeting_link} target="_blank" rel="noopener noreferrer"><Video size={12} /> Join</a>
+                  )}
+                  {iv.my_feedback_given
+                    ? <span className="wq-row-sub">Feedback given</span>
+                    : iv.is_future
+                      ? <span className="wq-row-sub">Feedback opens on the day</span>
+                      : <button type="button" className="wq-row-btn" onClick={() => { setFb({ rating: '', recommendation: '', comments: '' }); setFeedbackFor(iv); }}>
+                          <Star size={12} /> My feedback
+                        </button>}
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* ── Feedback still owed (whole company) ─────────────────────────── */}
+      {feedbackDue.length > 0 && (
+        <section className="wq-panel" id="wq-feedback-due">
+          <header className="wq-panel-head">
+            <MessageSquareWarning size={15} />
+            <h3>Interviews with no feedback yet</h3>
+            <button type="button" className="wq-panel-link" onClick={() => go({ page: 'InterviewCenter', params: { tab: 'schedule' } })}>Open the schedule</button>
+          </header>
+          <div className="wq-rows">
+            {feedbackDue.map(iv => (
+              <div key={iv.id} className="wq-row">
+                <div className="wq-row-main">
+                  <button type="button" className="wq-row-name" onClick={() => openCandidate(iv.candidate_id)}>
+                    {iv.candidate_name}
+                  </button>
+                  <span className="wq-row-sub">
+                    {[roundLabel(iv.interview_round), iv.interviewer_name ? `with ${iv.interviewer_name}` : 'no interviewer set'].filter(Boolean).join(' · ')}
+                    {' · '}{fmtDate(iv.interview_date)}
+                    {iv.days_since > 0 ? ` (${iv.days_since}d ago)` : ''}
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+          {(counts?.feedback_pending ?? 0) > feedbackDue.length && (
+            <p className="wq-more">Showing the oldest {feedbackDue.length} of {counts.feedback_pending}.</p>
+          )}
+        </section>
+      )}
+
+      {feedbackFor && (
+        <div className="wq-modal-back" onMouseDown={(e) => { if (e.target === e.currentTarget && !savingFb) setFeedbackFor(null); }}>
+          <div className="wq-modal" role="dialog" aria-modal="true" aria-labelledby="wq-fb-title">
+            <h3 id="wq-fb-title">Your feedback — {feedbackFor.candidate_name}</h3>
+            <p className="wq-modal-sub">
+              Saved on the candidate's profile. The recruiter records the final outcome on the schedule.
+            </p>
+            <label htmlFor="wq-fb-rec">Recommendation *</label>
+            <select id="wq-fb-rec" autoFocus value={fb.recommendation} onChange={e => setFb(f => ({ ...f, recommendation: e.target.value }))}>
+              <option value="">Choose…</option>
+              <option value="strong_hire">Strong hire</option>
+              <option value="hire">Hire</option>
+              <option value="hold">Hold</option>
+              <option value="reject">Do not hire</option>
+            </select>
+            <label htmlFor="wq-fb-rating">Rating (1–5)</label>
+            <input id="wq-fb-rating" type="number" min="1" max="5" step="0.5" value={fb.rating} onChange={e => setFb(f => ({ ...f, rating: e.target.value }))} />
+            <label htmlFor="wq-fb-c">Comments</label>
+            <textarea id="wq-fb-c" rows={4} maxLength={5000} value={fb.comments} onChange={e => setFb(f => ({ ...f, comments: e.target.value }))} />
+            <div className="wq-modal-acts">
+              <button type="button" className="pulse-btn-secondary" onClick={() => setFeedbackFor(null)} disabled={savingFb}>Cancel</button>
+              <button type="button" className="pulse-btn-primary" onClick={saveFeedback} disabled={savingFb}>{savingFb ? 'Saving…' : 'Save feedback'}</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Recontacts, in full ─────────────────────────────────────────── */}
       {recontacts.length > 0 && (
@@ -259,11 +444,7 @@ export default function RecruitmentWorkQueue({ setPage, embedded = false }) {
             {recontacts.map(rc => (
               <div key={rc.id} className="wq-row">
                 <div className="wq-row-main">
-                  <button
-                    type="button"
-                    className="wq-row-name"
-                    onClick={() => { setSelectedCandidateId(rc.candidate_id); setPage?.('CandidateDetail'); }}
-                  >
+                  <button type="button" className="wq-row-name" onClick={() => openCandidate(rc.candidate_id)}>
                     {rc.full_name}
                   </button>
                   <span className="wq-row-sub">
@@ -274,23 +455,26 @@ export default function RecruitmentWorkQueue({ setPage, embedded = false }) {
                 </div>
                 <div className="wq-row-acts">
                   {rc.phone && <a className="wq-row-link" href={`tel:${rc.phone}`}>{rc.phone}</a>}
-                  <button
-                    type="button"
-                    className="wq-row-btn"
-                    onClick={async () => {
-                      try {
-                        await api.post(`/recruitment/recontacts/${rc.id}/complete`, { status: 'done', reengage: true });
-                        toast(`${rc.full_name} back in active consideration`);
-                        load();
-                      } catch (e) { toast(e?.response?.data?.error || 'Could not update', 'error'); }
-                    }}
-                  >
-                    Contacted — bring back
-                  </button>
+                  {canEdit && (
+                    <>
+                      <button type="button" className="wq-row-btn" onClick={() => setForwarding({ id: rc.candidate_id, full_name: rc.full_name })}>
+                        Put forward
+                      </button>
+                      <button type="button" className="wq-row-btn" disabled={bringing === rc.id} onClick={() => markContacted(rc)}>
+                        {bringing === rc.id ? 'Saving…' : 'Contacted'}
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
             ))}
           </div>
+          {forwarding && (
+            <PutForwardDialog candidate={forwarding} onClose={() => setForwarding(null)} onSaved={load} />
+          )}
+          {(counts?.recontact_due ?? 0) > recontacts.length && (
+            <p className="wq-more">Showing the {recontacts.length} most overdue of {counts.recontact_due} — the rest are in the Talent Bank.</p>
+          )}
         </section>
       )}
     </div>
@@ -304,7 +488,7 @@ export default function RecruitmentWorkQueue({ setPage, embedded = false }) {
         icon={ListChecks}
         eyebrow="Recruitment"
         title="My Recruitment Work"
-        subtitle="What needs you today. Analytics live on the Dashboard — this screen is for acting, not reading."
+        subtitle="What needs acting on today. The numbers are the whole recruiting team's queue; “assigned to me” and “My interviews” are yours."
       />
     }>
       {body}

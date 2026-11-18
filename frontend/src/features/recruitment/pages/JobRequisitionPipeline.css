@@ -32,8 +32,8 @@
 .jrp-stage-badge { padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
 .jrp-view-btn { background: #f3f4f6; border: none; border-radius: 6px; padding: 5px 8px; cursor: pointer; color: #6b7280; display: flex; }
 .jrp-view-btn:hover { background: #e5e7eb; }
-.jrp-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.4); z-index: 1000; display: flex; justify-content: flex-end; }
-.jrp-drawer { width: 440px; background: #fff; height: 100vh; display: flex; flex-direction: column; animation: jrp-slide .25s ease; }
+.jrp-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.4); z-index: 1000; display: flex; align-items: center; justify-content: center; padding: 24px; }
+.jrp-drawer { width: 440px; background: #fff; max-width: 100%; max-height: calc(100vh - 48px); border-radius: 12px; overflow: auto; display: flex; flex-direction: column; animation: pulse-dialog-in .18s ease-out; }
 @keyframes jrp-slide { from { transform: translateX(100%); } to { transform: translateX(0); } }
 .jrp-drawer-hd { display: flex; justify-content: space-between; align-items: center; padding: 20px; border-bottom: 1px solid #e5e7eb; }
 .jrp-drawer-hd h3 { font-size: 16px; font-weight: 700; color: #111827; margin: 0; }
@@ -73,3 +73,30 @@
   .jrp-drawer { width: 100%; }
   .jrp-form-grid { grid-template-columns: 1fr; }
 }
+
+/* Embedded in the Jobs hub: the hub owns the header, the tab's own actions sit here. */
+.jrp-toolbar { display: flex; justify-content: flex-end; gap: 8px; margin-bottom: 12px; }
+.jrp-btn-outline:disabled { opacity: .55; cursor: not-allowed; }
+.jrp-field select:disabled { background: #f9fafb; color: #9ca3af; }
+
+/* Requisition view / create / edit open IN PLACE of the list, inside the tab
+   (user request 2026-11-17: not over the page, not full window). */
+.jrp-panel { background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; display: flex; flex-direction: column; }
+.jrp-panel-hd { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 14px 20px; border-bottom: 1px solid #e5e7eb; }
+.jrp-panel-hd h3 { font-size: 16px; font-weight: 700; color: #111827; margin: 0; }
+.jrp-panel-body { padding: 20px; }
+.jrp-panel-ft { padding: 14px 20px; border-top: 1px solid #e5e7eb; display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+.jrp-back { display: inline-flex; align-items: center; gap: 6px; border: 1px solid #e5e7eb; background: #fff; border-radius: 8px; padding: 6px 10px; font-size: 13px; font-weight: 600; color: #374151; cursor: pointer; }
+.jrp-back:hover { color: var(--color-primary, #6B3FDB); border-color: var(--color-primary, #6B3FDB); }
+.jrp-split { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 20px; align-items: start; }
+.jrp-split-side { position: sticky; top: 12px; max-height: calc(100vh - 160px); overflow-y: auto; }
+@media (max-width: 1000px) {
+  .jrp-split { grid-template-columns: 1fr; }
+  .jrp-split-side { position: static; max-height: none; }
+}
+.jrp-wait { margin-top: 16px; font-size: 13px; color: #92400e; background: #fffbeb; border: 1px solid #fcd34d; border-radius: 8px; padding: 8px 12px; }
+
+/* Success note and "job is live on the website" strip (2026-11-17). */
+.jrp-notice { background: var(--color-success-bg, #f0fdf4); border: 1px solid #bbf7d0; color: #166534; border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; font-size: 12px; }
+.jrp-live { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; background: #f5f3ff; border: 1px solid #ddd6fe; color: #5b21b6; border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; font-size: 12.5px; }
+.jrp-live span { flex: 1 1 240px; }

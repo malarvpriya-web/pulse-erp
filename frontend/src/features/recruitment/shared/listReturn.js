@@ -48,3 +48,26 @@ export function candidateListReturnParams() {
   params.set('tab', 'all');
   return Object.fromEntries(params.entries());
 }
+
+// ── Previous / Next on the candidate profile ────────────────────────────────
+// The list that opened a profile records the candidate ids in the order shown,
+// so the profile can step to the neighbouring candidate without going back.
+// Same storage rules as above: per tab, every access wrapped.
+const SEQ_KEY = 'pulse.recruitment.candidateList.sequence';
+
+/** Called by a list when it opens a profile. `ids` in on-screen order. */
+export function rememberCandidateSequence(ids) {
+  try {
+    sessionStorage.setItem(SEQ_KEY, JSON.stringify((ids || []).filter(id => id != null)));
+  } catch { /* the profile simply shows no Previous / Next */ }
+}
+
+/** The remembered ids (may be empty). */
+export function candidateSequence() {
+  try {
+    const list = JSON.parse(sessionStorage.getItem(SEQ_KEY) || '[]');
+    return Array.isArray(list) ? list : [];
+  } catch {
+    return [];
+  }
+}

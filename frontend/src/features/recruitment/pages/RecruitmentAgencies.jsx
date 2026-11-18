@@ -8,7 +8,8 @@ import {
 } from 'lucide-react';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
 import { fmtDate } from '@/utils/dateFormatter';
-import Drawer from '../shared/components/Drawer';
+import Dialog from '../shared/components/Dialog';
+import { stageColor, stageLabel } from '../shared/constants';
 import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const EMPTY_FORM = {
@@ -196,17 +197,8 @@ function CandidatesPanel({ agency, onClose }) {
       .finally(() => setLoading(false));
   }, [agency.id]);
 
-  const STAGE_COLORS = {
-    applied:     { bg:'#dbeafe', color:'#1d4ed8' },
-    screening:   { bg:'#ede9fe', color:'#6d28d9' },
-    interview:   { bg:'#ede9fe', color:'#5b21b6' },
-    offer:       { bg:'#d1fae5', color:'#065f46' },
-    hired:       { bg:'#dcfce7', color:'#15803d' },
-    rejected:    { bg:'#fee2e2', color:'#b91c1c' },
-  };
-
   return (
-    <Drawer overflowY="auto">
+    <Dialog overflowY="auto">
         <div style={{ padding:'20px 24px', borderBottom:'1px solid #f0f0f4', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
           <div>
             <h2 style={{ fontSize:15, fontWeight:700, color:'#1f2937', margin:0 }}>Candidates from {agency.name}</h2>
@@ -225,18 +217,18 @@ function CandidatesPanel({ agency, onClose }) {
           ) : (
             <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
               {candidates.map(c => {
-                const sc = STAGE_COLORS[c.stage] || { bg:'#f3f4f6', color:'#374151' };
+                const sc = stageColor(c.stage);
                 return (
                   <div key={c.id} style={{ background:'#f9fafb', borderRadius:10, padding:'12px 14px', border:'1px solid #f0f0f4' }}>
                     <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:4 }}>
                       <p style={{ fontSize:13, fontWeight:600, color:'#1f2937', margin:0 }}>
-                        {c.first_name} {c.last_name}
+                        {c.full_name}
                       </p>
-                      <span style={{ background:sc.bg, color:sc.color, borderRadius:20, padding:'2px 8px', fontSize:10, fontWeight:600, textTransform:'capitalize' }}>
-                        {c.stage}
+                      <span style={{ background:sc.bg, color:sc.color, borderRadius:20, padding:'2px 8px', fontSize:10, fontWeight:600 }}>
+                        {stageLabel(c.stage)}
                       </span>
                     </div>
-                    {c.candidate_role && <p style={{ fontSize:11, color:'#6b7280', margin:'2px 0' }}>{c.candidate_role}</p>}
+                    {c.current_designation && <p style={{ fontSize:11, color:'#6b7280', margin:'2px 0' }}>{c.current_designation}{c.current_company ? ` @ ${c.current_company}` : ''}</p>}
                     {c.applied_position && <p style={{ fontSize:11, color:'#9ca3af', margin:0 }}>Applied for: {c.applied_position}</p>}
                   </div>
                 );
@@ -244,7 +236,7 @@ function CandidatesPanel({ agency, onClose }) {
             </div>
           )}
         </div>
-    </Drawer>
+    </Dialog>
   );
 }
 
@@ -351,8 +343,7 @@ export default function RecruitmentAgencies() {
         <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(320px,1fr))', gap:16 }}>
           {agencies.map(a => {
             const expired = isExpired(a.agreement_end);
-            const specs = Array.isArray(a.specializations) ? a.specializations
-              : (a.specialization_text ? a.specialization_text.split(',').map(s => s.trim()) : []);
+            const specs = Array.isArray(a.specializations) ? a.specializations : [];
 
             return (
               <div key={a.id} style={{ background:'#fff', borderRadius:12, border:'1px solid #f0f0f4', boxShadow:'0 1px 3px rgba(0,0,0,.05)', overflow:'hidden' }}>
@@ -481,6 +472,8 @@ export default function RecruitmentAgencies() {
         </div>
       )}
 
+      <AgencyFees />
+
       {/* Modals */}
       {showModal && (
         <AgencyModal agency={editingAgency} onClose={closeModal} onSaved={onSaved}/>
@@ -489,5 +482,115 @@ export default function RecruitmentAgencies() {
         <CandidatesPanel agency={viewCandidates} onClose={() => setViewCandidates(null)}/>
       )}
     </PageShell>
+  );
+}
+
+/**
+ * Fees owed to agencies — one row per agency-sourced hire, written when the
+ * employee record is created (fee % from the agency × the accepted offer's CTC).
+ * The recruiter moves it pending → invoiced → paid, or waives it.
+ */
+const FEE_STATUS = {
+  pending:  { label: 'Pending',  bg: '#ede9fe', color: '#5b21b6' },
+  invoiced: { label: 'Invoiced', bg: '#e0f2fe', color: '#0369a1' },
+  paid:     { label: 'Paid',     bg: '#dcfce7', color: '#15803d' },
+  waived:   { label: 'Waived',   bg: '#f3f4f6', color: '#6b7280' },
+};
+
+function AgencyFees() {
+  const toast = useToast();
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [editing, setEditing] = useState(null);
+
+  const load = useCallback(() => {
+    setLoading(true);
+    api.get('/talent/agencies/fees')
+      .then(r => setRows(r.data?.data ?? []))
+      .catch(() => setRows([]))
+      .finally(() => setLoading(false));
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const save = async () => {
+    try {
+      await api.put(`/talent/agencies/fees/${editing.id}`, {
+        status: editing.status, fee_amount: editing.fee_amount, invoice_no: editing.invoice_no,
+        paid_on: editing.paid_on || '', notes: editing.notes,
+      });
+      toast.success('Fee updated');
+      setEditing(null);
+      load();
+    } catch (err) { toast.error(err.response?.data?.error || 'Could not update the fee'); }
+  };
+
+  const money = (v) => (v == null ? '—' : `₹${Number(v).toLocaleString('en-IN')}`);
+  const outstanding = rows.filter(r => ['pending', 'invoiced'].includes(r.status)).reduce((n, r) => n + (Number(r.fee_amount) || 0), 0);
+
+  return (
+    <div style={{ background:'#fff', borderRadius:12, border:'1px solid #f0f0f4', marginTop:24 }}>
+      <div style={{ padding:'14px 18px', borderBottom:'1px solid #f3f4f6', display:'flex', justifyContent:'space-between', alignItems:'baseline', gap:8, flexWrap:'wrap' }}>
+        <h3 style={{ margin:0, fontSize:15 }}>Agency fees</h3>
+        <span style={{ fontSize:13, color:'#374151' }}>Outstanding: <strong>{money(outstanding)}</strong></span>
+      </div>
+      {loading ? <div style={{ padding:20, color:'#9ca3af', fontSize:13 }}>Loading…</div>
+       : rows.length === 0 ? <div style={{ padding:20, color:'#6b7280', fontSize:13 }}>No agency-sourced hires yet. A fee is recorded here when an agency candidate becomes an employee.</div>
+       : (
+        <div style={{ overflowX:'auto' }}>
+          <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
+            <thead><tr style={{ background:'#f9fafb' }}>
+              {['Agency','Candidate','Employee','Annual CTC','Fee %','Fee','Invoice','Status',''].map(h => (
+                <th key={h} style={{ padding:'8px 12px', textAlign:'left', fontWeight:600, color:'#374151', whiteSpace:'nowrap' }}>{h}</th>
+              ))}
+            </tr></thead>
+            <tbody>
+              {rows.map(r => {
+                const st = FEE_STATUS[r.status] || FEE_STATUS.pending;
+                return (
+                  <tr key={r.id} style={{ borderTop:'1px solid #f3f4f6' }}>
+                    <td style={{ padding:'8px 12px' }}>{r.agency_name || '—'}</td>
+                    <td style={{ padding:'8px 12px' }}>{r.candidate_name || '—'}</td>
+                    <td style={{ padding:'8px 12px' }}>{r.employee_name || '—'}{r.employee_code ? ` (${r.employee_code})` : ''}</td>
+                    <td style={{ padding:'8px 12px' }}>{money(r.annual_ctc)}</td>
+                    <td style={{ padding:'8px 12px' }}>{r.fee_percentage != null ? `${Number(r.fee_percentage)}%` : '—'}</td>
+                    <td style={{ padding:'8px 12px', fontWeight:600 }}>{money(r.fee_amount)}</td>
+                    <td style={{ padding:'8px 12px' }}>{r.invoice_no || '—'}</td>
+                    <td style={{ padding:'8px 12px' }}><span style={{ background:st.bg, color:st.color, borderRadius:12, padding:'2px 8px', fontSize:11, fontWeight:600 }}>{st.label}</span></td>
+                    <td style={{ padding:'8px 12px' }}>
+                      <button onClick={() => setEditing({ ...r, paid_on: r.paid_on ? String(r.paid_on).slice(0, 10) : '' })}
+                              style={{ padding:'4px 10px', background:'#f3f4f6', border:'none', borderRadius:6, cursor:'pointer', fontSize:12 }}>
+                        <Pencil size={11}/> Update
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {editing && (
+        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,.4)', zIndex:1000, display:'flex', alignItems:'center', justifyContent:'center' }}>
+          <div style={{ background:'#fff', borderRadius:12, padding:22, width:'min(420px,94vw)', display:'grid', gap:10 }}>
+            <h3 style={{ margin:0, fontSize:16 }}>Fee — {editing.candidate_name}</h3>
+            {[
+              ['Status', <select key="s" value={editing.status} onChange={e => setEditing(x => ({ ...x, status: e.target.value }))} style={{ padding:8, border:'1px solid #e5e7eb', borderRadius:7 }}>
+                {Object.entries(FEE_STATUS).map(([v, m]) => <option key={v} value={v}>{m.label}</option>)}
+              </select>],
+              ['Fee amount (₹)', <input key="a" type="number" min="0" value={editing.fee_amount ?? ''} onChange={e => setEditing(x => ({ ...x, fee_amount: e.target.value }))} style={{ padding:8, border:'1px solid #e5e7eb', borderRadius:7 }} />],
+              ['Invoice no.', <input key="i" value={editing.invoice_no || ''} onChange={e => setEditing(x => ({ ...x, invoice_no: e.target.value }))} style={{ padding:8, border:'1px solid #e5e7eb', borderRadius:7 }} />],
+              ['Paid on', <input key="p" type="date" value={editing.paid_on || ''} onChange={e => setEditing(x => ({ ...x, paid_on: e.target.value }))} style={{ padding:8, border:'1px solid #e5e7eb', borderRadius:7 }} />],
+              ['Notes', <textarea key="n" rows={2} value={editing.notes || ''} onChange={e => setEditing(x => ({ ...x, notes: e.target.value }))} style={{ padding:8, border:'1px solid #e5e7eb', borderRadius:7 }} />],
+            ].map(([label, node]) => (
+              <label key={label} style={{ display:'grid', gap:4, fontSize:12, fontWeight:600, color:'#374151' }}>{label}{node}</label>
+            ))}
+            <div style={{ display:'flex', justifyContent:'flex-end', gap:8, marginTop:6 }}>
+              <button className="pulse-btn-secondary" onClick={() => setEditing(null)}>Cancel</button>
+              <button className="pulse-btn-primary" onClick={save}>Save</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }

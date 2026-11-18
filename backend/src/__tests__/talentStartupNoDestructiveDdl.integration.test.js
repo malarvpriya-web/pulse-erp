@@ -8,7 +8,8 @@
  *   - the old block, replayed, loses every membership and those columns;
  *   - in that same state, loading the routes now changes nothing;
  *   - on the integer schema, rows and all columns are untouched;
- *   - with the table missing, it is still created, with its indexes and columns.
+ *   - with the table missing, loading the routes creates nothing: since DB-01C3
+ *     (manual §248) only migrations change the schema.
  *
  * Scratch databases only (helpers/migrationFixtureDb.js).
  */
@@ -39,8 +40,7 @@ function loadRoutesAgainst(c) {
       if (typeof a[0] === 'string') console.log('SQL> ' + a[0].replace(/\\s+/g, ' ').trim().slice(0, 300));
       return real(...a);
     };
-    const m = await import(${JSON.stringify(pathToFileURL(ROUTES).href)});
-    await m.talentSchemaReady;
+    await import(${JSON.stringify(pathToFileURL(ROUTES).href)});
     process.exit(0);`;
   const env = { ...process.env, DB_HOST: host, DB_PORT: String(port), DB_NAME: database, DB_PASSWORD: password, DB_SSL: 'false', NODE_ENV: 'test' };
   delete env.DATABASE_URL;
@@ -63,6 +63,7 @@ const columns = async (c) => (await c.query(
 const hasColumn = async (c, name) => (await columns(c)).some((x) => x.column_name === name);
 const typeOf = async (c, name) => (await columns(c)).find((x) => x.column_name === name)?.data_type;
 const drops = (sql) => sql.filter((s) => /DROP\s+TABLE/i.test(s) && /talent_pool_members/i.test(s));
+const schemaChanges = (sql) => sql.filter((s) => /^\s*(CREATE|ALTER|DROP|TRUNCATE)\b/i.test(s) || /\b(ALTER TABLE|CREATE TABLE|DROP TABLE|DROP COLUMN)\b/i.test(s));
 
 describe('talent_pool_members at startup', () => {
   it('the risk: the old block lost every membership and the later columns', async () => {
@@ -89,8 +90,7 @@ describe('talent_pool_members at startup', () => {
       await c.query(UUID_STATE);
       const before = await rows(c);
       const sql = loadRoutesAgainst(c);
-      expect(sql.length, 'the module issued no SQL at all, so this test proved nothing').toBeGreaterThan(0);
-      expect(drops(sql)).toEqual([]);
+      expect(schemaChanges(sql)).toEqual([]);
       expect(await rows(c)).toEqual(before);
       expect(before).toHaveLength(2);
       expect(await typeOf(c, 'candidate_id')).toBe('uuid');
@@ -115,12 +115,24 @@ describe('talent_pool_members at startup', () => {
     });
   }, 90000);
 
-  it('with the table missing: it is created, with integer keys, its indexes and its columns', async () => {
+  it('with the table missing: loading the routes creates nothing', async () => {
     await withFixtureDb('tlnddl', async ({ client: c }) => {
       await c.query(`CREATE TABLE employees (id serial PRIMARY KEY)`);
       const sql = loadRoutesAgainst(c);
-      expect(drops(sql)).toEqual([]);
-      expect(sql.some((s) => s.startsWith('CREATE TABLE IF NOT EXISTS talent_pool_members '))).toBe(true);
+      expect(schemaChanges(sql)).toEqual([]);
+      expect(await columns(c)).toEqual([]);
+    });
+  }, 90000);
+
+  it('the migration still creates it, with integer keys, its indexes and its columns', async () => {
+    await withFixtureDb('tlnddl', async ({ client: c }) => {
+      const { up } = await import('../database/migrations/20261105000004_startup_schema_into_migrations.js');
+      expect(typeof up).toBe('function');
+      const src = readFileSync(resolve(here, '../database/migrations/20261105000004_startup_schema_into_migrations.js'), 'utf8');
+      const stmts = src.match(/`(CREATE TABLE IF NOT EXISTS talent_pool_members[\s\S]*?|CREATE INDEX IF NOT EXISTS idx_tpm_pool[\s\S]*?|ALTER TABLE talent_pool_members[\s\S]*?)`/g);
+      expect(stmts).toHaveLength(3);
+      await c.query(`CREATE TABLE employees (id serial PRIMARY KEY)`);
+      for (const s of stmts) await c.query(s.slice(1, -1));
       expect(await typeOf(c, 'pool_id')).toBe('integer');
       expect(await typeOf(c, 'candidate_id')).toBe('integer');
       expect(await hasColumn(c, 'notes')).toBe(true);

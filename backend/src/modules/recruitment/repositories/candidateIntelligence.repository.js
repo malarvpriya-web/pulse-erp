@@ -28,6 +28,7 @@
  */
 
 import pool from '../../shared/db.js';
+import { QUEUE_PREDICATES as Q, UNANSWERED_OFFERS_SQL } from '../workQueueFilters.js';
 
 // ── §14's scorecard ─────────────────────────────────────────────────────────
 /**
@@ -430,14 +431,19 @@ const repo = {
    * DISTINCT ON (code) with company_id NULLS LAST is what picks the company's own
    * wording of Q4 over the seeded one while still returning the other eight.
    */
-  async listScreeningQuestions(company_id = null) {
+  async listScreeningQuestions(company_id = null, { includeInactive = false } = {}) {
+    // The company's own row (an edited copy) wins over the shared one; only
+    // then is is_active applied, so switching a question off for this company
+    // hides it instead of bringing back the shared wording.
     const { rows } = await pool.query(
-      `SELECT DISTINCT ON (code) *
-         FROM screening_questions
-        WHERE is_active = TRUE
-          AND (company_id IS NULL OR company_id = $1::int)
-        ORDER BY code, company_id NULLS LAST`,
-      [company_id]
+      `SELECT * FROM (
+         SELECT DISTINCT ON (code) *
+           FROM screening_questions
+          WHERE (company_id IS NULL OR company_id = $1::int)
+          ORDER BY code, company_id NULLS LAST
+       ) q
+       WHERE $2::boolean OR q.is_active = TRUE`,
+      [company_id, includeInactive]
     );
     // Re-sorted in JS because the DISTINCT ON above dictates the ORDER BY, and
     // sort_order is what the recruiter should see them in.
@@ -1335,6 +1341,15 @@ const repo = {
             )`,
         [candidate_id]
       );
+      // Primary application follows the candidate (see createRecontact).
+      await client.query(
+        `UPDATE candidate_applications a
+            SET stage = 'future_use', updated_at = NOW()
+           FROM candidates c
+          WHERE a.candidate_id = c.id AND c.id = $1 AND a.is_primary = TRUE
+            AND c.current_stage = 'future_use' AND a.stage <> 'future_use'`,
+        [candidate_id]
+      );
 
       await repo.recordActivity({
         company_id: ctx.company_id, candidate_id,
@@ -1428,13 +1443,21 @@ const repo = {
       add(`EXISTS (SELECT 1 FROM candidate_applications a WHERE a.candidate_id = c.id)`);
     }
 
+    // "Skills — all of them": every term must be on the candidate, either in
+    // their own skills or in a tag a recruiter put on them when banking them.
+    // The page used to send these as `tags` only, so a candidate whose résumé
+    // listed "Power electronics" was not found by a skills search for it.
     const skills = normaliseList(filters.skills);
     if (skills.length) {
-      add(`EXISTS (
-             SELECT 1 FROM jsonb_array_elements_text(COALESCE(c.skills,'[]'::jsonb)) AS s(v)
-              WHERE LOWER(s.v) = ANY($${n++}::text[])
-             HAVING COUNT(DISTINCT LOWER(s.v)) = $${n++}
-           )`, skills.map(s => s.toLowerCase()), skills.length);
+      add(`(
+             SELECT COUNT(DISTINCT v) FROM (
+               SELECT LOWER(s.v) AS v FROM jsonb_array_elements_text(COALESCE(c.skills,'[]'::jsonb)) AS s(v)
+               UNION
+               SELECT LOWER(t.v) FROM talent_pool_members m,
+                      jsonb_array_elements_text(COALESCE(m.tags,'[]'::jsonb)) AS t(v)
+                WHERE m.candidate_id = c.id
+             ) u WHERE v = ANY($${n++}::text[])
+           ) = $${n++}`, skills.map(s => s.toLowerCase()), skills.length);
     }
 
     const tags = normaliseList(filters.tags);
@@ -1483,6 +1506,12 @@ const repo = {
               (SELECT COALESCE(jsonb_agg(DISTINCT tp.pool_name), '[]'::jsonb)
                  FROM talent_pool_members m JOIN talent_pools tp ON tp.id = m.pool_id
                 WHERE m.candidate_id = c.id) AS pools,
+              (SELECT COALESCE(jsonb_agg(jsonb_build_object('id', tp.id, 'name', tp.pool_name) ORDER BY tp.pool_name), '[]'::jsonb)
+                 FROM talent_pool_members m JOIN talent_pools tp ON tp.id = m.pool_id
+                WHERE m.candidate_id = c.id) AS pool_list,
+              (SELECT COALESCE(jsonb_agg(DISTINCT t.v), '[]'::jsonb)
+                 FROM talent_pool_members m, jsonb_array_elements_text(COALESCE(m.tags,'[]'::jsonb)) AS t(v)
+                WHERE m.candidate_id = c.id) AS bank_tags,
               (SELECT COALESCE(jsonb_agg(DISTINCT rs.department), '[]'::jsonb)
                  FROM candidate_role_suitability rs
                 WHERE rs.candidate_id = c.id AND rs.suitability <> 'not_suitable') AS suitable_departments,
@@ -1494,7 +1523,103 @@ const repo = {
         LIMIT $${n++} OFFSET $${n++}`,
       [...params, limit, offset]
     );
-    return { rows: rowsRes.rows, total: countRes.rows[0].total, limit, offset };
+    // The size of the whole bank, whatever is filtered — the page's "in the bank"
+    // and "Everyone" numbers. They used to show the filtered total, so picking a
+    // category made "Everyone" read as that category's count.
+    let bank_size = countRes.rows[0].total;
+    if (filters.scope !== 'all') {
+      const { rows: b } = await pool.query(
+        `SELECT COUNT(*)::int AS n FROM candidates c
+          WHERE c.deleted_at IS NULL AND ($1::int IS NULL OR c.company_id = $1)
+            AND (c.disposition IN ('talent_bank','future_opportunity')
+                 OR EXISTS (SELECT 1 FROM talent_pool_members m WHERE m.candidate_id = c.id))`,
+        [filters.company_id || null]
+      );
+      bank_size = b[0].n;
+    }
+    return { rows: rowsRes.rows, total: countRes.rows[0].total, bank_size, limit, offset };
+  },
+
+  /**
+   * Take a candidate out of one Talent Bank category, or out of the bank.
+   *
+   * With pool_id: only that membership goes. If it was their last category and
+   * their status is 'talent_bank', they are still in the bank (by status) — that
+   * is deliberate, "remove from category" is not "forget them".
+   *
+   * Without pool_id: every membership goes, pending recontact reminders are
+   * cancelled and the status becomes 'inactive'. The candidate record, its
+   * history and its applications are untouched — nothing is deleted.
+   */
+  async removeFromTalentBank(candidate_id, { pool_id = null, reason = null } = {}, ctx = {}) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const { rows: cand } = await client.query(
+        `SELECT id, full_name, disposition FROM candidates
+          WHERE id = $1 AND deleted_at IS NULL AND ($2::int IS NULL OR company_id = $2) FOR UPDATE`,
+        [candidate_id, ctx.company_id]
+      );
+      if (!cand.length) { await client.query('ROLLBACK'); return null; }
+
+      let summary;
+      let removedPools = [];
+      if (pool_id) {
+        const { rows } = await client.query(
+          `DELETE FROM talent_pool_members m USING talent_pools tp
+            WHERE m.pool_id = tp.id AND m.candidate_id = $1 AND m.pool_id = $2
+              AND ($3::int IS NULL OR tp.company_id = $3)
+          RETURNING tp.pool_name`,
+          [candidate_id, pool_id, ctx.company_id]
+        );
+        if (!rows.length) {
+          await client.query('ROLLBACK');
+          const err = new Error('They are not kept under that category.');
+          err.status = 404;
+          throw err;
+        }
+        removedPools = rows.map(r => r.pool_name);
+        summary = `Removed from the Talent Bank category ${removedPools.join(', ')}`;
+      } else {
+        const { rows } = await client.query(
+          `DELETE FROM talent_pool_members m USING talent_pools tp
+            WHERE m.pool_id = tp.id AND m.candidate_id = $1
+          RETURNING tp.pool_name`,
+          [candidate_id]
+        );
+        removedPools = rows.map(r => r.pool_name);
+        await client.query(
+          `UPDATE candidate_recontact
+              SET status = 'cancelled', completed_at = NOW(), completed_by = $2,
+                  outcome_note = COALESCE($3, 'Removed from the Talent Bank'), updated_at = NOW()
+            WHERE candidate_id = $1 AND status = 'pending'`,
+          [candidate_id, ctx.actor_user_id || null, reason]
+        );
+        await client.query(
+          `UPDATE candidates SET disposition = 'inactive', updated_at = NOW()
+            WHERE id = $1 AND disposition IN ('talent_bank','future_opportunity')`,
+          [candidate_id]
+        );
+        summary = 'Removed from the Talent Bank' + (reason ? ` — ${reason}` : '');
+      }
+
+      await repo.recordActivity({
+        company_id: ctx.company_id, candidate_id,
+        event_type: 'talent_bank_removed',
+        summary,
+        detail: { pool_id: pool_id || null, pools: removedPools, reason },
+        actor_user_id: ctx.actor_user_id || null,
+        actor_name: ctx.actor_name || null,
+      }, client);
+
+      await client.query('COMMIT');
+      return { candidate_id, full_name: cand[0].full_name, pools: removedPools, whole_bank: !pool_id };
+    } catch (e) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw e;
+    } finally {
+      client.release();
+    }
   },
 
   // ── Future Opportunity / recontact (§18) ──────────────────────────────────
@@ -1536,6 +1661,19 @@ const repo = {
                                      THEN current_stage ELSE 'future_use' END,
                 updated_at = NOW()
           WHERE id = $1 AND disposition NOT IN ('hired','blacklisted')`,
+        [candidate_id]
+      );
+      // The primary application follows the candidate, as every other stage
+      // change does (moveCandidateStage, bulk 'stage'). Without it the candidate
+      // read "Future use" while their application still read "Screening", so the
+      // Dashboard's stage chart and the job's own board disagreed (Dashboard
+      // review 2026-11-17).
+      await client.query(
+        `UPDATE candidate_applications a
+            SET stage = 'future_use', updated_at = NOW()
+           FROM candidates c
+          WHERE a.candidate_id = c.id AND c.id = $1 AND a.is_primary = TRUE
+            AND c.current_stage = 'future_use' AND a.stage <> 'future_use'`,
         [candidate_id]
       );
 
@@ -1883,6 +2021,27 @@ const repo = {
               WHERE id = ANY($1::int[]) AND disposition NOT IN ('hired','blacklisted')`,
             [scopedIds]
           );
+          // Same stage rule as addToTalentBank(): parked in Future use unless
+          // genuinely still in play for a role. Bulk used to skip it, so a
+          // bulk-banked candidate stayed on the live pipeline board.
+          await client.query(
+            `UPDATE candidates c SET current_stage = 'future_use'
+              WHERE c.id = ANY($1::int[]) AND c.current_stage NOT IN ('hired','offer','selected')
+                AND NOT EXISTS (
+                  SELECT 1 FROM candidate_applications a
+                   WHERE a.candidate_id = c.id AND a.status = 'active'
+                     AND a.stage IN ('screening','shortlisted','assessment','1st_level','2nd_level','offer','selected')
+                )`,
+            [scopedIds]
+          );
+          await client.query(
+            `UPDATE candidate_applications a
+                SET stage = 'future_use', updated_at = NOW()
+               FROM candidates c
+              WHERE a.candidate_id = c.id AND c.id = ANY($1::int[]) AND a.is_primary = TRUE
+                AND c.current_stage = 'future_use' AND a.stage <> 'future_use'`,
+            [scopedIds]
+          );
           eventType = 'talent_bank_added';
           summary   = pools.length
             ? `Added to the Talent Bank: ${pools.map(p => p.pool_name).join(', ')} (bulk)`
@@ -1925,55 +2084,44 @@ const repo = {
    * "My Recruitment Work" — counts, each of which the UI turns into a link.
    *
    * Every count here is a question a recruiter can act on this morning, which is
-   * why none of them is a chart. `mine` scopes to the caller's own candidates
-   * when they own any; a recruiter with nothing assigned sees the whole company's
-   * queue rather than an empty screen that looks broken.
+   * why none of them is a chart. The tiles are the WHOLE COMPANY's queue (a small
+   * recruiting team shares one pipeline); only `assigned_to_me` and
+   * `my_draft_screenings` are the caller's own.
    *
-   * The staleness counts measure from `last_activity_at`, which is the whole
-   * reason that column was added — the previous implementation measured from
-   * created_at and so reported a candidate moved yesterday as waiting 30 days.
+   * Candidate counts use the predicates in workQueueFilters.js — the same SQL the
+   * candidate list applies for `?queue=<key>` — so the number on a tile and the
+   * list behind it cannot drift apart.
    */
   async getWorkQueue(company_id, user_id = null) {
-    const LIVE = `('applied','screening','shortlisted','assessment','1st_level','2nd_level','offer','selected')`;
+    const C = `c.deleted_at IS NULL AND ($1::int IS NULL OR c.company_id = $1)`;
+    // Feedback is owed per interview: an interview that has happened (date
+    // before today), was not cancelled, and has no feedback row for THAT
+    // interview. Linking on candidate_id hid round 2 once round 1 had a note.
+    const FB_PENDING = `s.deleted_at IS NULL AND s.interview_date < CURRENT_DATE
+             AND s.status NOT IN ('cancelled','completed')
+             AND ($1::int IS NULL OR s.company_id = $1)
+             AND NOT EXISTS (SELECT 1 FROM interview_notes n WHERE n.interview_id = s.id)`;
 
     const { rows } = await pool.query(
       `SELECT
-         (SELECT COUNT(*)::int FROM candidates c
-           WHERE c.deleted_at IS NULL AND ($1::int IS NULL OR c.company_id = $1)
-             AND c.current_stage IN ('applied','screening')
-             AND NOT EXISTS (SELECT 1 FROM candidate_screenings s
-                              WHERE s.candidate_id = c.id AND s.status = 'completed')
-         ) AS needs_screening,
+         (SELECT COUNT(*)::int FROM candidates c WHERE ${C} AND ${Q.needs_screening}) AS needs_screening,
 
          (SELECT COUNT(*)::int FROM interview_schedules i
-           WHERE i.interview_date = CURRENT_DATE AND i.status <> 'cancelled'
+           WHERE i.deleted_at IS NULL AND i.interview_date = CURRENT_DATE AND i.status = 'scheduled'
              AND ($1::int IS NULL OR i.company_id = $1)
          ) AS interviews_today,
 
-         -- An interview that has happened and has no feedback row. Measured on
-         -- the SCHEDULE, not the candidate, because feedback is owed per
-         -- interview.
-         (SELECT COUNT(*)::int FROM interview_schedules i
-           WHERE i.interview_date < CURRENT_DATE AND i.status NOT IN ('cancelled','completed')
-             AND ($1::int IS NULL OR i.company_id = $1)
-             AND NOT EXISTS (SELECT 1 FROM interview_notes n WHERE n.candidate_id = i.candidate_id)
-         ) AS feedback_pending,
+         (SELECT COUNT(*)::int FROM interview_schedules s WHERE ${FB_PENDING}) AS feedback_pending,
 
-         (SELECT COUNT(*)::int FROM candidates c
-           WHERE c.deleted_at IS NULL AND ($1::int IS NULL OR c.company_id = $1)
-             AND c.current_stage IN ${LIVE}
-             AND COALESCE(c.last_activity_at, c.created_at) < NOW() - INTERVAL '3 days'
-         ) AS waiting_over_3_days,
+         (SELECT COUNT(*)::int FROM candidates c WHERE ${C} AND ${Q.waiting_over_3_days}) AS waiting_over_3_days,
 
          (SELECT COUNT(*)::int FROM offer_letters o
-           WHERE o.deleted_at IS NULL AND o.offer_status IN ('draft','sent')
+           -- Same set as Offer Management's "Awaiting answer" filter.
+           WHERE o.deleted_at IS NULL AND o.offer_status IN ${UNANSWERED_OFFERS_SQL}
              AND ($1::int IS NULL OR o.company_id = $1)
          ) AS offers_pending,
 
-         (SELECT COUNT(*)::int FROM candidates c
-           WHERE c.deleted_at IS NULL AND ($1::int IS NULL OR c.company_id = $1)
-             AND c.current_stage IN ('selected','offer') AND c.disposition <> 'hired'
-         ) AS joining_pending,
+         (SELECT COUNT(*)::int FROM candidates c WHERE ${C} AND ${Q.joining_pending}) AS joining_pending,
 
          (SELECT COUNT(*)::int FROM candidate_recontact rc
            JOIN candidates c ON c.id = rc.candidate_id AND c.deleted_at IS NULL
@@ -1981,39 +2129,38 @@ const repo = {
              AND ($1::int IS NULL OR rc.company_id = $1)
          ) AS recontact_due,
 
-         (SELECT COUNT(DISTINCT rs.candidate_id)::int FROM candidate_role_suitability rs
-           JOIN candidates c ON c.id = rs.candidate_id AND c.deleted_at IS NULL
-           WHERE rs.status = 'open' AND rs.suitability <> 'not_suitable'
-             AND ($1::int IS NULL OR rs.company_id = $1)
-             -- Only worth surfacing when there is somewhere to put them.
-             AND EXISTS (SELECT 1 FROM job_openings o
-                          WHERE o.status = 'open' AND o.deleted_at IS NULL
-                            AND LOWER(o.department) = LOWER(rs.department)
-                            AND ($1::int IS NULL OR o.company_id = $1))
-         ) AS recommended_for_other_roles,
+         (SELECT COUNT(*)::int FROM candidates c WHERE ${C} AND ${Q.recommended_for_other_roles}) AS recommended_for_other_roles,
 
          (SELECT COUNT(*)::int FROM candidates c
-           WHERE c.deleted_at IS NULL AND ($1::int IS NULL OR c.company_id = $1)
-             AND c.disposition IN ('talent_bank','future_opportunity')
+           WHERE ${C} AND c.disposition IN ('talent_bank','future_opportunity')
          ) AS talent_bank_size,
 
+         -- Only the caller's own drafts. With no user id there is no "my".
          (SELECT COUNT(*)::int FROM candidate_screenings s
            WHERE s.status = 'draft' AND ($1::int IS NULL OR s.company_id = $1)
-             AND ($2::int IS NULL OR s.screened_by = $2)
+             AND $2::int IS NOT NULL AND s.screened_by = $2
          ) AS my_draft_screenings,
 
          (SELECT COUNT(*)::int FROM candidates c
-           WHERE c.deleted_at IS NULL AND ($1::int IS NULL OR c.company_id = $1)
-             AND c.recruiter_id = $2::int AND c.current_stage IN ${LIVE}
+           WHERE ${C} AND c.recruiter_id = $2::int AND ${Q.live}
          ) AS assigned_to_me,
 
-         (SELECT COUNT(*)::int FROM candidates c
-           WHERE c.deleted_at IS NULL AND ($1::int IS NULL OR c.company_id = $1)
-             AND c.recruiter_id IS NULL AND c.current_stage IN ${LIVE}
-         ) AS unassigned`,
+         (SELECT COUNT(*)::int FROM candidates c WHERE ${C} AND ${Q.unassigned}) AS unassigned`,
       [company_id, user_id]
     );
-    return rows[0];
+    const { rows: feedbackDue } = await pool.query(
+      `SELECT s.id, s.candidate_id, s.interview_date, s.interview_time, s.interview_round,
+              c.full_name AS candidate_name, e.name AS interviewer_name,
+              (CURRENT_DATE - s.interview_date) AS days_since
+         FROM interview_schedules s
+         JOIN candidates c ON c.id = s.candidate_id AND c.deleted_at IS NULL
+         LEFT JOIN employees e ON e.id = s.interviewer_id
+        WHERE ${FB_PENDING}
+        ORDER BY s.interview_date ASC
+        LIMIT 25`,
+      [company_id]
+    );
+    return { ...rows[0], feedback_due: feedbackDue };
   },
 
   // ── Quick view (§8) ───────────────────────────────────────────────────────

@@ -18,7 +18,7 @@ import './candidate-actions.css';
  * each dialog is one screen with no scrolling at 768px height.
  */
 
-function Modal({ title, subtitle, icon: Icon, tone = 'route', onClose, children, footer }) {
+export function Modal({ title, subtitle, icon: Icon, tone = 'route', onClose, children, footer, wide = false }) {
   // Escape closes. Bound while open only, so it cannot swallow Escape from a
   // dialog that opened on top of this one.
   useEffect(() => {
@@ -29,7 +29,7 @@ function Modal({ title, subtitle, icon: Icon, tone = 'route', onClose, children,
 
   return (
     <div className="cad-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose?.(); }}>
-      <div className="cad" role="dialog" aria-modal="true" aria-label={title}>
+      <div className={`cad${wide ? ' cad--wide' : ''}`} role="dialog" aria-modal="true" aria-label={title}>
         <header className={`cad-head cad-head--${tone}`}>
           <div className="cad-head-text">
             {Icon && <Icon size={16} className="cad-head-icon" />}
@@ -475,6 +475,177 @@ export function FutureOpportunityDialog({ candidate, departments = [], onClose, 
         onChange={(e) => setNote(e.target.value)}
         placeholder="Keen on Manifest but finishing an M.Tech. Asked us to call in March."
       />
+    </Modal>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * Put forward for an opening
+ * ═══════════════════════════════════════════════════════════════════════════
+ * The Talent Bank's reason to exist: a role opens, you find someone you already
+ * know, you put them forward. Posts to /candidates/:id/recommend, which adds an
+ * application for each opening picked — no second candidate — and, when the
+ * candidate was banked, brings them back into active hiring (status active,
+ * stage Applied, pending recontact reminder closed).
+ */
+export function PutForwardDialog({ candidate, onClose, onSaved }) {
+  const _toast = useToast();
+  const toast = useCallback((m, t = 'success') => _toast({ message: m, type: t }), [_toast]);
+  const [openings, setOpenings] = useState(null);
+  const [picked, setPicked] = useState(() => new Set());
+  const [notes, setNotes] = useState('');
+  const [q, setQ] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let live = true;
+    api.get('/recruitment/openings', { params: { status: 'open' } })
+      .then(res => {
+        const list = Array.isArray(res.data) ? res.data : (res.data?.rows || res.data?.data || []);
+        if (live) setOpenings(list.filter(o => String(o.status || 'open').toLowerCase() === 'open'));
+      })
+      .catch(() => { if (live) setOpenings([]); });
+    return () => { live = false; };
+  }, []);
+
+  const shown = useMemo(() => {
+    const s = q.trim().toLowerCase();
+    return (openings || []).filter(o => !s
+      || String(o.job_title || '').toLowerCase().includes(s)
+      || String(o.department || '').toLowerCase().includes(s));
+  }, [openings, q]);
+
+  const save = async () => {
+    if (!picked.size) return toast('Pick at least one opening.', 'error');
+    setSaving(true);
+    try {
+      const res = await api.post(`/recruitment/candidates/${candidate.id}/recommend`, {
+        job_opening_ids: [...picked],
+        notes: notes.trim() || undefined,
+      });
+      toast(res?.data?.message || 'Put forward');
+      onSaved?.(res?.data);
+      onClose?.();
+    } catch (e) {
+      toast(e?.response?.data?.error || 'Could not put them forward', 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal
+      title={`Put ${candidate?.full_name} forward`}
+      subtitle="Adds them to the openings you pick. If they were in the Talent Bank, they come back into active hiring and any recontact reminder is closed."
+      icon={Shuffle}
+      tone="route"
+      onClose={onClose}
+      footer={
+        <>
+          <button type="button" className="cad-btn" onClick={onClose}>Cancel</button>
+          <button type="button" className="cad-btn cad-btn--primary" onClick={save} disabled={saving || !picked.size}>
+            {saving ? 'Saving…' : `Put forward${picked.size > 1 ? ` for ${picked.size}` : ''}`}
+          </button>
+        </>
+      }
+    >
+      {openings === null ? (
+        <p className="cad-empty">Loading open jobs…</p>
+      ) : openings.length === 0 ? (
+        <p className="cad-empty">There are no open jobs right now. Open one under Jobs, then come back.</p>
+      ) : (
+        <>
+          {openings.length > 6 && (
+            <input className="cad-input" value={q} onChange={(e) => setQ(e.target.value)}
+              placeholder="Search open jobs" aria-label="Search open jobs" />
+          )}
+          <div className="cad-pool-chips" style={{ marginTop: 8 }}>
+            {shown.map(o => {
+              const on = picked.has(o.id);
+              return (
+                <button
+                  key={o.id} type="button" aria-pressed={on}
+                  className={`cad-pool-chip${on ? ' is-on' : ''}`}
+                  onClick={() => setPicked(prev => {
+                    const next = new Set(prev);
+                    if (next.has(o.id)) next.delete(o.id); else next.add(o.id);
+                    return next;
+                  })}
+                >
+                  {on && <Check size={11} />}
+                  {o.job_title}{o.department ? ` · ${o.department}` : ''}
+                </button>
+              );
+            })}
+            {shown.length === 0 && <p className="cad-empty">No open job matches “{q}”.</p>}
+          </div>
+        </>
+      )}
+
+      <label className="cad-label" htmlFor="cad-pf-notes">Note for the hiring manager <span className="cad-optional">optional</span></label>
+      <textarea id="cad-pf-notes" className="cad-textarea" rows={2} value={notes}
+        onChange={(e) => setNotes(e.target.value)}
+        placeholder="Met in 2026 for Testing — strong on inverter fault finding." />
+    </Modal>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * Remove from the Talent Bank
+ * ═══════════════════════════════════════════════════════════════════════════
+ * Either one category (poolId given) or the whole bank. Nothing is deleted: the
+ * candidate, history and applications stay; the whole-bank path cancels pending
+ * reminders and sets the status to Inactive.
+ */
+export function RemoveFromBankDialog({ candidate, poolId = null, poolName = null, onClose, onSaved }) {
+  const _toast = useToast();
+  const toast = useCallback((m, t = 'success') => _toast({ message: m, type: t }), [_toast]);
+  const [reason, setReason] = useState('');
+  const [saving, setSaving] = useState(false);
+  const whole = !poolId;
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const res = await api.delete(`/recruitment/candidates/${candidate.id}/talent-bank`, {
+        params: poolId ? { pool_id: poolId } : undefined,
+        data: reason.trim() ? { reason: reason.trim() } : undefined,
+      });
+      toast(res?.data?.message || 'Removed');
+      onSaved?.(res?.data);
+      onClose?.();
+    } catch (e) {
+      toast(e?.response?.data?.error || 'Could not remove', 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal
+      title={whole ? `Remove ${candidate?.full_name} from the Talent Bank` : `Remove ${candidate?.full_name} from ${poolName}`}
+      subtitle={whole
+        ? 'They leave every category, any recontact reminder is cancelled and their status becomes Inactive. Their profile and history stay.'
+        : 'Only this category. They stay in the Talent Bank under any others.'}
+      icon={Archive}
+      tone="stop"
+      onClose={onClose}
+      footer={
+        <>
+          <button type="button" className="cad-btn" onClick={onClose}>Cancel</button>
+          <button type="button" className="cad-btn cad-btn--stop" onClick={save} disabled={saving}>
+            {saving ? 'Removing…' : 'Remove'}
+          </button>
+        </>
+      }
+    >
+      {whole && (
+        <>
+          <label className="cad-label" htmlFor="cad-rm-reason">Why? <span className="cad-optional">optional</span></label>
+          <textarea id="cad-rm-reason" className="cad-textarea" rows={2} value={reason}
+            onChange={(e) => setReason(e.target.value)} placeholder="Joined another company; not interested any more." />
+        </>
+      )}
     </Modal>
   );
 }

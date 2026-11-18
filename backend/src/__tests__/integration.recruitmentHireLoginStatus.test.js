@@ -245,3 +245,36 @@ describe('auto-creation checklist', () => {
     expect(await snapshotUser(existing.id)).toEqual(before);
   });
 });
+
+const { probationEndDate } = await import('../shared/probationDates.js');
+
+// ── probation on hire (§269) ─────────────────────────────────────────────────
+describe('hireCandidate — probation dates', () => {
+
+  const hireWith = async (email, options) => {
+    const candId = await newCandidate(email);
+    const result = await recruitmentRepository.hireCandidate(candId, COMPANY, null, options);
+    created.employees.push(result.employee.id);
+    return (await pool.query(
+      `SELECT status, joining_date::text AS joining, probation_months, probation_end_date::text AS end
+         FROM employees WHERE id = $1`, [result.employee.id])).rows[0];
+  };
+
+  it('a regular hire starts on Probation with the company period, counted from today', async () => {
+    const { rows: [{ today }] } = await pool.query(`SELECT CURRENT_DATE::text AS today`);
+    const e = await hireWith(nextEmail('prob'), { employmentType: 'full_time' });
+    expect(e).toEqual({ status: 'Probation', joining: today, probation_months: 6, end: probationEndDate(today, 6) });
+  });
+
+  it('uses the accepted offer\'s joining date', async () => {
+    const e = await hireWith(nextEmail('probjoin'), { employmentType: 'full_time', joiningDate: '2026-12-01' });
+    expect(e).toEqual({ status: 'Probation', joining: '2026-12-01', probation_months: 6, end: '2027-05-31' });
+  });
+
+  it('interns and contract hires have no probation and start Active', async () => {
+    for (const employmentType of ['Intern', 'contract', 'Consultant']) {
+      const e = await hireWith(nextEmail(`np${employmentType}`), { employmentType });
+      expect(e, employmentType).toMatchObject({ status: 'Active', probation_months: null, end: null });
+    }
+  });
+});

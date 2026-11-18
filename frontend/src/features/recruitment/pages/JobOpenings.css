@@ -78,8 +78,8 @@
 .jo-card-actions .jo-pipeline-btn { flex: 1; }
 
 /* Drawer */
-.jo-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 1000; display: flex; justify-content: flex-end; }
-.jo-drawer  { width: 500px; max-width: 95vw; background: #fff; display: flex; flex-direction: column; height: 100vh; box-shadow: -8px 0 32px rgba(0,0,0,.12); animation: jo-slide .2s ease; }
+.jo-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 1000; display: flex; align-items: center; justify-content: center; padding: 24px; }
+.jo-drawer  { width: 500px; max-width: 95vw; background: #fff; display: flex; flex-direction: column; max-height: calc(100vh - 48px); border-radius: 12px; overflow: auto; box-shadow: 0 20px 60px rgba(0,0,0,.18); animation: pulse-dialog-in .18s ease-out; }
 @keyframes jo-slide { from { transform: translateX(100%); } to { transform: translateX(0); } }
 
 .jo-drawer-hd { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid #e5e7eb; }
@@ -106,3 +106,27 @@
 
 .jo-icon-btn { background: none; border: 1px solid #e5e7eb; border-radius: 7px; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; cursor: pointer; color: #6b7280; }
 .jo-icon-btn:hover { background: #f3f4f6; }
+
+/* Embedded in the Jobs hub: the hub owns the header, the tab's own actions sit here. */
+.jo-toolbar { display: flex; justify-content: flex-end; gap: 8px; margin-bottom: 12px; }
+.jo-error { background: #fef2f2; border: 1px solid #fecaca; color: #b91c1c; border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; font-size: 13px; display: flex; align-items: center; gap: 10px; }
+.jo-field input:disabled, .jo-field select:disabled { background: #f9fafb; color: #6b7280; }
+
+/* Job view / post / edit open IN PLACE of the cards, inside the tab
+   (user request 2026-11-17: not over the page, not full window). */
+.jo-panel { background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; display: flex; flex-direction: column; }
+.jo-panel-hd { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 14px 20px; border-bottom: 1px solid #e5e7eb; }
+.jo-panel-hd h3 { font-size: 16px; font-weight: 700; color: #111827; margin: 0; }
+.jo-panel-body { padding: 20px; }
+.jo-panel-ft { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; padding: 14px 20px; border-top: 1px solid #e5e7eb; }
+.jo-back { display: inline-flex; align-items: center; gap: 6px; border: 1px solid #e5e7eb; background: #fff; border-radius: 8px; padding: 6px 10px; font-size: 13px; font-weight: 600; color: #374151; cursor: pointer; }
+.jo-back:hover { color: var(--color-primary, #6B3FDB); border-color: var(--color-primary, #6B3FDB); }
+.jo-split { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 20px; align-items: start; }
+.jo-split-main { display: flex; flex-direction: column; gap: 14px; }
+.jo-split-side { position: sticky; top: 12px; max-height: calc(100vh - 160px); overflow-y: auto; }
+@media (max-width: 1000px) {
+  .jo-split { grid-template-columns: 1fr; }
+  .jo-split-side { position: static; max-height: none; }
+}
+.jo-panel-status { display: flex; gap: 8px; flex-wrap: wrap; margin-right: auto; }
+.jo-btn-outline:disabled { opacity: .55; cursor: not-allowed; }

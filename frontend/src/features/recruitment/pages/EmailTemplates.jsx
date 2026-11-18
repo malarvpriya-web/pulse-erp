@@ -1,39 +1,51 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import DOMPurify from 'dompurify';
 import {
-  Mail, Plus, Search, Edit2, Trash2, Copy, Eye, EyeOff, X, Check,
-  ChevronDown, ToggleLeft, ToggleRight, RefreshCw, ArrowLeft,
+  Mail, Plus, Search, Edit2, Trash2, Copy, Eye, EyeOff, X,
+  ToggleLeft, ToggleRight, RefreshCw,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import { useToast as useGlobalToast } from '@/context/ToastContext';
 import { matchesSearch } from '../shared/search';
+import EmailSetupWarning from '../shared/components/EmailSetupWarning';
 import { PageHero } from '@/components/pulse-ui';
 
-// ── Type config ───────────────────────────────────────────────────────────────
+// ── Events the system actually sends ──────────────────────────────────────────
+// Each key is the trigger the backend fires (services/emailTrigger.js). The list
+// used to offer interview_scheduled / rejection / offer_letter / joining_
+// instructions / interview_reminder, none of which is ever sent, so a template
+// saved under them never went out. `vars` are the placeholders that event fills;
+// any other {{placeholder}} would arrive blank.
 const TYPE_CFG = {
-  application_received: { label: 'Application Received', color: '#6366f1', bg: '#eef2ff' },
-  interview_scheduled:  { label: 'Interview Scheduled',  color: '#0891b2', bg: '#ecfeff' },
-  interview_reminder:   { label: 'Interview Reminder',   color: '#6d28d9', bg: '#f5f3ff' },
-  rejection:            { label: 'Rejection',             color: '#dc2626', bg: '#fef2f2' },
-  offer_letter:         { label: 'Offer Letter',          color: '#16a34a', bg: '#f0fdf4' },
-  joining_instructions: { label: 'Joining Instructions',  color: '#6B3FDB', bg: '#faf5ff' },
+  application_received:   { label: 'Application received',   color: '#6366f1', bg: '#eef2ff',
+    when: 'A candidate is added or applies on the careers page', vars: ['candidate_name', 'candidate_email', 'job_title'] },
+  interview_l1_scheduled: { label: 'Interview scheduled',    color: '#0891b2', bg: '#ecfeff',
+    when: 'An interview is booked', vars: ['candidate_name', 'interview_date', 'interview_mode'] },
+  interview_rejected:     { label: 'Not progressing',        color: '#dc2626', bg: '#fef2f2',
+    when: 'An interview outcome is "Not selected"', vars: ['candidate_name', 'rejection_reason'] },
+  offer_sent:             { label: 'Offer sent',             color: '#16a34a', bg: '#f0fdf4',
+    when: 'An offer is approved (the offer letter PDF is attached)', vars: ['candidate_name', 'company_name', 'job_title', 'ctc', 'joining_date', 'offer_expiry_date'] },
+  hired_welcome:          { label: 'Welcome on joining',     color: '#6B3FDB', bg: '#faf5ff',
+    when: 'The employee record is created for a hire', vars: ['candidate_name', 'job_title', 'joining_date', 'employee_id'] },
 };
 
 const ALL_TYPES = Object.entries(TYPE_CFG).map(([value, cfg]) => ({ value, ...cfg }));
 
-// ── Available template variables ──────────────────────────────────────────────
-const VARIABLES = [
-  { key: '{{candidate_name}}',  desc: "Candidate's full name" },
-  { key: '{{candidate_email}}', desc: "Candidate's email" },
-  { key: '{{job_title}}',       desc: 'Position title' },
-  { key: '{{company_name}}',    desc: 'Your company' },
-  { key: '{{interview_date}}',  desc: 'Interview date' },
-  { key: '{{interview_time}}',  desc: 'Interview time' },
-  { key: '{{meeting_link}}',    desc: 'Video call link' },
-  { key: '{{offer_salary}}',    desc: 'Offered salary' },
-  { key: '{{joining_date}}',    desc: 'Start date' },
-  { key: '{{recruiter_name}}',  desc: 'Recruiter name' },
-];
+const VAR_DESC = {
+  candidate_name: "Candidate's full name", candidate_email: "Candidate's email", job_title: 'Position title',
+  company_name: 'Your company', interview_date: 'Interview date and time', interview_mode: 'In person / Video call / Phone',
+  rejection_reason: 'Reason recorded with the outcome', ctc: 'Annual CTC', joining_date: 'Joining date',
+  offer_expiry_date: 'Offer valid until', employee_id: 'New employee code',
+};
+// Example values for the preview, so it reads like the e-mail a candidate gets.
+const SAMPLE = {
+  candidate_name: 'Priya Sharma', candidate_email: 'priya@example.com', job_title: 'Service Engineer',
+  company_name: 'Your company', interview_date: '24 Nov 26, 10:30', interview_mode: 'Video call',
+  rejection_reason: 'We have chosen a candidate whose experience is closer to the role', ctc: '₹6,00,000',
+  joining_date: '01 Dec 26', offer_expiry_date: '28 Nov 26', employee_id: 'EMP0123',
+};
+const fillSample = (text) => String(text || '').replace(/\{\{(\w+)\}\}/g, (m, k) => SAMPLE[k] ?? m);
+const varsFor = (type) => (TYPE_CFG[type]?.vars || []).map(k => ({ key: `{{${k}}}`, desc: VAR_DESC[k] || k }));
 
 const EMPTY_FORM = {
   template_name: '',
@@ -95,6 +107,14 @@ function TemplateCard({ tpl, onEdit, onDelete, onToggle, onDuplicate }) {
           <div style={{ fontSize: 15, fontWeight: 700, color: '#111827', marginBottom: 6, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
             {tpl.template_name}
           </div>
+          {tpl.in_use && (
+            <div style={{ display: 'inline-block', fontSize: 10, fontWeight: 700, color: '#065f46', background: '#d1fae5', borderRadius: 10, padding: '1px 8px', marginBottom: 6, marginRight: 6 }}>IN USE</div>
+          )}
+          {tpl.is_default && (
+            <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 6 }}>
+              {tpl.overridden ? 'Shared default — your own version is used instead' : 'Shared default. Edit it to make your own version.'}
+            </div>
+          )}
           <span style={{
             display: 'inline-block', padding: '3px 10px', borderRadius: 20,
             fontSize: 11, fontWeight: 700, letterSpacing: '.03em', textTransform: 'uppercase',
@@ -105,6 +125,7 @@ function TemplateCard({ tpl, onEdit, onDelete, onToggle, onDuplicate }) {
         </div>
         {/* Status pill */}
         <button
+          disabled={tpl.is_default}
           onClick={() => onToggle(tpl.id, tpl.is_active)}
           title={tpl.is_active ? 'Active — click to deactivate' : 'Inactive — click to activate'}
           style={{
@@ -146,9 +167,11 @@ function TemplateCard({ tpl, onEdit, onDelete, onToggle, onDuplicate }) {
         <button onClick={() => onDuplicate(tpl)} style={btnStyle('#f3f4f6', '#374151')}>
           <Copy size={12} /> Duplicate
         </button>
-        <button onClick={() => onDelete(tpl.id, tpl.template_name)} style={{ ...btnStyle('#fef2f2', '#dc2626'), marginLeft: 'auto' }}>
-          <Trash2 size={12} /> Delete
-        </button>
+        {!tpl.is_default && (
+          <button onClick={() => onDelete(tpl.id, tpl.template_name)} style={{ ...btnStyle('#fef2f2', '#dc2626'), marginLeft: 'auto' }}>
+            <Trash2 size={12} /> Delete
+          </button>
+        )}
       </div>
     </div>
   );
@@ -206,12 +229,15 @@ function TemplateDrawer({ editing, onClose, onSaved, showToast }) {
     if (!form.template_name.trim()) return showToast('Template name is required', 'error');
     if (!form.subject.trim())       return showToast('Subject is required', 'error');
     if (!form.body_html.trim())     return showToast('Body cannot be empty', 'error');
+    const allowed = new Set(TYPE_CFG[form.template_type]?.vars || []);
+    const unknown = [...new Set([...`${form.subject} ${form.body_html}`.matchAll(/\{\{(\w+)\}\}/g)].map(m => m[1]))].filter(v => !allowed.has(v));
+    if (unknown.length && !window.confirm(`This event does not fill ${unknown.map(v => `{{${v}}}`).join(', ')} — it would arrive blank. Save anyway?`)) return;
     setSaving(true);
     try {
       const payload = { ...form };
       if (editing) {
         await api.put(`/recruitment/email-templates/${editing.id}`, payload);
-        showToast('Template updated');
+        showToast(editing.is_default ? 'Saved as your own version — it replaces the shared default' : 'Template updated');
       } else {
         await api.post('/recruitment/email-templates', payload);
         showToast('Template created');
@@ -234,12 +260,11 @@ function TemplateDrawer({ editing, onClose, onSaved, showToast }) {
       }} />
       {/* Drawer */}
       <div style={{
-        position: 'fixed', top: 0, right: 0, bottom: 0,
-        width: 'min(680px, 95vw)',
+        position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', maxHeight: 'calc(100vh - 48px)', borderRadius: 12, overflowY: 'auto', maxWidth: 'calc(100vw - 32px)', width: 680,
         background: '#fff', zIndex: 901,
         display: 'flex', flexDirection: 'column',
-        boxShadow: '-8px 0 40px rgba(0,0,0,.15)',
-        animation: 'et-slide-in .22s ease',
+        boxShadow: '0 20px 60px rgba(0,0,0,.18)',
+        animation: 'pulse-dialog-fade .18s ease-out',
       }}>
         {/* Drawer header */}
         <div style={{
@@ -335,11 +360,11 @@ function TemplateDrawer({ editing, onClose, onSaved, showToast }) {
                   background: '#f8f7ff', padding: '8px 14px', fontSize: 11,
                   color: '#6b7280', borderBottom: '1px solid #e5e7eb', fontWeight: 600,
                 }}>
-                  Preview — {form.subject || '(no subject)'}
+                  Preview with example values — {fillSample(form.subject) || '(no subject)'}
                 </div>
                 <div
                   style={{ padding: '20px 24px', minHeight: 240, fontSize: 14, lineHeight: 1.7, color: '#374151' }}
-                  dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(form.body_html || '<p style="color:#9ca3af">No content yet…</p>') }}
+                  dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(fillSample(form.body_html) || '<p style="color:#9ca3af">No content yet…</p>') }}
                 />
               </div>
             ) : (
@@ -359,10 +384,13 @@ function TemplateDrawer({ editing, onClose, onSaved, showToast }) {
             padding: '14px 16px', marginBottom: 18,
           }}>
             <div style={{ fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 10 }}>
-              Click a variable to insert at cursor
+              Click a placeholder to insert it — these are the ones this event fills
             </div>
+            {TYPE_CFG[form.template_type]?.when && (
+              <div style={{ fontSize: 12, color: '#374151', marginBottom: 8 }}>Sent when: {TYPE_CFG[form.template_type].when}</div>
+            )}
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 7 }}>
-              {VARIABLES.map(v => (
+              {varsFor(form.template_type).map(v => (
                 <button
                   key={v.key}
                   type="button"
@@ -396,7 +424,7 @@ function TemplateDrawer({ editing, onClose, onSaved, showToast }) {
               }
             </button>
             <span style={{ fontSize: 13, fontWeight: 600, color: form.is_active ? '#16a34a' : '#9ca3af' }}>
-              {form.is_active ? 'Active — template will be available for use' : 'Inactive — template is hidden from use'}
+              {form.is_active ? 'On — this is the e-mail sent for this event (any other one for the event is switched off)' : 'Off — not sent'}
             </span>
           </div>
 
@@ -428,7 +456,7 @@ const labelStyle = { display: 'block', marginBottom: 6, fontSize: 12, fontWeight
 const inputStyle = { width: '100%', padding: '9px 13px', border: '1px solid #e5e7eb', borderRadius: 8, fontSize: 14, outline: 'none', fontFamily: 'inherit', boxSizing: 'border-box', transition: 'border-color .15s' };
 
 // ── Main page ─────────────────────────────────────────────────────────────────
-export default function EmailTemplates({ setPage }) {
+export default function EmailTemplates({ embedded = false }) {
   const [templates,  setTemplates]  = useState([]);
   const [loading,    setLoading]    = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -436,11 +464,15 @@ export default function EmailTemplates({ setPage }) {
   const [search,     setSearch]     = useState('');
   const [typeFilter, setTypeFilter] = useState('all');
   const [confirm,    setConfirm]    = useState(null); // { id, name }
+  const [emailOk,    setEmailOk]    = useState(true);
+  useEffect(() => {
+    api.get('/recruitment/setup-status').then(r => setEmailOk(r.data?.email_configured !== false)).catch(() => {});
+  }, []);
   const _globalToast = useGlobalToast();
   const showToast = useCallback((msg, type = 'success') => _globalToast({ message: msg, type }), [_globalToast]);
 
   const load = useCallback(async () => {
-
+    setLoading(true);
     try {
       const res = await api.get('/recruitment/email-templates');
       setTemplates(Array.isArray(res.data) ? res.data : []);
@@ -456,10 +488,10 @@ export default function EmailTemplates({ setPage }) {
   const handleToggle = async (id, current) => {
     try {
       await api.put(`/recruitment/email-templates/${id}`, { is_active: !current });
-      setTemplates(prev => prev.map(t => t.id === id ? { ...t, is_active: !current } : t));
-      showToast(current ? 'Template deactivated' : 'Template activated');
-    } catch {
-      showToast('Failed to update status', 'error');
+      showToast(current ? 'Switched off' : 'Switched on — any other template for this event was switched off');
+      load();
+    } catch (err) {
+      showToast(err.response?.data?.error || 'Failed to update status', 'error');
     }
   };
 
@@ -467,10 +499,10 @@ export default function EmailTemplates({ setPage }) {
     if (!confirm) return;
     try {
       await api.delete(`/recruitment/email-templates/${confirm.id}`);
-      setTemplates(prev => prev.filter(t => t.id !== confirm.id));
       showToast('Template deleted');
-    } catch {
-      showToast('Failed to delete template', 'error');
+      load();
+    } catch (err) {
+      showToast(err.response?.data?.error || 'Failed to delete template', 'error');
     } finally {
       setConfirm(null);
     }
@@ -485,11 +517,11 @@ export default function EmailTemplates({ setPage }) {
         body_html: tpl.body_html,
         is_active: false,
       };
-      const res = await api.post('/recruitment/email-templates', payload);
-      setTemplates(prev => [...prev, res.data]);
-      showToast('Template duplicated');
-    } catch {
-      showToast('Failed to duplicate template', 'error');
+      await api.post('/recruitment/email-templates', payload);
+      showToast('Copy made (switched off) — edit it, then switch it on');
+      load();
+    } catch (err) {
+      showToast(err.response?.data?.error || 'Failed to duplicate template', 'error');
     }
   };
 
@@ -509,8 +541,13 @@ export default function EmailTemplates({ setPage }) {
     return matchSearch && matchType;
   });
 
-  const activeCount   = templates.filter(t => t.is_active).length;
-  const inactiveCount = templates.length - activeCount;
+  // What the sender picks for each event: the company's own active template,
+  // else the shared default (services/emailTrigger.js).
+  const withUse = templates.map(t => ({
+    ...t, in_use: t.is_active && (t.is_default ? !t.overridden : true),
+  }));
+  const shown = filtered.map(t => withUse.find(w => w.id === t.id) || t);
+  const missing = ALL_TYPES.filter(ty => !withUse.some(t => t.in_use && t.template_type === ty.value));
 
   return (
     <>
@@ -536,53 +573,26 @@ export default function EmailTemplates({ setPage }) {
         />
       )}
 
-      <div style={{ padding: '28px 32px', margin: '0 auto' }}>
-
-        {/* ── Page header ── */}
-        <PageHero
-          icon={Mail}
-          eyebrow="Recruitment"
-          title="Email Templates"
-          subtitle="Recruitment email templates used across offers, interviews and rejections"
-          meta={[
-            { value: activeCount, label: 'active', tone: 'good' },
-            ...(inactiveCount > 0 ? [{ value: inactiveCount, label: 'inactive' }] : []),
-          ]}
-          actions={
-            <>
-              <button className="plh-cta plh-cta--ghost" onClick={() => setPage('RecruitmentDashboard')}>
-                <ArrowLeft size={14} /> Back
-              </button>
-              <button className="plh-cta plh-cta--ghost plh-cta--icon" onClick={load} title="Refresh">
-                <RefreshCw size={14} />
-              </button>
-              <button className="plh-cta" onClick={openCreate}>
-                <Plus size={15} /> New Template
-              </button>
-            </>
-          }
-        />
-
-        {/* ── Stats row ── */}
-        <div style={{ display: 'flex', gap: 14, marginBottom: 24, flexWrap: 'wrap' }}>
-          {[
-            { label: 'Total', value: templates.length, color: '#4B2DCE', bg: '#F2EFFE' },
-            { label: 'Active', value: activeCount, color: '#16a34a', bg: '#f0fdf4' },
-            { label: 'Inactive', value: inactiveCount, color: '#9ca3af', bg: '#f9fafb' },
-            ...ALL_TYPES.map(t => ({
-              label: t.label, color: t.color, bg: t.bg,
-              value: templates.filter(tp => tp.template_type === t.value).length,
-            })),
-          ].filter(s => s.value > 0).map((s, i) => (
-            <div key={i} style={{
-              padding: '8px 16px', borderRadius: 20, background: s.bg,
-              fontSize: 12, fontWeight: 700, color: s.color,
-              border: `1px solid ${s.bg === '#f9fafb' ? '#e5e7eb' : s.bg}`,
-            }}>
-              {s.value} {s.label}
-            </div>
-          ))}
+      <div>
+        {!embedded && (
+          <PageHero icon={Mail} eyebrow="Recruitment" title="Email Templates"
+            subtitle="The e-mails candidates receive, one per event" />
+        )}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 13, color: '#6b7280' }}>
+            One template is sent per event. Shared defaults are used until you make your own version.
+          </span>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button type="button" className="pulse-btn-secondary" onClick={load} title="Refresh"><RefreshCw size={14} /></button>
+            <button type="button" className="pulse-btn-primary" onClick={openCreate}><Plus size={14} /> New template</button>
+          </div>
         </div>
+        <EmailSetupWarning show={!emailOk} />
+        {missing.length > 0 && !loading && (
+          <div style={{ padding: '10px 14px', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 10, color: '#92400e', fontSize: 13, marginBottom: 14 }}>
+            Nothing is sent for: {missing.map(m => m.label).join(', ')} — no template is switched on for {missing.length > 1 ? 'these events' : 'this event'}.
+          </div>
+        )}
 
         {/* ── Filter bar ── */}
         <div style={{ display: 'flex', gap: 12, marginBottom: 24, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -664,7 +674,7 @@ export default function EmailTemplates({ setPage }) {
           </div>
         ) : (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 18 }}>
-            {filtered.map(tpl => (
+            {shown.map(tpl => (
               <TemplateCard
                 key={tpl.id}
                 tpl={tpl}
@@ -674,29 +684,6 @@ export default function EmailTemplates({ setPage }) {
                 onDuplicate={handleDuplicate}
               />
             ))}
-          </div>
-        )}
-
-        {/* ── Variables reference ── */}
-        {templates.length > 0 && (
-          <div style={{
-            marginTop: 40, background: '#fafafa', border: '1px solid #f0f0f8',
-            borderRadius: 14, padding: '20px 24px',
-          }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: '#374151', marginBottom: 12 }}>
-              📋 Available Template Variables
-            </div>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-              {VARIABLES.map(v => (
-                <div key={v.key} title={v.desc} style={{
-                  display: 'flex', flexDirection: 'column', padding: '6px 12px',
-                  background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8,
-                }}>
-                  <code style={{ fontSize: 12, color: '#4B2DCE', fontWeight: 700 }}>{v.key}</code>
-                  <span style={{ fontSize: 10, color: '#9ca3af', marginTop: 2 }}>{v.desc}</span>
-                </div>
-              ))}
-            </div>
           </div>
         )}
 

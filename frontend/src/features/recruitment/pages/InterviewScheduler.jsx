@@ -1,30 +1,32 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import api from '@/services/api/client';
 import useAppStore from '@/store/useAppStore';
 import {
   Calendar, Clock, Video, Building2, Phone, User, Link2, FileText,
   CheckCircle, XCircle, RefreshCw, CalendarDays, BookOpen, Square,
-  CheckSquare, X, Search, ChevronDown, ChevronUp, Plus, UserPlus,
+  CheckSquare, X, Search, ChevronDown, ChevronUp, Plus, UserPlus, Pencil,
 } from 'lucide-react';
 import './InterviewScheduler.css';
 import { useToast } from '@/context/ToastContext';
 import { fmtDate as fmtDateStr } from '@/utils/dateFormatter';
-import { CAT_STYLE, DIFF_STYLE, candidateRows } from '../shared/constants';
-import Drawer from '../shared/components/Drawer';
+import { CAT_STYLE, DIFF_STYLE, candidateRows, INTERVIEW_ROUNDS, INTERVIEW_MODES, interviewRoundLabel } from '../shared/constants';
+import Dialog from '../shared/components/Dialog';
 import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const STATUS_META = {
   scheduled:   { label: 'Scheduled',   bg: '#dbeafe', color: '#1d4ed8', icon: Clock },
   completed:   { label: 'Completed',   bg: '#dcfce7', color: '#15803d', icon: CheckCircle },
   cancelled:   { label: 'Cancelled',   bg: '#fee2e2', color: '#b91c1c', icon: XCircle },
-  rescheduled: { label: 'Rescheduled', bg: '#ede9fe', color: '#5b21b6', icon: RefreshCw },
 };
 
 const MODE_META = {
-  online:  { label: 'Online',  icon: Video,      color: '#4f46e5', bg: '#e0e7ff' },
-  offline: { label: 'In Person', icon: Building2, color: '#0369a1', bg: '#dbeafe' },
-  phone:   { label: 'Phone',   icon: Phone,      color: '#0f766e', bg: '#ccfbf1' },
+  video:     { label: 'Video call', icon: Video,     color: '#4f46e5', bg: '#e0e7ff' },
+  in_person: { label: 'In person',  icon: Building2, color: '#0369a1', bg: '#dbeafe' },
+  phone:     { label: 'Phone',      icon: Phone,     color: '#0f766e', bg: '#ccfbf1' },
 };
+MODE_META.online = MODE_META.video;      // rows saved before 2026-11-17
+MODE_META.offline = MODE_META.in_person;
 
 const fmtTime = (t) => {
   if (!t) return '—';
@@ -52,7 +54,10 @@ function SuggestedQuestionsPanel({ interview, onClose }) {
   const toast = useToast();
   const [questions,  setQuestions]  = useState([]);
   const [loading,    setLoading]    = useState(true);
-  const [checked,    setChecked]    = useState({});           // id → bool
+  // Ticks are saved on the interview (question_ids), so the interviewer sees the
+  // same list when they reopen it.
+  const [checked,    setChecked]    = useState(() => Object.fromEntries((interview.question_ids || []).map(id => [id, true])));
+  const firstRender = useRef(true);
   const [search,     setSearch]     = useState('');
   const [catFilter,  setCatFilter]  = useState('');
   const [expanded,   setExpanded]   = useState({});           // id → bool
@@ -67,6 +72,16 @@ function SuggestedQuestionsPanel({ interview, onClose }) {
 
   useEffect(() => { load(); }, [load]);
 
+  useEffect(() => {
+    if (firstRender.current) { firstRender.current = false; return undefined; }
+    const ids = Object.entries(checked).filter(([, v]) => v).map(([k]) => Number(k));
+    const t = setTimeout(() => {
+      api.put(`/recruitment/interviews/${interview.id}`, { question_ids: ids })
+        .catch(() => toast({ message: 'Could not save the question list', type: 'error' }));
+    }, 400);
+    return () => clearTimeout(t);
+  }, [checked]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const toggle      = (id) => setChecked(p => ({ ...p, [id]: !p[id] }));
   const toggleExp   = (id) => setExpanded(p => ({ ...p, [id]: !p[id] }));
   const checkedCount = Object.values(checked).filter(Boolean).length;
@@ -74,7 +89,7 @@ function SuggestedQuestionsPanel({ interview, onClose }) {
   const categories = [...new Set(questions.map(q => q.category))].sort();
 
   return (
-    <Drawer width={460} boxShadow="-4px 0 24px rgba(0,0,0,.15)">
+    <Dialog width={460} boxShadow="-4px 0 24px rgba(0,0,0,.15)">
 
         {/* Header */}
         <div style={{ padding: '18px 20px', borderBottom: '1px solid #f0f0f4', flexShrink: 0 }}>
@@ -202,28 +217,82 @@ function SuggestedQuestionsPanel({ interview, onClose }) {
             </button>
           </div>
         )}
-    </Drawer>
+    </Dialog>
   );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 
+const EMPTY_FORM = {
+  candidate_id: '', job_opening_id: '', interview_round: '1st_level', date: '', time: '',
+  mode: 'in_person', meeting_link: '', interviewer_id: '', panel: [], notes: '',
+};
+const inputStyle = { width: '100%', padding: '8px 10px', border: '1px solid #e5e7eb', borderRadius: 7, fontSize: 13, outline: 'none', boxSizing: 'border-box', background: '#fff' };
+const labelStyle = { fontSize: 11, fontWeight: 700, color: '#374151', textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: 5 };
+
+/** Searchable candidate picker: opens its list on click (no 200-row cap). */
+function CandidatePicker({ value, onChange, initialName }) {
+  const [q, setQ] = useState('');
+  const [rows, setRows] = useState([]);
+  const [open, setOpen] = useState(false);
+  const [label, setLabel] = useState(initialName || '');
+  useEffect(() => { setLabel(initialName || ''); }, [initialName]);
+  useEffect(() => {
+    if (!open) return undefined;
+    const t = setTimeout(() => {
+      api.get('/recruitment/candidates', { params: { search: q || undefined, limit: 30, sort_by: 'last_activity_at' } })
+        .then(r => setRows(candidateRows(r.data))).catch(() => setRows([]));
+    }, 200);
+    return () => clearTimeout(t);
+  }, [q, open]);
+  return (
+    <div style={{ position: 'relative' }}>
+      <input style={inputStyle} value={open ? q : (label || '')} placeholder="Search by name, email or phone…"
+             onFocus={() => { setOpen(true); setQ(''); }} onChange={e => setQ(e.target.value)}
+             onBlur={() => setTimeout(() => setOpen(false), 150)} aria-label="Candidate" />
+      {open && (
+        <div style={{ position: 'absolute', zIndex: 5, left: 0, right: 0, top: '100%', background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8, maxHeight: 240, overflowY: 'auto', boxShadow: '0 8px 20px rgba(0,0,0,.08)' }}>
+          {rows.length === 0 && <div style={{ padding: 10, fontSize: 12, color: '#9ca3af' }}>No candidates found</div>}
+          {rows.map(c => (
+            <button type="button" key={c.id}
+                    onMouseDown={() => { onChange(c); setLabel(c.full_name); setOpen(false); }}
+                    style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 10px', border: 'none', background: String(c.id) === String(value) ? '#f5f3ff' : '#fff', cursor: 'pointer', fontSize: 13 }}>
+              <strong>{c.full_name}</strong>
+              <span style={{ color: '#6b7280' }}>{c.job_title ? ` — ${c.job_title}` : ''}{c.current_stage ? ` · ${c.current_stage.replace(/_/g, ' ')}` : ''}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 const InterviewScheduler = ({ setPage }) => {
   const _toast = useToast();
   const toast  = useCallback((msg, type = 'success') => _toast({ message: msg, type }), [_toast]);
   const setSelectedCandidateId = useAppStore(s => s.setSelectedCandidateId);
+  const [sp, setSp] = useSearchParams();
 
   const [interviews,   setInterviews]   = useState([]);
-  const [candidates,   setCandidates]   = useState([]);
+  const [employees,    setEmployees]    = useState([]);
+  const [openings,     setOpenings]     = useState([]);
+  const [departments,  setDepartments]  = useState([]);
   const [loading,      setLoading]      = useState(false);
-  const [filter,       setFilter]       = useState('all');
-  const [dateFilter,   setDateFilter]   = useState('');
+  // ?date=YYYY-MM-DD&status=all — the work queue's "interviews today" tile
+  // opens the schedule on the set it counted.
+  const [filter,       setFilter]       = useState(() => (['all', 'scheduled', 'completed', 'cancelled'].includes(sp.get('status')) ? sp.get('status') : 'scheduled'));
+  const [mineOnly,     setMineOnly]     = useState(false);
+  const [dateFilter,   setDateFilter]   = useState(() => (/^\d{4}-\d{2}-\d{2}$/.test(sp.get('date') || '') ? sp.get('date') : ''));
+  // ?dept=<department> — the Dashboard's department filter carried over, so its
+  // "Interviews today" tile and this list agree. An interview's department is
+  // its job's, else the candidate's applied job's (API).
+  const [deptFilter,   setDeptFilter]   = useState(() => sp.get('dept') || '');
   const [questionsFor, setQuestionsFor] = useState(null);
-  // Schedule drawer
-  const [scheduleOpen, setScheduleOpen] = useState(false);
-  const [schedForm,    setSchedForm]    = useState({ candidate_id: '', date: '', time: '', mode: 'offline', interviewer: '', notes: '' });
-  const [scheduling,   setScheduling]   = useState(false);
-  // Complete-with-feedback modal
+  const [formOpen,     setFormOpen]     = useState(false);
+  const [editing,      setEditing]      = useState(null);       // interview being edited/rescheduled
+  const [form,         setForm]         = useState(EMPTY_FORM);
+  const [candName,     setCandName]     = useState('');
+  const [saving,       setSaving]       = useState(false);
   const [completingIv, setCompletingIv] = useState(null);
   const [feedback,     setFeedback]     = useState({ outcome: 'selected', rejection_reason: '', rating: '', comments: '' });
   const [submittingFb, setSubmittingFb] = useState(false);
@@ -234,86 +303,124 @@ const InterviewScheduler = ({ setPage }) => {
       const params = {};
       if (filter !== 'all') params.status = filter;
       if (dateFilter) params.interview_date = dateFilter;
+      if (mineOnly) params.mine = 1;
+      if (deptFilter) params.department = deptFilter;
       const res = await api.get('/recruitment/interviews', { params });
       setInterviews(Array.isArray(res.data) ? res.data : []);
     } catch { setInterviews([]); }
     finally { setLoading(false); }
-  }, [filter, dateFilter]);
+  }, [filter, dateFilter, mineOnly, deptFilter]);
 
-  useEffect(() => { fetchInterviews(); }, [fetchInterviews]);
-
-  useEffect(() => {
-    api.get('/recruitment/candidates').then(r => setCandidates(candidateRows(r.data))).catch(() => {});
-  }, []);
-
-  const cancelInterview = async (id) => {
-    try {
-      await api.put(`/recruitment/interviews/${id}`, { status: 'cancelled' });
-      toast('Interview cancelled');
-      fetchInterviews();
-    } catch { toast('Error cancelling interview', 'error'); }
+  const pickDept = (v) => {
+    setDeptFilter(v);
+    setSp(prev => { const n = new URLSearchParams(prev); if (v) n.set('dept', v); else n.delete('dept'); return n; }, { replace: true });
   };
 
-  const handleSchedule = async () => {
-    if (!schedForm.candidate_id) return toast('Select a candidate', 'error');
-    if (!schedForm.date || !schedForm.time) return toast('Date and time are required', 'error');
-    setScheduling(true);
+  useEffect(() => { fetchInterviews(); }, [fetchInterviews]);
+  useEffect(() => {
+    api.get('/recruitment/meta/candidate-workbench').then(r => setEmployees(r.data?.employees || [])).catch(() => {});
+    api.get('/recruitment/openings', { params: { status: 'open' } }).then(r => setOpenings(Array.isArray(r.data) ? r.data : [])).catch(() => {});
+    api.get('/recruitment/filter-options').then(r => setDepartments(Array.isArray(r.data?.departments) ? r.data.departments : [])).catch(() => {});
+  }, []);
+  const deptOptions = [...new Set([...departments, ...(deptFilter ? [deptFilter] : [])])].sort();
+
+  // Arriving from Candidate Detail with ?candidate=<id> opens the form for them.
+  useEffect(() => {
+    const cid = sp.get('candidate');
+    if (!cid) return;
+    api.get(`/recruitment/candidates/${cid}`).then(r => {
+      const c = r.data;
+      setEditing(null);
+      setForm({ ...EMPTY_FORM, candidate_id: String(c.id), job_opening_id: c.applied_job_id ? String(c.applied_job_id) : '',
+                interview_round: c.current_stage === '1st_level' ? '2nd_level' : '1st_level' });
+      setCandName(c.full_name);
+      setFormOpen(true);
+    }).catch(() => {});
+    setSp(prev => { const n = new URLSearchParams(prev); n.delete('candidate'); return n; }, { replace: true });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+
+  const openNew = () => { setEditing(null); setForm(EMPTY_FORM); setCandName(''); setFormOpen(true); };
+  const openEdit = (iv) => {
+    setEditing(iv);
+    setForm({
+      candidate_id: String(iv.candidate_id), job_opening_id: iv.job_opening_id ? String(iv.job_opening_id) : '',
+      interview_round: iv.interview_round || '', date: String(iv.interview_date || '').slice(0, 10),
+      time: String(iv.interview_time || '').slice(0, 5), mode: iv.interview_mode === 'offline' ? 'in_person' : iv.interview_mode === 'online' ? 'video' : (iv.interview_mode || 'in_person'),
+      meeting_link: iv.meeting_link || '', interviewer_id: iv.interviewer_id ? String(iv.interviewer_id) : '',
+      panel: (iv.panel_employee_ids || []).map(String), notes: iv.notes || '',
+    });
+    setCandName(iv.candidate_name);
+    setFormOpen(true);
+  };
+
+  const save = async () => {
+    if (!form.candidate_id) return toast('Choose the candidate', 'error');
+    if (!form.date) return toast('Choose the interview date', 'error');
+    if (!form.interviewer_id) return toast('Choose the interviewer — they get the reminder and give the feedback', 'error');
+    if (form.mode === 'video' && form.meeting_link && !/^https?:\/\//i.test(form.meeting_link)) return toast('The meeting link must start with http:// or https://', 'error');
+    setSaving(true);
+    const body = {
+      interview_date: form.date, interview_time: form.time || '', interview_mode: form.mode,
+      meeting_link: form.meeting_link, interviewer_id: Number(form.interviewer_id),
+      panel_employee_ids: form.panel.map(Number), interview_round: form.interview_round || '',
+      job_opening_id: form.job_opening_id ? Number(form.job_opening_id) : '', notes: form.notes,
+    };
     try {
-      await api.post('/recruitment/interviews', {
-        candidate_id:   schedForm.candidate_id,
-        interview_date: schedForm.date,
-        interview_time: schedForm.time,
-        interview_mode: schedForm.mode,
-        notes: schedForm.interviewer
-          ? `Interviewer: ${schedForm.interviewer}${schedForm.notes ? ' — ' + schedForm.notes : ''}`
-          : schedForm.notes,
-      });
-      toast('Interview scheduled');
-      setScheduleOpen(false);
-      setSchedForm({ candidate_id: '', date: '', time: '', mode: 'offline', interviewer: '', notes: '' });
+      if (editing) {
+        await api.put(`/recruitment/interviews/${editing.id}`, body);
+        toast('Interview updated');
+      } else {
+        await api.post('/recruitment/interviews', { ...body, candidate_id: Number(form.candidate_id) });
+        toast('Interview scheduled — the interviewer and panel have been notified');
+      }
+      setFormOpen(false);
       fetchInterviews();
     } catch (err) {
-      toast(err?.response?.data?.error || 'Failed to schedule', 'error');
-    } finally { setScheduling(false); }
+      toast(err?.response?.data?.error || 'Could not save the interview', 'error');
+    } finally { setSaving(false); }
+  };
+
+  const cancelInterview = async (iv) => {
+    const reason = window.prompt(`Cancel the interview with ${iv.candidate_name}? Give a reason (optional).`);
+    if (reason === null) return;
+    try {
+      await api.put(`/recruitment/interviews/${iv.id}`, { status: 'cancelled', ...(reason.trim() ? { notes: `Cancelled: ${reason.trim()}` } : {}) });
+      toast('Interview cancelled');
+      fetchInterviews();
+    } catch (err) { toast(err?.response?.data?.error || 'Could not cancel the interview', 'error'); }
   };
 
   const handleCompleteFeedback = async () => {
     if (feedback.outcome === 'rejected' && !feedback.rejection_reason.trim())
-      return toast('Rejection reason is required', 'error');
+      return toast('Give the reason the candidate is not moving on', 'error');
     setSubmittingFb(true);
     try {
-      await api.post(`/recruitment/interviews/${completingIv.id}/submit-feedback`, {
+      const res = await api.post(`/recruitment/interviews/${completingIv.id}/submit-feedback`, {
         outcome:          feedback.outcome,
         rejection_reason: feedback.rejection_reason || undefined,
         rating:           feedback.rating || undefined,
         comments:         feedback.comments || undefined,
       });
-      toast('Interview completed — candidate stage updated');
+      toast(res.data?.message || 'Feedback saved');
       setCompletingIv(null);
-      setFeedback({ outcome: 'selected', rejection_reason: '', rating: '', comments: '' });
       fetchInterviews();
     } catch (err) {
-      toast(err?.response?.data?.error || 'Failed to submit feedback', 'error');
+      toast(err?.response?.data?.error || 'Could not save the feedback', 'error');
     } finally { setSubmittingFb(false); }
   };
 
-  const openCandidate = (id) => { setSelectedCandidateId(id); setPage('CandidateDetail'); };
+  const openCandidate = (id) => { setSelectedCandidateId(id); setPage?.('CandidateDetail'); };
 
-  // Group by date
   const grouped = {};
   interviews.forEach(iv => {
-    const d = iv.interview_date;
-    if (!grouped[d]) grouped[d] = [];
-    grouped[d].push(iv);
+    const d = String(iv.interview_date || '').slice(0, 10);
+    (grouped[d] = grouped[d] || []).push(iv);
   });
   const sortedDates = Object.keys(grouped).sort();
 
-  const counts = {
-    total:       interviews.length,
-    scheduled:   interviews.filter(i => i.status === 'scheduled').length,
-    completed:   interviews.filter(i => i.status === 'completed').length,
-    cancelled:   interviews.filter(i => i.status === 'cancelled').length,
-  };
+  const empName = (id) => employees.find(e => String(e.id) === String(id))?.name || '';
 
   return (
     <PageShell dock={
@@ -321,150 +428,166 @@ const InterviewScheduler = ({ setPage }) => {
         icon={UserPlus}
         eyebrow="Recruitment"
         title="Interview Scheduler"
-        subtitle="All scheduled interviews by date"
+        subtitle="Book interviews with an interviewer and panel, reschedule, and record the outcome"
       />
     }>
 
-      {/* Schedule Drawer */}
-      {scheduleOpen && (
-        <>
-          <div onClick={() => setScheduleOpen(false)} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.35)', zIndex: 900 }} />
-          <div style={{ position: 'fixed', top: 0, right: 0, bottom: 0, width: 'min(480px,95vw)', background: '#fff', zIndex: 901, display: 'flex', flexDirection: 'column', boxShadow: '-8px 0 40px rgba(0,0,0,.15)' }}>
-            <div style={{ padding: '18px 22px', borderBottom: '1px solid #f0f0f4', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ fontWeight: 800, fontSize: 16, color: '#1f2937' }}>Schedule Interview</span>
-              <button onClick={() => setScheduleOpen(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#6b7280' }}><X size={18} /></button>
+      {formOpen && (
+        <Dialog width="min(520px,100vw)" boxShadow="-4px 0 24px rgba(0,0,0,.15)" overflowY="auto">
+          <div style={{ padding: '18px 22px', borderBottom: '1px solid #f0f0f4', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <h3 style={{ margin: 0, fontSize: 16, fontWeight: 800 }}>{editing ? 'Edit or reschedule interview' : 'Schedule interview'}</h3>
+            <button onClick={() => setFormOpen(false)} aria-label="Close" style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#6b7280' }}><X size={18} /></button>
+          </div>
+          <div style={{ padding: '18px 22px', flex: 1, display: 'grid', gap: 14 }}>
+            <div>
+              <div style={labelStyle}>Candidate *</div>
+              {editing
+                ? <div style={{ ...inputStyle, background: '#f9fafb' }}>{candName}</div>
+                : <CandidatePicker value={form.candidate_id} initialName={candName}
+                                   onChange={(c) => { set('candidate_id', String(c.id)); setCandName(c.full_name);
+                                                      if (c.applied_job_id) set('job_opening_id', String(c.applied_job_id)); }} />}
             </div>
-            <div style={{ flex: 1, overflowY: 'auto', padding: 22, display: 'flex', flexDirection: 'column', gap: 14 }}>
-              {[
-                { label: 'Candidate *', node: (
-                  <select style={{ width: '100%', padding: '8px 10px', border: '1px solid #e5e7eb', borderRadius: 7, fontSize: 13, outline: 'none' }}
-                    value={schedForm.candidate_id} onChange={e => setSchedForm(f => ({ ...f, candidate_id: e.target.value }))}>
-                    <option value="">Select candidate…</option>
-                    {candidates.map(c => <option key={c.id} value={c.id}>{c.full_name} — {c.job_title || ''}</option>)}
-                  </select>
-                )},
-                { label: 'Date *', node: <input type="date" style={{ width: '100%', padding: '8px 10px', border: '1px solid #e5e7eb', borderRadius: 7, fontSize: 13, outline: 'none', boxSizing: 'border-box' }} value={schedForm.date} onChange={e => setSchedForm(f => ({ ...f, date: e.target.value }))} /> },
-                { label: 'Time *', node: <input type="time" style={{ width: '100%', padding: '8px 10px', border: '1px solid #e5e7eb', borderRadius: 7, fontSize: 13, outline: 'none', boxSizing: 'border-box' }} value={schedForm.time} onChange={e => setSchedForm(f => ({ ...f, time: e.target.value }))} /> },
-                { label: 'Mode', node: (
-                  <select style={{ width: '100%', padding: '8px 10px', border: '1px solid #e5e7eb', borderRadius: 7, fontSize: 13, outline: 'none' }}
-                    value={schedForm.mode} onChange={e => setSchedForm(f => ({ ...f, mode: e.target.value }))}>
-                    <option value="offline">In Person</option>
-                    <option value="online">Online</option>
-                    <option value="phone">Phone</option>
-                  </select>
-                )},
-                { label: 'Interviewer', node: <input style={{ width: '100%', padding: '8px 10px', border: '1px solid #e5e7eb', borderRadius: 7, fontSize: 13, outline: 'none', boxSizing: 'border-box' }} placeholder="Interviewer name" value={schedForm.interviewer} onChange={e => setSchedForm(f => ({ ...f, interviewer: e.target.value }))} /> },
-                { label: 'Notes', node: <textarea rows={3} style={{ width: '100%', padding: '8px 10px', border: '1px solid #e5e7eb', borderRadius: 7, fontSize: 13, outline: 'none', resize: 'vertical', boxSizing: 'border-box' }} value={schedForm.notes} onChange={e => setSchedForm(f => ({ ...f, notes: e.target.value }))} /> },
-              ].map(({ label, node }) => (
-                <div key={label}>
-                  <div style={{ fontSize: 11, fontWeight: 700, color: '#374151', textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: 5 }}>{label}</div>
-                  {node}
-                </div>
-              ))}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              <div>
+                <div style={labelStyle}>Round</div>
+                <select style={inputStyle} value={form.interview_round} onChange={e => set('interview_round', e.target.value)}>
+                  <option value="">Not specified</option>
+                  {INTERVIEW_ROUNDS.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
+                </select>
+              </div>
+              <div>
+                <div style={labelStyle}>For job</div>
+                <select style={inputStyle} value={form.job_opening_id} onChange={e => set('job_opening_id', e.target.value)}>
+                  <option value="">Candidate's applied job</option>
+                  {openings.map(o => <option key={o.id} value={o.id}>{o.job_title}</option>)}
+                </select>
+              </div>
+              <div>
+                <div style={labelStyle}>Date *</div>
+                <input type="date" style={inputStyle} value={form.date} onChange={e => set('date', e.target.value)} />
+              </div>
+              <div>
+                <div style={labelStyle}>Time</div>
+                <input type="time" style={inputStyle} value={form.time} onChange={e => set('time', e.target.value)} />
+              </div>
+              <div>
+                <div style={labelStyle}>Mode</div>
+                <select style={inputStyle} value={form.mode} onChange={e => set('mode', e.target.value)}>
+                  {INTERVIEW_MODES.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
+                </select>
+              </div>
+              <div>
+                <div style={labelStyle}>Meeting link</div>
+                <input style={inputStyle} value={form.meeting_link} onChange={e => set('meeting_link', e.target.value)}
+                       placeholder={form.mode === 'video' ? 'https://meet…' : 'Not needed'} disabled={form.mode !== 'video'} />
+              </div>
             </div>
-            <div style={{ padding: '14px 22px', borderTop: '1px solid #f0f0f4', display: 'flex', justifyContent: 'flex-end', gap: 10, background: '#fafafa' }}>
-              <button onClick={() => setScheduleOpen(false)} style={{ padding: '8px 16px', borderRadius: 8, border: '1px solid #e5e7eb', background: '#f9fafb', color: '#374151', fontWeight: 600, cursor: 'pointer', fontSize: 13 }}>Cancel</button>
-              <button onClick={handleSchedule} disabled={scheduling} style={{ padding: '8px 20px', borderRadius: 8, border: 'none', background: '#4B2DCE', color: '#fff', fontWeight: 700, cursor: 'pointer', fontSize: 13, opacity: scheduling ? 0.7 : 1 }}>
-                {scheduling ? 'Scheduling…' : 'Schedule'}
-              </button>
+            <div>
+              <div style={labelStyle}>Interviewer (lead) *</div>
+              <select style={inputStyle} value={form.interviewer_id} onChange={e => set('interviewer_id', e.target.value)}>
+                <option value="">Choose an employee…</option>
+                {employees.map(e => <option key={e.id} value={e.id}>{e.name}{e.designation ? ` — ${e.designation}` : ''}</option>)}
+              </select>
+            </div>
+            <div>
+              <div style={labelStyle}>Panel members</div>
+              <select style={inputStyle} value="" onChange={e => { const v = e.target.value; if (v && !form.panel.includes(v) && v !== form.interviewer_id) set('panel', [...form.panel, v]); }}>
+                <option value="">Add a panel member…</option>
+                {employees.filter(e => String(e.id) !== form.interviewer_id && !form.panel.includes(String(e.id)))
+                  .map(e => <option key={e.id} value={e.id}>{e.name}{e.designation ? ` — ${e.designation}` : ''}</option>)}
+              </select>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 6 }}>
+                {form.panel.map(id => (
+                  <span key={id} style={{ background: '#f5f3ff', color: 'var(--color-primary, #6B3FDB)', borderRadius: 14, padding: '3px 8px', fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    {empName(id) || `#${id}`}
+                    <button type="button" aria-label="Remove" onClick={() => set('panel', form.panel.filter(x => x !== id))}
+                            style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, color: 'inherit' }}><X size={11} /></button>
+                  </span>
+                ))}
+              </div>
+            </div>
+            <div>
+              <div style={labelStyle}>Notes</div>
+              <textarea rows={3} style={inputStyle} value={form.notes} onChange={e => set('notes', e.target.value)} placeholder="Anything the panel should know…" />
             </div>
           </div>
-        </>
+          <div style={{ padding: '14px 22px', borderTop: '1px solid #f0f0f4', display: 'flex', justifyContent: 'flex-end', gap: 10, background: '#fafafa' }}>
+            <button className="pulse-btn-secondary" onClick={() => setFormOpen(false)}>Cancel</button>
+            <button className="pulse-btn-primary" onClick={save} disabled={saving}>{saving ? 'Saving…' : editing ? 'Save changes' : 'Schedule'}</button>
+          </div>
+        </Dialog>
       )}
 
-      {/* Complete with Feedback Modal */}
       {completingIv && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.45)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <div style={{ background: '#fff', borderRadius: 14, padding: '28px 30px', width: 'min(480px,94vw)', maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,.2)' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+          <div style={{ background: '#fff', borderRadius: 14, padding: '24px 26px', width: 'min(480px,94vw)', maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,.2)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
               <div>
-                <h3 style={{ margin: 0, fontSize: 17, fontWeight: 800, color: '#1f2937' }}>Mark Interview Complete</h3>
-                <p style={{ margin: '4px 0 0', fontSize: 12, color: '#6b7280' }}>{completingIv.candidate_name} · {completingIv.interview_date}</p>
+                <h3 style={{ margin: 0, fontSize: 17, fontWeight: 800, color: '#1f2937' }}>Record the outcome</h3>
+                <p style={{ margin: '4px 0 0', fontSize: 12, color: '#6b7280' }}>
+                  {completingIv.candidate_name} · {interviewRoundLabel(completingIv.interview_round)} · {fmtDateStr(completingIv.interview_date)}
+                </p>
               </div>
-              <button onClick={() => setCompletingIv(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#9ca3af' }}><X size={18} /></button>
+              <button onClick={() => setCompletingIv(null)} aria-label="Close" style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#9ca3af' }}><X size={18} /></button>
             </div>
-            {[
-              { label: 'Outcome *', node: (
-                <select style={{ width: '100%', padding: '8px 10px', border: '1px solid #e5e7eb', borderRadius: 7, fontSize: 13, outline: 'none' }}
-                  value={feedback.outcome} onChange={e => setFeedback(f => ({ ...f, outcome: e.target.value }))}>
-                  <option value="selected">Selected — advance to next stage</option>
-                  <option value="rejected">Rejected — move to Not Suitable</option>
+            <div style={{ display: 'grid', gap: 12 }}>
+              <div>
+                <div style={labelStyle}>Outcome *</div>
+                <select style={inputStyle} value={feedback.outcome} onChange={e => setFeedback(f => ({ ...f, outcome: e.target.value }))}>
+                  <option value="selected">Selected — moves on (1st level → 2nd level, 2nd level/final → offer)</option>
+                  <option value="rejected">Not selected — moves to Not Suitable</option>
                 </select>
-              )},
-              ...(feedback.outcome === 'rejected' ? [{ label: 'Rejection Reason *', node: <input style={{ width: '100%', padding: '8px 10px', border: '1px solid #e5e7eb', borderRadius: 7, fontSize: 13, outline: 'none', boxSizing: 'border-box' }} placeholder="Reason for rejection…" value={feedback.rejection_reason} onChange={e => setFeedback(f => ({ ...f, rejection_reason: e.target.value }))} /> }] : []),
-              { label: 'Rating (1–5)', node: <input type="number" min="1" max="5" step="0.1" style={{ width: '100%', padding: '8px 10px', border: '1px solid #e5e7eb', borderRadius: 7, fontSize: 13, outline: 'none', boxSizing: 'border-box' }} value={feedback.rating} onChange={e => setFeedback(f => ({ ...f, rating: e.target.value }))} /> },
-              { label: 'Comments', node: <textarea rows={3} style={{ width: '100%', padding: '8px 10px', border: '1px solid #e5e7eb', borderRadius: 7, fontSize: 13, outline: 'none', resize: 'vertical', boxSizing: 'border-box' }} placeholder="Optional notes…" value={feedback.comments} onChange={e => setFeedback(f => ({ ...f, comments: e.target.value }))} /> },
-            ].map(({ label, node }) => (
-              <div key={label} style={{ marginBottom: 14 }}>
-                <div style={{ fontSize: 11, fontWeight: 700, color: '#374151', textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: 5 }}>{label}</div>
-                {node}
               </div>
-            ))}
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 8 }}>
-              <button onClick={() => setCompletingIv(null)} style={{ padding: '8px 16px', borderRadius: 8, border: '1px solid #e5e7eb', background: '#f9fafb', color: '#374151', fontWeight: 600, cursor: 'pointer', fontSize: 13 }}>Cancel</button>
-              <button onClick={handleCompleteFeedback} disabled={submittingFb} style={{ padding: '8px 20px', borderRadius: 8, border: 'none', background: '#16a34a', color: '#fff', fontWeight: 700, cursor: 'pointer', fontSize: 13, opacity: submittingFb ? 0.7 : 1 }}>
-                {submittingFb ? 'Submitting…' : 'Submit & Complete'}
-              </button>
+              {feedback.outcome === 'rejected' && (
+                <div>
+                  <div style={labelStyle}>Reason *</div>
+                  <input style={inputStyle} value={feedback.rejection_reason} onChange={e => setFeedback(f => ({ ...f, rejection_reason: e.target.value }))} />
+                </div>
+              )}
+              <div>
+                <div style={labelStyle}>Rating (1–5)</div>
+                <input type="number" min="1" max="5" step="0.5" style={inputStyle} value={feedback.rating} onChange={e => setFeedback(f => ({ ...f, rating: e.target.value }))} />
+              </div>
+              <div>
+                <div style={labelStyle}>Comments</div>
+                <textarea rows={3} style={inputStyle} value={feedback.comments} onChange={e => setFeedback(f => ({ ...f, comments: e.target.value }))} />
+              </div>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 16 }}>
+              <button className="pulse-btn-secondary" onClick={() => setCompletingIv(null)}>Cancel</button>
+              <button className="pulse-btn-primary" onClick={handleCompleteFeedback} disabled={submittingFb}>{submittingFb ? 'Saving…' : 'Save & complete'}</button>
             </div>
           </div>
         </div>
       )}
 
-      {/* Header */}
       <div className="is-header">
-        <div className="is-header-l">
-          <div className="is-header-icon"><CalendarDays size={18} /></div>
-          <div>
-
-
-          </div>
-        </div>
-        <div className="is-header-r">
-          <input type="date" className="is-date-input" value={dateFilter}
-            onChange={e => setDateFilter(e.target.value)} />
-          <select className="is-select" value={filter} onChange={e => setFilter(e.target.value)}>
-            <option value="all">All Status</option>
+        <div className="is-header-r" style={{ flexWrap: 'wrap' }}>
+          <input type="date" className="is-date-input" value={dateFilter} onChange={e => setDateFilter(e.target.value)} aria-label="Date" />
+          <select className="is-select" value={filter} onChange={e => setFilter(e.target.value)} aria-label="Status">
+            <option value="all">All statuses</option>
             <option value="scheduled">Scheduled</option>
             <option value="completed">Completed</option>
             <option value="cancelled">Cancelled</option>
-            <option value="rescheduled">Rescheduled</option>
           </select>
-          {dateFilter && (
-            <button className="is-clear-btn" onClick={() => setDateFilter('')}>Clear date</button>
-          )}
-          <button
-            onClick={() => setScheduleOpen(true)}
-            style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '7px 14px', background: '#4B2DCE', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 700, fontSize: 13 }}
-          >
-            <Plus size={13} /> Schedule
-          </button>
+          <select className="is-select" value={deptFilter} onChange={e => pickDept(e.target.value)} aria-label="Department">
+            <option value="">All departments</option>
+            {deptOptions.map(d => <option key={d} value={d}>{d}</option>)}
+          </select>
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
+            <input type="checkbox" checked={mineOnly} onChange={e => setMineOnly(e.target.checked)} /> Only mine
+          </label>
+          {dateFilter && <button className="is-clear-btn" onClick={() => setDateFilter('')}>Clear date</button>}
+          <button className="pulse-btn-primary" onClick={openNew}><Plus size={13} /> Schedule</button>
         </div>
       </div>
 
-      {/* Summary */}
-      <div className="is-summary">
-        {[
-          { label: 'Total',     value: counts.total,     cls: 'is-sum-purple' },
-          { label: 'Scheduled', value: counts.scheduled, cls: 'is-sum-blue' },
-          { label: 'Completed', value: counts.completed, cls: 'is-sum-green' },
-          { label: 'Cancelled', value: counts.cancelled, cls: 'is-sum-red' },
-        ].map(c => (
-          <div key={c.label} className="is-sum-card">
-            <span className={`is-sum-val ${c.cls}`}>{c.value}</span>
-            <span className="is-sum-label">{c.label}</span>
-          </div>
-        ))}
-      </div>
-
-      {/* Content */}
       {loading ? (
-        <div className="is-skeleton-list">
-          {[1,2,3].map(i => <div key={i} className="is-skeleton-row" />)}
-        </div>
+        <div className="is-skeleton-list">{[1, 2, 3].map(i => <div key={i} className="is-skeleton-row" />)}</div>
       ) : sortedDates.length === 0 ? (
         <div className="is-empty">
           <CalendarDays size={40} color="#c4b5fd" />
-          <p>No interviews scheduled</p>
+          <p>No interviews {filter !== 'all' ? filter : ''}{dateFilter ? ' on this date' : ''}</p>
         </div>
       ) : (
         <div className="is-timeline">
@@ -472,8 +595,6 @@ const InterviewScheduler = ({ setPage }) => {
             const df = fmtDate(date);
             return (
               <div key={date} className="is-date-group">
-
-                {/* Date heading */}
                 <div className={`is-date-hd ${df.isToday ? 'is-date-today' : ''}`}>
                   <div className="is-date-dot" />
                   <div className="is-date-info">
@@ -482,59 +603,44 @@ const InterviewScheduler = ({ setPage }) => {
                   </div>
                   <span className="is-date-count">{grouped[date].length} interview{grouped[date].length > 1 ? 's' : ''}</span>
                 </div>
-
-                {/* Interview cards */}
                 <div className="is-cards">
                   {grouped[date].map(iv => {
                     const sm = STATUS_META[iv.status] || STATUS_META.scheduled;
-                    const mm = MODE_META[iv.interview_mode] || MODE_META.offline;
+                    const mm = MODE_META[iv.interview_mode] || MODE_META.in_person;
                     const StatusIcon = sm.icon;
                     const ModeIcon   = mm.icon;
-                    const initials   = (iv.candidate_name || '?').split(' ').map(w => w[0]).join('').slice(0,2).toUpperCase();
-
+                    const initials   = (iv.candidate_name || '?').split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
                     return (
                       <div key={iv.id} className="is-card">
-
-                        {/* Left — time */}
                         <div className="is-card-time">
                           <Clock size={12} color="#9ca3af" />
                           <span className="is-time">{fmtTime(iv.interview_time)}</span>
                           <div className="is-mode-pill" style={{ background: mm.bg, color: mm.color }}>
-                            <ModeIcon size={10} />
-                            <span>{mm.label}</span>
+                            <ModeIcon size={10} /><span>{mm.label}</span>
                           </div>
                         </div>
-
-                        {/* Divider */}
                         <div className="is-card-divider" />
-
-                        {/* Center — details */}
                         <div className="is-card-body">
                           <div className="is-candidate-row">
                             <div className="is-avatar">{initials}</div>
                             <div>
-                              <div className="is-candidate-name"
-                                onClick={() => openCandidate(iv.candidate_id)}>{iv.candidate_name}</div>
-                              <div className="is-candidate-email">{iv.candidate_email}</div>
+                              <button type="button" className="is-candidate-name" onClick={() => openCandidate(iv.candidate_id)}
+                                      style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer' }}>{iv.candidate_name}</button>
+                              <div className="is-candidate-email">
+                                {[interviewRoundLabel(iv.interview_round) !== '—' ? interviewRoundLabel(iv.interview_round) : null, iv.job_title].filter(Boolean).join(' · ') || iv.candidate_email}
+                              </div>
                             </div>
                           </div>
-
                           <div className="is-meta-row">
-                            {iv.interviewer_name && (
-                              <span className="is-meta-item"><User size={11} /> {iv.interviewer_name}</span>
-                            )}
+                            <span className="is-meta-item"><User size={11} /> {iv.interviewer_name || 'No interviewer'}
+                              {Array.isArray(iv.panel) && iv.panel.length ? ` + ${iv.panel.map(p => p.name).join(', ')}` : ''}</span>
                             {iv.meeting_link && (
-                              <a href={iv.meeting_link} target="_blank" rel="noopener noreferrer" className="is-meeting-link">
-                                <Link2 size={11} /> Join Meeting
-                              </a>
+                              <a href={iv.meeting_link} target="_blank" rel="noopener noreferrer" className="is-meeting-link"><Link2 size={11} /> Join meeting</a>
                             )}
-                            {iv.notes && (
-                              <span className="is-meta-item"><FileText size={11} /> {iv.notes}</span>
-                            )}
+                            {iv.feedback_count > 0 && <span className="is-meta-item"><FileText size={11} /> {iv.feedback_count} feedback</span>}
+                            {iv.notes && <span className="is-meta-item"><FileText size={11} /> {iv.notes}</span>}
                           </div>
                         </div>
-
-                        {/* Right — status + actions */}
                         <div className="is-card-r">
                           <span className="is-status-badge" style={{ background: sm.bg, color: sm.color }}>
                             <StatusIcon size={10} /> {sm.label}
@@ -542,23 +648,18 @@ const InterviewScheduler = ({ setPage }) => {
                           <div className="is-action-row">
                             {iv.status === 'scheduled' && (<>
                               <button className="is-btn-complete"
-                                onClick={() => { setFeedback({ outcome: 'selected', rejection_reason: '', rating: '', comments: '' }); setCompletingIv(iv); }}>
+                                      onClick={() => { setFeedback({ outcome: 'selected', rejection_reason: '', rating: '', comments: '' }); setCompletingIv(iv); }}>
                                 <CheckCircle size={12} /> Complete
                               </button>
-                              <button className="is-btn-cancel"
-                                onClick={() => cancelInterview(iv.id)}>
-                                <XCircle size={12} /> Cancel
-                              </button>
+                              <button className="is-btn-cancel" onClick={() => openEdit(iv)}><Pencil size={12} /> Edit</button>
+                              <button className="is-btn-cancel" onClick={() => cancelInterview(iv)}><XCircle size={12} /> Cancel</button>
                             </>)}
-                            <button
-                              onClick={() => setQuestionsFor(iv)}
-                              style={{ display:'flex', alignItems:'center', gap:4, padding:'5px 10px', background:'#ede9fe', color:'#6B3FDB', border:'none', borderRadius:6, cursor:'pointer', fontSize:11, fontWeight:600 }}
-                            >
-                              <BookOpen size={11}/> Questions
+                            <button onClick={() => setQuestionsFor(iv)}
+                                    style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '5px 10px', background: '#ede9fe', color: '#6B3FDB', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>
+                              <BookOpen size={11} /> Questions{Array.isArray(iv.question_ids) && iv.question_ids.length ? ` (${iv.question_ids.length})` : ''}
                             </button>
                           </div>
                         </div>
-
                       </div>
                     );
                   })}
@@ -572,7 +673,7 @@ const InterviewScheduler = ({ setPage }) => {
       {questionsFor && (
         <SuggestedQuestionsPanel
           interview={questionsFor}
-          onClose={() => setQuestionsFor(null)}
+          onClose={() => { setQuestionsFor(null); fetchInterviews(); }}
         />
       )}
     </PageShell>

@@ -20,7 +20,8 @@
 .hfc-bar-track { height: 10px; border-radius: 999px; background: #E8E1FC; overflow: hidden; }
 .hfc-bar-fill { height: 100%; border-radius: 999px; background: linear-gradient(90deg, #6B3FDB, #7B3FE4); }
 .hfc-bar-val { font-size: 12px; color: #111827; font-weight: 700; text-align: right; }
-.hfc-table-wrap { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; overflow: hidden; }
+.hfc-table-wrap { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; overflow-x: auto; }
+.hfc-table th { white-space: nowrap; }
 .hfc-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .hfc-table thead tr { background: #f9fafb; }
 .hfc-table th { padding: 10px 14px; text-align: left; font-size: 11px; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: .4px; border-bottom: 1px solid #e5e7eb; }

@@ -1,7 +1,11 @@
 import pool from '../../shared/db.js';
+import { QUEUE_PREDICATES, UNANSWERED_OFFERS_SQL } from '../workQueueFilters.js';
 import { createEmployeeLogin } from '../../../employees/employee.service.js';
 import { nextEmployeeCode, assertCodeAvailable } from '../../../shared/employeeCode.js';
+import { getProbationPolicy, probationEndDate, toIsoDate } from '../../../shared/probationDates.js';
 import { pickUpdatable } from '../../../shared/safeUpdate.js';
+import { nextOfferNumber } from '../../../shared/docNumber.js';
+import { triggerEmail } from '../../../services/emailTrigger.js';
 import { initOnboardingChecklist } from '../../hr/onboarding.service.js';
 // The activity timeline. Imported here rather than called from the route layer so
 // that a stage move and its timeline entry are one transaction: a move recorded
@@ -10,6 +14,24 @@ import { initOnboardingChecklist } from '../../hr/onboarding.service.js';
 // written by the same call. candidateIntelligence imports only shared/db.js, so
 // there is no cycle.
 import candidateIntelligence from './candidateIntelligence.repository.js';
+
+/**
+ * The department an interview or an offer belongs to: its own job opening's,
+ * else the job the candidate applied to. One rule for the Dashboard numbers
+ * and for the Interviews / Offer Management lists their tiles open, so a
+ * department-filtered tile and the list behind it agree (Dashboard review
+ * 2026-11-17 — interviews were counted company-wide and offers matched on
+ * the offer's own job only).
+ *
+ * @param {string} alias table alias of interview_schedules / offer_letters
+ * @returns {string} SQL expression yielding the department (or NULL)
+ */
+export function recordDepartmentSql(alias) {
+  return `COALESCE(
+    (SELECT d_jo.department FROM job_openings d_jo WHERE d_jo.id = ${alias}.job_opening_id),
+    (SELECT d_cj.department FROM candidates d_c JOIN job_openings d_cj ON d_cj.id = d_c.applied_job_id
+      WHERE d_c.id::text = ${alias}.candidate_id::text))`;
+}
 
 /**
  * Stage keys → the words a recruiter reads on the timeline.
@@ -46,37 +68,79 @@ const LOGIN_STATUS_NOTES = {
   failed:           'Not created: login provisioning failed. See the server log.',
 };
 
+/** [3, '4', 'x', 4] → [3, 4]. Accepts an array or a JSON/comma string. */
+/** Stages the Dept Pipeline report shows as columns, in pipeline order. */
+/** Report department filter: null (all), one name, or a list → text[] or null. */
+const deptList = (d) => (d == null || d === '' ? null : Array.isArray(d) ? d : [String(d)]);
+
+export const REPORT_PIPELINE_STAGES = ['applied', 'screening', 'shortlisted', 'assessment', '1st_level', '2nd_level', 'offer', 'selected', 'hired'];
+
+export function normaliseIdList(v) {
+  let list = v;
+  if (typeof list === 'string') {
+    try { list = JSON.parse(list); } catch { list = list.split(','); }
+  }
+  if (!Array.isArray(list)) return [];
+  return [...new Set(list.map(x => parseInt(x, 10)).filter(x => Number.isInteger(x) && x > 0))];
+}
+
 const recruitmentRepository = {
   // ==================== JOB REQUISITIONS ====================
   async createRequisition(data) {
     const {
       job_title, department, department_id, employment_type, number_of_positions,
-      job_description, skills_required, experience_required, location,
-      salary_range, requested_by_employee_id, company_id,
+      job_description, skills_required, location, requested_by_employee_id, company_id, priority,
+      experience_min, experience_max, salary_min, salary_max,
+      hiring_reason, replacing_employee_id, justification,
     } = data;
     // job_requisitions.department stores a department NAME, not an id. The
     // frontend historically sent it as `department_id`, which made every reader
     // of this payload assume it was a foreign key. `department` is the correct
     // field name; `department_id` stays accepted so older callers keep working.
     const departmentName = department ?? department_id ?? null;
+    const num = (v) => (v === '' || v == null || Number.isNaN(Number(v)) ? null : Number(v));
+    const reason = hiring_reason || 'new_position';
     const result = await pool.query(
       `INSERT INTO job_requisitions
          (job_title, department, employment_type, number_of_positions, job_description,
-          skills_required, experience_required, location, salary_range, requested_by,
-          company_id, status)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'draft') RETURNING *`,
-      [job_title, departmentName, employment_type, number_of_positions, job_description,
-       skills_required, experience_required, location, salary_range,
-       requested_by_employee_id, company_id]
+          skills_required, location, requested_by, company_id, status, priority,
+          experience_min, experience_max, salary_min, salary_max,
+          hiring_reason, replacing_employee_id, justification)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'draft',$10,$11,$12,$13,$14,$15,$16,$17) RETURNING id`,
+      [job_title, departmentName, employment_type, number_of_positions, job_description || null,
+       skills_required || null, location || null, requested_by_employee_id ?? null, company_id,
+       priority || 'medium',
+       num(experience_min), num(experience_max), num(salary_min), num(salary_max),
+       reason, reason === 'replacement' ? num(replacing_employee_id) : null, justification || null]
     );
-    return result.rows[0];
+    return this.findRequisitionById(result.rows[0].id, company_id);
   },
 
+  // Each row carries what the screen needs to follow the job end to end: who
+  // raised it, who is being replaced, the opening it became (and how that
+  // opening is doing), and the approver's last decision with its comment —
+  // the reason it was sent back was recorded but never shown anywhere.
+  _requisitionSelect: `
+    SELECT jr.*, e.name AS requested_by_name, re.name AS replacing_employee_name,
+           jo.id AS opening_id, jo.job_title AS opening_title, jo.status AS opening_status,
+           COALESCE(jo.positions_filled, 0) AS positions_filled,
+           (SELECT COUNT(*)::int FROM candidate_applications ca JOIN candidates c ON c.id = ca.candidate_id
+             WHERE ca.job_opening_id = jo.id AND c.deleted_at IS NULL) AS applicants_count,
+           d.status AS last_decision, d.comments AS last_decision_comment,
+           d.decision_date AS last_decision_at, du.name AS last_decision_by
+      FROM job_requisitions jr
+      LEFT JOIN employees e  ON e.id  = jr.requested_by
+      LEFT JOIN employees re ON re.id = jr.replacing_employee_id
+      LEFT JOIN LATERAL (SELECT id, job_title, status, positions_filled FROM job_openings
+                          WHERE requisition_id = jr.id AND deleted_at IS NULL
+                          ORDER BY created_at DESC LIMIT 1) jo ON TRUE
+      LEFT JOIN LATERAL (SELECT status, comments, decision_date, approver_id FROM approvals
+                          WHERE module_name = 'requisition' AND reference_id = jr.id
+                          ORDER BY decision_date DESC NULLS LAST, id DESC LIMIT 1) d ON TRUE
+      LEFT JOIN users du ON du.id = d.approver_id`,
+
   async findRequisitions(filters = {}) {
-    let query = `SELECT jr.*, e.name AS requested_by_name
-                 FROM job_requisitions jr
-                 LEFT JOIN employees e ON jr.requested_by = e.id
-                 WHERE jr.deleted_at IS NULL`;
+    let query = `${this._requisitionSelect} WHERE jr.deleted_at IS NULL`;
     const params = [];
     let n = 1;
     if (filters.company_id) { query += ` AND jr.company_id = $${n++}`; params.push(filters.company_id); }
@@ -92,10 +156,7 @@ const recruitmentRepository = {
     let extra = '';
     if (company_id) { extra = ` AND jr.company_id = $2`; params.push(company_id); }
     const result = await pool.query(
-      `SELECT jr.*, e.name AS requested_by_name
-       FROM job_requisitions jr
-       LEFT JOIN employees e ON jr.requested_by = e.id
-       WHERE jr.id = $1 AND jr.deleted_at IS NULL${extra}`,
+      `${this._requisitionSelect} WHERE jr.id = $1 AND jr.deleted_at IS NULL${extra}`,
       params
     );
     return result.rows[0];
@@ -108,7 +169,12 @@ const recruitmentRepository = {
   // WHERE clause (not just a check in the route) closes the cross-tenant
   // write this also had no guard against.
   async updateRequisition(id, data, company_id = null) {
-    const safe = await pickUpdatable('job_requisitions', data);
+    // Empty strings become NULL so a field can be cleared (and numeric columns
+    // don't reject '').
+    const input = { ...data };
+    for (const k of Object.keys(input)) if (input[k] === '') input[k] = null;
+    if (input.hiring_reason === 'new_position') input.replacing_employee_id = null;
+    const safe = await pickUpdatable('job_requisitions', input);
     const fields = [];
     const values = [];
     let paramCount = 1;
@@ -125,10 +191,10 @@ const recruitmentRepository = {
       `UPDATE job_requisitions SET ${fields.join(', ')}
         WHERE id = $${paramCount}
           AND ($${paramCount + 1}::int IS NULL OR company_id = $${paramCount + 1})
-        RETURNING *`,
+        RETURNING id`,
       values
     );
-    return result.rows[0];
+    return result.rows[0] ? this.findRequisitionById(result.rows[0].id, company_id) : undefined;
   },
 
   // Previously had no company_id scoping at all — any authenticated user
@@ -141,27 +207,75 @@ const recruitmentRepository = {
     );
   },
 
+  // ==================== JOB TIMELINE ====================
+  /**
+   * One step in a job's life (job_requisition_events, migration
+   * 20261117000006). Never throws: the step itself has already happened, and a
+   * missing timeline line must not turn a saved change into an error.
+   * `db` may be a transaction client.
+   */
+  async recordJobEvent({ company_id = null, requisition_id, job_opening_id = null, event,
+                         from_status = null, to_status = null, comment = null, actor_user_id = null }, db = pool) {
+    if (!requisition_id || !event) return;
+    try {
+      await db.query(
+        `INSERT INTO job_requisition_events
+           (company_id, requisition_id, job_opening_id, event, from_status, to_status, comment, actor_user_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        [company_id, requisition_id, job_opening_id, event, from_status, to_status, comment || null, actor_user_id]);
+    } catch (err) {
+      console.warn('[job timeline] could not record', event, 'for requisition', requisition_id, '—', err.message);
+    }
+  },
+
+  /**
+   * The whole story of a job, oldest first: the recorded steps, plus every
+   * application and hire on the opening it became (read live from the
+   * candidate tables, so they are never out of step with the pipeline).
+   */
+  async getRequisitionTimeline(requisitionId, company_id) {
+    const { rows } = await pool.query(
+      `SELECT * FROM (
+         SELECT e.id::text AS key, e.created_at AS at, e.event, e.from_status, e.to_status, e.comment,
+                COALESCE(u.name, u.email) AS actor, NULL::text AS candidate, NULL::int AS candidate_id
+           FROM job_requisition_events e
+           LEFT JOIN users u ON u.id = e.actor_user_id
+          WHERE e.requisition_id = $1 AND ($2::int IS NULL OR e.company_id = $2)
+         UNION ALL
+         SELECT 'app' || ca.id, COALESCE(ca.applied_at, ca.created_at), 'application', NULL, NULL,
+                CASE WHEN ca.origin IS NOT NULL AND ca.origin <> 'applied' THEN ca.origin END,
+                NULL, c.full_name, c.id
+           FROM candidate_applications ca
+           JOIN candidates c ON c.id = ca.candidate_id AND c.deleted_at IS NULL
+           JOIN job_openings jo ON jo.id = ca.job_opening_id
+          WHERE jo.requisition_id = $1 AND ($2::int IS NULL OR jo.company_id = $2)
+         UNION ALL
+         SELECT 'hire' || c.id, c.hired_at, 'hired', NULL, NULL, NULL, NULL, c.full_name, c.id
+           FROM candidates c
+           JOIN job_openings jo ON jo.id = c.applied_job_id
+          WHERE jo.requisition_id = $1 AND ($2::int IS NULL OR jo.company_id = $2)
+            AND c.hired_at IS NOT NULL AND c.deleted_at IS NULL
+       ) t
+       ORDER BY at ASC NULLS LAST, key ASC`,
+      [requisitionId, company_id ?? null]);
+    return rows;
+  },
+
   // ==================== JOB OPENINGS ====================
   async createOpening(data) {
     const {
       requisition_id, job_title, department, location, employment_type,
       experience_min, experience_max, salary_min, salary_max,
-      closing_date, company_id, status,
-      // form-field aliases from JobOpenings.jsx
+      closing_date, company_id, status, benefits, requirements,
+      number_of_positions, skills_required,
+      // older form-field alias
       description: _desc, job_description,
-      requirements: _req, skills_required,
-      experience_required,
-      salary_range,
-      benefits,
     } = data;
 
+    // Each value goes to its own column. This used to concatenate skills,
+    // "Experience: …" and "Salary: …" into `requirements`, so the Edit form
+    // could never show them again and no filter could read them.
     const description = _desc || job_description || null;
-    // store skills + experience hint together in requirements when no structured fields
-    const requirementsText = [
-      _req || skills_required || null,
-      experience_required ? `Experience: ${experience_required}` : null,
-      salary_range ? `Salary: ${salary_range}` : null,
-    ].filter(Boolean).join(' | ') || null;
 
     // Concurrency: the caller's route-level "is the requisition approved?" check
     // and this insert used to be separate unlocked statements, so two concurrent
@@ -175,9 +289,10 @@ const recruitmentRepository = {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
+      let reqRow = null;
       if (requisition_id) {
         const req = await client.query(
-          `SELECT id, status FROM job_requisitions
+          `SELECT id, status, number_of_positions, skills_required FROM job_requisitions
             WHERE id = $1 AND ($2::int IS NULL OR company_id = $2) AND deleted_at IS NULL
             FOR UPDATE`,
           [requisition_id, company_id]
@@ -198,17 +313,22 @@ const recruitmentRepository = {
                 new Error(`This requisition has not been approved yet (current status: '${reqStatus}'). Job openings can only be created against an approved requisition.`),
                 { statusCode: 400 });
         }
+        reqRow = req.rows[0];
       }
+      const num = (v) => (v === '' || v == null || Number.isNaN(Number(v)) ? null : Number(v));
       const result = await client.query(
         `INSERT INTO job_openings
            (requisition_id, job_title, department, location, employment_type,
             experience_min, experience_max, salary_min, salary_max,
-            description, requirements, benefits, closing_date, company_id, status)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *`,
+            description, requirements, benefits, closing_date, company_id, status,
+            number_of_positions, skills_required)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING *`,
         [requisition_id || null, job_title, department, location, employment_type,
-         experience_min || null, experience_max || null, salary_min || null, salary_max || null,
-         description, requirementsText, benefits || null, closing_date || null, company_id,
-         status || 'open']
+         num(experience_min), num(experience_max), num(salary_min), num(salary_max),
+         description, requirements || null, benefits || null, closing_date || null, company_id,
+         status || 'open',
+         num(number_of_positions) ?? num(reqRow?.number_of_positions) ?? 1,
+         skills_required || reqRow?.skills_required || null]
       );
       if (requisition_id) {
         await client.query(`UPDATE job_requisitions SET status = 'open' WHERE id = $1`, [requisition_id]);
@@ -227,8 +347,10 @@ const recruitmentRepository = {
     let query = `
       SELECT jo.*,
              jr.job_title AS req_job_title, jr.department AS req_department,
-             jr.number_of_positions, jr.employment_type AS req_employment_type,
-             jr.location AS req_location, jr.salary_range,
+             COALESCE(jo.number_of_positions, jr.number_of_positions, 1) AS number_of_positions,
+             jr.status AS requisition_status, jr.priority AS requisition_priority,
+             jr.employment_type AS req_employment_type,
+             jr.location AS req_location, jr.salary_min AS req_salary_min, jr.salary_max AS req_salary_max,
              -- Counts APPLICATIONS, not candidates-whose-primary-job-is-this-one.
              -- candidates.applied_job_id holds only the primary application, so a
              -- candidate recommended onto this opening was invisible in its own
@@ -257,9 +379,11 @@ const recruitmentRepository = {
     const result = await pool.query(
       `SELECT jo.*,
               jr.job_title AS req_job_title, jr.department AS req_department,
-              jr.number_of_positions, jr.employment_type AS req_employment_type,
-              jr.location AS req_location, jr.salary_range,
-              jr.job_description, jr.skills_required, jr.experience_required,
+              COALESCE(jo.number_of_positions, jr.number_of_positions, 1) AS number_of_positions,
+              jr.status AS requisition_status, jr.priority AS requisition_priority,
+              jr.employment_type AS req_employment_type,
+              jr.location AS req_location, jr.salary_min AS req_salary_min, jr.salary_max AS req_salary_max,
+              jr.job_description AS req_job_description, jr.experience_min AS req_experience_min, jr.experience_max AS req_experience_max,
               -- Counts APPLICATIONS, not candidates-whose-primary-job-is-this-one.
              -- candidates.applied_job_id holds only the primary application, so a
              -- candidate recommended onto this opening was invisible in its own
@@ -280,7 +404,13 @@ const recruitmentRepository = {
   // Same key-interpolation mass-assignment/injection issue as updateRequisition
   // above — see that comment.
   async updateOpening(id, data, company_id = null) {
-    const safe = await pickUpdatable('job_openings', data);
+    // The older form sent job_description; the column is description. Empty
+    // strings become NULL so a field can be cleared (and numeric columns don't
+    // reject '').
+    const input = { ...data };
+    if (input.job_description !== undefined && input.description === undefined) input.description = input.job_description;
+    for (const k of Object.keys(input)) if (input[k] === '') input[k] = null;
+    const safe = await pickUpdatable('job_openings', input);
     const fields = [];
     const values = [];
     let paramCount = 1;
@@ -541,6 +671,9 @@ const recruitmentRepository = {
     if (filters.company_id)     { add(`c.company_id = $${n++}`, filters.company_id); }
     if (filters.applied_job_id) { add(`c.applied_job_id = $${n++}`, filters.applied_job_id); }
     if (filters.current_stage)  { add(`c.current_stage = $${n++}`, filters.current_stage); }
+    // ?queue=<key> — the work queue's own rule for that tile (workQueueFilters.js),
+    // so "8 need screening" opens exactly those eight. Unknown keys are ignored.
+    if (filters.queue && Object.hasOwn(QUEUE_PREDICATES, filters.queue)) { add(`(${QUEUE_PREDICATES[filters.queue]})`); }
     if (filters.overall_status) { add(`c.overall_status = $${n++}`, filters.overall_status); }
     if (filters.source)         { add(`c.source = $${n++}`, filters.source); }
 
@@ -815,9 +948,10 @@ const recruitmentRepository = {
       await client.query('BEGIN');
 
       const { rows: cand } = await client.query(
-        `SELECT id, full_name, applied_job_id, company_id
+        `SELECT id, full_name, applied_job_id, company_id, disposition, current_stage
            FROM candidates
-          WHERE id = $1 AND deleted_at IS NULL AND ($2::int IS NULL OR company_id = $2)`,
+          WHERE id = $1 AND deleted_at IS NULL AND ($2::int IS NULL OR company_id = $2)
+          FOR UPDATE`,
         [candidate_id, company_id]
       );
       if (!cand.length) throw Object.assign(new Error('Candidate not found'), { statusCode: 404 });
@@ -866,8 +1000,62 @@ const recruitmentRepository = {
         else alreadyThere.push({ id: opening.id, job_title: opening.job_title });
       }
 
+      // ── Back from the Talent Bank ─────────────────────────────────────────
+      // Putting a kept candidate forward for a new opening is the point of the
+      // Talent Bank. Before 2026-11-17 the new application was added but the
+      // candidate still read "Talent Bank / Future use": hidden from the live
+      // pipeline board (which reads candidates.current_stage) and still due a
+      // recontact reminder. Now, when their main application is parked
+      // (future_use) or finished, the new application becomes the main one, the
+      // candidate's stage follows it, the status goes back to active and any
+      // pending reminder is closed as done.
+      let broughtBack = false;
+      if (created.length) {
+        const first = created[0];
+        const { rows: prim } = await client.query(
+          `SELECT id, stage FROM candidate_applications
+            WHERE candidate_id = $1 AND is_primary = TRUE LIMIT 1`,
+          [candidate_id]
+        );
+        const parked = !prim.length || ['future_use', 'rejected', 'not_suitable'].includes(prim[0].stage);
+        const banked = ['talent_bank', 'future_opportunity', 'inactive'].includes(candidate.disposition)
+          || candidate.current_stage === 'future_use';
+        if (parked && banked) {
+          if (prim.length) {
+            await client.query(`UPDATE candidate_applications SET is_primary = FALSE, updated_at = NOW() WHERE id = $1`, [prim[0].id]);
+          }
+          await client.query(`UPDATE candidate_applications SET is_primary = TRUE, updated_at = NOW() WHERE id = $1`, [first.id]);
+          await client.query(
+            `UPDATE candidates
+                SET current_stage = 'applied', applied_job_id = $2, updated_at = NOW()
+              WHERE id = $1 AND current_stage NOT IN ('hired','offer','selected')`,
+            [candidate_id, first.job_opening_id]
+          );
+          await client.query(
+            `INSERT INTO candidate_stage_history (candidate_id, stage, moved_by, notes, moved_by_user_id, company_id)
+             VALUES ($1, 'applied', NULL, $2, $3, $4)`,
+            [candidate_id, `Back from the Talent Bank — put forward for ${first.job_title}`,
+             recommended_by, candidate.company_id]
+          );
+          first.is_primary = true;
+          broughtBack = true;
+        }
+        await client.query(
+          `UPDATE candidates SET disposition = 'active', updated_at = NOW()
+            WHERE id = $1 AND disposition IN ('talent_bank','future_opportunity','inactive')`,
+          [candidate_id]
+        );
+        await client.query(
+          `UPDATE candidate_recontact
+              SET status = 'done', completed_at = NOW(), completed_by = $2,
+                  outcome_note = $3, updated_at = NOW()
+            WHERE candidate_id = $1 AND status = 'pending'`,
+          [candidate_id, recommended_by, `Put forward for ${created.map(a => a.job_title).join(', ')}`]
+        );
+      }
+
       await client.query('COMMIT');
-      return { candidate, created, alreadyThere };
+      return { candidate, created, alreadyThere, broughtBack };
     } catch (err) {
       await client.query('ROLLBACK');
       throw err;
@@ -1146,7 +1334,7 @@ const recruitmentRepository = {
   // user could read or write interview notes for another company's candidate
   // by guessing/enumerating candidate_id.
   async createInterviewNote(data, company_id = null) {
-    const { candidate_id, interviewer_id, interview_round, rating, comments, recommendation } = data;
+    const { candidate_id, interviewer_id, interview_round, rating, comments, recommendation, interview_id = null } = data;
     if (company_id) {
       const owns = await pool.query(
         `SELECT 1 FROM candidates WHERE id = $1 AND company_id = $2`,
@@ -1156,9 +1344,10 @@ const recruitmentRepository = {
     }
     const result = await pool.query(
       `INSERT INTO interview_notes
-         (candidate_id, interviewer_id, interview_round, rating, comments, recommendation)
-       VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
-      [candidate_id, interviewer_id, interview_round, rating, comments, recommendation]
+         (candidate_id, interviewer_id, interview_round, rating, comments, recommendation, interview_id, company_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,COALESCE($8::int, (SELECT company_id FROM candidates WHERE id = $1))) RETURNING *`,
+      [candidate_id, interviewer_id || null, interview_round || null, rating || null, comments || null,
+       recommendation || null, interview_id || null, company_id || null]
     );
     await this.refreshOverallRating(candidate_id);
     return result.rows[0];
@@ -1187,10 +1376,12 @@ const recruitmentRepository = {
     let extra = '';
     if (company_id) { extra = ` AND c.company_id = $2`; params.push(company_id); }
     const result = await pool.query(
-      `SELECT n.*, e.name AS interviewer_name
+      `SELECT n.*, e.name AS interviewer_name,
+              s.interview_date, s.interview_round AS scheduled_round
        FROM interview_notes n
        JOIN candidates c ON c.id = n.candidate_id
        LEFT JOIN employees e ON n.interviewer_id = e.id
+       LEFT JOIN interview_schedules s ON s.id = n.interview_id
        WHERE n.candidate_id = $1${extra}
        ORDER BY n.created_at DESC`,
       params
@@ -1203,7 +1394,10 @@ const recruitmentRepository = {
     const {
       candidate_id, interview_date, interview_time, interview_mode,
       meeting_link, interviewer_id, notes, company_id,
+      interview_round = null, job_opening_id = null,
     } = data;
+    const panel = JSON.stringify(normaliseIdList(data.panel_employee_ids).filter(id => id !== Number(interviewer_id)));
+    const questions = JSON.stringify(normaliseIdList(data.question_ids));
     // A plain INSERT...RETURNING * only has interview_schedules' own columns
     // (candidate_id, interview_mode, ...) — no candidate_name/candidate_email.
     // recruitment.routes.js's POST /interviews handler fires the
@@ -1216,14 +1410,20 @@ const recruitmentRepository = {
       `WITH ins AS (
          INSERT INTO interview_schedules
            (candidate_id, interview_date, interview_time, interview_mode,
-            meeting_link, interviewer_id, notes, company_id, status)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'scheduled') RETURNING *
+            meeting_link, interviewer_id, notes, company_id, status,
+            interview_round, job_opening_id, panel_employee_ids, question_ids)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'scheduled',$9,$10,$11::jsonb,$12::jsonb) RETURNING *
        )
-       SELECT ins.*, c.full_name AS candidate_name, c.email AS candidate_email
+       SELECT ins.*, c.full_name AS candidate_name, c.email AS candidate_email,
+              c.current_stage AS candidate_stage,
+              COALESCE(jo.job_title, cjo.job_title) AS job_title
        FROM ins
-       LEFT JOIN candidates c ON c.id::text = ins.candidate_id::text`,
-      [candidate_id, interview_date, interview_time, interview_mode,
-       meeting_link, interviewer_id, notes, company_id]
+       LEFT JOIN candidates c ON c.id::text = ins.candidate_id::text
+       LEFT JOIN job_openings jo ON jo.id = ins.job_opening_id
+       LEFT JOIN job_openings cjo ON cjo.id = c.applied_job_id`,
+      [candidate_id, interview_date, interview_time || null, interview_mode || null,
+       meeting_link || null, interviewer_id || null, notes || null, company_id,
+       interview_round, job_opening_id || null, panel, questions]
     );
     return result.rows[0];
   },
@@ -1231,18 +1431,35 @@ const recruitmentRepository = {
   async findInterviews(filters = {}) {
     let query = `
       SELECT s.*, c.full_name AS candidate_name, c.email AS candidate_email,
-             e.name AS interviewer_name, e.company_email AS interviewer_email
+             c.current_stage AS candidate_stage,
+             e.name AS interviewer_name, e.company_email AS interviewer_email,
+             COALESCE(jo.job_title, cjo.job_title) AS job_title,
+             COALESCE(jo.department, cjo.department) AS department,
+             (SELECT COALESCE(json_agg(json_build_object('id', pe.id, 'name', pe.name) ORDER BY pe.name), '[]'::json)
+                FROM employees pe
+               WHERE pe.id IN (SELECT (jsonb_array_elements_text(s.panel_employee_ids))::int)) AS panel,
+             (SELECT COUNT(*)::int FROM interview_notes n WHERE n.interview_id = s.id) AS feedback_count
       FROM interview_schedules s
       LEFT JOIN candidates c ON c.id::text = s.candidate_id::text
       LEFT JOIN employees e ON e.id = s.interviewer_id
+      LEFT JOIN job_openings jo ON jo.id = s.job_opening_id
+      LEFT JOIN job_openings cjo ON cjo.id = c.applied_job_id
       WHERE s.deleted_at IS NULL`;
     const params = [];
     let n = 1;
     if (filters.company_id)    { query += ` AND s.company_id = $${n++}`;     params.push(filters.company_id); }
     if (filters.interviewer_id){ query += ` AND s.interviewer_id = $${n++}`; params.push(filters.interviewer_id); }
+    // "My interviews": lead interviewer or on the panel.
+    if (filters.panel_member_id) {
+      query += ` AND (s.interviewer_id = $${n} OR s.panel_employee_ids @> to_jsonb($${n}::int))`;
+      n++; params.push(filters.panel_member_id);
+    }
+    if (filters.from_date)     { query += ` AND s.interview_date >= $${n++}`; params.push(filters.from_date); }
     if (filters.candidate_id)  { query += ` AND s.candidate_id = $${n++}`;   params.push(filters.candidate_id); }
     if (filters.interview_date){ query += ` AND s.interview_date = $${n++}`; params.push(filters.interview_date); }
     if (filters.status)        { query += ` AND s.status = $${n++}`;         params.push(filters.status); }
+    // ?department= — the Dashboard's department filter, same rule as its tile.
+    if (filters.department)    { query += ` AND ${recordDepartmentSql('s')} = $${n++}`; params.push(filters.department); }
     query += ` ORDER BY s.interview_date, s.interview_time`;
     const result = await pool.query(query, params);
     return result.rows;
@@ -1251,7 +1468,14 @@ const recruitmentRepository = {
   // Same key-interpolation mass-assignment/injection issue as updateRequisition
   // above — see that comment.
   async updateInterview(id, data, company_id = null) {
-    const safe = await pickUpdatable('interview_schedules', data);
+    const input = { ...data };
+    for (const k of Object.keys(input)) if (input[k] === '') input[k] = null;
+    if (input.panel_employee_ids !== undefined) {
+      input.panel_employee_ids = JSON.stringify(normaliseIdList(input.panel_employee_ids)
+        .filter(x => input.interviewer_id == null || x !== Number(input.interviewer_id)));
+    }
+    if (input.question_ids !== undefined) input.question_ids = JSON.stringify(normaliseIdList(input.question_ids));
+    const safe = await pickUpdatable('interview_schedules', input);
     const fields = [];
     const values = [];
     let paramCount = 1;
@@ -1297,27 +1521,56 @@ const recruitmentRepository = {
   // it to another tenant by passing those keys in the body.
   async createEmailTemplate(data, company_id = null) {
     const { template_name, template_type, subject, body_html, variables_json } = data;
+    // is_active used to be ignored here, so "Duplicate" (which asks for an
+    // inactive copy) made a second ACTIVE template for the same event.
+    const isActive = data.is_active !== false;
+    if (isActive) await this.deactivateOtherTemplates(template_type, company_id, null);
     const result = await pool.query(
       `INSERT INTO email_templates
-         (template_name, template_type, subject, body_html, variables_json, name, category, stage_trigger, company_id, module)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'recruitment') RETURNING *`,
+         (template_name, template_type, subject, body_html, variables_json, name, category, stage_trigger, company_id, module, is_active)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'recruitment',$10) RETURNING *`,
       // name/category/stage_trigger are separately-typed columns (varchar vs
       // text) from template_name/template_type — reusing the same $n for both
       // fails with "inconsistent types deduced for parameter" even though the
       // JS values are identical, so each gets its own placeholder.
-      [template_name, template_type, subject, body_html, variables_json, template_name, template_type, template_type, company_id]
+      [template_name, template_type, subject, body_html, variables_json, template_name, template_type, template_type, company_id, isActive]
     );
     return result.rows[0];
   },
 
+  /**
+   * One template is in use per event per company (the sender takes one row,
+   * with no tie-break — migration 20261117000008 now enforces it). Switching a
+   * template on switches that event's other company template off.
+   */
+  async deactivateOtherTemplates(templateType, company_id, keepId) {
+    if (company_id == null || !templateType) return;
+    await pool.query(
+      `UPDATE email_templates SET is_active = false, updated_at = CURRENT_TIMESTAMP
+        WHERE module = 'recruitment' AND company_id = $1 AND stage_trigger = $2
+          AND is_active AND deleted_at IS NULL AND ($3::int IS NULL OR id <> $3)`,
+      [company_id, templateType, keepId]
+    );
+  },
+
   async findEmailTemplates(filters = {}, company_id = null) {
-    let query = `SELECT * FROM email_templates WHERE is_active IS NOT FALSE AND module = 'recruitment'`;
-    const params = [];
-    let n = 1;
-    query += ` AND ($${n}::int IS NULL OR company_id = $${n})`; params.push(company_id); n++;
-    if (filters.template_type) { query += ` AND template_type = $${n++}`; params.push(filters.template_type); }
-    if (filters.is_active !== undefined) { query += ` AND is_active = $${n++}`; params.push(filters.is_active); }
-    query += ` ORDER BY template_name`;
+    // The company's own templates AND the shared defaults (company_id NULL),
+    // which are what actually send until the company writes its own. Listing
+    // only company rows hid every default from the page. Switched-off
+    // templates are listed too, so they can be switched back on.
+    let query = `SELECT t.*, (t.company_id IS NULL) AS is_default,
+                        EXISTS (SELECT 1 FROM email_templates o
+                                 WHERE t.company_id IS NULL AND o.company_id = $1::int AND o.module = 'recruitment'
+                                   AND o.deleted_at IS NULL AND o.is_active
+                                   AND o.stage_trigger = t.stage_trigger) AS overridden
+                   FROM email_templates t
+                  WHERE t.module = 'recruitment' AND t.deleted_at IS NULL`;
+    const params = [company_id];
+    let n = 2;
+    query += ` AND (t.company_id IS NULL OR t.company_id = $1::int)`;
+    if (filters.template_type) { query += ` AND t.template_type = $${n++}`; params.push(filters.template_type); }
+    if (filters.is_active !== undefined) { query += ` AND t.is_active = $${n++}`; params.push(filters.is_active); }
+    query += ` ORDER BY t.stage_trigger, t.company_id NULLS LAST, t.template_name`;
     const result = await pool.query(query, params);
     return result.rows;
   },
@@ -1349,6 +1602,13 @@ const recruitmentRepository = {
       mirrored.name = data.template_name;
     }
     const safe = await pickUpdatable('email_templates', mirrored);
+    // Becoming (or staying) active while the event may change: free the slot.
+    if (rest.is_active === true || (rest.template_type !== undefined && rest.is_active !== false)) {
+      const { rows: [cur] } = await pool.query(`SELECT stage_trigger, is_active FROM email_templates WHERE id = $1`, [id]);
+      if (cur && (rest.is_active === true || cur.is_active)) {
+        await this.deactivateOtherTemplates(rest.template_type ?? cur.stage_trigger, company_id, Number(id));
+      }
+    }
     const fields = [];
     const values = [];
     let paramCount = 1;
@@ -1373,8 +1633,10 @@ const recruitmentRepository = {
   },
 
   async deleteEmailTemplate(id, company_id = null) {
+    // is_active too: the sender (services/emailTrigger.js) looks at is_active,
+    // so a template that was only soft-deleted kept being sent.
     await pool.query(
-      `UPDATE email_templates SET deleted_at = CURRENT_TIMESTAMP
+      `UPDATE email_templates SET deleted_at = CURRENT_TIMESTAMP, is_active = false
         WHERE id = $1 AND module = 'recruitment'
           AND ($2::int IS NULL OR company_id = $2)`,
       [id, company_id]
@@ -1404,15 +1666,24 @@ const recruitmentRepository = {
       // auto-draft path, which has no human author — a machine-drafted offer has no
       // one to exclude, and still requires a human approver to send.
       created_by,
+      designation,
     } = data;
+    // Designation defaults to the opening's title; the letter needs one.
+    let role = designation || null;
+    if (!role && job_opening_id) {
+      const { rows } = await pool.query(`SELECT job_title FROM job_openings WHERE id = $1`, [job_opening_id]);
+      role = rows[0]?.job_title || null;
+    }
+    const offerNo = await nextOfferNumber();
     const result = await pool.query(
       `INSERT INTO offer_letters
-         (candidate_id, job_opening_id, offered_salary, joining_date, notes, company_id, offer_status, offer_expiry_date, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,'draft',$7,$8) RETURNING *`,
-      [candidate_id, job_opening_id, offered_salary, joining_date, notes, company_id,
-       offer_expiry_date || null, created_by || null]
+         (candidate_id, job_opening_id, offered_salary, joining_date, notes, company_id, offer_status, offer_expiry_date, created_by,
+          designation, offer_no)
+       VALUES ($1,$2,$3,$4,$5,$6,'draft',$7,$8,$9,$10) RETURNING *`,
+      [candidate_id, job_opening_id || null, offered_salary, joining_date || null, notes || null, company_id,
+       offer_expiry_date || null, created_by || null, role, offerNo]
     );
-    await this.moveCandidateStage(candidate_id, 'offer', null, 'Offer created');
+    await this.moveCandidateStage(candidate_id, 'offer', null, 'Offer created', company_id);
     return result.rows[0];
   },
 
@@ -1460,17 +1731,38 @@ const recruitmentRepository = {
   async findOffers(filters = {}) {
     let query = `
       SELECT ol.*, c.full_name AS candidate_name, c.email AS candidate_email,
-             COALESCE(jo.job_title, jr.job_title) AS job_title
+             COALESCE(jo.job_title, jr.job_title) AS job_title,
+             ${recordDepartmentSql('ol')} AS department,
+             -- The approved budget the offer is checked against (requisition).
+             COALESCE(jr.salary_min, jo.salary_min) AS budget_min,
+             COALESCE(jr.salary_max, jo.salary_max) AS budget_max,
+             (ol.offer_status = 'sent' AND ol.offer_expiry_date < CURRENT_DATE) AS is_expired,
+             emp.id AS employee_id, emp.employee_id AS employee_code,
+             sp.status AS salary_proposal_status,
+             last.comments AS last_decision_comment, last.status AS last_decision_status
       FROM offer_letters ol
       JOIN candidates c ON ol.candidate_id = c.id
       LEFT JOIN job_openings jo ON ol.job_opening_id = jo.id
       LEFT JOIN job_requisitions jr ON jo.requisition_id = jr.id
+      LEFT JOIN LATERAL (SELECT e.id, e.office_id AS employee_id FROM employees e
+                          WHERE e.source_candidate_id = ol.candidate_id AND e.deleted_at IS NULL
+                            AND ol.offer_status = 'accepted' LIMIT 1) emp ON TRUE
+      LEFT JOIN LATERAL (SELECT p.status FROM salary_revision_proposals p
+                          WHERE p.source_type = 'offer' AND p.source_id = ol.id::text
+                          ORDER BY p.created_at DESC LIMIT 1) sp ON TRUE
+      LEFT JOIN LATERAL (SELECT a.status, a.comments FROM approvals a
+                          WHERE a.module_name = 'offer' AND a.title = 'Offer #' || ol.id::text
+                          ORDER BY a.decision_date DESC NULLS LAST LIMIT 1) last ON TRUE
       WHERE ol.deleted_at IS NULL`;
     const params = [];
     let n = 1;
     if (filters.company_id)   { query += ` AND ol.company_id = $${n++}`;   params.push(filters.company_id); }
     if (filters.offer_status) { query += ` AND ol.offer_status = $${n++}`; params.push(filters.offer_status); }
     if (filters.candidate_id) { query += ` AND ol.candidate_id = $${n++}`; params.push(filters.candidate_id); }
+    // ?department= — the Dashboard's department filter, same rule as its tile.
+    // A list (a department head's departments) or one name; [] matches nothing.
+    if (filters.departments)  { query += ` AND ${recordDepartmentSql('ol')} = ANY($${n++}::text[])`; params.push(filters.departments); }
+    else if (filters.department) { query += ` AND ${recordDepartmentSql('ol')} = $${n++}`; params.push(filters.department); }
     query += ` ORDER BY ol.created_at DESC`;
     const result = await pool.query(query, params);
     return result.rows;
@@ -1502,7 +1794,8 @@ const recruitmentRepository = {
     // to block self-approval, so a caller who could rewrite it could approve their
     // own offer by first reassigning its author. Same guard, same reasoning as
     // updateEmailTemplate()'s company_id/module strip.
-    const { created_by: _ignoredCreatedBy, company_id: _ignoredCompanyId, ...rest } = data;
+    const { created_by: _ignoredCreatedBy, company_id: _ignoredCompanyId, offer_no: _ignoredNo, ...rest } = data;
+    for (const k of Object.keys(rest)) if (rest[k] === '') rest[k] = null;
     const safe = await pickUpdatable('offer_letters', rest);
     const fields = [];
     const values = [];
@@ -1569,6 +1862,12 @@ const recruitmentRepository = {
       await client.query(
         `UPDATE candidates SET overall_status = 'hired', current_stage = 'hired', hired_at = NOW()
          WHERE id = $1`,
+        [offer.candidate_id]
+      );
+      // The primary application mirrors the candidate (it was left at "offer").
+      await client.query(
+        `UPDATE candidate_applications SET stage = 'hired', status = 'hired', updated_at = NOW()
+          WHERE candidate_id = $1 AND is_primary`,
         [offer.candidate_id]
       );
       // positions_filled is deliberately NOT incremented here — hireCandidate()
@@ -1656,6 +1955,12 @@ const recruitmentRepository = {
           params.push(department);
           return ` AND ${col} IN (SELECT id FROM job_openings WHERE department = $${params.length})`;
         },
+        /** Interviews / offers — see recordDepartmentSql(). */
+        deptOfRecord(alias) {
+          if (!department) return '';
+          params.push(department);
+          return ` AND ${recordDepartmentSql(alias)} = $${params.length}`;
+        },
       };
     };
 
@@ -1665,14 +1970,17 @@ const recruitmentRepository = {
     const qTotal     = q(); const fTotal     = qTotal.deptViaOpening('applied_job_id') + qTotal.inRange('created_at');
     const qHired     = q(); const fHired     = qHired.deptViaOpening('applied_job_id') + qHired.inRange('hired_at');
     const qTth       = q(); const fTth       = qTth.deptViaOpening('applied_job_id') + qTth.inRange('hired_at');
+    const qOffers    = q(); const fOffers    = qOffers.deptOfRecord('o');
+    const qTodayIv   = q(); const fTodayIv   = qTodayIv.deptOfRecord('i');
+    const qUpIv      = q(); const fUpIv      = qUpIv.deptOfRecord('i');
 
     const [positions, headcount, active, total, todayIv, upcomingIv, offers, hired, tth] = await Promise.all([
       safeQ(`SELECT COUNT(*) AS cnt FROM job_openings jo
              WHERE jo.status = 'open' AND jo.company_id = $1 AND jo.deleted_at IS NULL
                ${fPositions}`, qPositions.params),
-      // Unfilled seats across open roles. number_of_positions lives on the
-      // requisition; openings with no linked requisition count as 1 seat.
-      safeQ(`SELECT COALESCE(SUM(GREATEST(COALESCE(jr.number_of_positions, 1) - COALESCE(jo.positions_filled, 0), 0)), 0) AS cnt
+      // Unfilled seats across open roles: the opening's own head count
+      // (migration 20261117000002), else its requisition's, else 1.
+      safeQ(`SELECT COALESCE(SUM(GREATEST(COALESCE(jo.number_of_positions, jr.number_of_positions, 1) - COALESCE(jo.positions_filled, 0), 0)), 0) AS cnt
                FROM job_openings jo
                LEFT JOIN job_requisitions jr ON jr.id = jo.requisition_id
               WHERE jo.status = 'open' AND jo.company_id = $1 AND jo.deleted_at IS NULL
@@ -1684,14 +1992,20 @@ const recruitmentRepository = {
       safeQ(`SELECT COUNT(*) AS cnt FROM candidates
              WHERE company_id = $1 AND deleted_at IS NULL
                ${fTotal}`, qTotal.params),
-      safeQ(`SELECT COUNT(*) AS cnt FROM interview_schedules
-             WHERE interview_date = CURRENT_DATE AND status = 'scheduled'
-               AND company_id = $1 AND deleted_at IS NULL`, [company_id]),
-      safeQ(`SELECT COUNT(*) AS cnt FROM interview_schedules
-             WHERE interview_date >= CURRENT_DATE AND status <> 'cancelled'
-               AND company_id = $1 AND deleted_at IS NULL`, [company_id]),
-      safeQ(`SELECT COUNT(*) AS cnt FROM offer_letters
-             WHERE offer_status = 'sent' AND company_id = $1 AND deleted_at IS NULL`, [company_id]),
+      safeQ(`SELECT COUNT(*) AS cnt FROM interview_schedules i
+             WHERE i.interview_date = CURRENT_DATE AND i.status = 'scheduled'
+               AND i.company_id = $1 AND i.deleted_at IS NULL
+               ${fTodayIv}`, qTodayIv.params),
+      safeQ(`SELECT COUNT(*) AS cnt FROM interview_schedules i
+             WHERE i.interview_date >= CURRENT_DATE AND i.status <> 'cancelled'
+               AND i.company_id = $1 AND i.deleted_at IS NULL
+               ${fUpIv}`, qUpIv.params),
+      // Awaiting an answer (draft, pending approval, sent) — the same set as My
+      // Work's "offers pending" and Offer Management's "Awaiting answer". It
+      // counted 'sent' only, so the Dashboard said 0 while My Work said 2.
+      safeQ(`SELECT COUNT(*) AS cnt FROM offer_letters o
+             WHERE o.offer_status IN ${UNANSWERED_OFFERS_SQL} AND o.company_id = $1 AND o.deleted_at IS NULL
+               ${fOffers}`, qOffers.params),
       // Keyed on hired_at, not updated_at. updated_at is bumped by ANY later edit
       // to the candidate row (even a note), so a candidate hired months ago moved
       // into "this month" the moment anyone touched their record.
@@ -1731,16 +2045,20 @@ const recruitmentRepository = {
   // opening — previously a separate getCandidatePipeline() with its own SQL
   // and a fixed-key-object shape instead of this array-of-{stage,count}
   // shape), and /talent/recruiter-dashboard (previously its own third copy).
-  async getPipelineSummary(company_id, job_opening_id = null) {
+  async getPipelineSummary(company_id, job_opening_id = null, filters = {}) {
+    // All 13 stages of candidates_current_stage_check, in pipeline order.
     const STAGE_ORDER = {
-      applied: 1, screening: 2, '1st_level': 3, '2nd_level': 4,
-      offer: 5, hired: 6, not_suitable: 7, maybe: 8, future_use: 9, rejected: 10,
+      applied: 1, screening: 2, shortlisted: 3, assessment: 4, '1st_level': 5, '2nd_level': 6,
+      offer: 7, selected: 8, hired: 9, maybe: 10, future_use: 11, not_suitable: 12, rejected: 13,
     };
     const STAGE_COLORS = {
       applied:    '#64748b',
       screening:  '#3b82f6',
       '1st_level':'#8b5cf6',
       '2nd_level':'#a855f7',
+      shortlisted:'#6d28d9',
+      assessment: '#92610a',
+      selected:   '#15803d',
       offer:      '#f59e0b',
       hired:      '#22c55e',
       not_suitable:'#ef4444',
@@ -1784,6 +2102,9 @@ const recruitmentRepository = {
     let n = 1;
     if (company_id)     { query += ` AND company_id = $${n++}`;     params.push(company_id); }
     if (job_opening_id) { query += ` AND applied_job_id = $${n++}`; params.push(job_opening_id); }
+    // Department (Dashboard filter): candidates carry none, so match through
+    // the job they applied to. Stage counts are point-in-time — no period.
+    if (filters.department) { query += ` AND applied_job_id IN (SELECT id FROM job_openings WHERE department = $${n++})`; params.push(filters.department); }
     query += ` GROUP BY current_stage`;
     const result = await pool.query(query, params);
     return result.rows
@@ -1796,11 +2117,31 @@ const recruitmentRepository = {
       .sort((a, b) => a.order - b.order);
   },
 
-  async getSourceAnalytics(company_id) {
-    let query = `SELECT source, COUNT(*) AS count FROM candidates WHERE deleted_at IS NULL`;
+  /**
+   * Candidates by sourcing channel.
+   *
+   * COUNT(*) is cast to int: pg returns bigint as a STRING, and the Dashboard's
+   * pie (recharts) skips any non-number value — with "9" it summed to 0 and
+   * drew nothing (Dashboard review 2026-11-17).
+   *
+   * @param {number|null} company_id
+   * @param {{from?:string|null,to?:string|null,department?:string|null}} [filters]
+   *   period on candidates.created_at (when they came in); department through
+   *   the applied job opening.
+   */
+  async getSourceAnalytics(company_id, filters = {}) {
+    const { from = null, to = null, department = null } = filters;
+    let query = `SELECT COALESCE(NULLIF(TRIM(source), ''), 'unknown') AS source, COUNT(*)::int AS count
+                   FROM candidates WHERE deleted_at IS NULL`;
     const params = [];
-    if (company_id) { query += ` AND company_id = $1`; params.push(company_id); }
-    query += ` GROUP BY source ORDER BY count DESC`;
+    if (company_id) { params.push(company_id); query += ` AND company_id = $${params.length}`; }
+    if (from)       { params.push(from);       query += ` AND created_at >= $${params.length}::date`; }
+    if (to)         { params.push(to);         query += ` AND created_at < ($${params.length}::date + INTERVAL '1 day')`; }
+    if (department) {
+      params.push(department);
+      query += ` AND applied_job_id IN (SELECT id FROM job_openings WHERE department = $${params.length})`;
+    }
+    query += ` GROUP BY 1 ORDER BY count DESC`;
     const result = await pool.query(query, params);
     return result.rows;
   },
@@ -1944,7 +2285,7 @@ const recruitmentRepository = {
   // candidate who was already hired.
   async hireCandidate(candidateId, companyId, dbClient, options = {}) {
     const client = dbClient || pool;
-    const { employmentType = null, offeredSalary = null, sourceCandidateId = null } = options;
+    const { employmentType = null, offeredSalary = null, sourceCandidateId = null, joiningDate = null, designation = null } = options;
 
     // 1. Load candidate + job title — scoped to companyId so a candidate id
     // belonging to another company can't be hired into this one (it wasn't
@@ -1952,7 +2293,7 @@ const recruitmentRepository = {
     const candResult = await client.query(
       `SELECT c.*, COALESCE(jo.job_title, jr.job_title) AS job_title,
               jo.id AS job_opening_id, jo.department,
-              jr.number_of_positions
+              COALESCE(jo.number_of_positions, jr.number_of_positions) AS number_of_positions
        FROM candidates c
        LEFT JOIN job_openings jo ON c.applied_job_id = jo.id
        LEFT JOIN job_requisitions jr ON jo.requisition_id = jr.id
@@ -2012,7 +2353,10 @@ const recruitmentRepository = {
     // Refuse the hire with a message that names what to fix, rather than
     // minting an incomplete master record that HR then has to find.
     const hireDept = String(cand.department ?? '').trim();
-    const hireRole = String(cand.job_title  ?? '').trim();
+    // The designation on the accepted offer letter is what the person signed;
+    // the job title is the fallback (it used to be used even when the letter
+    // said otherwise, e.g. a "[SAMPLE] …" job title on the employee record).
+    const hireRole = String(designation || cand.job_title || '').trim();
     const gaps = [];
     if (!hireDept) gaps.push('department');
     if (!hireRole) gaps.push('job title');
@@ -2026,14 +2370,35 @@ const recruitmentRepository = {
       );
     }
 
+    // 4a. Joining date and probation (§269). A hire used to start 'Active'
+    // on CURRENT_DATE with no probation dates, so it never reached Probation
+    // Management, the reminder job or a review. Now:
+    //   - joining date = the accepted offer's joining date, else today;
+    //   - status 'Probation' with the company's default period
+    //     (Probation settings) and the end date by the one calendar rule
+    //     (shared/probationDates.js), as Add Employee does;
+    //   - interns, contract, consultant, temporary and freelance hires have no
+    //     probation and start 'Active', as before.
+    const { rows: [{ today }] } = await client.query(`SELECT CURRENT_DATE::text AS today`);
+    const joining = toIsoDate(joiningDate) ?? today;
+    const onProbation = companyId != null
+      && !/intern|contract|consult|temporar|freelanc/i.test(String(employmentType ?? ''));
+    let probationMonths = null;
+    let probationEnd = null;
+    if (onProbation) {
+      probationMonths = (await getProbationPolicy(client, companyId)).probation_months;
+      probationEnd = probationEndDate(joining, probationMonths);
+    }
+
     const empResult = await client.query(
       `INSERT INTO employees
          (company_id, office_id, first_name, last_name, company_email, phone,
           department, designation, employment_type, status, joining_date,
-          source_candidate_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'Active', CURRENT_DATE, $10) RETURNING *`,
+          probation_months, probation_end_date, source_candidate_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::date,$12,$13::date,$14) RETURNING *`,
       [companyId, employeeId, firstName, lastName, cand.email, cand.phone,
-       hireDept, hireRole, employmentType, sourceCandidateId]
+       hireDept, hireRole, employmentType, onProbation ? 'Probation' : 'Active', joining,
+       probationMonths, probationEnd, sourceCandidateId]
     );
     const employee = empResult.rows[0];
 
@@ -2108,6 +2473,11 @@ const recruitmentRepository = {
       [candidateId]
     );
     await client.query(
+      `UPDATE candidate_applications SET stage = 'hired', status = 'hired', updated_at = NOW()
+        WHERE candidate_id = $1 AND is_primary`,
+      [candidateId]
+    );
+    await client.query(
       `INSERT INTO candidate_stage_history (candidate_id, stage, notes)
        VALUES ($1, 'hired', 'Converted to employee')`,
       [candidateId]
@@ -2136,6 +2506,22 @@ const recruitmentRepository = {
           WHERE id = $1`,
         [cand.job_opening_id, cand.number_of_positions ?? null]
       );
+      // Its requisition is fulfilled with it (Jobs review 2026-11-17: the
+      // requisition stayed "Open" after the last seat was filled).
+      const filled = await client.query(
+        `UPDATE job_requisitions jr SET status = 'closed', updated_at = NOW()
+           FROM job_openings jo
+          WHERE jo.id = $1 AND jr.id = jo.requisition_id AND jo.status = 'closed' AND jr.status = 'open'
+          RETURNING jr.id, jr.company_id`,
+        [cand.job_opening_id]
+      );
+      if (filled.rows[0]) {
+        await recruitmentRepository.recordJobEvent({
+          company_id: filled.rows[0].company_id, requisition_id: filled.rows[0].id,
+          job_opening_id: cand.job_opening_id, event: 'filled', from_status: 'open', to_status: 'closed',
+          comment: 'Every position is filled — the job and its requisition closed automatically.',
+        }, client);
+      }
     }
 
     return { employee, employeeId, payrollEnrolled, loginProvisioned, loginStatus, onboardingInitialized };
@@ -2153,8 +2539,8 @@ const recruitmentRepository = {
   // reported via the log row's 'failed' status.
   async autoCreateEmployeeFromCandidate(candidateId, companyId, triggeredBy = null) {
     const { rows: candidates } = await pool.query(`
-      SELECT c.*, jo.job_title, jo.department, jo.location, jo.employment_type,
-             o.offered_salary, o.joining_date
+      SELECT c.*, jo.id AS job_opening_id, jo.job_title, jo.department, jo.location, jo.employment_type,
+             o.id AS accepted_offer_id, o.offered_salary, o.joining_date, o.designation AS offer_designation
         FROM candidates c
         LEFT JOIN job_openings jo ON jo.id = c.applied_job_id
         LEFT JOIN offer_letters o ON o.candidate_id = c.id AND o.offer_status = 'accepted'
@@ -2198,6 +2584,8 @@ const recruitmentRepository = {
           employmentType: c.employment_type,
           offeredSalary: parseFloat(c.offered_salary),
           sourceCandidateId: candidateId,
+          joiningDate: c.joining_date,
+          designation: c.offer_designation || null,
         });
 
       const checklist_items = [
@@ -2222,7 +2610,33 @@ const recruitmentRepository = {
       `, [employee.id, employeeId, JSON.stringify(checklist_items), logId]);
 
       await client.query('COMMIT');
-      return { status: 201, employee, employeeId, candidateName: c.full_name };
+
+      // Welcome e-mail. It used to fire only from POST /candidates/:id/hire,
+      // which no screen called, so no new joiner ever received it.
+      triggerEmail('hired_welcome', {
+        candidate_email: c.email || employee.company_email || '',
+        candidate_name:  c.full_name || '',
+        job_title:       c.offer_designation || c.job_title || '',
+        joining_date:    c.joining_date ? toIsoDate(c.joining_date) : (employee.joining_date ? toIsoDate(employee.joining_date) : ''),
+        employee_id:     employeeId,
+      }, companyId);
+
+      // Agency fee owed for a candidate the agency supplied (missing feature 7).
+      if (c.source_agency_id) {
+        await pool.query(
+          `INSERT INTO recruitment_agency_fees
+             (company_id, agency_id, candidate_id, employee_id, offer_id, annual_ctc, fee_percentage, fee_amount)
+           SELECT $1, a.id, $2, $3, $4, $5::numeric, a.fee_percentage,
+                  CASE WHEN a.fee_percentage IS NULL OR $5::numeric IS NULL THEN NULL
+                       ELSE ROUND($5::numeric * a.fee_percentage / 100, 2) END
+             FROM recruitment_agencies a
+            WHERE a.id = $6 AND a.company_id = $1
+           ON CONFLICT DO NOTHING`,
+          [companyId, candidateId, employee.id, c.accepted_offer_id || null,
+           c.offered_salary != null ? Number(c.offered_salary) : null, c.source_agency_id]
+        ).catch(err => console.warn('[Recruitment] agency fee row failed:', err.message));
+      }
+      return { status: 201, employee, employeeId, candidateName: c.full_name, checklist: checklist_items };
     } catch (empErr) {
       await client.query('ROLLBACK').catch(() => {});
       // The failure log is written on the pool, not the rolled-back client —
@@ -2238,107 +2652,205 @@ const recruitmentRepository = {
   },
 
   // ==================== REPORTS ====================
+  // Reports & Setup → Reports (review 2026-11-17). Rules shared by every report:
+  //  • to_date is INCLUSIVE: `created_at <= '2026-11-17'` stopped at midnight,
+  //    so everything that happened on the last day (today, by default) was missing.
+  //  • department = the job's department, else its requisition's — the same
+  //    rule everywhere. Three of the four reports ignored ?department= entirely.
+  //  • COUNT() is cast ::int so the page never sums strings.
   async getReportsSummary({ company_id, from_date, to_date, department }) {
-    const params = [];
-    let n = 1;
-    let cFilter = `c.deleted_at IS NULL`;
-    let oFilter = `ol.deleted_at IS NULL`;
-    if (company_id) { cFilter += ` AND c.company_id = $${n}`; oFilter += ` AND ol.company_id = $${n}`; params.push(company_id); n++; }
-    if (from_date)  { cFilter += ` AND c.created_at >= $${n++}`; params.push(from_date); }
-    if (to_date)    { cFilter += ` AND c.created_at <= $${n++}`; params.push(to_date); }
-    if (department) { cFilter += ` AND jo.department = $${n++}`; params.push(department); }
-
-    const result = await pool.query(`
+    const params = [company_id ?? null, from_date || null, to_date || null, deptList(department)];
+    const { rows: [cand] } = await pool.query(`
       SELECT
-        COUNT(DISTINCT c.id) AS total_candidates,
-        COUNT(DISTINCT c.id) FILTER (WHERE c.overall_status = 'hired') AS total_hired,
-        COUNT(DISTINCT c.id) FILTER (WHERE c.overall_status = 'rejected') AS total_rejected,
-        COUNT(DISTINCT c.id) FILTER (WHERE c.overall_status = 'active') AS active_pipeline,
-        AVG(DATE_PART('day', c.hired_at - c.created_at))
-          FILTER (WHERE c.hired_at IS NOT NULL) AS avg_time_to_hire,
-        COUNT(DISTINCT c.id) FILTER (WHERE c.source = 'referral') AS referral_hires,
-        COUNT(DISTINCT c.id) FILTER (WHERE c.source = 'linkedin') AS linkedin_hires,
-        COUNT(DISTINCT c.id) FILTER (WHERE c.source = 'website') AS website_hires,
-        COUNT(DISTINCT c.id) FILTER (WHERE c.source = 'job_portal') AS job_portal_hires
-      FROM candidates c
-      LEFT JOIN job_openings jo ON c.applied_job_id = jo.id
-      LEFT JOIN offer_letters ol ON ol.candidate_id = c.id AND ${oFilter}
-      WHERE ${cFilter}
-    `, params);
-    return result.rows[0];
+        COUNT(*) FILTER (WHERE in_period)::int                                  AS total_candidates,
+        COUNT(*) FILTER (WHERE in_period AND overall_status = 'hired')::int     AS total_hired,
+        COUNT(*) FILTER (WHERE in_period AND overall_status = 'rejected')::int  AS total_rejected,
+        COUNT(*) FILTER (WHERE in_period AND overall_status = 'active')::int    AS active_pipeline,
+        -- Hires MADE in the period (by hire date), whenever they applied.
+        COUNT(*) FILTER (WHERE hired_in_period)::int                            AS hired_in_period,
+        ROUND(AVG(DATE_PART('day', hired_at - created_at)) FILTER (WHERE hired_in_period))::int AS avg_time_to_hire
+      FROM (
+        SELECT c.overall_status, c.hired_at, c.created_at,
+               (($2::date IS NULL OR c.created_at >= $2::date) AND ($3::date IS NULL OR c.created_at < $3::date + 1)) AS in_period,
+               (c.hired_at IS NOT NULL AND ($2::date IS NULL OR c.hired_at >= $2::date) AND ($3::date IS NULL OR c.hired_at < $3::date + 1)) AS hired_in_period
+          FROM candidates c
+          LEFT JOIN job_openings jo ON jo.id = c.applied_job_id
+          LEFT JOIN job_requisitions jr ON jr.id = jo.requisition_id
+         WHERE c.deleted_at IS NULL
+           AND ($1::int IS NULL OR c.company_id = $1)
+           AND ($4::text[] IS NULL OR COALESCE(jo.department, jr.department) = ANY($4::text[]))
+      ) x`, params);
+    const offers = await this.getOffersReport({ company_id, from_date, to_date, department });
+    return { ...cand, offers: offers.totals };
   },
 
-  async getVacancyAging({ company_id, from_date, to_date }) {
-    const params = [];
-    let n = 1;
-    let filter = `jo.deleted_at IS NULL AND jo.status = 'open'`;
-    if (company_id) { filter += ` AND jo.company_id = $${n++}`; params.push(company_id); }
-    if (from_date)  { filter += ` AND jo.created_at >= $${n++}`; params.push(from_date); }
-    if (to_date)    { filter += ` AND jo.created_at <= $${n++}`; params.push(to_date); }
-    const result = await pool.query(`
-      SELECT jo.id, jo.job_title, jo.department, jo.status,
-             jo.created_at,
-             EXTRACT(DAY FROM NOW() - jo.created_at) AS days_open,
-             COALESCE(jo.positions_filled, 0) AS positions_filled,
-             jr.number_of_positions,
-             COUNT(c.id) AS applicant_count
-      FROM job_openings jo
-      LEFT JOIN job_requisitions jr ON jo.requisition_id = jr.id
-      LEFT JOIN candidates c ON c.applied_job_id = jo.id AND c.deleted_at IS NULL
-      WHERE ${filter}
-      GROUP BY jo.id, jr.number_of_positions
-      ORDER BY days_open DESC
-    `, params);
-    return result.rows;
+  // Point-in-time: every job open RIGHT NOW, however long ago it was posted.
+  // It used to keep only jobs CREATED inside the date range, so with the
+  // default 60-day window a vacancy could never reach the 60-day "At Risk" line.
+  async getVacancyAging({ company_id, department }) {
+    const { rows } = await pool.query(`
+      SELECT jo.id, jo.job_title, COALESCE(jo.department, jr.department) AS department, jo.status,
+             TO_CHAR(COALESCE(jo.posted_date, jo.created_at::date), 'YYYY-MM-DD') AS opened_on,
+             (CURRENT_DATE - COALESCE(jo.posted_date, jo.created_at::date))::int AS days_open,
+             TO_CHAR(jo.closing_date, 'YYYY-MM-DD') AS closing_date,
+             COALESCE(jo.positions_filled, 0)::int AS positions_filled,
+             COALESCE(jo.number_of_positions, jr.number_of_positions, 1)::int AS number_of_positions,
+             (SELECT COUNT(*) FROM candidate_applications ca JOIN candidates c ON c.id = ca.candidate_id
+               WHERE ca.job_opening_id = jo.id AND c.deleted_at IS NULL)::int AS applicant_count,
+             (SELECT COUNT(*) FROM candidate_applications ca JOIN candidates c ON c.id = ca.candidate_id
+               WHERE ca.job_opening_id = jo.id AND c.deleted_at IS NULL AND ca.status = 'active')::int AS active_applicants
+        FROM job_openings jo
+        LEFT JOIN job_requisitions jr ON jo.requisition_id = jr.id
+       WHERE jo.deleted_at IS NULL AND jo.status IN ('open', 'on_hold')
+         AND ($1::int IS NULL OR jo.company_id = $1)
+         AND ($2::text[] IS NULL OR COALESCE(jo.department, jr.department) = ANY($2::text[]))
+       ORDER BY days_open DESC, jo.id`, [company_id ?? null, deptList(department)]);
+    return rows;
   },
 
-  async getSourceEffectiveness({ company_id, from_date, to_date }) {
-    const params = [];
-    let n = 1;
-    let filter = `c.deleted_at IS NULL`;
-    if (company_id) { filter += ` AND c.company_id = $${n++}`; params.push(company_id); }
-    if (from_date)  { filter += ` AND c.created_at >= $${n++}`; params.push(from_date); }
-    if (to_date)    { filter += ` AND c.created_at <= $${n++}`; params.push(to_date); }
-    const result = await pool.query(`
-      SELECT c.source,
-             COUNT(*) AS total_applications,
-             COUNT(*) FILTER (WHERE c.overall_status = 'hired') AS hires,
-             COUNT(*) FILTER (WHERE c.overall_status = 'rejected') AS rejections,
-             ROUND(
-               100.0 * COUNT(*) FILTER (WHERE c.overall_status = 'hired') / NULLIF(COUNT(*), 0), 1
-             ) AS hire_rate_pct
-      FROM candidates c
-      WHERE ${filter}
-      GROUP BY c.source
-      ORDER BY hires DESC
-    `, params);
-    return result.rows;
+  async getSourceEffectiveness({ company_id, from_date, to_date, department }) {
+    const { rows } = await pool.query(`
+      SELECT COALESCE(NULLIF(c.source, ''), 'unknown') AS source,
+             COUNT(*)::int AS total_applications,
+             COUNT(*) FILTER (WHERE c.overall_status = 'hired')::int AS hires,
+             COUNT(*) FILTER (WHERE c.overall_status = 'rejected')::int AS rejections,
+             COUNT(*) FILTER (WHERE c.overall_status = 'active')::int AS in_progress,
+             ROUND(100.0 * COUNT(*) FILTER (WHERE c.overall_status = 'hired') / NULLIF(COUNT(*), 0), 1)::float AS hire_rate_pct
+        FROM candidates c
+        LEFT JOIN job_openings jo ON jo.id = c.applied_job_id
+        LEFT JOIN job_requisitions jr ON jr.id = jo.requisition_id
+       WHERE c.deleted_at IS NULL
+         AND ($1::int IS NULL OR c.company_id = $1)
+         AND ($2::date IS NULL OR c.created_at >= $2::date)
+         AND ($3::date IS NULL OR c.created_at < $3::date + 1)
+         AND ($4::text[] IS NULL OR COALESCE(jo.department, jr.department) = ANY($4::text[]))
+       GROUP BY 1
+       ORDER BY hires DESC, total_applications DESC`,
+      [company_id ?? null, from_date || null, to_date || null, deptList(department)]);
+    return rows;
   },
 
-  async getDepartmentPipeline({ company_id, from_date, to_date }) {
-    const params = [];
-    let n = 1;
-    let filter = `c.deleted_at IS NULL`;
-    if (company_id) { filter += ` AND c.company_id = $${n++}`; params.push(company_id); }
-    if (from_date)  { filter += ` AND c.created_at >= $${n++}`; params.push(from_date); }
-    if (to_date)    { filter += ` AND c.created_at <= $${n++}`; params.push(to_date); }
-    const result = await pool.query(`
+  // Applications (one per candidate per job), so a candidate put forward to a
+  // second job counts in that job's department too — the same unit the job
+  // boards count. Every stage is listed; shortlisted, assessment and selected
+  // were missing, so the columns never added up to Total.
+  async getDepartmentPipeline({ company_id, from_date, to_date, department }) {
+    const stageCols = REPORT_PIPELINE_STAGES
+      .map(st => `COUNT(*) FILTER (WHERE ca.stage = '${st}')::int AS "${st}"`).join(',\n             ');
+    const { rows } = await pool.query(`
       SELECT COALESCE(jo.department, jr.department, 'Unassigned') AS department,
-             COUNT(*) AS total,
-             COUNT(*) FILTER (WHERE c.current_stage = 'applied')    AS applied,
-             COUNT(*) FILTER (WHERE c.current_stage = 'screening')  AS screening,
-             COUNT(*) FILTER (WHERE c.current_stage = '1st_level')  AS first_level,
-             COUNT(*) FILTER (WHERE c.current_stage = '2nd_level')  AS second_level,
-             COUNT(*) FILTER (WHERE c.current_stage = 'offer')      AS offer,
-             COUNT(*) FILTER (WHERE c.overall_status = 'hired')     AS hired
-      FROM candidates c
-      LEFT JOIN job_openings jo ON c.applied_job_id = jo.id
-      LEFT JOIN job_requisitions jr ON jo.requisition_id = jr.id
-      WHERE ${filter}
-      GROUP BY 1
-      ORDER BY total DESC
-    `, params);
-    return result.rows;
+             COUNT(*)::int AS total,
+             ${stageCols},
+             COUNT(*) FILTER (WHERE ca.stage IN ('rejected', 'not_suitable'))::int AS rejected,
+             COUNT(*) FILTER (WHERE ca.stage IN ('maybe', 'future_use'))::int AS parked
+        FROM candidate_applications ca
+        JOIN candidates c ON c.id = ca.candidate_id AND c.deleted_at IS NULL
+        LEFT JOIN job_openings jo ON jo.id = ca.job_opening_id
+        LEFT JOIN job_requisitions jr ON jr.id = jo.requisition_id
+       WHERE ($1::int IS NULL OR ca.company_id = $1)
+         AND ($2::date IS NULL OR COALESCE(ca.applied_at, ca.created_at) >= $2::date)
+         AND ($3::date IS NULL OR COALESCE(ca.applied_at, ca.created_at) < $3::date + 1)
+         AND ($4::text[] IS NULL OR COALESCE(jo.department, jr.department) = ANY($4::text[]))
+       GROUP BY 1
+       ORDER BY total DESC`,
+      [company_id ?? null, from_date || null, to_date || null, deptList(department)]);
+    return rows;
+  },
+
+  // Offers made in the period (by the day they went out; drafts by creation):
+  // the outcome of each, why declined/withdrawn, and how long candidates took.
+  async getOffersReport({ company_id, from_date, to_date, department }) {
+    const { rows } = await pool.query(`
+      SELECT ol.id, ol.offer_no, ol.offer_status, ol.designation, ol.offered_salary::float AS offered_salary,
+             c.full_name AS candidate_name,
+             ${recordDepartmentSql('ol')} AS department,
+             TO_CHAR(ol.offer_sent_date, 'YYYY-MM-DD') AS sent_on,
+             TO_CHAR(ol.response_date, 'YYYY-MM-DD') AS answered_on,
+             TO_CHAR(ol.offer_expiry_date, 'YYYY-MM-DD') AS valid_until,
+             CASE WHEN ol.offer_sent_date IS NOT NULL AND ol.response_date IS NOT NULL
+                  THEN (ol.response_date - ol.offer_sent_date)::int END AS days_to_answer,
+             ol.close_reason
+        FROM offer_letters ol
+        JOIN candidates c ON c.id = ol.candidate_id
+       WHERE ol.deleted_at IS NULL
+         AND ($1::int IS NULL OR ol.company_id = $1)
+         AND ($2::date IS NULL OR COALESCE(ol.offer_sent_date, ol.created_at::date) >= $2::date)
+         AND ($3::date IS NULL OR COALESCE(ol.offer_sent_date, ol.created_at::date) <= $3::date)
+         AND ($4::text[] IS NULL OR ${recordDepartmentSql('ol')} = ANY($4::text[]))
+       ORDER BY COALESCE(ol.offer_sent_date, ol.created_at::date) DESC`,
+      [company_id ?? null, from_date || null, to_date || null, deptList(department)]);
+    const count = (st) => rows.filter(r => r.offer_status === st).length;
+    const answered = rows.filter(r => r.days_to_answer != null && ['accepted', 'declined'].includes(r.offer_status));
+    const madeToCandidate = count('sent') + count('accepted') + count('declined');
+    const totals = {
+      total: rows.length,
+      awaiting_approval: count('draft') + count('pending_approval'),
+      sent: count('sent'),
+      accepted: count('accepted'),
+      declined: count('declined'),
+      withdrawn: count('withdrawn'),
+      acceptance_rate: madeToCandidate ? Math.round((count('accepted') / madeToCandidate) * 1000) / 10 : null,
+      avg_days_to_answer: answered.length
+        ? Math.round(answered.reduce((a, r) => a + r.days_to_answer, 0) / answered.length) : null,
+    };
+    return { totals, rows };
+  },
+
+  // Hiring Forecasts (review 2026-11-17). Demand by department from the
+  // requisitions AND the jobs — the page used to read job openings only, so an
+  // approved requisition with no job posted yet, or one awaiting approval, was
+  // missing from "demand" altogether. Pipeline = ACTIVE applications on open
+  // jobs (it counted rejected applicants as pipeline). `within_days` keeps the
+  // jobs closing within N days (and the requisitions, which have no date).
+  async getHiringForecast({ company_id, department = null, within_days = null }) {
+    const days = Number.parseInt(within_days, 10);
+    const params = [company_id ?? null, deptList(department), days > 0 && days <= 3650 ? days : null];
+    const { rows: jobs } = await pool.query(`
+      SELECT COALESCE(jo.department, jr.department, 'Unassigned') AS department,
+             COUNT(*)::int AS open_roles,
+             SUM(GREATEST(COALESCE(jo.number_of_positions, jr.number_of_positions, 1) - COALESCE(jo.positions_filled, 0), 0))::int AS open_seats,
+             SUM((SELECT COUNT(*) FROM candidate_applications ca JOIN candidates c ON c.id = ca.candidate_id
+                   WHERE ca.job_opening_id = jo.id AND ca.status = 'active' AND c.deleted_at IS NULL))::int AS pipeline,
+             SUM((SELECT COUNT(*) FROM offer_letters ol
+                   WHERE ol.job_opening_id = jo.id AND ol.deleted_at IS NULL
+                     AND ol.offer_status IN ('draft', 'pending_approval', 'sent')))::int AS offers_out,
+             TO_CHAR(MIN(jo.closing_date) FILTER (WHERE jo.closing_date >= CURRENT_DATE), 'YYYY-MM-DD') AS soonest_closing
+        FROM job_openings jo
+        LEFT JOIN job_requisitions jr ON jr.id = jo.requisition_id
+       WHERE jo.deleted_at IS NULL AND jo.status IN ('open', 'on_hold')
+         AND ($1::int IS NULL OR jo.company_id = $1)
+         AND ($2::text[] IS NULL OR COALESCE(jo.department, jr.department) = ANY($2::text[]))
+         AND ($3::int IS NULL OR (jo.closing_date IS NOT NULL AND jo.closing_date <= CURRENT_DATE + $3::int))
+       GROUP BY 1`, params);
+    const { rows: reqs } = await pool.query(`
+      SELECT COALESCE(jr.department, 'Unassigned') AS department,
+             COALESCE(SUM(jr.number_of_positions) FILTER (WHERE jr.status = 'approved'), 0)::int AS approved_not_posted,
+             COALESCE(SUM(jr.number_of_positions) FILTER (WHERE jr.status = 'pending_approval'), 0)::int AS awaiting_approval
+        FROM job_requisitions jr
+       WHERE jr.deleted_at IS NULL AND jr.status IN ('approved', 'pending_approval')
+         AND NOT EXISTS (SELECT 1 FROM job_openings jo WHERE jo.requisition_id = jr.id AND jo.deleted_at IS NULL
+                           AND jo.status IN ('open', 'on_hold'))
+         AND ($1::int IS NULL OR jr.company_id = $1)
+         AND ($2::text[] IS NULL OR jr.department = ANY($2::text[]))
+         AND $3::int IS NULL
+       GROUP BY 1`, params);
+    const byDept = new Map();
+    const blank = (d) => ({ department: d, open_roles: 0, open_seats: 0, pipeline: 0, offers_out: 0, soonest_closing: null, approved_not_posted: 0, awaiting_approval: 0 });
+    for (const r of jobs) byDept.set(r.department, { ...blank(r.department), ...r });
+    for (const r of reqs) byDept.set(r.department, { ...(byDept.get(r.department) || blank(r.department)), ...r });
+    const [tth, offers, i2h] = await Promise.all([
+      this.getTimeToHire(company_id), this.getOfferAcceptanceRate(company_id), this.getInterviewToHireRatio(company_id),
+    ]);
+    return {
+      rows: [...byDept.values()].sort((a, b) => (b.open_seats + b.approved_not_posted) - (a.open_seats + a.approved_not_posted)),
+      rates: {
+        avg_days_to_hire: tth.matched ? tth.avg_days : null,
+        hires_measured: tth.matched,
+        offer_acceptance_pct: offers.offered ? offers.rate : null,
+        interview_to_hire_pct: i2h.interviewed ? i2h.ratio : null,
+        interviewed: i2h.interviewed,
+      },
+    };
   },
 };
 

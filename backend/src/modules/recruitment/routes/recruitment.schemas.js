@@ -49,7 +49,9 @@ export const INTERVIEW_RECOMMENDATIONS = ['strong_hire', 'hire', 'hold', 'reject
 // The status columns below are bare varchars in Postgres with no CHECK, so these
 // lists are the only thing standing between a typo and a permanently unrenderable
 // badge. Mirrors frontend/src/features/recruitment/shared/constants.js.
-export const REQUISITION_STATUSES = ['draft', 'pending_approval', 'approved', 'open', 'closed'];
+export const REQUISITION_STATUSES = ['draft', 'pending_approval', 'approved', 'open', 'closed', 'cancelled'];
+export const REQUISITION_PRIORITIES = ['low', 'medium', 'high'];
+export const HIRING_REASONS = ['new_position', 'replacement'];
 export const OPENING_STATUSES     = ['draft', 'pending_approval', 'open', 'on_hold', 'closed', 'cancelled'];
 export const OFFER_STATUSES       = ['draft', 'pending_approval', 'sent', 'accepted', 'declined', 'withdrawn'];
 export const CANDIDATE_STATUSES   = ['active', 'hired', 'rejected', 'withdrawn'];
@@ -69,6 +71,8 @@ export const CANDIDATE_SOURCES    = [
 ];
 export const INTERVIEW_MODES    = ['video', 'in_person', 'phone'];
 export const INTERVIEW_STATUSES = ['scheduled', 'completed', 'cancelled'];
+// interview_schedules_round_check (migration 20261117000002).
+export const INTERVIEW_ROUNDS   = ['1st_level', '2nd_level', 'technical', 'hr', 'final'];
 
 /* ── Requisitions ──────────────────────────────────────────────────────────── */
 
@@ -79,10 +83,20 @@ export const requisitionSchema = {
   number_of_positions: { type: 'int', min: 1, max: 9999 },
   job_description:     { type: 'string' },
   skills_required:     { type: 'string' },
-  experience_required: { type: 'string', max: 100 },
   location:            { type: 'string', max: 200 },
-  salary_range:        { type: 'string', max: 100 },
-  requested_by:        { type: 'int', min: 1 },
+  // Numeric ranges (migration 20261117000005) so the opening raised from the
+  // requisition can carry them over and be checked against them.
+  experience_min:      { type: 'int', min: 0, max: 60, label: 'Minimum experience' },
+  experience_max:      { type: 'int', min: 0, max: 60, label: 'Maximum experience' },
+  salary_min:          { type: 'number', min: 0, label: 'Minimum salary' },
+  salary_max:          { type: 'number', min: 0, label: 'Maximum salary' },
+  hiring_reason:       { type: 'enum', values: HIRING_REASONS, label: 'Reason for hiring' },
+  replacing_employee_id: { type: 'int', min: 1, label: 'Employee being replaced' },
+  justification:       { type: 'string', max: 2000, label: 'Justification' },
+  // requested_by is NOT accepted from the body: it is the signed-in user's
+  // employee, set by the route. The self-approval guard reads it.
+
+  priority:            { type: 'enum', values: REQUISITION_PRIORITIES, label: 'Priority' },
   // 'approved' stays in the list on purpose. The route's own guard rejects it with a
   // specific message ("must be approved through the Approval Center"); excluding it
   // here would pre-empt that with a vaguer enum error.
@@ -92,8 +106,10 @@ export const requisitionSchema = {
 /* ── Job openings ──────────────────────────────────────────────────────────── */
 
 export const openingSchema = {
-  requisition_id:  { type: 'int', min: 1 },
+  requisition_id:  { type: 'int', min: 1, label: 'Requisition' },
   job_title:       { type: 'string', required: true, max: 200 },
+  number_of_positions: { type: 'int', min: 1, max: 9999, label: 'Number of positions' },
+  skills_required: { type: 'string', label: 'Skills' },
   department:      { type: 'string', max: 100 },
   location:        { type: 'string', max: 200 },
   employment_type: { type: 'string', max: 50 },
@@ -172,7 +188,13 @@ export const interviewSchema = {
   interview_time: { type: 'time' },
   interview_mode: { type: 'enum', values: INTERVIEW_MODES, label: 'Mode' },
   meeting_link:   { type: 'string', max: 500 },
-  interviewer_id: { type: 'int', min: 1 },
+  interviewer_id: { type: 'int', min: 1, label: 'Interviewer' },
+  // Other panel members (employee ids). The lead interviewer is interviewer_id.
+  panel_employee_ids: { type: 'array', label: 'Panel' },
+  interview_round: { type: 'enum', values: INTERVIEW_ROUNDS, label: 'Round' },
+  job_opening_id: { type: 'int', min: 1, label: 'Job opening' },
+  // Question-bank ids the interviewer chose to use (Interviews → Schedule → Questions).
+  question_ids:   { type: 'array', label: 'Questions' },
   status:         { type: 'enum', values: INTERVIEW_STATUSES },
   notes:          { type: 'string' },
 };
@@ -185,6 +207,7 @@ export const interviewNoteSchema = {
   candidate_id:     { type: 'int', min: 1, required: true },
   interviewer_id:   { type: 'int', min: 1 },
   interview_round:  { type: 'string', max: 100 },
+  interview_id:     { type: 'string', max: 40, label: 'Interview' },
   rating:           { type: 'number', min: 1, max: 5 },
   comments:         { type: 'string' },
   recommendation:   { type: 'enum', values: INTERVIEW_RECOMMENDATIONS },
@@ -202,6 +225,7 @@ export const submitFeedbackSchema = {
 export const offerSchema = {
   candidate_id:      { type: 'int', min: 1, required: true },
   job_opening_id:    { type: 'int', min: 1 },
+  designation:       { type: 'string', max: 200 },
   offered_salary:    { type: 'number', min: 0 },
   joining_date:      { type: 'date' },
   // Per-offer override of the company-wide offer_validity_days setting
@@ -210,6 +234,8 @@ export const offerSchema = {
   offer_expiry_date: { type: 'date', label: 'Offer expiry date' },
   offer_status:      { type: 'enum', values: OFFER_STATUSES, label: 'Status' },
   notes:             { type: 'string' },
+  // Why the candidate declined / why it was withdrawn (migration 20261117000008).
+  close_reason:      { type: 'string', max: 1000, label: 'Reason' },
 };
 
 /* ── Email templates ───────────────────────────────────────────────────────── */

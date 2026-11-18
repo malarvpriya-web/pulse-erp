@@ -31,8 +31,8 @@
 .ofm-status-badge { padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
 .ofm-view-btn { background: #f3f4f6; border: none; border-radius: 6px; padding: 5px 8px; cursor: pointer; color: #6b7280; display: flex; }
 .ofm-view-btn:hover { background: #e5e7eb; }
-.ofm-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.4); z-index: 50; display: flex; justify-content: flex-end; }
-.ofm-drawer { width: 420px; background: #fff; height: 100vh; display: flex; flex-direction: column; animation: ofm-slide .25s ease; }
+.ofm-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.4); z-index: 50; display: flex; align-items: center; justify-content: center; padding: 24px; }
+.ofm-drawer { width: 420px; background: #fff; max-width: 100%; max-height: calc(100vh - 48px); border-radius: 12px; overflow: auto; display: flex; flex-direction: column; animation: pulse-dialog-in .18s ease-out; }
 @keyframes ofm-slide { from { transform: translateX(100%); } to { transform: translateX(0); } }
 .ofm-drawer-hd { display: flex; justify-content: space-between; align-items: center; padding: 20px; border-bottom: 1px solid #e5e7eb; }
 .ofm-drawer-hd h3 { font-size: 16px; font-weight: 700; color: #111827; margin: 0; }

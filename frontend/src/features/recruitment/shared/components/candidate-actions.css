@@ -11,6 +11,7 @@
   padding: 20px;
 }
 
+.cad--wide { max-width: 760px !important; }
 .cad {
   background: #fff;
   border-radius: 12px;
@@ -37,12 +38,12 @@
   flex: none;
 }
 .cad-head--route { background: #F5F3FF; }
-.cad-head--keep  { background: #ECFEFF; }
+.cad-head--keep  { background: #F5F3FF; }
 .cad-head--stop  { background: #FEF2F2; }
 
 .cad-head-text { display: flex; gap: 9px; align-items: flex-start; min-width: 0; }
 .cad-head-icon { flex: none; margin-top: 2px; color: #4B2DCE; }
-.cad-head--keep .cad-head-icon { color: #0E7490; }
+.cad-head--keep .cad-head-icon { color: #6B3FDB; }
 .cad-head--stop .cad-head-icon { color: #B91C1C; }
 
 .cad-title {
@@ -216,8 +217,8 @@
   color: #475569;
   cursor: pointer;
 }
-.cad-pool-chip:hover { border-color: #a5f3fc; background: #F0FDFF; }
-.cad-pool-chip.is-on { background: #ECFEFF; border-color: #67E8F9; color: #0E7490; }
+.cad-pool-chip:hover { border-color: #DDD6FE; background: #FAF8FF; }
+.cad-pool-chip.is-on { background: #F5F3FF; border-color: #A78BFA; color: #6B3FDB; }
 
 .cad-pool-count {
   font-size: 9.5px;
@@ -227,7 +228,7 @@
   border-radius: 20px;
   padding: 0 5px;
 }
-.cad-pool-chip.is-on .cad-pool-count { background: rgba(255, 255, 255, .7); color: #0E7490; }
+.cad-pool-chip.is-on .cad-pool-count { background: rgba(255, 255, 255, .7); color: #6B3FDB; }
 
 /* ── Confirm (§22) ─────────────────────────────────────────────────────── */
 
@@ -272,8 +273,8 @@
 .cad-btn--primary { background: #4B2DCE; border-color: #4B2DCE; color: #fff; }
 .cad-btn--primary:hover:not(:disabled) { background: #3f23b5; }
 
-.cad-btn--keep { background: #0E7490; border-color: #0E7490; color: #fff; }
-.cad-btn--keep:hover:not(:disabled) { background: #0b5d73; }
+.cad-btn--keep { background: #6B3FDB; border-color: #6B3FDB; color: #fff; }
+.cad-btn--keep:hover:not(:disabled) { background: #5B35D5; }
 
 .cad-btn--stop { background: #B91C1C; border-color: #B91C1C; color: #fff; }
 .cad-btn--stop:hover:not(:disabled) { background: #991b1b; }

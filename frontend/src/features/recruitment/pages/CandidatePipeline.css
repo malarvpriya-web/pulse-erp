@@ -95,8 +95,8 @@
 .cp-rej-badge        { font-size: 10px; font-weight: 600; color: #dc2626; background: #fee2e2; padding: 2px 8px; border-radius: 20px; }
 
 /* Drawer */
-.cp-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 1000; display: flex; justify-content: flex-end; }
-.cp-drawer  { width: 440px; max-width: 95vw; background: #fff; display: flex; flex-direction: column; height: 100vh; box-shadow: -8px 0 32px rgba(0,0,0,.12); animation: cp-slide .2s ease; }
+.cp-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 1000; display: flex; align-items: center; justify-content: center; padding: 24px; }
+.cp-drawer  { width: 440px; max-width: 95vw; background: #fff; display: flex; flex-direction: column; max-height: calc(100vh - 48px); border-radius: 12px; overflow: auto; box-shadow: 0 20px 60px rgba(0,0,0,.18); animation: pulse-dialog-in .18s ease-out; }
 @keyframes cp-slide { from { transform: translateX(100%); } to { transform: translateX(0); } }
 
 .cp-drawer-hd { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid #e5e7eb; }

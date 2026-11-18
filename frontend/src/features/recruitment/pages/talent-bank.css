@@ -16,13 +16,13 @@
 /* ── Recontacts due (§18) ──────────────────────────────────────────────── */
 
 .tbank-due {
-  background: #ECFEFF;
-  border: 1px solid #A5F3FC;
+  background: #F5F3FF;
+  border: 1px solid #DDD6FE;
   border-radius: 10px;
   padding: 11px 13px;
 }
 
-.tbank-due-head { display: flex; align-items: center; gap: 7px; margin-bottom: 9px; color: #0E7490; }
+.tbank-due-head { display: flex; align-items: center; gap: 7px; margin-bottom: 9px; color: #6B3FDB; }
 .tbank-due-head h3 { margin: 0; font-size: 12.5px; font-weight: 800; }
 
 .tbank-due-list { display: flex; flex-direction: column; gap: 5px; }
@@ -38,7 +38,7 @@
   border-radius: 7px;
 }
 .tbank-due-main { min-width: 0; }
-.tbank-due-sub { display: block; font-size: 11px; color: #0f766e; margin-top: 1px; }
+.tbank-due-sub { display: block; font-size: 11px; color: #5B35D5; margin-top: 1px; }
 .tbank-due-acts { display: flex; gap: 5px; flex: none; }
 
 /* ── Category chips (§17) ──────────────────────────────────────────────── */
@@ -79,8 +79,8 @@
   cursor: pointer;
   font-family: inherit;
 }
-.tbank-cat:hover { border-color: #67E8F9; background: #F0FDFF; }
-.tbank-cat.is-on { background: #ECFEFF; border-color: #22D3EE; color: #0E7490; font-weight: 700; }
+.tbank-cat:hover { border-color: #A78BFA; background: #FAF8FF; }
+.tbank-cat.is-on { background: #F5F3FF; border-color: #6B3FDB; color: #6B3FDB; font-weight: 700; }
 
 .tbank-cat-n {
   font-size: 9px;
@@ -90,7 +90,7 @@
   border-radius: 20px;
   padding: 0 5px;
 }
-.tbank-cat.is-on .tbank-cat-n { background: rgba(255, 255, 255, .75); color: #0E7490; }
+.tbank-cat.is-on .tbank-cat-n { background: rgba(255, 255, 255, .75); color: #6B3FDB; }
 
 /* ── Search ────────────────────────────────────────────────────────────── */
 
@@ -114,7 +114,7 @@
   font-family: inherit;
   color: #1f2937;
 }
-.tbank-q-input:focus { outline: 2px solid #A5F3FC; outline-offset: -1px; border-color: #67E8F9; }
+.tbank-q-input:focus { outline: 2px solid #DDD6FE; outline-offset: -1px; border-color: #A78BFA; }
 .tbank-q-clear {
   position: absolute; right: 7px; display: inline-flex; padding: 2px;
   background: none; border: 0; color: #94a3b8; cursor: pointer;
@@ -127,7 +127,7 @@
   border: 0;
   font-size: 12px;
   font-weight: 600;
-  color: #0E7490;
+  color: #6B3FDB;
   cursor: pointer;
 }
 .tbank-reset:hover { text-decoration: underline; }
@@ -160,7 +160,7 @@
 }
 .tbank-sel { cursor: pointer; }
 .tbank-in:focus,
-.tbank-sel:focus { outline: 2px solid #A5F3FC; outline-offset: -1px; border-color: #67E8F9; }
+.tbank-sel:focus { outline: 2px solid #DDD6FE; outline-offset: -1px; border-color: #A78BFA; }
 
 /* ── Count ─────────────────────────────────────────────────────────────── */
 
@@ -232,7 +232,7 @@
 }
 .tbank-chip--xs { font-size: 9.5px; padding: 1px 6px; }
 .tbank-chip--dim { background: #f1f5f9; color: #64748b; }
-.tbank-chip--pool { background: #ECFEFF; color: #0E7490; }
+.tbank-chip--pool { background: #F5F3FF; color: #6B3FDB; }
 .tbank-chip--score { background: #F5F3FF; color: #6C47FF; }
 .tbank-chip--due { background: #FEF3C7; color: #92400E; }
 
@@ -280,23 +280,23 @@
   gap: 4px;
   padding: 4px 9px;
   background: #fff;
-  border: 1px solid #A5F3FC;
+  border: 1px solid #DDD6FE;
   border-radius: 6px;
   font-size: 10.5px;
   font-weight: 700;
-  color: #0E7490;
+  color: #6B3FDB;
   cursor: pointer;
   font-family: inherit;
 }
-.tbank-mini:hover { background: #F0FDFF; }
-.tbank-mini--go { background: #0E7490; border-color: #0E7490; color: #fff; }
-.tbank-mini--go:hover { background: #0b5d73; }
+.tbank-mini:hover { background: #FAF8FF; }
+.tbank-mini--go { background: #6B3FDB; border-color: #6B3FDB; color: #fff; }
+.tbank-mini--go:hover { background: #5B35D5; }
 
 .tbank-btn {
   margin-top: 4px;
   padding: 7px 14px;
-  background: #0E7490;
-  border: 1px solid #0E7490;
+  background: #6B3FDB;
+  border: 1px solid #6B3FDB;
   border-radius: 7px;
   font-size: 12.5px;
   font-weight: 600;
@@ -304,7 +304,7 @@
   cursor: pointer;
   font-family: inherit;
 }
-.tbank-btn:hover { background: #0b5d73; }
+.tbank-btn:hover { background: #5B35D5; }
 
 /* ── Empty ─────────────────────────────────────────────────────────────── */
 
@@ -327,4 +327,59 @@
   .tbank-results { grid-template-columns: 1fr; }
   .tbank-due-row { align-items: flex-start; }
   .tbank-due-acts { margin-left: 0; }
+}
+
+/* ── 2026-11-17 merge: categories managed here, card actions, more filters ── */
+
+.tbank-manage {
+  display: inline-flex; align-items: center; gap: 4px; margin-left: auto;
+  padding: 4px 10px; border: 1px dashed #DDD6FE; border-radius: 20px; background: #fff;
+  font-size: 11px; font-weight: 700; color: #6B3FDB; cursor: pointer; font-family: inherit;
+}
+.tbank-manage:hover { background: #FAF8FF; }
+
+.tbank-more {
+  display: inline-flex; align-items: center; gap: 5px; flex: none;
+  padding: 7px 11px; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff;
+  font-size: 12px; font-weight: 600; color: #475569; cursor: pointer; font-family: inherit;
+}
+.tbank-more:hover, .tbank-more.is-on { border-color: #A78BFA; color: #6B3FDB; background: #FAF8FF; }
+
+.tbank-filters--more { margin-top: 10px; padding-top: 10px; border-top: 1px dashed #e5e7eb; }
+
+.tbank-error {
+  padding: 10px 12px; border-radius: 8px; background: var(--color-danger-bg, #FEF2F2);
+  color: var(--color-danger, #B91C1C); font-size: 12px; font-weight: 600;
+}
+
+.tbank-chip-x {
+  display: inline-flex; align-items: center; justify-content: center;
+  margin-left: 3px; padding: 0; width: 13px; height: 13px; border: 0; border-radius: 50%;
+  background: transparent; color: inherit; cursor: pointer; opacity: .6;
+}
+.tbank-chip-x:hover { opacity: 1; background: rgba(107, 63, 219, .15); }
+
+.tbank-card-acts { display: flex; align-items: center; gap: 5px; }
+.tbank-mini--icon { padding: 4px 6px; }
+.tbank-mini--icon:disabled { opacity: .35; cursor: not-allowed; }
+.tbank-mini--stop { background: #B91C1C; border-color: #B91C1C; color: #fff; }
+.tbank-mini--stop:hover { background: #991b1b; }
+
+.tbc-list { display: flex; flex-direction: column; gap: 12px; }
+.tbc-group { display: flex; flex-direction: column; gap: 4px; }
+.tbc-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;
+  padding: 7px 10px; border: 1px solid #ecedf3; border-radius: 8px; background: #fff;
+}
+.tbc-row.is-off { background: #f8fafc; }
+.tbc-row.is-off .tbc-name { color: #94a3b8; }
+.tbc-main { display: flex; flex-direction: column; min-width: 0; }
+.tbc-name { font-size: 12.5px; font-weight: 700; color: #1f2937; }
+.tbc-sub { font-size: 11px; color: #64748b; }
+.tbc-acts { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+
+@media (max-width: 640px) {
+  .tbank-search-row { flex-wrap: wrap; }
+  .tbank-manage { margin-left: 0; }
+  .tbank-card-foot { flex-wrap: wrap; gap: 6px; }
 }

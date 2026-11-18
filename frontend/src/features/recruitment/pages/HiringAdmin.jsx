@@ -1,5 +1,6 @@
-import { lazy } from 'react';
-import { FileText as IcFileText, Globe as IcGlobe, Mail as IcMail, Settings2 as IcSettings2, TrendingUp as IcTrendingUp } from 'lucide-react';
+import { lazy, useEffect, useState } from 'react';
+import api from '@/services/api/client';
+import { FileText as IcFileText, Mail as IcMail, Settings2 as IcSettings2, TrendingUp as IcTrendingUp } from 'lucide-react';
 import { TabHub } from '@/components/pulse-ui';
 
 /**
@@ -14,25 +15,32 @@ import { TabHub } from '@/components/pulse-ui';
 const HiringForecasts = lazy(() => import('./HiringForecasts'));
 const RecruitmentReports = lazy(() => import('./RecruitmentReports'));
 const EmailTemplates = lazy(() => import('./EmailTemplates'));
-const CareersPageAdmin = lazy(() => import('./CareersPageAdmin'));
 const RecruitmentSettings = lazy(() => import('./RecruitmentSettings'));
 
 export const TABS = [
   { id: 'forecasts', label: 'Hiring Forecasts', icon: IcTrendingUp, page: 'HiringForecasts', Component: HiringForecasts },
   { id: 'reports', label: 'Reports', icon: IcFileText, page: 'RecruitmentReports', Component: RecruitmentReports },
   { id: 'templates', label: 'Email Templates', icon: IcMail, page: 'EmailTemplates', Component: EmailTemplates },
-  { id: 'careers', label: 'Careers Page', icon: IcGlobe, page: 'CareersPageAdmin', Component: CareersPageAdmin },
   { id: 'settings', label: 'Settings', icon: IcSettings2, page: 'RecruitmentSettings', Component: RecruitmentSettings },
 ];
 
+// Settings and Email Templates are HR's; a department head does not get them
+// (owner decision 2026-11-18 — the API refuses their changes too).
+const SETUP_TABS = ['templates', 'settings'];
+
 export default function HiringAdmin({ setPage }) {
+  const [canSetup, setCanSetup] = useState(true);
+  useEffect(() => {
+    api.get('/recruitment/setup-status').then(r => setCanSetup(r.data?.can_manage_setup !== false)).catch(() => {});
+  }, []);
+  const tabs = canSetup ? TABS : TABS.filter(t => !SETUP_TABS.includes(t.id));
   return (
     <TabHub
       icon={IcSettings2}
       eyebrow="Recruitment"
       title="Reports & Setup"
-      subtitle="Hiring forecasts, recruitment reports, candidate email templates, the public careers page and module settings"
-      tabs={TABS}
+      subtitle="Hiring forecasts, recruitment reports, candidate email templates and module settings"
+      tabs={tabs}
       setPage={setPage}
     />
   );

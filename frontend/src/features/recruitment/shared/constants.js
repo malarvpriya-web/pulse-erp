@@ -101,7 +101,7 @@ export const STAGE_COLORS = {
   // problem §2 is about. Only 'rejected' is red; 'not_suitable' is amber,
   // because it is a verdict about a ROLE, not about the person.
   maybe:        { bg: '#F1F5F9', color: '#475569' },
-  future_use:   { bg: '#ECFEFF', color: '#0E7490' },
+  future_use:   { bg: '#F3E8FF', color: '#7E22CE' },
   not_suitable: { bg: '#FEF3C7', color: '#92400E' },
   rejected:     { bg: '#FEF2F2', color: '#B91C1C' },
 };
@@ -173,8 +173,8 @@ export const DISPOSITION_COLORS = {
   in_screening:           { bg: '#F5F3FF', color: '#6C47FF' },
   // Talent Bank and Future Opportunity read as POSITIVE, retained states. They
   // are the two the brief cares most about not looking like failures.
-  talent_bank:            { bg: '#ECFDF5', color: '#047857' },
-  future_opportunity:     { bg: '#ECFEFF', color: '#0E7490' },
+  talent_bank:            { bg: '#F5F3FF', color: '#6B3FDB' },
+  future_opportunity:     { bg: '#F3E8FF', color: '#7E22CE' },
   hired:                  { bg: '#E8FBF0', color: '#047857' },
   inactive:               { bg: '#F1F5F9', color: '#475569' },
   blacklisted:            { bg: '#1F2937', color: '#F9FAFB' },
@@ -405,7 +405,7 @@ export const DECISION_TONES = {
   neutral: { bg: '#F1F5F9', color: '#475569', border: '#CBD5E1' },
   warn:    { bg: '#FEF3C7', color: '#92400E', border: '#FDE68A' },
   route:   { bg: '#EFEAFD', color: '#4B2DCE', border: '#DDD3FB' },
-  keep:    { bg: '#ECFEFF', color: '#0E7490', border: '#A5F3FC' },
+  keep:    { bg: '#F5F3FF', color: '#6B3FDB', border: '#DDD6FE' },
   stop:    { bg: '#FEF2F2', color: '#B91C1C', border: '#FECACA' },
 };
 export const decisionLabel = (d) =>
@@ -444,10 +444,10 @@ export const ACTIVITY_TONES = {
   suitability_recorded:       { tone: 'route', dot: '#4B2DCE' },
   suitability_converted:      { tone: 'route', dot: '#4B2DCE' },
   recommended_for_role:       { tone: 'route', dot: '#4B2DCE' },
-  talent_bank_added:          { tone: 'keep',  dot: '#0E7490' },
-  future_opportunity_created: { tone: 'keep',  dot: '#0E7490' },
+  talent_bank_added:          { tone: 'keep',  dot: '#6B3FDB' },
+  future_opportunity_created: { tone: 'keep',  dot: '#6B3FDB' },
   recontact_due:              { tone: 'warn',  dot: '#92400E' },
-  recontacted:                { tone: 'keep',  dot: '#0E7490' },
+  recontacted:                { tone: 'keep',  dot: '#6B3FDB' },
   recontact_cancelled:        { tone: 'muted', dot: '#94A3B8' },
   interview_scheduled:        { tone: 'info',  dot: '#4338CA' },
   interview_feedback_added:   { tone: 'key',   dot: '#4338CA' },
@@ -467,6 +467,9 @@ export const activityTone = (t) => ACTIVITY_TONES[t] || { tone: 'muted', dot: '#
 export const SOURCE_LABELS = {
   manual:     'Manual Entry',
   website:    'Website',
+  // The public careers portal — every applicant through it carries this. It
+  // had no label, so the Dashboard showed the raw key (review 2026-11-17).
+  careers:    'Careers Page',
   linkedin:   'LinkedIn',
   naukri:     'Naukri',
   indeed:     'Indeed',
@@ -476,10 +479,12 @@ export const SOURCE_LABELS = {
   agency:     'Agency',
   walk_in:    'Walk-in',
   resume_db:  'Resume Database',
+  unknown:    'Not recorded',
 };
 
 export const SOURCE_COLORS = {
   website:    { bg: '#dbeafe', color: '#1d4ed8' },
+  careers:    { bg: '#f5f3ff', color: '#6B3FDB' },
   linkedin:   { bg: '#e0e7ff', color: '#4338ca' },
   naukri:     { bg: '#e0f2fe', color: '#0369a1' },
   indeed:     { bg: '#eef2ff', color: '#3730a3' },
@@ -548,7 +553,14 @@ export const REQUISITION_STATUS = {
   approved:         { label: 'Approved',         bg: '#dcfce7', color: '#15803d' },
   open:             { label: 'Open',             bg: '#dbeafe', color: '#1d4ed8' },
   closed:           { label: 'Closed',           bg: '#f3f4f6', color: '#6b7280' },
+  cancelled:        { label: 'Cancelled',        bg: '#fee2e2', color: '#b91c1c' },
 };
+export const REQUISITION_PRIORITIES = [
+  { value: 'high',   label: 'High',   bg: '#fee2e2', color: '#b91c1c' },
+  { value: 'medium', label: 'Medium', bg: '#ede9fe', color: '#5b21b6' },
+  { value: 'low',    label: 'Low',    bg: '#f3f4f6', color: '#4b5563' },
+];
+export const requisitionPriority = (p) => REQUISITION_PRIORITIES.find(x => x.value === p) || REQUISITION_PRIORITIES[1];
 export const requisitionStatus = (s) => REQUISITION_STATUS[(s || '').toLowerCase()] || REQUISITION_STATUS.draft;
 
 /* ── Offer status ───────────────────────────────────────────────────────── */
@@ -564,10 +576,21 @@ export const OFFER_STATUS = {
 export const offerStatus = (s) => OFFER_STATUS[(s || '').toLowerCase()] || OFFER_STATUS.draft;
 
 /* ── Interview rounds ───────────────────────────────────────────────────── */
+// interview_schedules_round_check (migration 20261117000002). A passed 1st
+// level moves the candidate to 2nd level; a passed 2nd level or final round
+// moves them to Offer; technical and HR rounds record the result only.
 export const INTERVIEW_ROUNDS = [
-  'HR Round', 'Technical Round 1', 'Technical Round 2', 'Technical Round 3',
-  'Managerial Round', 'Final Round', 'Assignment', 'Reference Check',
+  { value: '1st_level', label: '1st Level' },
+  { value: '2nd_level', label: '2nd Level' },
+  { value: 'technical', label: 'Technical' },
+  { value: 'hr',        label: 'HR' },
+  { value: 'final',     label: 'Final' },
 ];
+export const interviewRoundLabel = (r) => INTERVIEW_ROUNDS.find(x => x.value === r)?.label || r || '—';
+export const interviewModeLabel = (m) => ({ video: 'Video call', in_person: 'In person', phone: 'Phone', offline: 'In person', online: 'Video call' })[m] || m || '—';
+
+// candidates_qualification_check.
+export const QUALIFICATIONS = ['Diploma', 'BE/BTech', 'ME/MTech', 'MBA', 'MCA', 'BCA', 'BSc', 'MSc', 'BCom', 'PhD', 'Other'];
 
 export const INTERVIEW_MODES = [
   { value: 'video', label: 'Video Call' },

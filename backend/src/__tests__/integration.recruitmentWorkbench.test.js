@@ -116,7 +116,7 @@ async function sweep() {
     await pool.query(`DELETE FROM interview_notes WHERE candidate_id IN ${cands}`);
     await pool.query(`DELETE FROM interview_schedules WHERE company_id = $1`, [companyId]);
     await pool.query(`DELETE FROM offer_letters WHERE company_id = $1`, [companyId]);
-    await pool.query(`DELETE FROM job_offers WHERE company_id = $1`, [companyId]);
+    await pool.query(`DELETE FROM recruitment_agency_fees WHERE company_id = $1`, [companyId]);
     await pool.query(`DELETE FROM recruitment_employee_creation_log WHERE company_id = $1`, [companyId]);
     await pool.query(`DELETE FROM talent_pool_members WHERE pool_id IN (SELECT id FROM talent_pools WHERE company_id = $1)`, [companyId]);
     await pool.query(`DELETE FROM talent_pools WHERE company_id = $1`, [companyId]);
