@@ -1961,7 +1961,8 @@ router.put('/offers/:id', edit, validatePatch(offerSchema), async (req, res) => 
     const body = { ...req.body };
     delete body.candidate_id;
     const day = (d) => (d == null ? null : (d instanceof Date ? isoOfLocal(d) : String(d).slice(0, 10)));
-    // A sent offer may have its validity EXTENDED (the candidate asked for more
+    // OWNER DECISION 2026-11-18 (fixed): once sent, only the validity date may
+    // change. A sent offer may have its validity EXTENDED (the candidate asked for more
     // time) — that changes no money term, so it needs no fresh approval.
     const onlyExtending = before.offer_status === 'sent'
       && Object.keys(body).every(k => k === 'offer_expiry_date')
@@ -1983,6 +1984,7 @@ router.put('/offers/:id', edit, validatePatch(offerSchema), async (req, res) => 
       if (exp && join && exp > join) return res.status(400).json({ error: 'The offer should expire before the joining date.' });
       if (body.offered_salary !== undefined && !(Number(body.offered_salary) > 0)) return res.status(400).json({ error: 'Enter the annual CTC.' });
     }
+    // OWNER DECISION 2026-11-18 (fixed): accepted offers cannot be withdrawn.
     // An accepted offer is no longer withdrawable here: accepting hires the
     // candidate and creates the employee, and pulling the offer afterwards left
     // an employee with a "withdrawn" offer. A joiner who does not turn up is an
@@ -2068,7 +2070,8 @@ router.post('/offers/:id/salary-proposal', edit, async (req, res) => {
 
 router.post('/offers/:id/accept', edit, async (req, res) => {
   try {
-    // Offers never expired: a "sent" offer stayed acceptable for ever. Past its
+    // OWNER DECISION 2026-11-18 (fixed): an expired offer is accepted only with
+    // an explicit confirmation (accept_late). Offers never expired: a "sent" offer stayed acceptable for ever. Past its
     // valid-until date it now needs an explicit "accept late" from the user
     // (or the validity extended first), so lapsing is a decision, not an accident.
     const current = await recruitmentRepository.findOfferById(req.params.id, cid(req));

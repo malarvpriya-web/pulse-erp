@@ -139,3 +139,16 @@ describe('Website careers code', () => {
     expect(code).not.toMatch(/innerHTML/);
   });
 });
+
+describe('The three fixed offer rules (owner 2026-11-18)', () => {
+  it('are stated on the page, and an accepted offer has no Withdraw', async () => {
+    mount(<OfferManagement embedded />);
+    const rules = await screen.findByTestId('offer-rules');
+    expect(rules.textContent).toMatch(/only its valid-until date can change/);
+    expect(rules.textContent).toMatch(/expired offer can still be accepted, after a confirmation/);
+    expect(rules.textContent).toMatch(/accepted offer cannot be withdrawn/);
+    const row = (await screen.findByText('Dinesh')).closest('tr');
+    expect(within(row).queryByRole('button', { name: /Withdraw/ })).toBeNull();
+    expect(within(row).getByText(/No-show goes to Exit Management/i)).toBeTruthy();
+  });
+});

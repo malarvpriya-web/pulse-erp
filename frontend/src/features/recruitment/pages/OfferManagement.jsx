@@ -426,6 +426,13 @@ export default function OfferManagement({ embedded = false, setPage }) {
         })}
       </div>
 
+      {/* Owner decisions 2026-11-18 — the three fixed offer rules, said where they apply. */}
+      <p data-testid="offer-rules" style={{ fontSize: 12, color: '#6b7280', margin: '0 0 12px', lineHeight: 1.5 }}>
+        Once an offer is sent, only its valid-until date can change; to change the terms, withdraw it and make a new offer.
+        An expired offer can still be accepted, after a confirmation. An accepted offer cannot be withdrawn; if the person
+        does not join, that is handled in Exit Management.
+      </p>
+
       <div style={{ background: '#fff', borderRadius: 12, border: '1px solid #f0f0f4', overflow: 'auto' }}>
         {loading ? (
           <div style={{ padding: 40, textAlign: 'center', color: '#9ca3af' }}>Loading…</div>
@@ -473,6 +480,7 @@ export default function OfferManagement({ embedded = false, setPage }) {
                       {sentBack && <div style={{ fontSize: 11, color: '#92400e', marginTop: 4 }}>Sent back: {o.last_decision_comment}</div>}
                       {o.close_reason && ['declined', 'withdrawn'].includes(o.offer_status) && <div style={{ fontSize: 11, color: '#6b7280', marginTop: 4 }}>{o.close_reason}</div>}
                       {o.offer_status === 'accepted' && o.employee_code && <div style={{ fontSize: 11, color: '#065f46', marginTop: 4 }}>Employee {o.employee_code}</div>}
+                      {o.offer_status === 'accepted' && <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 4 }}>Final. A no-show goes to Exit Management.</div>}
                     </td>
                     <td style={{ padding: '10px 14px' }}>
                       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
@@ -491,7 +499,8 @@ export default function OfferManagement({ embedded = false, setPage }) {
                         {o.offer_status === 'sent' && (<>
                           <button type="button" disabled={busy === `c${o.id}`} onClick={() => acceptOffer(o)} style={actBtn('#d1fae5', '#065f46')}><CheckCircle size={11} /> Accepted</button>
                           <button type="button" onClick={() => setReason({ kind: 'declined', offer: o })} style={actBtn('#fee2e2', '#991b1b')}><XCircle size={11} /> Declined</button>
-                          <button type="button" onClick={() => setExtend(o)} style={actBtn('#f3f4f6', '#374151')}><CalendarPlus size={11} /> Extend</button>
+                          <button type="button" onClick={() => setExtend(o)} title="Only the valid-until date can change after sending. To change the terms, withdraw and make a new offer."
+                            style={actBtn('#f3f4f6', '#374151')}><CalendarPlus size={11} /> Extend</button>
                         </>)}
                         {o.offer_status === 'accepted' && (o.salary_proposal_status
                           ? <span style={{ fontSize: 11, color: '#5b21b6', alignSelf: 'center' }}>Salary proposal: {o.salary_proposal_status}</span>
