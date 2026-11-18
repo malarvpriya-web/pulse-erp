@@ -22,8 +22,13 @@ import jwt from 'jsonwebtoken';
  */
 export async function createIsolatedCompany(pool, prefix) {
   const code = `${prefix}${Date.now().toString(36).toUpperCase()}`;
+  // A valid TAN, payroll that does not read attendance, and rule changes that
+  // apply at once: suites that test those checks switch them back on.
   const { rows: [co] } = await pool.query(
-    `INSERT INTO companies (name, code) VALUES ($1, $2) RETURNING id`, [`${code} test company`, code]);
+    `INSERT INTO companies (name, code, tan) VALUES ($1, $2, 'ZZZZ99999Z') RETURNING id`, [`${code} test company`, code]);
+  await pool.query(
+    `INSERT INTO company_settings (company_id, module, settings) VALUES ($1, 'payroll', '{"require_attendance_sync": false, "rules_two_person": false}'::jsonb)
+     ON CONFLICT (company_id, module) DO NOTHING`, [co.id]);
   const { rows: [user] } = await pool.query(
     `INSERT INTO users (name, email, password_hash, company_id, is_active, role)
      VALUES ($1, $2, 'not-a-real-hash', $3, true, 'admin') RETURNING id`,

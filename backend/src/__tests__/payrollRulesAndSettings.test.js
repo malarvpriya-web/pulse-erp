@@ -7,7 +7,8 @@
 import { describe, it, expect } from 'vitest';
 import { normalizePayrollSettings, normalizeForSave, validatePayCycle, payCycleFor } from '../modules/payroll/payrollSettings.js';
 import { evaluateEligibility, validateStatutoryProfile, blockingIssues, isValidPAN, isValidTAN } from '../modules/payroll/payrollEligibility.js';
-import { resolveRules, BUILT_IN_RULES } from '../modules/payroll/statutoryRules.js';
+import { resolveRules, BUILT_IN_RULES, RULE_KEYS, COMPANY_SETTING_KEYS, ruleValueProblems } from '../modules/payroll/statutoryRules.js';
+import { computePayroll, planBonus } from '../modules/payroll/payrollEngine.js';
 
 // Company 1's stored blob on 2026-10-20 (both screens' keys, disagreeing).
 const LIVE = {
@@ -140,7 +141,7 @@ describe('statutory verification status (primary-source pass, 2026-10-20)', () =
   it('every built-in version declares a status and the evidence behind it', () => {
     for (const [key, versions] of Object.entries(BUILT_IN_RULES)) {
       for (const v of versions) {
-        expect(['verified', 'unverified', 'decision_required'], key).toContain(v.status);
+        expect(['verified', 'unverified', 'decision_required', 'company_setting'], key).toContain(v.status);
         expect(String(v.evidence || '').length, key).toBeGreaterThan(10);
       }
     }
@@ -149,12 +150,72 @@ describe('statutory verification status (primary-source pass, 2026-10-20)', () =
     const at = (d) => resolveRules(d).applied;
     expect(at('2026-09-30')['pf.wage_ceiling']).toMatchObject({ status: 'verified', effective_from: '2026-09-17' });
     expect(at('2026-08-31')['pf.wage_ceiling']).toMatchObject({ status: 'verified', effective_from: '2026-05-29' });
-    expect(at('2026-09-30')['tax.new'].status).toBe('unverified');
+    expect(at('2026-03-31')['tax.new'].status).toBe('unverified');
+    expect(at('2026-09-30')['tax.new']).toMatchObject({ status: 'verified', effective_from: '2026-04-01' });
     expect(at('2026-09-30')['pf.wage_floor_basis'].status).toBe('decision_required');
     expect(at('2026-09-30')['esi.wage_basis'].status).toBe('decision_required');
   });
+  it('every built-in value passes the check on typed values', () => {
+    for (const key of RULE_KEYS) for (const v of BUILT_IN_RULES[key]) expect(ruleValueProblems(key, v.value), `${key} ${v.effective_from}`).toEqual([]);
+  });
+  it('typed values the engine would miscalculate are refused', () => {
+    const tax = BUILT_IN_RULES['tax.new'][0].value;
+    expect(ruleValueProblems('pf.wage_ceiling', NaN)).not.toEqual([]);
+    expect(ruleValueProblems('pf.wage_ceiling', 0)).not.toEqual([]);
+    expect(ruleValueProblems('esi.employee_rate', 101)).not.toEqual([]);
+    expect(ruleValueProblems('pf.wage_floor_pct', null)).toEqual([]);
+    expect(ruleValueProblems('pf.wage_ceiling', null)).not.toEqual([]);
+    expect(ruleValueProblems('esi.wage_basis', 'net_pay')).not.toEqual([]);
+    // Rate typed as 5 instead of 5%, a gap between bands, a closed last band.
+    expect(ruleValueProblems('tax.new', { ...tax, slabs: [{ min: 0, max: null, rate: 5 }] })).not.toEqual([]);
+    expect(ruleValueProblems('tax.new', { ...tax, slabs: [{ min: 0, max: 100, rate: 0 }, { min: 200, max: null, rate: 0.1 }] })).not.toEqual([]);
+    expect(ruleValueProblems('tax.new', { ...tax, slabs: [{ min: 0, max: 100, rate: 0 }] })).not.toEqual([]);
+    expect(ruleValueProblems('tax.new', { ...tax, cess_pct: NaN })).not.toEqual([]);
+    expect(ruleValueProblems('pt.slabs', { MH: [{ min: 0, max: 100, pt: 0 }, { min: 100, max: null, pt: 200 }] })[0]).toMatch(/^MH: band 2 must start at 101/);
+    expect(ruleValueProblems('lwf.rates', { TN: { employee: 20, employer: 40, months: [13] } })[0]).toMatch(/^TN: months/);
+    expect(ruleValueProblems('lwf.rates', { TN: { employee: 20, employer: 40, months: [] } })).toEqual([]);
+  });
+  it('bonus plans and the statutory bonus figures refuse what the engine would miscalculate', () => {
+    const plan = { name: 'Diwali', type: 'fixed', amount: 5000, months: [10], active: true };
+    expect(ruleValueProblems('bonus.plans', { plans: [plan] })).toEqual([]);
+    expect(ruleValueProblems('bonus.plans', { plans: [{ ...plan, name: ' ' }] })[0]).toMatch(/name is required/);
+    expect(ruleValueProblems('bonus.plans', { plans: [plan, { ...plan, name: 'diwali' }] })[0]).toMatch(/used twice/);
+    expect(ruleValueProblems('bonus.plans', { plans: [{ ...plan, type: 'pct_basic', amount: 500 }] })[0]).toMatch(/above 100/);
+    expect(ruleValueProblems('bonus.plans', { plans: [{ ...plan, months: [] }] })[0]).toMatch(/months/);
+    expect(ruleValueProblems('bonus.plans', { plans: [{ ...plan, amount: NaN }] })[0]).toMatch(/amount/);
+    expect(ruleValueProblems('bonus.statutory', { wage_eligibility: 21000, calc_ceiling: 7000, min_pct: 30, max_pct: 20 })[0]).toMatch(/min_pct/);
+  });
+  it('bonus plans pay in their months only, on what the month earned', () => {
+    const plans = [
+      { name: 'F', type: 'fixed', amount: 5000, months: [10], active: true },
+      { name: 'B', type: 'pct_basic', amount: 10, months: [10, 3], active: true },
+      { name: 'G', type: 'pct_gross', amount: 1, months: [10], active: true },
+      { name: 'Off', type: 'fixed', amount: 9999, months: [10], active: false },
+    ];
+    expect(planBonus(plans, 10, { basic: 30000, gross: 60000 })).toBe(5000 + 3000 + 600);
+    expect(planBonus(plans, 3, { basic: 15000, gross: 30000 })).toBe(1500);
+    expect(planBonus(plans, 4, { basic: 30000, gross: 60000 })).toBe(0);
+    expect(planBonus(null, 10)).toBe(0);
+  });
+  it('a plan bonus reaches gross and tax like any bonus, and stays out unless payroll passes the plans', () => {
+    const emp = { id: 1, office_id: 'E1', basic_salary: 30000, joining_date: '2024-04-01', state: 'Tamil Nadu' };
+    const structureComponents = [
+      { name: 'Basic', type: 'earning', value: 100, calculation_type: 'percentage_of_ctc' },
+    ];
+    const config = { month: 10, year: 2026, rules: resolveRules('2026-10-31').values, structureComponents };
+    const plain = computePayroll(emp, config);
+    const paid = computePayroll(emp, { ...config, bonus_plans: [{ name: 'F', type: 'fixed', amount: 5000, months: [10], active: true }] });
+    expect(paid.bonus).toBe(5000);
+    expect(paid.gross).toBe(plain.gross + 5000);
+    expect(plain.bonus).toBe(0);
+  });
+  it('a company setting never blocks a payroll approval', () => {
+    expect(COMPANY_SETTING_KEYS).toEqual(['bonus.statutory', 'bonus.plans', 'incentive.sales', 'pf.edli_rate', 'pf.admin_rate', 'pf.admin_min_monthly', 'wages.minimum_monthly']);
+    const { applied } = resolveRules('2026-11-30');
+    for (const k of COMPANY_SETTING_KEYS) expect(applied[k].status).toBe('company_setting');
+  });
   it('a recorded company version is a confirmation and wins on the same date', () => {
     const rows = [{ rule_key: 'tax.new', effective_from: '2025-04-01', value: BUILT_IN_RULES['tax.new'][0].value, company_id: 1, source_reference: 'CBDT ref' }];
-    expect(resolveRules('2026-09-30', rows).applied['tax.new']).toMatchObject({ origin: 'company', status: 'verified' });
+    expect(resolveRules('2026-03-31', rows).applied['tax.new']).toMatchObject({ origin: 'company', status: 'verified' });
   });
 });

@@ -90,6 +90,24 @@ describe('Add Employee', () => {
     SAVE();
     await waitFor(() => expect(api.post).toHaveBeenCalled());
     expect(sent()).toMatchObject({ current_address: '1 Fixture Street', account_number: '123456789012', ifsc_code: 'HDFC0001234' });
+    expect(sent()).toMatchObject({ account_holder_name: 'Ravi Kumar' });
+    expect(sent().cancelled_cheque_file).toBeInstanceOf(File);
+  });
+
+  it('§267: a new account needs the account-holder name and a cancelled cheque or statement — nothing is sent without them', async () => {
+    mockApi();
+    render(<AddEmployee employee={null} setPage={vi.fn()} setSelectedEmployee={vi.fn()} />);
+    fillBasics();
+    fillBankAndAddress({ proof: false });
+    SAVE();
+    expect(await screen.findByText(/Enter the account-holder name/)).toBeTruthy();
+    expect(screen.getByText(/Attach a cancelled cheque or a bank statement/)).toBeTruthy();
+    expect(api.post).not.toHaveBeenCalled();
+    fireEvent.change(document.getElementById('ae-account-holder'), { target: { value: 'Ravi Kumar' } });
+    fireEvent.change(screen.getByLabelText('Bank statement'), { target: { files: [new File(['%PDF'], 's.pdf', { type: 'application/pdf' })] } });
+    SAVE();
+    await waitFor(() => expect(api.post).toHaveBeenCalled());
+    expect(sent().bank_statement_file).toBeInstanceOf(File);
   });
 
   it('says the bank details wait for a second HR person (§204)', async () => {

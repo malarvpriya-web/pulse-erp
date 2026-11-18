@@ -389,8 +389,12 @@ describe('failure of the SUCCESS security-event insert', () => {
     expect(userWrites).toHaveLength(1);
     expect(userWrites[0].params).toContain(fx.evFail);
     expect(userWrites[0].rowCount).toBe(1);                 // its one linked login
+    // §267: its bank-detail change requests (numbers, holder name, proof paths) are blanked too.
+    const bankWrites = writes.filter(w => /^UPDATE employee_bank_change_requests\b/i.test(w.sql));
+    expect(bankWrites).toHaveLength(1);
+    expect(bankWrites[0].params).toEqual([fx.evFail]);
     // Nothing else is written but the success event.
-    const rest = writes.filter(w => !empWrites.includes(w) && !userWrites.includes(w));
+    const rest = writes.filter(w => !empWrites.includes(w) && !userWrites.includes(w) && !bankWrites.includes(w));
     expect(rest).toHaveLength(1);
     expect(rest[0].sql).toMatch(/^INSERT INTO security_events\s*\(/i);
   });

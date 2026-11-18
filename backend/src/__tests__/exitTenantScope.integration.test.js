@@ -132,6 +132,7 @@ beforeAll(async () => {
   await pool.query(`INSERT INTO companies (id, name, code) VALUES ($1,'ZZ ExitTs A','ZZETA'), ($2,'ZZ ExitTs B','ZZETB')`, [A, B]);
   await login('hrA', 'hr_manager', A);
   await login('hrB', 'hr_manager', B);
+  await login('finA', 'finance_manager', A);
   await login('unscopedHr', 'hr_manager', null);   // no users.company_id, no user_scope
   await login('super', 'super_admin', null);       // a deliberate global scope
 }, 60_000);
@@ -250,16 +251,22 @@ describe('POST /exit/fnf/compute/:employee_id', () => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 describe('PUT /exit/fnf/:id/approve', () => {
-  const send = (who, s, extra) => call(who, 'put', `/fnf/${s.er}/approve`, extra);
+  // Approval is Finance's now (§254), so the same scoping is proved with a Finance login.
+  // A successful approval, with its confirmed rules, is in settlementApprovePay.
+  const send = (who, s, extra) => call(who === 'hrA' ? 'finA' : who, 'put', `/fnf/${s.er}/approve`, extra);
 
-  it('same company: approves; approving again is idempotent; concurrent approves agree', async () => {
+  it('same company with nothing computed: reaches the settlement step and is refused, changing nothing', async () => {
     const s = await leaver(A, { fnf: 'draft' });
+    const before = await snapshot(s);
     const r = await send('hrA', s);
-    expect(r.status).toBe(200);
-    expect(r.body).toMatchObject({ id: s.er, fnf_status: 'approved' });
-    const again = await Promise.all([send('hrA', s), send('hrA', s)]);
-    expect(again.map(x => x.status)).toEqual([200, 200]);
-    expect((await snapshot(s)).exit_request.fnf_status).toBe('approved');
+    expect(r.status).toBe(409);
+    expect(r.body.code).toBe('SETTLEMENT_NOT_COMPUTED');
+    expect(await snapshot(s)).toEqual(before);
+  });
+
+  it('HR no longer approves', async () => {
+    const s = await leaver(A, { fnf: 'draft' });
+    expect((await call('hrA', 'put', `/fnf/${s.er}/approve`)).status).toBe(403);
   });
 
   it('a PAID settlement is not moved back to approved (409)', async () => {
@@ -270,10 +277,10 @@ describe('PUT /exit/fnf/:id/approve', () => {
   });
 
   it.each([['abc', 400], ['12abc', 400], ['0', 400], ['2147483000', 404]])('id %j → %i', async (bad, code) => {
-    expect((await call('hrA', 'put', `/fnf/${bad}/approve`)).status).toBe(code);
+    expect((await call('finA', 'put', `/fnf/${bad}/approve`)).status).toBe(code);
   });
 
-  refusals('PUT /exit/fnf/:id/approve', send, { okStatus: 200 });
+  refusals('PUT /exit/fnf/:id/approve', send, { okStatus: 409 });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

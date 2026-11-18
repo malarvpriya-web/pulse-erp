@@ -49,6 +49,8 @@ const fx = { tok: {}, user: {}, emp: {} };
 
 const app = express();
 app.use(express.json());
+const { employeeUploadForTests } = await import('./helpers/testApp.js');   // what server.js mounts first (§267 bank proof)
+app.use('/api/employees', employeeUploadForTests);
 app.use('/api/employees', employeeRouter);
 app.use('/api/notes', noteRouter);
 app.use('/api/onboarding', verifyToken, onboardingRouter);   // mounted behind verifyToken in server.js

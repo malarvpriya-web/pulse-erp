@@ -30,7 +30,7 @@ vi.mock('../components/dashboard/CelebrationSpotlight', () => ({ default: () => 
 vi.mock('../hooks/useSessionManager', () => ({
   default: () => ({ showWarning: false, sessionTimeRemaining: 0, extendSession: vi.fn(), forceLogout: vi.fn() }),
 }));
-const PROBED = ['EmployeeSelfService', 'EmployeeDashboard', 'PayrollCenter', 'ExitCenter'];
+const PROBED = ['EmployeeDashboard', 'PayrollCenter', 'ExitCenter'];
 vi.mock('../config/autoRouter', async () => {
   const { ROUTES } = await import('../config/routes');
   const probes = Object.fromEntries(PROBED.map(k => [k, { ...ROUTES[k], component: () => <div data-testid="page">{k}</div> }]));
@@ -46,8 +46,8 @@ const { default: Layout } = await import('../components/Layout');
 
 const GRANTS = {
   super_admin: [], admin: [],
-  hr: ['hr:view', 'employees:view', 'payroll:view'], hr_manager: ['hr:view', 'payroll:view'], hr_exec: ['hr:view'],
-  payroll_admin: ['hr:view', 'payroll:view'], manager: ['employees:view'], employee: ['employees:view'],
+  hr: ['hr:view', 'exit:view', 'employees:view', 'payroll:view'], hr_manager: ['hr:view', 'exit:view', 'payroll:view'], hr_exec: ['hr:view', 'exit:view'],
+  payroll_admin: ['hr:view', 'exit:view', 'payroll:view'], manager: ['employees:view'], employee: ['employees:view'],
   department_head: ['employees:view'], sales_exec: [], finance_manager: ['payroll:view'],
 };
 
@@ -68,12 +68,10 @@ beforeEach(() => { document.body.innerHTML = ''; });
 
 const HR_MENU_ROLES = ['super_admin', 'admin', 'hr', 'hr_manager', 'hr_exec', 'payroll_admin', 'manager', 'employee'];
 
-describe('the portal by direct URL', () => {
-  it.each(HR_MENU_ROLES)('%s can open Employee Self-Service', async (role) => {
+describe('the removed portal by direct URL (2026-11-11)', () => {
+  it.each([...HR_MENU_ROLES, 'department_head', 'sales_exec', 'finance_manager'])('%s opening /EmployeeSelfService lands on My Dashboard', async (role) => {
     expect(await outcome(role, 'EmployeeSelfService')).toBe('page');
-  });
-  it.each(['department_head', 'sales_exec', 'finance_manager'])('%s (no HR menu) is refused it by address too', async (role) => {
-    expect(await outcome(role, 'EmployeeSelfService')).toBe('denied');
+    expect(screen.getByTestId('page').textContent).toBe('EmployeeDashboard');
   });
   it('My Dashboard stays open to every role (PERSONAL_PAGES)', async () => {
     expect(await outcome('sales_exec', 'EmployeeDashboard')).toBe('page');

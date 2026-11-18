@@ -288,7 +288,8 @@ describe('cross-tenant references the Add Employee form can send', () => {
   it('the asset-type master being empty does not block allocation', () => {
     // Same rule validateMasterValue uses for department: an unseeded master
     // must not stop every write.
-    expect(ASSETS).toMatch(/if \(seeded\.length\)/);
+    // (Moved into assetTypeError() on 11 Nov 26, shared by POST, PUT and re-issue.)
+    expect(ASSETS).toMatch(/if \(!seeded\.length\) return null;/);
   });
 });
 

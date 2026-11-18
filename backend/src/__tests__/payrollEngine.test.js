@@ -76,7 +76,7 @@ describe('employer contributions are not deducted from the employee (audit item 
     expect(s.employer_pf).toBeGreaterThan(0);
     expect(s.total_deductions).toBe(s.employee_pf + s.employee_esi + s.professional_tax + s.tds + s.lwf_employee);
     expect(s.net_pay).toBe(s.gross - s.total_deductions);
-    expect(s.employer_contributions.total).toBe(s.employer_pf + s.employer_esi + s.lwf_employer);
+    expect(s.employer_contributions.total).toBe(s.edli_employer + s.pf_admin_employer + s.employer_pf + s.employer_esi + s.lwf_employer);
     expect(s.ctc_monthly).toBe(s.gross + s.employer_contributions.total);
   });
 });
@@ -150,7 +150,8 @@ describe('inputs that must exist (no fabricated salary)', () => {
   it('OT multiplier 89 (the seeded value) is refused, not paid', () => {
     try { run({}, { overtime_hours: 10, ot_multiplier: 89 }); throw new Error('no throw'); }
     catch (e) { expect(e.code).toBe('OT_MULTIPLIER'); }
-    expect(run({}, { overtime_hours: 10, ot_multiplier: 2 }).overtime_pay).toBe(Math.round(30000 / 208 * 10 * 2));
+    // Basic 30,000 = 40% of 75,000: the overtime rate is on the Code's wages, 37,500 (§261)
+    expect(run({}, { overtime_hours: 10, ot_multiplier: 2 }).overtime_pay).toBe(Math.round(37500 / 208 * 10 * 2));
   });
   it('EMI larger than pay → NEGATIVE_NET (it used to clamp net to ₹0 silently)', () => {
     try { run({}, { recoveries: [{ type: 'loan', amount: 200000 }] }); throw new Error('no throw'); }
@@ -217,5 +218,33 @@ describe('periods, quarters and financial years (audit item 18)', () => {
     expect(parseFinancialYear('2026-2029')).toBeNull();
     expect(indianFinancialYear(3, 2027)).toBe('2026-2027');
     expect(indianFinancialYear(4, 2026)).toBe('2026-2027');
+  });
+});
+
+// §261 — the statutory bonus report used average Basic × 12 and a ₹7,000 cap.
+import { computeStatutoryBonus } from '../modules/payroll/payrollEngine.js';
+describe('statutory bonus', () => {
+  const rule = { wage_eligibility: 21000, calc_ceiling: 7000, min_pct: 8.33, max_pct: 20 };
+  const m = (month, year, wage, worked_days = 26) => ({ month, year, wage, worked_days });
+  it('counts only the months actually paid', () => {
+    const b = computeStatutoryBonus([m(1, 2027, 6000), m(2, 2027, 6000), m(3, 2027, 6000)], rule);
+    expect(b.bonus_wages).toBe(18000);
+    expect(b.min_bonus).toBe(Math.round(18000 * 0.0833));   // 1,499 — not 6,000 × 12 × 8.33% = 5,998
+    expect(b.max_bonus).toBe(3600);
+  });
+  it('caps each month at ₹7,000 or the minimum wage, whichever is higher', () => {
+    const months = [m(4, 2026, 18000), m(5, 2026, 18000)];
+    expect(computeStatutoryBonus(months, rule).bonus_wages).toBe(14000);
+    const b = computeStatutoryBonus(months, rule, () => 15000);
+    expect(b.bonus_wages).toBe(30000);
+    expect(b.per_month[0].cap).toBe(15000);
+  });
+  it('pays at least ₹100, and needs 30 working days and a wage within the limit', () => {
+    expect(computeStatutoryBonus([m(4, 2026, 500, 30)], rule).min_bonus).toBe(100);
+    const short = computeStatutoryBonus([m(4, 2026, 9000, 20)], rule);
+    expect(short.eligible).toBe(false);
+    expect(short.reasons[0]).toMatch(/30 are needed/);
+    const high = computeStatutoryBonus([m(4, 2026, 25000)], rule);
+    expect(high).toMatchObject({ eligible: false, min_bonus: 0, max_bonus: 0 });
   });
 });

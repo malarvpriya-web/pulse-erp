@@ -100,6 +100,66 @@ describe('release gate — statutory jurisdiction', () => {
   const ptRow = (TNvalue) => ({ rule_key: 'pt.slabs', company_id: 1, effective_from: '2026-04-01', value: { TN: TNvalue }, source_reference: 'test fixture' });
   const VP = { statutory_state: TN, pt_local_body: 'village_panchayat', pt_local_body_name: 'Test Panchayat' };
 
+  // Gate queries answered with these draft rows instead of the employee states.
+  const withDrafts = (settings, drafts, ruleRows = []) => {
+    const inner = client({ ...base, ...settings }, [TN], TN, { ruleRows });
+    return { async query(sql) { return /pr\.status = 'pending'/.test(sql) ? { rows: drafts } : inner.query(sql); } };
+  };
+  const TN_OK = { statutory_state: TN, pt_local_body: 'municipality' };
+  const at = (settings, drafts, ruleRows) => releaseReadiness({ company_id: 1, month: 11, year: 2026, client: withDrafts(settings, drafts, ruleRows) });
+
+  it('a TN company is told what to confirm for TN, not about Karnataka', async () => {
+    const { blockers } = await gate(TN_OK, [TN]);
+    const pt = blockers.find(b => b.key === 'pt.slabs'), lwf = blockers.find(b => b.key === 'lwf.rates');
+    expect(pt.state).toBe('TN');
+    expect(pt.message).toMatch(/council/);
+    expect(pt.message).not.toMatch(/Karnataka|KA:/);
+    expect(lwf.message).toMatch(/Rule 12 was NOT read/);
+    expect(lwf.message).not.toMatch(/KLWB/);
+  });
+
+  it('every rule blocker says which date to record it on', async () => {
+    const { blockers } = await gate(TN_OK, [TN]);
+    const rule = blockers.filter(b => b.code.startsWith('RULE_'));
+    expect(rule.length).toBeGreaterThan(0);
+    for (const b of rule) expect(b.record_from, b.key).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+
+  it('a confirmation recorded on that date clears the blocker and changes no value', async () => {
+    const { blockers } = await gate(TN_OK, [TN]);
+    const b = blockers.find(x => x.key === 'lwf.rates');
+    const ruleRows = [{ rule_key: b.key, company_id: 1, effective_from: b.record_from, value: b.value, source_reference: 'source' }];
+    const after = await gate(TN_OK, [TN], { ruleRows });
+    expect(after.blockers.some(x => x.key === 'lwf.rates')).toBe(false);
+    expect(resolveRules('2026-11-30', ruleRows).values['lwf.rates']).toEqual(b.value);
+  });
+
+  // Surcharge and the old-regime senior slabs are computed since 2026-11-09
+  // (payrollGoLiveEngine.test.js): such a draft no longer blocks approval.
+  it('income above ₹50L and old-regime seniors no longer block: the engine computes them', async () => {
+    const over = await at(TN_OK, [{ office_id: 'EMP038', annual_taxable_income: '5000001.00', tax_regime: 'new' }]);
+    expect(over.blockers.some(b => b.code === 'TAX_NOT_MODELLED')).toBe(false);
+    const senior = await at(TN_OK, [{ office_id: 'EMP002', annual_taxable_income: '900000', tax_regime: 'old', dob: '1966-11-30' }]);
+    expect(senior.blockers.some(b => b.code === 'TAX_NOT_MODELLED')).toBe(false);
+  });
+
+  it('a rule change after the draft blocks; a confirmation of the same value does not', async () => {
+    const drafts = [{ office_id: 'EMP001', generated_at: '2026-11-05T10:00:00Z', annual_taxable_income: '900000', tax_regime: 'new' }];
+    const row = (value, created_at) => ({ rule_key: 'esi.wage_basis', company_id: 1, effective_from: '2025-11-21', value, source_reference: 'x', created_at });
+    const code = async (rows) => (await at(TN_OK, drafts, rows)).blockers.some(b => b.code === 'DRAFT_PREDATES_RULE');
+    expect(await code([row('code_wages', '2026-11-05T11:00:00Z')])).toBe(true);   // changed, after the draft
+    expect(await code([row('code_wages', '2026-11-05T09:00:00Z')])).toBe(false);  // changed, before the draft
+    expect(await code([row('gross', '2026-11-05T11:00:00Z')])).toBe(false);       // same value: no figure moves
+    // Dated into the month but equal to what the period already used: no figure moves.
+    const ceiling = { rule_key: 'pf.wage_ceiling', company_id: 1, effective_from: '2026-09-01', value: 25000, source_reference: 'x', created_at: '2026-11-05T11:00:00Z' };
+    expect(await code([ceiling])).toBe(false);
+    // jsonb reorders keys: a recorded table is the same table.
+    const { values } = resolveRules('2025-04-15');
+    const reorder = (v) => Object.fromEntries(Object.keys(v).reverse().map(k => [k, v[k]]));
+    const lwf = { rule_key: 'lwf.rates', company_id: 1, effective_from: '2025-01-10', value: reorder(values['lwf.rates']), source_reference: 'x', created_at: '2026-11-05T11:00:00Z' };
+    expect(await code([lwf])).toBe(false);
+  });
+
   it('company state must match the state its GSTIN is registered in', async () => {
     expect(await codes({ statutory_state: TN, pt_local_body: 'municipality' }, [TN], TN, { gstin: '29AABCM1234A1Z5' })).toContain('COMPANY_GSTIN_STATE');
     expect(await codes({ statutory_state: TN, pt_local_body: 'municipality' }, [TN], TN, { gstin: '33AABCM1234A1Z5' })).not.toContain('COMPANY_GSTIN_STATE');

@@ -209,8 +209,10 @@ describe('loans & advances (isolated company, synthetic employees)', () => {
     expect((await call(co, 'post', `/api/payroll/loan-advances/${loanId}/prepay`).send({ amount: 30000, payment_date: '2026-10-05' })).status).toBe(200);
     await confirmRules(co, 10, 2026);
     const stale = await call(checker, 'post', '/api/payroll/approve').send({ month: 10, year: 2026 });
-    expect(stale.status).toBe(409);
-    expect(stale.body.message).toMatch(/Regenerate/);
+    // The release check sees the deductions changed (total_deductions is compared
+    // since §261) and refuses before the loan check gets to it.
+    expect(stale.status).toBe(422);
+    expect(stale.body.release_blockers.map(b => b.code)).toContain('DRAFT_OUT_OF_DATE');
     await call(co, 'post', '/api/payroll/generate').send({ month: 10, year: 2026, employee_id: E.A });
     const oct = (await call(co, 'get', `/api/payroll/payslips?employee_id=${E.A}&month=10&year=2026`)).body.data;
     // 3,599.67 + 30.00 interest = 3,629.67 → payslip shows 3,630
@@ -329,6 +331,8 @@ describe('representative loans through payroll: one deduction per month, approve
   });
 
   it('maker-checker holds; approval records each installment once and reduces the balance', async () => {
+    // October's leftover drafts would hold November (EARLIER_MONTH_OPEN)
+    await call(co, 'post', '/api/payroll/discard').send({ month: 10, year: 2026 });
     await confirmRules(co, 11, 2026);
     const own = await call(co, 'post', '/api/payroll/approve').send({ month: 11, year: 2026 });
     expect(own.status).toBe(403);

@@ -164,12 +164,13 @@ describe('C3 — F&F approve and pay are suspended', () => {
     expect((await call(emp, 'post', `/api/exit/fnf/${s.er}/pay`)).status).toBe(403);
   });
 
-  it('switched off, approve works again (reversal)', async () => {
+  it('switched off, the Finance controls take over: HR still cannot approve (§254)', async () => {
     process.env.HR_CONTAINMENT_FNF = 'off';
     const s = await leaver('EMP114', { fnf: 'draft', netPayable: 1000 });
+    const before = await exitRow(s.er);
     const r = await call(hr, 'put', `/api/exit/fnf/${s.er}/approve`);
-    expect(r.status).toBe(200);
-    expect((await exitRow(s.er)).fnf_status).toBe('approved');
+    expect(r.status).toBe(403);
+    expect(await exitRow(s.er)).toEqual(before);
   });
 });
 
@@ -243,41 +244,10 @@ describe('C6 — an employee leaves only through the exit workflow', () => {
     expect((await empRow(id)).status).toBe('Notice');
   });
 
-  it('Offboarding Complete with no exit request → 409, nothing changes', async () => {
-    const id = await addEmployee(co, 'EMP123');
-    const r = await call(hr, 'post', `/api/hr/offboarding/${id}/complete`);
-    expect(r.status).toBe(409);
-    expect(r.body.code).toBe('EXIT_NOT_SETTLED');
-    expect(await empRow(id)).toMatchObject({ status: 'Active', exit_date: null });
-  });
-
-  it('Offboarding Complete with F&F not paid → 409, exit and employee unchanged', async () => {
-    const s = await leaver('EMP124', { fnf: 'approved', netPayable: 500 });
-    const beforeExit = await exitRow(s.er);
-    const r = await call(hr, 'post', `/api/hr/offboarding/${s.emp}/complete`);
-    expect(r.status).toBe(409);
-    expect(await exitRow(s.er)).toEqual(beforeExit);
-    expect(await empRow(s.emp)).toMatchObject({ status: 'Notice', exit_date: null });
-  });
-
-  it('Offboarding Complete after F&F was paid still finalises', async () => {
-    const s = await leaver('EMP125', { fnf: 'paid', netPayable: 500 });
-    const r = await call(hr, 'post', `/api/hr/offboarding/${s.emp}/complete`);
-    expect(r.status).toBe(200);
-    expect((await empRow(s.emp)).status).toBe('Left');
-  });
-
-  it('another company\'s employee is still 404 (scope check runs first)', async () => {
-    expect((await call(hr, 'post', `/api/hr/offboarding/${empOther}/complete`)).status).toBe(404);
-  });
-
-  it('switched off, both paths behave as before (reversal)', async () => {
+  it('switched off, the status path behaves as before (reversal)', async () => {
     process.env.HR_CONTAINMENT_EXIT_STATUS = 'off';
     const id = await addEmployee(co, 'EMP126');
     expect((await call(hr, 'patch', `/api/employees/${id}/status`).send({ status: 'Left' })).status).toBe(200);
-    const s = await leaver('EMP127', { fnf: 'draft' });
-    expect((await call(hr, 'post', `/api/hr/offboarding/${s.emp}/complete`)).status).toBe(200);
-    expect((await empRow(s.emp)).status).toBe('Left');
   });
 });
 

@@ -178,7 +178,7 @@ const NOT_IN_MENU = {
   Tickets:                 'redirects to SupportDashboard — same support_tickets table, and it already reads /finance/ticket-categories; SLA policy CRUD is its own menu row',
 
   // Superseded in place, documented at its ROUTES entry.
-  AllCandidates:           'superseded by CandidateWorkbench; kept routable for old links',
+  EmployeeDocuments:       'retired 11 Nov 26 (owner): documents are collected on Add Employee, HR uploads only; the URL redirects to EmployeeRecords (routes.jsx)',
 
   // (MyAnnouncements has no menu row but IS reachable: Home's Announcements card
   // opens it — setPage('MyAnnouncements', { ref }) — as does the bell.)
@@ -191,6 +191,10 @@ const NOT_IN_MENU = {
   // cannot draw the edge. The bell reaches both too (notificationTarget.js).
   MyInternEvaluations:     "opened from an approvals row: open.page 'MyInternEvaluations' (approvals.sources.js), and the bell",
   MyProbationReviews:      "opened from an approvals row: open.page 'MyProbationReviews' (approvals.sources.js), and the bell",
+  // Finance holds payroll_payment:approve but not internships:view, so it pays
+  // intern stipends here, opened from the Approval Center `stip` rows. HR uses
+  // the Stipends tab of Internships (HR audit 2026-11-16).
+  InternStipends:          "opened from an approvals row: open.page 'InternStipends' (approvals.sources.js, type stip)",
 
 };
 

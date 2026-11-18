@@ -135,6 +135,19 @@ function cleanDump(text) {
     .join('\n');
 }
 
+// A new database starts with the real company only. The source database also holds
+// test tenants, and they must not reach production through the baseline (§248).
+const BASELINE_COMPANY_IDS = new Set([1]);
+function onlyBaselineCompanies(text) {
+  const lines = text.split('\n');
+  const isRow = (l) => /^\s*\(\d+,/.test(l);
+  const kept = lines.filter((l) => !isRow(l) || BASELINE_COMPANY_IDS.has(Number(l.match(/^\s*\((\d+),/)[1])));
+  const rows = kept.filter(isRow);
+  if (rows.length !== BASELINE_COMPANY_IDS.size) throw new Error(`baseline companies: expected ${BASELINE_COMPANY_IDS.size} rows, found ${rows.length}`);
+  let seen = 0;
+  return kept.map((l) => (isRow(l) ? l.replace(/[,;]\s*$/, ++seen === rows.length ? ';' : ',') : l)).join('\n');
+}
+
 let dataSql = '';
 for (const table of CONFIG_DATA_TABLES) {
   const d = spawnSync(pgDump, [
@@ -147,7 +160,8 @@ for (const table of CONFIG_DATA_TABLES) {
     console.error(`❌  pg_dump (data: ${table}) failed:\n`, d.stderr);
     process.exit(1);
   }
-  dataSql += `\n-- ── ${table} ──\n` + cleanDump(d.stdout);
+  const cleaned = cleanDump(d.stdout);
+  dataSql += `\n-- ── ${table} ──\n` + (table === 'companies' ? onlyBaselineCompanies(cleaned) : cleaned);
 }
 
 // ── Build manifest: migration files embodied by this snapshot ────────────────

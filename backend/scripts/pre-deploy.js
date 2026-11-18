@@ -24,6 +24,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import crypto from 'crypto';
 import { resolveDbTarget, pgToolEnv, requiredDeployEnv, dbTargetOverrides } from '../src/config/dbTarget.js';
+import { baselineManifestNames } from '../src/config/baselineManifest.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -132,7 +133,7 @@ function checkMigrationIntegrity() {
     return;
   }
 
-  const rows = r.stdout.trim().split('\n').filter(Boolean).map(line => {
+  const rows = r.stdout.trim().split(/\r?\n/).filter(Boolean).map(line => {
     const [name, checksum] = line.split('|');
     return { name, checksum };
   });
@@ -142,7 +143,8 @@ function checkMigrationIntegrity() {
     if (!name) continue;
     const filePath = path.join(MIGRATIONS_DIR, name);
     if (!fs.existsSync(filePath)) {
-      warn(`  ⚠️   Applied migration missing from disk: ${name}`);
+      if (baselineManifestNames().has(name)) note(`  ℹ️   Absorbed into baseline.sql: ${name}`);
+      else warn(`  ⚠️   Applied migration missing from disk: ${name}`);
       continue;
     }
     const current = fileChecksum(filePath);
@@ -178,7 +180,7 @@ function checkPendingMigrations() {
   ], { env: pgEnv, encoding: 'utf8', timeout: 10000 });
 
   const appliedNames = new Set(
-    (r.status === 0 ? r.stdout.trim().split('\n') : []).filter(Boolean)
+    (r.status === 0 ? r.stdout.trim().split(/\r?\n/) : []).filter(Boolean)
   );
 
   const pending = files.filter(f => !appliedNames.has(f));

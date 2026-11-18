@@ -64,7 +64,7 @@ const GRANTS = {
   payroll_admin:   ['hr:view'],
 };
 const MASTER_ROLES    = ['super_admin', 'admin', 'hr', 'manager', 'department_head'];
-const DIRECTORY_ROLES = ['employee', 'hr_manager', 'hr_exec', 'payroll_admin'];
+const DIRECTORY_ROLES = ['hr_manager', 'hr_exec', 'payroll_admin'];
 
 function openAs(role, url, overrides = {}) {
   auth.role = role;
@@ -92,6 +92,14 @@ describe('/EmployeeDirectory', () => {
     expect(await screen.findByTestId('directory')).toBeTruthy();
     expect(screen.queryByTestId('denied')).toBeNull();
     expect(screen.queryByTestId('master')).toBeNull();
+  });
+
+  // 2026-11-11, owner's instruction: an ordinary employee has no colleague list
+  // (Org Chart shows who is where), so the URL is refused, not redirected.
+  it('employee is refused the phonebook', async () => {
+    openAs('employee', '/EmployeeDirectory');
+    expect(await screen.findByTestId('denied')).toBeTruthy();
+    expect(screen.queryByTestId('directory')).toBeNull();
   });
 });
 
@@ -124,7 +132,7 @@ describe('Page Access overrides never turn the redirect into Access Denied', () 
   });
 
   it('a role whose Employee Directory section is Not Visible is refused it, as any hidden section is', async () => {
-    openAs('employee', '/EmployeeDirectory', { 'Employee Directory': 'hidden' });
+    openAs('hr_exec', '/EmployeeDirectory', { 'Employee Directory': 'hidden' });
     expect(await screen.findByTestId('denied')).toBeTruthy();
   });
 });

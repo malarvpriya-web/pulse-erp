@@ -13,7 +13,7 @@ vi.mock('@/services/api/client', () => ({ default: api }));
 // SuccessionReports reads succession:export to show its Export button (§210).
 vi.mock('@/context/AuthContext', () => ({ useAuth: () => ({ hasPermission: () => true }) }));
 
-import SuccessionReports from '@/features/hr/pages/SuccessionReports';
+import SuccessionReports from '@/features/hr/succession/SuccessionReports';
 
 describe('fmtScore', () => {
   it.each([
@@ -42,7 +42,7 @@ describe('Succession Reports shows scores unpadded', () => {
         : [],
     }));
     render(<MemoryRouter><SuccessionReports /></MemoryRouter>);
-    fireEvent.click(await screen.findByRole('button', { name: /Talent Risk/ }));
+    fireEvent.click(await screen.findByRole('tab', { name: /Talent Risk/ }));
     const perfOf = async (name) => {
       const row = (await screen.findByText(name)).closest('tr');
       return row.querySelectorAll('td')[3].textContent;

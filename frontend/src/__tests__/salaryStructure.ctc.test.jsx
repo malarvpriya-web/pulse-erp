@@ -7,6 +7,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent, within } from '@testing-library/react';
 
 vi.mock('../services/api/client', () => ({ default: { get: vi.fn(), post: vi.fn(), put: vi.fn() } }));
+vi.mock('../context/AuthContext', () => ({
+  useAuth: () => ({ hasPermission: () => true, permissions: [{ module: 'payroll_payment', can_approve: true }] }),
+}));
 vi.mock('../components/ResultDialog', () => ({ default: () => null }));
 
 import api from '../services/api/client';

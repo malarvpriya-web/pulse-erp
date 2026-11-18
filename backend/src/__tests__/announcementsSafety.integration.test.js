@@ -8,7 +8,8 @@
  *     expired row on every call. It now needs a login and writes nothing; no GET
  *     in the module writes anything (row xmin is compared before/after).
  *   - No route checked the matrix. Employee (view-only) can now create, edit,
- *     pin, hide, archive and list nothing; HR (no delete) cannot archive.
+ *     pin, hide, archive and list nothing; HR archives too (owner decision
+ *     2026-11-17, migration 20261116000011); managers cannot.
  *   - Manager-tier publishers are team-scoped: own department, own posts.
  *   - Cross-company reads and writes are refused.
  *   - Feeds (/active, Home) honour audience, From/To dates, Scheduled Publish,
@@ -234,12 +235,15 @@ describe('permission matrix is enforced', () => {
     expect(await tableState()).toEqual(before);
   });
 
-  it('HR creates and edits company-wide but cannot archive (matrix: no delete); admin archives', async () => {
+  // Owner decision 2026-11-17: HR may archive (announcements:delete granted to
+  // hr, hr_manager, hr_exec — migration 20261116000011). Admin still can.
+  it('HR creates, edits and archives company-wide; admin archives too', async () => {
     const a = (await call('hr', 'post', '/announcements', body())).body;
     expect(a.company_id).toBe(A);
     expect((await call('hr', 'put', `/announcements/${a.id}`, body({ title: 'Edited by HR' }))).status).toBe(200);
-    expect((await call('hr', 'delete', `/announcements/${a.id}`)).status).toBe(403);
-    expect((await call('admin', 'delete', `/announcements/${a.id}`)).status).toBe(200);
+    expect((await call('hr', 'delete', `/announcements/${a.id}`)).status).toBe(200);
+    const b = (await call('hr', 'post', '/announcements', body())).body;
+    expect((await call('admin', 'delete', `/announcements/${b.id}`)).status).toBe(200);
   });
 
   it('rejects malformed input instead of 500 / NULL flags', async () => {
@@ -358,6 +362,22 @@ describe('employee-facing visibility', () => {
     expect(list.find(r => r.id === expired.id).lifecycle_status).toBe('expired');
     expect(list.find(r => r.id === sched.id).lifecycle_status).toBe('scheduled');
     expect((await call('hr', 'put', `/announcements/${expired.id}/toggle`, { is_active: true })).status).toBe(400);
+  });
+
+  it('the admin list names the addressed employee (target_name), and only for employee posts', async () => {
+    const list = (await call('hr', 'get', '/announcements')).body;
+    const { rows: [e] } = await pool.query('SELECT first_name, last_name FROM employees WHERE id = $1', [fx.emp.eOps]);
+    expect(list.find(r => r.id === one.id).target_name).toBe(`${e.first_name ?? ''} ${e.last_name ?? ''}`.trim());
+    expect(list.find(r => r.id === ops.id).target_name).toBeNull();
+    expect(list.find(r => r.id === all.id).target_name).toBeNull();
+  });
+});
+
+describe('server errors', () => {
+  it('a 500 does not send database error text to the client', () => {
+    const src = readFileSync(resolve(here, '../announcements/announcement.controller.js'), 'utf8');
+    const failFn = src.slice(src.indexOf('const fail ='), src.indexOf('};', src.indexOf('const fail =')));
+    expect(failFn).not.toMatch(/err\.message/);
   });
 });
 
@@ -496,7 +516,7 @@ describe('notifications', () => {
 // ── 9. HR role boundaries (migration 20261021000005) ─────────────────────────
 
 describe('HR administrator roles', () => {
-  it('hr_manager and hr_exec administer company-wide, but cannot archive', async () => {
+  it('hr_manager and hr_exec administer company-wide, including archive', async () => {
     for (const who of ['hrMgr', 'hrExec']) {
       expect((await call(who, 'get', '/announcements')).status).toBe(200);
       const a = await call(who, 'post', '/announcements', body({ title: `Zz by ${who}` }));
@@ -505,9 +525,9 @@ describe('HR administrator roles', () => {
       expect((await call(who, 'put', `/announcements/${a.body.id}`, body({ title: `Zz edited by ${who}` }))).status).toBe(200);
       expect((await call(who, 'put', `/announcements/${a.body.id}/pin`, { is_pinned: true })).status).toBe(200);
       expect((await call(who, 'put', `/announcements/${a.body.id}/toggle`, { is_active: false })).status).toBe(200);
-      expect((await call(who, 'delete', `/announcements/${a.body.id}`)).status).toBe(403);
+      expect((await call(who, 'delete', `/announcements/${a.body.id}`)).status).toBe(200);
       const { rows } = await pool.query('SELECT deleted_at FROM announcements WHERE id = $1', [a.body.id]);
-      expect(rows[0].deleted_at).toBeNull();
+      expect(rows[0].deleted_at).not.toBeNull();
     }
   });
 
@@ -522,7 +542,7 @@ describe('HR administrator roles', () => {
     expect(ids(await call('hrMgr', 'get', '/announcements'))).not.toContain(b.id);
   });
 
-  it('the matrix holds exactly the agreed boundaries — delete only for admin tiers', async () => {
+  it('the matrix holds exactly the agreed boundaries — delete for admin tiers and HR', async () => {
     const { rows } = await pool.query(`
       SELECT r.code, rp.can_view, rp.can_add, rp.can_edit, rp.can_delete, rp.can_approve, rp.can_export
         FROM role_permissions rp JOIN roles r ON r.id = rp.role_id
@@ -530,7 +550,8 @@ describe('HR administrator roles', () => {
       [['hr_manager', 'hr_exec', 'hr', 'manager', 'department_head', 'employee', 'admin', 'super_admin']]);
     const m = Object.fromEntries(rows.map(r => [r.code, r]));
     const vae = { can_view: true, can_add: true, can_edit: true, can_delete: false };
-    for (const code of ['hr_manager', 'hr_exec', 'hr', 'manager', 'department_head']) expect(m[code]).toMatchObject(vae);
+    for (const code of ['manager', 'department_head']) expect(m[code]).toMatchObject(vae);
+    for (const code of ['hr_manager', 'hr_exec', 'hr']) expect(m[code]).toMatchObject({ ...vae, can_delete: true });
     for (const code of ['hr_manager', 'hr_exec']) expect(m[code]).toMatchObject({ can_approve: false, can_export: false });
     expect(m.employee).toMatchObject({ can_view: true, can_add: false, can_edit: false, can_delete: false });
     for (const code of ['admin', 'super_admin']) expect(m[code].can_delete).toBe(true);
@@ -681,5 +702,63 @@ describe('employees cannot administer (re-checked alongside Super Admin)', () =>
     expect((await call('eOps', 'delete', `/announcements/${a.id}`)).status).toBe(403);
     expect((await tableState()).filter((r) => r.row.id === a.id)).toEqual(before);
     expect((await call('eOps', 'post', `/announcements/${a.id}/read`)).status).toBe(200);
+  });
+});
+
+// ── restore (2026-11-10) ─────────────────────────────────────────────────────
+
+describe('archive list and restore', () => {
+  it('admin sees the archive and restores; the row is visible again, audited, and not re-sent', async () => {
+    const a = (await call('admin', 'post', '/announcements', body({ title: 'Zz restore me' }))).body;
+    const sent = await notifCount(a.id);
+    expect(sent).toBeGreaterThan(0);
+    expect((await call('admin', 'delete', `/announcements/${a.id}`)).status).toBe(200);
+    expect(ids(await call('eOps', 'get', '/announcements/active'))).not.toContain(a.id);
+
+    const arch = await call('admin', 'get', '/announcements/archived');
+    expect(arch.status).toBe(200);
+    const row = arch.body.find(r => r.id === a.id);
+    expect(row.lifecycle_status).toBe('archived');
+    expect(row.deleted_at).toBeTruthy();
+    expect(ids(await call('admin', 'get', '/announcements'))).not.toContain(a.id);
+
+    const r = await call('admin', 'put', `/announcements/${a.id}/restore`);
+    expect(r.status).toBe(200);
+    expect(r.body.deleted_at).toBeNull();
+    expect(ids(await call('eOps', 'get', '/announcements/active'))).toContain(a.id);
+    expect(ids(await call('admin', 'get', '/announcements/archived'))).not.toContain(a.id);
+    expect(await notifCount(a.id)).toBe(sent);           // already went out: not sent twice
+    const audit = await waitForAudit(a.id, 'restore');
+    expect(audit).toHaveLength(1);
+    expect(Number(audit[0].company_id)).toBe(A);
+    expect(audit[0].old_data_json.deleted_at).toBeTruthy();
+    expect(audit[0].new_data_json.deleted_at).toBeNull();
+
+    // Restoring twice is a 404, not a second audit row.
+    expect((await call('admin', 'put', `/announcements/${a.id}/restore`)).status).toBe(404);
+  });
+
+  it('one archived before it ever went out is sent once when restored live', async () => {
+    const raw = await rawAnnouncement(A, { deleted_at: new Date(), notified_at: null });
+    expect(await notifCount(raw.id)).toBe(0);
+    expect((await call('admin', 'put', `/announcements/${raw.id}/restore`)).status).toBe(200);
+    expect(await notifCount(raw.id)).toBe(5);
+  });
+
+  it('HR sees the archive; employees and managers cannot see or restore it', async () => {
+    const raw = await rawAnnouncement(A, { deleted_at: new Date() });
+    expect(ids(await call('hr', 'get', '/announcements/archived'))).toContain(raw.id);
+    for (const who of ['mgr', 'eOps']) {
+      expect((await call(who, 'get', '/announcements/archived')).status).toBe(403);
+      expect((await call(who, 'put', `/announcements/${raw.id}/restore`)).status).toBe(403);
+    }
+    expect((await pool.query('SELECT deleted_at FROM announcements WHERE id = $1', [raw.id])).rows[0].deleted_at).not.toBeNull();
+  });
+
+  it("another company cannot see or restore A's archive", async () => {
+    const raw = await rawAnnouncement(A, { deleted_at: new Date() });
+    expect(ids(await call('adminB', 'get', '/announcements/archived'))).not.toContain(raw.id);
+    expect((await call('adminB', 'put', `/announcements/${raw.id}/restore`)).status).toBe(404);
+    expect((await pool.query('SELECT deleted_at FROM announcements WHERE id = $1', [raw.id])).rows[0].deleted_at).not.toBeNull();
   });
 });

@@ -1072,7 +1072,10 @@ describe('performance-review manager submit records the manager as an employee',
   const submit = (who, id, body = { manager_rating: 4, final_rating: 4, manager_comments: 'solid year' }) =>
     request(app).post(`/api/performance/reviews/${id}/manager-review`)
       .set('Authorization', `Bearer ${who.token()}`).send(body);
-  const reviewIn = async (company, employeeId, managerId = null) => (await one(
+  // The review names `mgr` as its manager: since 2026-11-11 only the
+  // employee's reporting manager or the manager named on the review (or HR)
+  // may submit the manager review — the manager role alone is not enough.
+  const reviewIn = async (company, employeeId, managerId = mgrEmployee) => (await one(
     `INSERT INTO performance_reviews (employee_id, manager_id, company_id, status) VALUES ($1, $2, $3, 'self_submitted') RETURNING id`,
     [employeeId, managerId, company.companyId])).id;
   let mgr, mgrEmployee;
@@ -1213,8 +1216,8 @@ describe('succession leaves out employees flagged is_test', () => {
     fake = await addEmployee(A, 'Zorvex');
     await pool.query(`UPDATE employees SET is_test = true WHERE id = $1 AND company_id = $2`, [fake, A.companyId]);
     await pool.query(
-      `INSERT INTO talent_assessments (employee_id, performance_score, potential_score, flight_risk, notes, company_id)
-       VALUES ($1, 4, 5, 'high', 'real person', $3), ($2, 4, 5, 'high', 'test record', $3)`, [real, fake, A.companyId]);
+      `INSERT INTO talent_assessments (employee_id, performance_score, potential_score, flight_risk, readiness, notes, company_id)
+       VALUES ($1, 4, 5, 'high', 'ready-now', 'real person', $3), ($2, 4, 5, 'high', 'ready-now', 'test record', $3)`, [real, fake, A.companyId]);
     role = (await one(`INSERT INTO critical_roles (role_title, company_id) VALUES ('${PREFIX} test-flag role', $1) RETURNING id`, [A.companyId])).id;
     await pool.query(
       `INSERT INTO succession_plans (critical_role_id, candidate_employee_id, rank, readiness_level, company_id)
@@ -1323,6 +1326,6 @@ describe('neutral label for the low/low cell', () => {
     const backend = src('../modules/hr/succession.routes.js');
     expect(backend).not.toMatch(/'Deadwood'/);
     expect(backend).not.toMatch(/process\.env\.RUN_SUCCESSION_SEED/);
-    expect(src('../../../frontend/src/features/hr/pages/SuccessionPlanning.jsx')).not.toMatch(/Deadwood/);
+    expect(src('../../../frontend/src/features/hr/succession/SuccessionPlanning.jsx')).not.toMatch(/Deadwood/);
   });
 });

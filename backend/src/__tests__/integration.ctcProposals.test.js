@@ -215,6 +215,17 @@ describe('proposal workflow', () => {
     expect(blocked.body.blockers.map(b => b.code)).toContain('CTC_POLICY_NOT_RECORDED');
     const pol = await call(co, 'post', '/api/payroll/statutory-rules').send({ rule_key: 'ctc.definition', effective_from: '2025-04-01', value: POLICY, source_reference: 'CTC test policy approval' });
     expect(pol.status).toBe(201);
+    // The source is optional (owner decision, 9 Nov 2026), and a blank one says so.
+    const noSource = await call(co, 'post', '/api/payroll/statutory-rules').send({ rule_key: 'ctc.definition', effective_from: '2025-04-01', value: POLICY, source_reference: '  ' });
+    expect(noSource.status).toBe(201);
+    expect(noSource.body.data.source_reference).toBe('No source given');
+    const ruleNoSource = await call(co, 'post', '/api/payroll/statutory-rules').send({ rule_key: 'pf.employee_rate', effective_from: '2025-04-01', value: 12, source_reference: '' });
+    expect(ruleNoSource.status).toBe(201);
+    expect(ruleNoSource.body.data.source_reference).toBe('No source given');
+    // …and payroll keeps reminding that it has none (a warning, never a blocker)
+    const r = (await call(co, 'get', '/api/payroll/release-readiness?month=10&year=2026')).body.data;
+    expect(r.warnings.find(w => w.code === 'RULE_NO_SOURCE' && w.key === 'pf.employee_rate')).toBeTruthy();
+    expect(r.blockers.some(b => b.code === 'RULE_NO_SOURCE')).toBe(false);
     const badPol = await call(co, 'post', '/api/payroll/statutory-rules').send({ rule_key: 'ctc.definition', effective_from: '2025-05-01', value: { version: 'x' }, source_reference: 'bad' });
     expect(badPol.status).toBe(400);
     await confirmForDate(co, '2026-10-01', CTC_RULE_KEYS);
@@ -273,15 +284,16 @@ describe('proposal workflow', () => {
     const ps = (await call(co, 'get', `/api/payroll/payslips?employee_id=${E.X}&month=10&year=2026`)).body.data;
     expect(ps.contract).toMatchObject({ annual_ctc: 957735 });
     expect(ps.gross).toBe(75000);
-    expect(ps.ctc_monthly).toBe(78000);                       // employer cost of the month, not the contract
+    expect(ps.ctc_monthly).toBe(78250);                       // employer cost of the month (PF 3,000 + EDLI 125 + EPF admin 125), not the contract
     expect(ps.deductions.reduce((s, d) => s + d.amount, 0)).toBe(ps.total_deductions);
     expect((await call(payer, 'post', `/api/payroll/${E.X}/mark-paid`).send({ month: 10, year: 2026, reference: 'CTCUTRX0000001', value_date: new Date(Date.now() + 5.5 * 3600e3).toISOString().slice(0, 10) })).status).toBe(200);
     const { rows: [gl] } = await pool.query(
       `SELECT SUM(jl.debit)::numeric d FROM journal_lines jl JOIN journal_entries je ON je.id = jl.entry_id
         WHERE je.company_id = $1 AND je.reference_type = 'payroll_run'`, [co.companyId]);
     const { rows: [runs] } = await pool.query(
-      `SELECT SUM(pr.ctc_monthly)::numeric c FROM payroll_runs pr JOIN employees e ON e.id = pr.employee_id WHERE e.company_id = $1 AND pr.month = 10 AND pr.year = 2026`, [co.companyId]);
-    expect(Number(gl.d)).toBe(Number(runs.c));
+      `SELECT SUM(pr.ctc_monthly)::numeric c, SUM(pr.pf_admin_employer)::numeric a FROM payroll_runs pr JOIN employees e ON e.id = pr.employee_id WHERE e.company_id = $1 AND pr.month = 10 AND pr.year = 2026`, [co.companyId]);
+    // + the EPF administration monthly minimum (₹500 per establishment) accrued on the first batch
+    expect(Number(gl.d)).toBe(Number(runs.c) + Math.max(0, 500 - Number(runs.a)));
   });
 });
 

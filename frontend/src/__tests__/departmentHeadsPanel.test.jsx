@@ -1,12 +1,12 @@
 /**
- * Department Heads panel (HR → Exit & Probation → Probation).
+ * Department Heads panel — its own page, HR › Department Heads (was inside Probation).
  *
  *  - Editors (hr:edit) can assign, change (reason required) and remove (reason
  *    required); viewers see the list and history but no controls.
  *  - A 403 from the server shows an access message, never a table.
  *  - The head picker offers exactly the server's eligible list.
- *  - The page sits in the HR menu group gated on module 'hr' — the permission
- *    the department_head role does not hold — and no new menu row exists.
+ *  - The page is its own row in the HR menu group gated on module 'hr' — the
+ *    permission the department_head role does not hold.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, cleanup, within } from '@testing-library/react';
@@ -159,10 +159,36 @@ describe('viewers and refused callers', () => {
 });
 
 describe('placement', () => {
-  it('lives inside the HR menu group (module hr) and adds no menu row of its own', () => {
-    const group = NAV_ITEMS.find((g) => (g.submenu || []).some((s) => s.page === 'Probation'));
-    expect(group?.module).toBe('hr');
-    const all = NAV_ITEMS.flatMap((g) => [g, ...(g.submenu || [])]);
-    expect(all.some((i) => /department.?head/i.test(`${i.name ?? ''} ${i.page ?? ''}`))).toBe(false);
+  it('has exactly one menu row, in the HR group (module hr), and is no longer on Probation', () => {
+    const all = NAV_ITEMS.flatMap((g) => (g.submenu || []).map((s) => ({ ...s, group: g })));
+    const rows = all.filter((i) => i.page === 'DepartmentHeads');
+    expect(rows).toHaveLength(1);
+    expect(rows[0].name).toBe('Department Heads');
+    expect(rows[0].group.module).toBe('hr');
+    expect(rows[0].inHub).toBeUndefined();
+  });
+});
+
+describe('a department retired in Master Data', () => {
+  it('is flagged, offers no Assign/Change, and keeps Remove and History', async () => {
+    api.get.mockImplementation(async (url) => (url === '/department-heads'
+      ? { data: { ...LIST, departments: [...LIST.departments, {
+          department_id: 9, department: 'Old Unit', department_active: false, employee_count: 0,
+          head: { assignment_id: 11, assigned_at: '2026-08-01T05:00:00Z', employee_id: 21, office_id: 'EMP021', name: 'Asha Rao', is_current: true, has_login: true },
+        }] } }
+      : { data: {} }));
+    renderAs(true);
+    const row = await waitFor(() => {
+      const r = document.querySelector('tr[data-department="Old Unit"]');
+      if (!r) throw new Error('not yet');
+      return r;
+    });
+    expect(row.textContent).toMatch(/Retired in Master Data/);
+    expect(within(row).queryByRole('button', { name: 'Change' })).toBeNull();
+    expect(within(row).queryByRole('button', { name: 'Assign' })).toBeNull();
+    expect(within(row).getByRole('button', { name: 'Remove' })).toBeTruthy();
+    expect(within(row).getByRole('button', { name: 'History for Old Unit' })).toBeTruthy();
+    // an active department still offers Change
+    expect(within(document.querySelector('tr[data-department="Finance"]')).getByRole('button', { name: 'Change' })).toBeTruthy();
   });
 });

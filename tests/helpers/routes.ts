@@ -114,7 +114,6 @@ export const ALL_ROUTES: RouteConfig[] = [
   { name: 'Recruitment Dashboard',    path: '/RecruitmentDashboard',        module: 'recruitment', severity: 'P0' },
   { name: 'Job Requisitions',         path: '/JobRequisitionPipeline',      module: 'recruitment', severity: 'P1' },
   { name: 'Job Openings',             path: '/JobOpenings',                 module: 'recruitment', severity: 'P1' },
-  { name: 'All Candidates',           path: '/AllCandidates',               module: 'recruitment', severity: 'P1' },
   { name: 'Candidate Pipeline',       path: '/CandidatePipeline',           module: 'recruitment', severity: 'P1' },
   { name: 'Interview Scheduler',      path: '/InterviewScheduler',          module: 'recruitment', severity: 'P1' },
   { name: 'Offer Management',         path: '/OfferManagement',             module: 'recruitment', severity: 'P1' },
@@ -125,11 +124,9 @@ export const ALL_ROUTES: RouteConfig[] = [
   { name: 'Recruitment Settings',     path: '/RecruitmentSettings',         module: 'recruitment', severity: 'P2' },
 
   // ── Talent ───────────────────────────────────────────────────────────────
-  { name: 'Resume Database',          path: '/ResumeDatabase',              module: 'talent',      severity: 'P1' },
   { name: 'Talent Pools',             path: '/TalentPools',                 module: 'talent',      severity: 'P1' },
   { name: 'Question Bank',            path: '/InterviewQuestionBank',       module: 'talent',      severity: 'P2' },
   { name: 'Agencies',                 path: '/RecruitmentAgencies',         module: 'talent',      severity: 'P2' },
-  { name: 'Recruiter Dashboard',      path: '/RecruiterDashboard',          module: 'talent',      severity: 'P1' },
 
   // ── CRM ──────────────────────────────────────────────────────────────────
   { name: 'CRM Dashboard',            path: '/SalesDashboard',              module: 'crm',         severity: 'P0' },

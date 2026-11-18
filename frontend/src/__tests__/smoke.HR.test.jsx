@@ -221,7 +221,8 @@ describe('Payroll — smoke', () => {
   it('renders month selector', () => {
     api.get.mockReturnValue(new Promise(() => {}));
     render(<Payroll setPage={() => {}} />);
-    expect(screen.getByRole('combobox')).toBeDefined();
+    // the month picker (the "Show" filter is a second combobox)
+    expect(screen.getAllByRole('combobox').length).toBeGreaterThan(0);
   });
 
   it('shows empty state message when no payroll records', async () => {
@@ -277,8 +278,8 @@ describe('Payroll — smoke', () => {
     stubApi({ payroll: [], summary: {}, trend: [] });
     render(<Payroll setPage={() => {}} />);
     await waitFor(() => expect(screen.getByText('All')).toBeDefined());
-    expect(screen.getByText('paid')).toBeDefined();
-    expect(screen.getByText('pending')).toBeDefined();
+    expect(screen.getByText('Paid')).toBeDefined();
+    expect(screen.getByText('Draft')).toBeDefined();
   });
 });
 
@@ -297,12 +298,13 @@ describe('Probation — smoke', () => {
     expect(screen.getByText('Probation Management')).toBeDefined();
   });
 
-  it('renders all four KPI cards', () => {
+  it('renders the KPI cards', () => {
     api.get.mockReturnValue(new Promise(() => {}));
     render(<Probation />);
     expect(screen.getByText('On Probation')).toBeDefined();
     expect(screen.getByText('Needs Attention')).toBeDefined();
     expect(screen.getByText('Due in 30 Days')).toBeDefined();
+    expect(screen.getByText('Awaiting HR Decision')).toBeDefined();
     expect(screen.getAllByText('On Track').length).toBeGreaterThanOrEqual(1);
   });
 
@@ -321,11 +323,11 @@ describe('Probation — smoke', () => {
     await waitFor(() => expect(screen.getByText('No employees found')).toBeDefined());
   });
 
-  it('renders Refresh and Notification Log buttons', () => {
+  it('renders Refresh and Reminder Log buttons', () => {
     api.get.mockReturnValue(new Promise(() => {}));
     render(<Probation />);
     expect(screen.getByText('Refresh')).toBeDefined();
-    expect(screen.getByText('Notification Log')).toBeDefined();
+    expect(screen.getByText('Reminder Log')).toBeDefined();
   });
 });
 

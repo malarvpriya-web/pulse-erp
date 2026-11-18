@@ -53,34 +53,40 @@ function hrRows(role, employeeId) {
 
 beforeEach(() => { document.body.innerHTML = ''; });
 
-describe('one entry point', () => {
-  it('exactly one menu row opens the portal, and none opens its tabs as pages', () => {
+// 2026-11-11 (owner decision): the Employee Self-Service portal is removed.
+// IT declarations are entered by Finance, documents and profile changes by HR,
+// expense claims stay in Travel Desk → Expense Claims.
+describe('no Self Service portal in the menu', () => {
+  it('no row opens it, and none opens its old tabs as pages', () => {
     const rows = NAV_ITEMS.flatMap(g => [g, ...(g.submenu || [])]).filter(r => !r.separator);
-    expect(rows.filter(r => r.page === 'EmployeeSelfService').map(r => r.name)).toEqual(['Self Service']);
-    for (const name of ['IT Declaration', 'Reimbursements', 'Profile Update']) {
+    expect(rows.filter(r => r.page === 'EmployeeSelfService')).toEqual([]);
+    for (const name of ['Self Service', 'IT Declaration', 'Reimbursements', 'Profile Update']) {
       expect(rows.some(r => r.name === name), name).toBe(false);
     }
-    // e-Signatures has a row with the same label for a DIFFERENT feature (the
-    // company document register, DocumentMaster) — not a second way into the
-    // employee's vault. Recorded so a rename or a real duplicate shows up here.
+    // e-Signatures' "Document Vault" is the company document register, a
+    // different feature — recorded so a rename or a real duplicate shows up.
     expect(rows.filter(r => r.name === 'Document Vault').map(r => r.page)).toEqual(['DocumentMaster']);
   });
-});
 
-describe('who sees the Self Service row', () => {
   it.each(['employee', 'manager', 'hr', 'hr_manager', 'hr_exec', 'payroll_admin', 'admin', 'super_admin'])(
-    'a linked %s sees it under HR', (role) => {
-      expect(hrRows(role, 7)).toContain('Self Service');
+    'a linked %s does not see a Self Service row under HR', (role) => {
+      expect(hrRows(role, 7)).not.toContain('Self Service');
     }, 15000);
 
-  it.each(['super_admin', 'admin', 'hr_manager'])('a %s login with no employee link does not', (role) => {
-    const rows = hrRows(role, null);
-    expect(rows).not.toContain('Self Service');
-    // only that row goes — the HR management rows stay
-    expect(rows).toContain('Payroll Center');
-  }, 15000);
-
   it('a manager sees only their own pages in HR — never the HR management rows', () => {
-    expect(hrRows('manager', 7).sort()).toEqual(['My Dashboard', 'Self Service']);
+    expect(hrRows('manager', 7)).toEqual(['My Dashboard', 'My Details', 'My Gate Passes']);
   });
+
+  // My Details (2026-11-11): every employee reads their own record there.
+  it.each(['manager', 'hr', 'hr_manager', 'payroll_admin'])('a linked %s sees My Details under HR', (role) => {
+    expect(hrRows(role, 7)).toContain('My Details');
+  }, 15000);
+  // An employee-only login has no HR menu: My Dashboard and My Details are
+  // top-level rows (owner, 2026-11-11) — see employeeMenu.trimmed.test.jsx.
+  it('a linked employee has no HR menu (its rows are top-level)', () => {
+    expect(hrRows('employee', 7)).toEqual([]);
+  }, 15000);
+  it('a login with no employee does not (nothing to show)', () => {
+    expect(hrRows('hr_manager', null)).not.toContain('My Details');
+  }, 15000);
 });

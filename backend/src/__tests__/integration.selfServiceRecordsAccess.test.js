@@ -13,6 +13,11 @@
  *  - Self-service reimbursements are retired (410): claims live in expense_claims.
  *  - A Super Admin with no linked employee is not treated as an employee.
  *
+ * 2026-11-11 (migration 20261111000001, owner decision): employees no longer
+ * change their own records. self_service add/edit are off for every role —
+ * Finance (it_declarations:add) enters declarations for employees, HR uploads
+ * their documents and edits their profile; an employee only reads.
+ *
  * Grants come from the role matrix (migration 20261029000001). Real routers
  * and database; two throwaway companies, synthetic employees, declarations,
  * documents and files only — all removed afterwards.
@@ -52,10 +57,14 @@ const FILE_PAN = `zz_ssrec_${process.pid}_pan.pdf`;
 let co, other, empA, empB, hr, fin, otherHr, unlinked, superNoLink, payrollAdmin, hrExec, manager, salesExec;
 const E = {}, D = {}, DOC = {};
 const call = (who, method, path) => request(app)[method](path).set('Authorization', `Bearer ${who.token()}`);
+// Finance enters a declaration for an employee (the only way since 2026-11-11).
+const fileFor = (employeeId, body) => call(fin, 'post', '/api/self-service/it-declarations').send({ employee_id: employeeId, ...body });
+const SELF_WRITES_OFF = 'Changes to your record are made by HR (documents, profile) or Finance (IT declarations). Please contact them.';
 
 async function sweep(companyId) {
   const emps = `(SELECT id FROM employees WHERE company_id = $1)`;
   await pool.query(`UPDATE users SET employee_id = NULL WHERE company_id = $1`, [companyId]);
+  await pool.query(`DELETE FROM notifications WHERE module_name = 'it_declarations' AND user_id IN (SELECT id FROM users WHERE company_id = $1)`, [companyId]);
   await pool.query(`DELETE FROM it_declarations WHERE employee_id IN ${emps}`, [companyId]);
   await pool.query(`DELETE FROM employee_documents WHERE employee_id IN ${emps}`, [companyId]);
   await pool.query(`DELETE FROM reimbursement_claims WHERE employee_id IN ${emps}`, [companyId]);
@@ -138,12 +147,13 @@ describe('IT declarations', () => {
     }
   });
 
-  it('a payroll- or finance-flavoured role reads nothing it holds no it_declarations grant for', async () => {
-    // manager and finance_manager used to read any colleague through PAYROLL_READ_ROLES
-    for (const who of [fin, manager, hrExec]) {
+  it('a role reads nothing it holds no it_declarations grant for; finance_manager enters them, so reads them', async () => {
+    // manager used to read any colleague through PAYROLL_READ_ROLES
+    for (const who of [manager, hrExec]) {
       const r = await call(who, 'get', `/api/self-service/it-declarations?employee_id=${E.B}&financial_year=${FY}`);
       expect(r.status).toBe(403);
     }
+    expect((await call(fin, 'get', `/api/self-service/it-declarations?employee_id=${E.B}&financial_year=${FY}`)).status).toBe(200);
   });
 
   it('a role without self_service cannot use the portal for its own record either', async () => {
@@ -154,13 +164,26 @@ describe('IT declarations', () => {
     expect((await call(salesExec, 'get', '/api/self-service/dashboard')).status).toBe(403);
   });
 
-  it('an employee cannot file a declaration for someone else; their own is always "submitted"', async () => {
+  it('an employee files no declaration, own or anyone else; Finance files it, always "submitted"', async () => {
+    const own = await call(empA, 'post', '/api/self-service/it-declarations').send({ declaration_type: '80D', amount: 5000, description: 'own', financial_year: FY });
+    expect(own.status).toBe(403);
+    expect(own.body).toEqual({ message: SELF_WRITES_OFF });
     const bad = await call(empA, 'post', '/api/self-service/it-declarations').send({ employee_id: E.B, declaration_type: '80D', amount: 5000 });
     expect(bad.status).toBe(403);
-    expect((await pool.query(`SELECT COUNT(*)::int n FROM it_declarations WHERE employee_id = $1`, [E.B])).rows[0].n).toBe(1);
-    const ok = await call(empA, 'post', '/api/self-service/it-declarations').send({ declaration_type: '80D', amount: 5000, status: 'approved', financial_year: FY });
+    expect((await pool.query(`SELECT COUNT(*)::int n FROM it_declarations WHERE employee_id = ANY($1)`, [[E.A, E.B]])).rows[0].n).toBe(2);
+    const ok = await fileFor(E.A, { declaration_type: '80D', amount: 5000, status: 'approved', financial_year: FY });
     expect(ok.status).toBe(201);
     expect(ok.body).toMatchObject({ employee_id: E.A, status: 'submitted' });
+    // hr_manager reviews but no longer enters
+    expect((await call(hr, 'post', '/api/self-service/it-declarations').send({ employee_id: E.B, declaration_type: '80C', amount: 1, description: 'x', financial_year: FY })).status).toBe(403);
+  });
+
+  it('accepts the types payroll reads, own NPS and home-loan interest included, and refuses any other (§262)', async () => {
+    const post = (declaration_type, amount) => fileFor(E.A, { declaration_type, amount, description: `${declaration_type} fixture`, financial_year: FY });
+    expect((await post('80CCD(1B)', 5000)).status).toBe(400);
+    expect((await post('Section 24', 5000)).status).toBe(400);
+    expect((await post('80CCD', 50000)).status).toBe(201);
+    expect((await post('HOME_LOAN', 180000)).status).toBe(201);
   });
 
   it('an employee cannot modify another employee\'s declaration, in or out of the company', async () => {
@@ -172,12 +195,13 @@ describe('IT declarations', () => {
     expect(Number((await decl(D.C)).amount)).toBe(10000);
   });
 
-  it('an employee edits their own submitted declaration but cannot review it', async () => {
-    const r = await call(empA, 'put', `/api/self-service/it-declarations/${D.A}`).send({ amount: 12000 });
+  it('the employee neither edits nor reviews their own declaration; Finance corrects it while it waits', async () => {
+    expect((await call(empA, 'put', `/api/self-service/it-declarations/${D.A}`).send({ amount: 11000 })).status).toBe(404);
+    const r = await call(fin, 'put', `/api/self-service/it-declarations/${D.A}`).send({ amount: 12000 });
     expect(r.status).toBe(200);
     expect(Number(r.body.amount)).toBe(12000);
     const self = await call(empA, 'put', `/api/self-service/it-declarations/${D.A}`).send({ status: 'approved', reviewed_by: 1 });
-    expect(self.status).toBe(403);
+    expect(self.status).toBe(404);
     expect((await decl(D.A))).toMatchObject({ status: 'submitted', reviewed_by: null });
   });
 
@@ -185,11 +209,11 @@ describe('IT declarations', () => {
     const r = await call(hr, 'put', `/api/self-service/it-declarations/${D.A}`).send({ status: 'approved', reviewed_by: 424242 });
     expect(r.status).toBe(200);
     expect(r.body).toMatchObject({ status: 'approved', reviewed_by: hr.userId });
-    // once reviewed, the employee can no longer change it
-    expect((await call(empA, 'put', `/api/self-service/it-declarations/${D.A}`).send({ amount: 1 })).status).toBe(409);
+    // once reviewed, Finance can no longer change it
+    expect((await call(fin, 'put', `/api/self-service/it-declarations/${D.A}`).send({ amount: 1 })).status).toBe(409);
     expect((await call(hr, 'put', `/api/self-service/it-declarations/${D.B}`).send({ status: 'bogus' })).status).toBe(400);
-    // finance_manager holds no review grant
-    expect((await call(fin, 'put', `/api/self-service/it-declarations/${D.B}`).send({ status: 'rejected' })).status).toBe(404);
+    // finance_manager enters declarations but holds no review grant
+    expect((await call(fin, 'put', `/api/self-service/it-declarations/${D.B}`).send({ status: 'rejected', remarks: 'x' })).status).toBe(403);
   });
 
   it('no reviewer reviews their own declaration', async () => {
@@ -232,18 +256,23 @@ describe('Documents', () => {
     }
   });
 
-  it('an employee\'s upload is filed against their own record, never the one in the body', async () => {
-    const r = await call(empA, 'post', '/api/self-service/documents').send({ employee_id: E.B, document_type: 'Aadhaar', document_name: 'a.pdf' });
+  it('an employee uploads nothing; HR files the document against the employee', async () => {
+    for (const body of [{ document_type: 'Aadhaar', document_name: 'a.pdf' }, { employee_id: E.B, document_type: 'Aadhaar', document_name: 'a.pdf' }]) {
+      expect((await call(empA, 'post', '/api/self-service/documents').send(body)).status).toBe(403);
+    }
+    const r = await call(hr, 'post', '/api/self-service/documents').send({ employee_id: E.A, document_type: 'Aadhaar', document_name: 'a.pdf' });
     expect(r.status).toBe(201);
     expect(r.body).toMatchObject({ employee_id: E.A, company_id: co.companyId });
   });
 
   it('an employee cannot verify or delete another employee\'s document', async () => {
     expect((await call(empA, 'patch', `/api/self-service/documents/${DOC.B}`).send({ status: 'verified' })).status).toBe(403);
-    expect((await call(empA, 'delete', `/api/self-service/documents/${DOC.B}`)).status).toBe(400);
-    expect((await call(empA, 'delete', `/api/self-service/documents/${DOC.C}`)).status).toBe(400);
-    const { rows } = await pool.query(`SELECT id FROM employee_documents WHERE id = ANY($1)`, [[DOC.B, DOC.C]]);
-    expect(rows).toHaveLength(2);
+    // since 2026-11-11 an employee deletes no document at all, their own included
+    for (const id of [DOC.A, DOC.B, DOC.C]) {
+      expect((await call(empA, 'delete', `/api/self-service/documents/${id}`)).status).toBe(403);
+    }
+    const { rows } = await pool.query(`SELECT id FROM employee_documents WHERE id = ANY($1)`, [[DOC.A, DOC.B, DOC.C]]);
+    expect(rows).toHaveLength(3);
   });
 
   it('HR works within the company only; the reviewer is recorded as an employee', async () => {
@@ -353,28 +382,14 @@ describe('Profile update', () => {
     }
   });
 
-  it('changing one field leaves the others alone — blank values never overwrite', async () => {
-    const r = await call(empA, 'put', `/api/self-service/employees/${E.A}/profile`).send({
-      blood_group: 'B+', address: '', emergency_contact: '' });
-    expect(r.status).toBe(200);
-    expect(r.body).toMatchObject({ blood_group: 'B+', masked_bank: 'XXXX9012' });
-    expect(await emp(E.A)).toEqual({ ...FIX, blood_group: 'B+' });
-  });
-
-  it('bank details are HR-only: any bank field is refused and nothing is saved', async () => {
-    for (const body of [{ bank_account: '999988887777' }, { ifsc_code: 'SBIN0000001' }, { bank_name: 'Other' }, { account_number: '1', emergency_contact: 'X' }]) {
+  it('an employee no longer edits their own profile here (HR does, in Edit Employee); nothing is saved', async () => {
+    for (const body of [{ blood_group: 'B+' }, { address: '2 New Road' }, { bank_account: '999988887777' },
+      { designation: 'CEO', basic_salary: 999999, emergency_contact: 'New Kin' }]) {
       const r = await call(empA, 'put', `/api/self-service/employees/${E.A}/profile`).send(body);
       expect(r.status).toBe(403);
-      expect(r.body.code).toBe('BANK_DETAILS_HR_ONLY');
+      expect(JSON.stringify(r.body)).not.toContain(FIX.account_number);
     }
-    expect(await emp(E.A)).toEqual({ ...FIX, blood_group: 'B+' });
-  });
-
-  it('HR-controlled fields cannot be self-edited, whatever the body carries', async () => {
-    const r = await call(empA, 'put', `/api/self-service/employees/${E.A}/profile`).send({
-      designation: 'CEO', department: 'Board', basic_salary: 999999, status: 'Inactive', company_id: other.companyId, emergency_contact: 'New Kin' });
-    expect(r.status).toBe(200);
-    expect(await emp(E.A)).toEqual({ ...FIX, blood_group: 'B+', emergency_name: 'New Kin' });
+    expect(await emp(E.A)).toEqual(FIX);
   });
 
   it('nobody updates another employee\'s profile here — HR included', async () => {
@@ -382,16 +397,12 @@ describe('Profile update', () => {
       const r = await call(who, 'put', `/api/self-service/employees/${E.A}/profile`).send({ blood_group: 'AB-' });
       expect(r.status).toBe(403);
     }
-    expect((await emp(E.A)).blood_group).toBe('B+');
+    expect((await emp(E.A)).blood_group).toBe(FIX.blood_group);
     expect((await call(empA, 'put', `/api/self-service/employees/${E.C}/profile`).send({ blood_group: 'A+' })).status).toBe(403);
     expect((await call(salesExec, 'put', `/api/self-service/employees/${E.S}/profile`).send({ blood_group: 'A+' })).status).toBe(403);
   });
 
-  it('input is validated; the reply masks the account', async () => {
-    expect((await call(empA, 'put', `/api/self-service/employees/${E.A}/profile`).send({ blood_group: 'Z' })).status).toBe(400);
-    const r = await call(empA, 'put', `/api/self-service/employees/${E.A}/profile`).send({ address: '2 New Road' });
-    expect(r.status).toBe(200);
-    expect(JSON.stringify(r.body)).not.toContain(FIX.account_number);
+  it('a malformed id is refused cleanly', async () => {
     expect((await call(empA, 'put', '/api/self-service/employees/abc/profile').send({})).status).toBe(400);
   });
 });
@@ -428,9 +439,11 @@ describe('IT declaration review queue (§203)', () => {
   const count = async () => (await pool.query(`SELECT COUNT(*)::int n FROM it_declarations WHERE employee_id IN (SELECT id FROM employees WHERE company_id = $1)`, [co.companyId])).rows[0].n;
 
   it('opens only with it_declarations:view, and lists the caller\'s company only', async () => {
-    for (const who of [empA, fin, manager, hrExec, salesExec]) {
+    for (const who of [empA, manager, hrExec, salesExec]) {
       expect((await call(who, 'get', `/api/self-service/it-declarations/review?financial_year=${FY}`)).status).toBe(403);
     }
+    // finance_manager enters declarations (2026-11-11), so it opens the list too
+    expect((await call(fin, 'get', `/api/self-service/it-declarations/review?financial_year=${FY}`)).status).toBe(200);
     const r = await call(payrollAdmin, 'get', `/api/self-service/it-declarations/review?financial_year=${FY}&status=all`);
     expect(r.status).toBe(200);
     const ids = r.body.map(d => d.id);
@@ -470,16 +483,173 @@ describe('IT declaration review queue (§203)', () => {
   it('history is for the owner and company reviewers only', async () => {
     expect((await call(empA, 'get', `/api/self-service/it-declarations/${D.B}/history`)).status).toBe(404);
     expect((await call(otherHr, 'get', `/api/self-service/it-declarations/${D.B}/history`)).status).toBe(404);
-    expect((await call(fin, 'get', `/api/self-service/it-declarations/${D.B}/history`)).status).toBe(404);
+    // finance_manager enters declarations (it_declarations:view), so it reads the history too
+    expect((await call(fin, 'get', `/api/self-service/it-declarations/${D.B}/history`)).status).toBe(200);
     expect((await call(hr, 'get', `/api/self-service/it-declarations/${D.B}/history`)).status).toBe(200);
   });
 
   it('the same declaration cannot be filed twice', async () => {
-    const body = { declaration_type: 'HRA', amount: 24000, description: 'Rent Apr-Mar', financial_year: FY };
-    expect((await call(empB, 'post', '/api/self-service/it-declarations').send(body)).status).toBe(201);
-    const dup = await call(empB, 'post', '/api/self-service/it-declarations').send({ ...body, description: ' rent apr-mar ' });
+    const body = { declaration_type: 'HRA', amount: 24000, description: 'Rent Apr-Mar', landlord_name: 'R Owner', financial_year: FY };
+    expect((await fileFor(E.B, body)).status).toBe(201);
+    const dup = await fileFor(E.B, { ...body, description: ' rent apr-mar ' });
     expect(dup.status).toBe(409);
     expect(dup.body.code).toBe('DUPLICATE_DECLARATION');
-    expect((await call(empB, 'post', '/api/self-service/it-declarations').send({ ...body, amount: 12000 })).status).toBe(201);
+    expect((await fileFor(E.B, { ...body, amount: 12000 })).status).toBe(201);
+  });
+});
+
+describe('IT declaration review integrity (§263)', () => {
+  const settle = () => new Promise(r => { setTimeout(r, 300); });   // logAudit writes after the response
+  const nextFY = `${Number(FY.slice(0, 4)) + 1}-${Number(FY.slice(0, 4)) + 2}`;
+  const lastFY = `${Number(FY.slice(0, 4)) - 1}-${FY.slice(0, 4)}`;
+  const file = (employeeId, body) => fileFor(employeeId, body);   // Finance files for the employee
+  const put = (who, id, body) => call(who, 'put', `/api/self-service/it-declarations/${id}`).send(body);
+  const notes = async (u) => (await pool.query(
+    `SELECT title, message FROM notifications WHERE user_id = $1 AND module_name = 'it_declarations' ORDER BY id`, [u.userId])).rows;
+
+  it('files for the current or the next financial year only, and checks every field', async () => {
+    const base = { declaration_type: '80D', amount: 5000, description: 'Mediclaim §263' };
+    for (const financial_year of [lastFY, 'SEED finan', '2026-2028', 'abc']) {
+      expect((await file(E.A, { ...base, financial_year })).status).toBe(400);
+    }
+    expect((await file(E.A, { ...base, financial_year: nextFY })).status).toBe(201);
+    for (const bad of [
+      { amount: 1e12 }, { amount: 'x' }, { description: 'x'.repeat(501) },
+      { proof_url: 'javascript:alert(1)' }, { metro_city: true },        // metro is for HRA only
+    ]) expect((await file(E.A, { ...base, financial_year: FY, ...bad })).status).toBe(400);
+    const ok = await file(E.A, { declaration_type: 'HRA', amount: 120000, description: 'Rent §263', metro_city: true, landlord_name: 'R Owner', landlord_pan: 'ABCDE1234F', proof_url: 'https://example.com/r.pdf', financial_year: FY });
+    expect(ok.status).toBe(201);
+    expect(ok.body).toMatchObject({ metro_city: true, status: 'submitted' });
+    expect(Number(ok.body.claimed_amount)).toBe(120000);
+  });
+
+  it('a reviewer approves less than declared only with a reason, never more; the employee is told', async () => {
+    const { body: d } = await file(E.B, { declaration_type: '80C', amount: 50000, description: 'ELSS §263', financial_year: FY });
+    expect((await put(payrollAdmin, d.id, { status: 'approved', amount: 60000 })).status).toBe(400);
+    expect((await put(payrollAdmin, d.id, { status: 'approved', amount: 30000 })).status).toBe(400);
+    expect((await put(payrollAdmin, d.id, { status: 'rejected', amount: 30000, remarks: 'x' })).status).toBe(400);
+    const r = await put(payrollAdmin, d.id, { status: 'approved', amount: 30000, remarks: 'Only ₹30,000 proved' });
+    expect(r.status).toBe(200);
+    expect(Number(r.body.amount)).toBe(30000);
+    expect(Number(r.body.claimed_amount)).toBe(50000);
+    const n = await notes(empB);
+    expect(n.at(-1).title).toBe('IT declaration approved');
+    expect(n.at(-1).message).toContain('Only ₹30,000 proved');
+    // the queue shows what was declared next to what was approved
+    const q = await call(payrollAdmin, 'get', `/api/self-service/it-declarations/review?financial_year=${FY}&status=approved`);
+    expect(q.body.find(x => x.id === d.id)).toMatchObject({ regime: 'new', regime_source: 'company', counts_for_tax: false, section_limit: 150000 });
+    // reopening restores the claim and is recorded with the amount change
+    const re = await put(payrollAdmin, d.id, { status: 'submitted' });
+    expect(Number(re.body.amount)).toBe(50000);
+    await settle();
+    const h = await call(empB, 'get', `/api/self-service/it-declarations/${d.id}/history`);
+    expect(h.body.events.map(e => [e.action, Number(e.from_amount), Number(e.to_amount)])).toEqual([
+      ['approve', 50000, 30000], ['reopen', 30000, 50000],
+    ]);
+  });
+
+  it('a reviewer never edits a declaration without a decision — an approved one least of all', async () => {
+    const { body: d } = await file(E.B, { declaration_type: '80D', amount: 20000, description: 'Parents §263', financial_year: FY });
+    expect((await put(payrollAdmin, d.id, { amount: 1000 })).status).toBe(403);
+    expect((await put(payrollAdmin, d.id, { status: 'approved', description: 'changed' })).status).toBe(400);
+    expect((await put(payrollAdmin, d.id, { status: 'approved' })).status).toBe(200);
+    expect((await put(payrollAdmin, d.id, { amount: 1000 })).status).toBe(403);
+    expect((await put(fin, d.id, { amount: 1000 })).status).toBe(409);        // Finance: no longer submitted
+    expect(Number((await decl(d.id)).amount)).toBe(20000);
+  });
+
+  it('Finance\'s edit changes the claim; clearing a proof link is possible; bad input is refused', async () => {
+    const { body: d } = await file(E.A, { declaration_type: 'LTA', amount: 15000, description: 'Trip §263', proof_url: 'https://example.com/t.pdf', financial_year: FY });
+    const r = await put(fin, d.id, { amount: 12000, proof_url: '' });
+    expect(r.status).toBe(200);
+    expect(Number(r.body.amount)).toBe(12000);
+    expect(Number(r.body.claimed_amount)).toBe(12000);
+    expect(r.body.proof_url).toBeNull();
+    expect(r.body.description).toBe('Trip §263');
+    expect((await put(fin, d.id, { proof_url: 'ftp://x' })).status).toBe(400);
+    expect((await put(fin, d.id, { metro_city: true })).status).toBe(400);
+  });
+
+  it('the database refuses a status, section or year nothing reads', async () => {
+    for (const [col, val] of [['status', 'active'], ['declaration_type', 'Standard'], ['financial_year', 'SEED finan']]) {
+      await expect(pool.query(`UPDATE it_declarations SET ${col} = $1 WHERE id = $2`, [val, D.A])).rejects.toThrow(/check constraint/);
+    }
+  });
+});
+
+describe('IT declarations: HRA landlord, 80D self / parents, proof files, policy, Approval Center (§264)', () => {
+  const file = (employeeId, body) => fileFor(employeeId, { financial_year: FY, ...body });
+  const uploaded = [];
+  afterAll(() => { for (const p of uploaded) rmSync(join(LOCAL_UPLOAD_DIR, p.split('/').pop()), { force: true }); });
+
+  it('HRA needs the landlord; their PAN above ₹1,00,000 a year; landlord details are HRA-only', async () => {
+    expect((await file(E.A, { declaration_type: 'HRA', amount: 60000, description: 'Rent no landlord §264' })).status).toBe(400);
+    expect((await file(E.A, { declaration_type: 'HRA', amount: 150000, description: 'Rent no PAN §264', landlord_name: 'Owner' })).status).toBe(400);
+    expect((await file(E.A, { declaration_type: 'HRA', amount: 150000, description: 'Rent bad PAN §264', landlord_name: 'Owner', landlord_pan: '12345' })).status).toBe(400);
+    expect((await file(E.A, { declaration_type: '80C', amount: 1000, description: 'PPF §264', landlord_name: 'Owner' })).status).toBe(400);
+    const ok = await file(E.A, { declaration_type: 'HRA', amount: 150000, description: 'Rent ok §264', landlord_name: 'Owner', landlord_pan: 'abcde1234f' });
+    expect(ok.status).toBe(201);
+    expect(ok.body).toMatchObject({ landlord_name: 'Owner', landlord_pan: 'ABCDE1234F' });
+    // nor can it later drop the PAN below the rule
+    expect((await call(fin, 'put', `/api/self-service/it-declarations/${ok.body.id}`).send({ landlord_pan: '' })).status).toBe(400);
+  });
+
+  it('80D is for self (default) or parents; "60 or over" applies to parents only', async () => {
+    const self = await file(E.A, { declaration_type: '80D', amount: 20000, description: 'Own policy §264' });
+    expect(self.status).toBe(201);
+    expect(self.body.insured_for).toBe('self');
+    const parents = await file(E.A, { declaration_type: '80D', amount: 45000, description: 'Parents policy §264', insured_for: 'parents', parents_senior: true });
+    expect(parents.body).toMatchObject({ insured_for: 'parents', parents_senior: true });
+    expect((await file(E.A, { declaration_type: '80D', amount: 1000, description: 'x §264', parents_senior: true })).status).toBe(400);
+    expect((await file(E.A, { declaration_type: '80C', amount: 1000, description: 'y §264', insured_for: 'self' })).status).toBe(400);
+    const q = await call(payrollAdmin, 'get', `/api/self-service/it-declarations/review?financial_year=${FY}&status=all`);
+    expect(q.body.find(r => r.id === parents.body.id)).toMatchObject({ section_limit: 50000 });
+    expect(q.body.find(r => r.id === self.body.id)).toMatchObject({ section_limit: 25000 });
+  });
+
+  it('Finance attaches the proof while the declaration waits; it opens for the employee and reviewers', async () => {
+    const { body: d } = await file(E.B, { declaration_type: '80C', amount: 7000, description: 'Proof file §264' });
+    const pdf = Buffer.from('%PDF-1.4 zz');
+    // the owner may no longer attach (self_service:edit is off); Finance does
+    expect((await call(empB, 'post', `/api/self-service/it-declarations/${d.id}/proof`).attach('file', pdf, { filename: 'p.pdf', contentType: 'application/pdf' })).status).toBe(404);
+    expect((await call(fin, 'post', `/api/self-service/it-declarations/${d.id}/proof`).attach('file', Buffer.from('x'), { filename: 'a.exe', contentType: 'application/octet-stream' })).status).toBe(400);
+    expect((await call(empA, 'post', `/api/self-service/it-declarations/${d.id}/proof`).attach('file', pdf, { filename: 'p.pdf', contentType: 'application/pdf' })).status).toBe(404);
+    const up = await call(fin, 'post', `/api/self-service/it-declarations/${d.id}/proof`).attach('file', pdf, { filename: 'p.pdf', contentType: 'application/pdf' });
+    expect(up.status).toBe(200);
+    expect(up.body.proof_file).toMatch(/^\/uploads\/.*itdecl_\d+\.pdf$/);
+    uploaded.push(up.body.proof_file);
+    const name = up.body.proof_file.split('/').pop();
+    expect((await call(empB, 'get', `/api/files/${name}`)).status).toBe(200);
+    expect((await call(payrollAdmin, 'get', `/api/files/${name}`)).status).toBe(200);
+    expect((await call(fin, 'get', `/api/files/${name}`)).status).toBe(200);    // Finance attached it
+    for (const who of [empA, otherHr]) expect((await call(who, 'get', `/api/files/${name}`)).status).toBe(403);
+    expect((await call(empA, 'head', `/api/files/${name}`)).status).toBe(403);
+    await call(payrollAdmin, 'put', `/api/self-service/it-declarations/${d.id}`).send({ status: 'approved' });
+    expect((await call(fin, 'post', `/api/self-service/it-declarations/${d.id}/proof`).attach('file', pdf, { filename: 'p.pdf', contentType: 'application/pdf' })).status).toBe(409);
+  });
+
+  it('the policy says which declarations count this month', async () => {
+    const r = await call(empA, 'get', '/api/self-service/it-declarations/policy');
+    expect(r.status).toBe(200);
+    expect(r.body.cutoff_month).toBe(1);                      // no saved setting: January
+    expect(r.body.counts_now).toEqual(expect.arrayContaining(['approved']));
+  });
+
+  it('waiting declarations appear in the Approval Center for reviewers, never their own, as "open"', async () => {
+    const { SOURCE_BY_TYPE } = await import('../modules/approvals/approvals.sources.js');
+    const src = SOURCE_BY_TYPE.itdecl;
+    const { body: a } = await file(E.A, { declaration_type: 'LTA', amount: 9000, description: 'Approval Center §264' });
+    const { body: h } = await file(E.H, { declaration_type: 'LTA', amount: 9000, description: 'Approval Center own §264' });
+    const rows = await src.pending(co.companyId);
+    const mineRow = rows.find(r => r.source_id === String(h.id));
+    const other = rows.find(r => r.source_id === String(a.id));
+    expect(mineRow).toBeTruthy();
+    expect(other).toBeTruthy();
+    const reviewer = { perms: { it_declarations: { can_approve: true } }, linkedEmployeeId: E.H };
+    expect(src.canAct(reviewer, other)).toBe(true);
+    expect(src.canAct(reviewer, mineRow)).toBe(false);
+    expect(src.canAct({ perms: {}, linkedEmployeeId: null }, other)).toBe(false);
+    expect(src.actions(other)).toEqual({ open: { page: 'PayrollCenter', params: { tab: 'statutory', view: 'declarations' } } });
+    expect(rows.every(r => r.company_id === co.companyId)).toBe(true);       // the caller's company only
   });
 });

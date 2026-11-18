@@ -18,6 +18,9 @@ services:
     #    real-DB integration tests, which would run against production data.
     # Tests run in CI (ci.yml) before anything reaches a deploy.
     buildCommand: npm ci
+    # The server refuses to start with pending migrations, and a failed migration
+    # here stops the deploy while the previous version keeps running.
+    preDeployCommand: npm run migrate
     startCommand: node server.js
     healthCheckPath: /api/health
     envVars:

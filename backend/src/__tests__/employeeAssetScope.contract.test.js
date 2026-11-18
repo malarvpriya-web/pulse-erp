@@ -89,8 +89,9 @@ describe('every write route is tenant-scoped', () => {
     expect(scopedRead, `${_name} reads the allocation unscoped`).toBe(true);
   });
 
+  // Re-issue INSERTs a new row rather than updating one; it is checked below.
   it.each(
-    WRITES.filter(w => w.method !== 'DELETE' && w.path !== '/').map(w => [`${w.method} ${w.path}`, w])
+    WRITES.filter(w => w.method !== 'DELETE' && w.path !== '/' && w.path !== '/:id/reissue').map(w => [`${w.method} ${w.path}`, w])
   )('%s also scopes the UPDATE itself', (_name, route) => {
     const body = bodyOf(route);
     // Scoping only the read leaves a TOCTOU gap, and more practically it is one
@@ -114,7 +115,8 @@ describe('every write route is tenant-scoped', () => {
   it('every route is behind a role gate', () => {
     for (const r of ROUTES) {
       expect(
-        /allowRoles\(|requirePermission\(/.test(r.line),
+        // ownOrPermission: the grant, or the caller's own record only (My Details, 2026-11-11)
+        /allowRoles\(|requirePermission\(|ownOrPermission\(/.test(r.line),
         `${r.method} ${r.path} has no authorization`,
       ).toBe(true);
     }
@@ -158,17 +160,38 @@ describe('scope comes from the token, never the client', () => {
 
 // ═════════════════════════════════════════════════════════════════════════════
 describe('asset type stays master-validated', () => {
+  // Since 11 Nov 26 the checks live in shared helpers (assetTypeError,
+  // liveEmployee) so POST, PUT and re-issue cannot drift apart. Asserted both
+  // ways: the helper holds the SQL, and the route calls the helper.
+  const helper = (name) => {
+    const start = SRC.indexOf(`async function ${name}(`);
+    expect(start, `${name}() not found`).toBeGreaterThan(-1);
+    return SRC.slice(start, SRC.indexOf('\n}\n', start));
+  };
+
   it('POST still checks the ASSET_TYPE master', () => {
-    // Guarding against a regression in the 2026-09-28 fix while this file was
-    // rewriting its neighbours.
+    const fn = helper('assetTypeError');
+    expect(fn).toMatch(/type = 'ASSET_TYPE'/);
+    expect(fn).toMatch(/is not a valid asset type/);
+    expect(fn).toMatch(/company_id IS NULL OR company_id = \$1/);
     const post = bodyOf(WRITES.find(w => w.path === '/'));
-    expect(post).toMatch(/type = 'ASSET_TYPE'/);
-    expect(post).toMatch(/is not a valid asset type/);
-    expect(post).toMatch(/company_id IS NULL OR company_id = \$1/);
+    expect(post).toMatch(/await assetTypeError\(cid, asset_type\)/);
   });
 
   it('POST still checks the employee belongs to the caller', () => {
+    expect(helper('liveEmployee')).toMatch(/SELECT id FROM employees[\s\S]{0,160}company_id = \$2/);
     const post = bodyOf(WRITES.find(w => w.path === '/'));
-    expect(post).toMatch(/SELECT id FROM employees[\s\S]{0,160}company_id = \$2/);
+    expect(post).toMatch(/await liveEmployee\(cid, employee_id\)/);
+  });
+
+  it('re-issue reads its source scoped, checks the new holder, and keeps the source company', () => {
+    const body = bodyOf(WRITES.find(w => w.path === '/:id/reissue'));
+    expect(body).toMatch(/loadOwnedAllocation\(req, res\)/);
+    expect(body).toMatch(/await liveEmployee\(cid, employee_id\)/);
+    expect(body).toMatch(/\[prev\.company_id, employee_id/);
+  });
+
+  it('PUT re-validates a changed asset type', () => {
+    expect(bodyOf(WRITES.find(w => w.method === 'PUT'))).toMatch(/await assetTypeError\(cid, next\.asset_type\)/);
   });
 });

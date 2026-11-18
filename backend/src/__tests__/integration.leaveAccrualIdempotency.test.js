@@ -391,3 +391,60 @@ describe('Leave accrual · the log row and the credit are one unit of work', () 
     expect(await allocated(ids.employee, ids.monthlyType)).toBe(0);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2026-11-12: EL had 12 days given up front AND a monthly accrual type, and the
+// new catch-up added nine monthly credits on top (21 days). These pin the guard.
+describe('Leave accrual · a balance given up front is never topped up monthly', () => {
+  it('a balance that already holds days with no monthly credit is skipped', async () => {
+    await pool.query(
+      `INSERT INTO leave_balances (employee_id, leave_type_id, year, allocated_days, used_days) VALUES ($1, $2, $3, 12, 0)`,
+      [ids.employee, ids.monthlyType, YEAR]);
+    const r = await runMonthlyAccrual({ companyId: ids.company, month: 3, year: YEAR, runMode: 'manual' });
+    expect(await allocated(ids.employee, ids.monthlyType)).toBe(12);
+    // The other employee has no balance yet, so accrues normally.
+    expect(await allocated(ids.employee2, ids.monthlyType)).toBe(1.25);
+    expect(r.credited).toBe(1);
+  });
+
+  it('a balance built by monthly credits keeps accruing', async () => {
+    await runMonthlyAccrual({ companyId: ids.company, month: 1, year: YEAR, runMode: 'manual' });
+    await runMonthlyAccrual({ companyId: ids.company, month: 2, year: YEAR, runMode: 'manual' });
+    expect(await allocated(ids.employee, ids.monthlyType)).toBe(2.5);
+  });
+
+  it('catch-up credits every month so far once, and a second catch-up adds nothing', async () => {
+    const { catchUpAccruals } = await import('../modules/leaves/services/leaveAccrual.service.js');
+    const today = new Date(Date.UTC(YEAR, 3, 20, 6));   // 20 Apr, IST
+    await catchUpAccruals({ companyId: ids.company, today });
+    expect(await allocated(ids.employee, ids.monthlyType)).toBe(5);   // Jan–Apr × 1.25
+    await catchUpAccruals({ companyId: ids.company, today });
+    expect(await allocated(ids.employee, ids.monthlyType)).toBe(5);
+  });
+});
+
+describe('Leave accrual · yearly credit', () => {
+  it('gives the quota pro-rated from joining once, and never adds to an existing balance', async () => {
+    const { runYearlyCredit } = await import('../modules/leaves/services/leaveAccrual.service.js');
+    const { rows: [yt] } = await pool.query(
+      `INSERT INTO leave_types (leave_name, leave_code, company_id, accrual_type, annual_quota, is_active)
+       VALUES ($1, $2, $3, 'yearly', 12, true) RETURNING id`, [`${TAG} Yearly`, `${TAG}YR`, ids.company]);
+    try {
+      await pool.query(`UPDATE employees SET joining_date = $2 WHERE id = $1`, [ids.employee2, `${YEAR}-07-01`]);
+      await pool.query(
+        `INSERT INTO leave_balances (employee_id, leave_type_id, year, allocated_days, used_days) VALUES ($1, $2, $3, 9, 0)`,
+        [ids.employee, yt.id, YEAR]);
+      await runYearlyCredit({ companyId: ids.company, year: YEAR, runMode: 'manual' });
+      await runYearlyCredit({ companyId: ids.company, year: YEAR, runMode: 'manual' });
+      expect(await allocated(ids.employee, yt.id)).toBe(9);    // HR's figure kept
+      expect(await allocated(ids.employee2, yt.id)).toBe(6);   // Jul–Dec of 12
+      const claim = (await logRows(ids.employee, yt.id)).find((l) => l.accrual_type === 'yearly');
+      expect(claim.days).toBe(0);                              // recorded as adding nothing
+    } finally {
+      await pool.query(`UPDATE employees SET joining_date = '2020-01-01' WHERE id = $1`, [ids.employee2]);
+      await pool.query(`DELETE FROM leave_accrual_log WHERE leave_type_id = $1`, [yt.id]);
+      await pool.query(`DELETE FROM leave_balances WHERE leave_type_id = $1`, [yt.id]);
+      await pool.query(`DELETE FROM leave_types WHERE id = $1`, [yt.id]);
+    }
+  });
+});

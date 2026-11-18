@@ -9,6 +9,8 @@ export default defineConfig({
     '**/03-crud/procurement-hardening.spec.ts',
     // §221 — creates employees, leaves and projects; testdb config only.
     '**/06-db-consistency.spec.ts',
+    // §270 — writes department-head assignments; testdb config only.
+    '**/department-heads.testdb.spec.ts',
     '**/menu-audit.spec.js',
     '**/menu-crawler.spec.ts',
     '**/full-menu-audit.spec.ts',

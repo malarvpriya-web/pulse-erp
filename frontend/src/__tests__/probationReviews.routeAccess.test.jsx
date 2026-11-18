@@ -47,9 +47,9 @@ const { ROUTES } = await import('../config/routes');
 const GRANTS = {
   super_admin:     [],
   admin:           [],
-  hr:              ['hr:view', 'employees:view', 'internships:view'],
-  hr_manager:      ['hr:view', 'internships:view'],
-  hr_exec:         ['hr:view', 'internships:view'],
+  hr:              ['hr:view', 'exit:view', 'employees:view', 'internships:view'],
+  hr_manager:      ['hr:view', 'exit:view', 'internships:view'],
+  hr_exec:         ['hr:view', 'exit:view', 'internships:view'],
   manager:         ['employees:view'],
   employee:        ['employees:view'],
   sales_exec:      [],

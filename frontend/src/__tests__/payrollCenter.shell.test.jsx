@@ -19,6 +19,9 @@ vi.mock('../features/hr/pages/PayrollForm16', () => probe('PayrollForm16'));
 vi.mock('../features/hr/pages/PayrollForm24Q', () => probe('PayrollForm24Q'));
 vi.mock('../features/hr/pages/PayrollSettings', () => probe('PayrollSettings'));
 vi.mock('../features/hr/components/payroll/PayrollOverview', () => probe('Overview'));
+vi.mock('../features/hr/components/payroll/StatutoryDuesPanel', () => probe('StatutoryDues'));
+vi.mock('../features/hr/components/payroll/TaxSetupPanel', () => probe('TaxSetup'));
+vi.mock('../features/hr/pages/ITDeclarationReview', () => probe('ITDeclarationReview'));
 // Grants the hub reads (PC-01): Form 138's view needs payroll_tds_extract:export.
 const auth = vi.hoisted(() => ({ denied: new Set() }));
 vi.mock('../context/AuthContext', () => ({
@@ -65,12 +68,23 @@ describe('PayrollCenter shell', () => {
   });
 
   // payroll_admin, hr and hr_manager open the hub but not the 24Q extract API (PC-01 D6/Q4).
-  it('without payroll_tds_extract:export Form 138 is not offered, and its deep link opens Form 16', async () => {
+  it('Tax & Statutory → IT declarations opens the review page embedded; only it_declarations:view sees it (§265)', async () => {
+    const r = await renderHub('/PayrollCenter?tab=statutory&view=declarations');
+    expect(screen.getByRole('tab', { name: /IT declarations/ }).getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByTestId('probe-ITDeclarationReview').dataset.embedded).toBe('true');
+    r.unmount();
+    await renderHub('/PayrollCenter?tab=statutory&view=declarations', ['it_declarations:view']);
+    expect(screen.queryByRole('tab', { name: /IT declarations/ })).toBeNull();
+    expect(screen.queryByTestId('probe-ITDeclarationReview')).toBeNull();
+    expect(screen.getByTestId('probe-StatutoryDues')).toBeTruthy();
+  });
+
+  it('without payroll_tds_extract:export Form 138 is not offered, and its deep link opens the first view of the section', async () => {
     await renderHub('/PayrollCenter?tab=form24q', ['payroll_tds_extract:export']);
     expect(screen.getByRole('tab', { name: 'Tax & Statutory' }).getAttribute('aria-selected')).toBe('true');
     expect(screen.queryByRole('tab', { name: /Form 138 \/ Form 24Q/ })).toBeNull();
     expect(screen.queryByTestId('probe-PayrollForm24Q')).toBeNull();
-    expect(screen.getByTestId('probe-PayrollForm16')).toBeTruthy();
+    expect(screen.getByTestId('probe-StatutoryDues')).toBeTruthy();
   });
 });
 

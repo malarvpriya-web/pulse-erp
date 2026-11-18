@@ -80,11 +80,10 @@ import ProjectProfitability from '../features/projects/pages/ProjectProfitabilit
 // The personal dashboard that predates the role-aware Home. Surfaced at
 // HR > My Dashboard; previously reachable only via global search.
 import EmployeeDashboard   from '../pages/EmployeeDashboard';
-// Gate passes and visitor management. /BiometricAccess redirected to
-// AttendanceSettings?tab=devices, which renders DeviceManagement and covers
-// none of this page's three tabs — so two features with live tables and routes
-// had no reachable screen. Surfaced at HR > Gate Pass & Visitors.
-import BiometricAccess     from '../features/hr/pages/BiometricAccess';
+// Attendance → Punch Import (§272): the attendance-import tab of the old
+// BiometricAccess page. Gate passes and visitors are HR → Gate Pass & Visitors
+// (GatePassVisitors), mounted in gateAccess.test.jsx inside a router.
+import PunchImport         from '../features/attendance/pages/PunchImport';
 
 const PAGES = [
   ['CalibrationCenter',     CalibrationCenter],
@@ -109,7 +108,7 @@ const PAGES = [
   ['TravelExpenses',        TravelExpenses],
   ['ProjectProfitability',  ProjectProfitability],
   ['EmployeeDashboard',     EmployeeDashboard],
-  ['BiometricAccess',       BiometricAccess],
+  ['PunchImport',           PunchImport],
 ];
 
 beforeEach(() => { cleanup(); });

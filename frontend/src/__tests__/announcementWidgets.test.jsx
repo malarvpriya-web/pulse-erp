@@ -11,10 +11,14 @@
  *     400. It now sends a 7-day window addressed to the manager's department.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 
 vi.mock('../pages/Home.css', () => ({}));
 vi.mock('../pages/ManagerDashboard.css', () => ({}));
+vi.mock('../pages/EmployeeDashboard.css', () => ({}));
+vi.mock('../components/dashboard/widgets/MyPayslipsWidget', () => ({ default: () => <div /> }));
+vi.mock('../components/attendance/PunchModeNotice', () => ({ default: () => <div /> }));
+vi.mock('../hooks/usePunchMode', () => ({ default: () => ({ mode: 'any' }) }));
 vi.mock('../services/api/client', () => ({ default: { get: vi.fn(), post: vi.fn() } }));
 vi.mock('../components/dashboard/CelebrationsBoard', () => ({ default: () => <div /> }));
 vi.mock('../components/attendance/CameraClockModal', () => ({ default: () => <div /> }));
@@ -31,6 +35,7 @@ import api from '../services/api/client';
 import { announcementText, announcementDate, announcementHtml } from '../features/hr/announcementFeed';
 import Home from '../pages/Home.jsx';
 import ManagerDashboard from '../pages/ManagerDashboard.jsx';
+import EmployeeDashboard from '../pages/EmployeeDashboard.jsx';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -144,5 +149,18 @@ describe('Manager quick-post', () => {
     await post('Hello');
     await new Promise(r => setTimeout(r, 50));
     expect(api.post.mock.calls.filter(([url]) => url === '/announcements')).toHaveLength(0);
+  });
+});
+
+describe('Employee Dashboard (HR > My Dashboard)', () => {
+  // 2026-11-11: announcements live on Home only — My Dashboard no longer
+  // repeats them (nor the clock-in strip, tasks or celebrations).
+  it('does not repeat the Home announcements card', async () => {
+    mockAuth = { user: { name: 'Zz Emp', email: 'zz.emp@manifest.in', employee_id: 5 }, role: 'employee', hasPermission: () => false };
+    api.get.mockResolvedValue({ data: [] });
+    render(<EmployeeDashboard setPage={vi.fn()} />);
+    await screen.findByText('My Employment');
+    expect(screen.queryByText('Company Announcements')).toBeNull();
+    expect(api.get.mock.calls.map(([u]) => u)).not.toContain('/announcements/active');
   });
 });

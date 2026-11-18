@@ -55,8 +55,12 @@ const { default: attendanceRoutes } = await import('../modules/attendance/routes
 
 const app = buildApp(['/api/attendance', verifyToken, attendanceRoutes]);
 let A, B, empA, empB;
-const lop = async (emp) => (await pool.query('SELECT lop_days FROM payroll_runs WHERE employee_id = $1 AND month = 3 AND year = 2027', [emp])).rows[0].lop_days;
-const sync = (who, body) => request(app).post('/api/attendance/payroll-sync').set('Authorization', `Bearer ${who.token()}`).send({ month: 3, year: 2027, force: true, ...body });
+// Loss of pay lands in the attendance summary, which payroll reads; the sync no
+// longer edits draft runs (a changed LOP with unchanged money). March 2026 is a
+// past month: days still to come are never counted as absence.
+const lop = async (emp) => (await pool.query('SELECT lop_days FROM payroll_attendance_summary WHERE employee_id = $1 AND month = 3 AND year = 2026', [emp])).rows[0]?.lop_days ?? 0;
+const draftLop = async (emp) => (await pool.query('SELECT lop_days FROM payroll_runs WHERE employee_id = $1 AND month = 3 AND year = 2026', [emp])).rows[0].lop_days;
+const sync = (who, body) => request(app).post('/api/attendance/payroll-sync').set('Authorization', `Bearer ${who.token()}`).send({ month: 3, year: 2026, force: true, ...body });
 
 async function login(company, roleCode) {
   const { rows: [u] } = await pool.query(
@@ -76,7 +80,7 @@ beforeAll(async () => {
   const emp = async (co) => (await pool.query(
     `INSERT INTO employees (company_id, office_id, first_name, last_name, status, joining_date) VALUES ($1, 'EMP001', 'Sync', 'Test', 'Active', '2026-01-01') RETURNING id`, [co.companyId])).rows[0].id;
   empA = await emp(A); empB = await emp(B);
-  await pool.query(`INSERT INTO payroll_runs (employee_id, month, year, status, gross, net_pay, lop_days, is_test) VALUES ($1, 3, 2027, 'pending', 50000, 45000, 0, false), ($2, 3, 2027, 'pending', 50000, 45000, 0, false)`, [empA, empB]);
+  await pool.query(`INSERT INTO payroll_runs (employee_id, month, year, status, gross, net_pay, lop_days, is_test) VALUES ($1, 3, 2026, 'pending', 50000, 45000, 0, false), ($2, 3, 2026, 'pending', 50000, 45000, 0, false)`, [empA, empB]);
 }, 60000);
 
 afterAll(async () => {
@@ -86,10 +90,11 @@ afterAll(async () => {
 describe('attendance payroll sync — one company only', () => {
   it('syncs the caller\'s company and never touches another company\'s runs', async () => {
     const r = await sync(A, {});
-    expect(r.status).toBe(200);
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
     expect(r.body.lop_summary.map(x => x.employee_id)).toEqual([empA]);
-    expect(Number(await lop(empA))).toBeGreaterThan(0);        // no attendance in March 2027 → LOP
+    expect(Number(await lop(empA))).toBeGreaterThan(0);        // no attendance in March 2026 → LOP
     expect(Number(await lop(empB))).toBe(0);                   // company B untouched
+    expect(Number(await draftLop(empA))).toBe(0);              // the draft is not edited behind payroll's back
   });
 
   it('naming another company\'s employee does not reach them', async () => {
@@ -108,5 +113,30 @@ describe('attendance payroll sync — one company only', () => {
     expect(r2.status).toBe(400);
     expect(Number(await lop(empA))).toBeGreaterThan(0);
     expect(Number(await lop(empB))).toBe(0);
+  });
+});
+
+describe('absence after last month\'s cutoff is carried into this month, once', () => {
+  it('last month counted to the 20th: its later working days are this month\'s carried loss of pay', async () => {
+    // February 2026 was synced on the 20th (pay day in the same month); nothing
+    // after it was counted. Its last working days, 23–27 Feb, had no attendance.
+    await pool.query(`INSERT INTO payroll_attendance_summary (company_id, employee_id, month, year, working_days, lop_days, counted_to, synced_at)
+                      VALUES ($1, $2, 2, 2026, 20, 0, '2026-02-20', '2026-02-20')
+                      ON CONFLICT (employee_id, month, year) DO UPDATE SET counted_to = '2026-02-20', carried_to_next = false`, [A.companyId, empA]);
+    const r = await sync(A, {});
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    const { rows: [mar] } = await pool.query('SELECT carried_lop_days, carried_base_days, counted_to::text AS counted_to FROM payroll_attendance_summary WHERE employee_id = $1 AND month = 3 AND year = 2026', [empA]);
+    expect(Number(mar.carried_lop_days)).toBe(5);        // Mon 23 – Fri 27 Feb
+    expect(Number(mar.carried_base_days)).toBe(20);      // February's working days
+    expect(mar.counted_to).toBe('2026-03-31');
+    const { rows: [feb] } = await pool.query('SELECT carried_to_next FROM payroll_attendance_summary WHERE employee_id = $1 AND month = 2 AND year = 2026', [empA]);
+    expect(feb.carried_to_next).toBe(true);
+  });
+
+  it('re-syncing last month afterwards does not count those days a second time', async () => {
+    const r = await request(app).post('/api/attendance/payroll-sync').set('Authorization', `Bearer ${A.token()}`).send({ month: 2, year: 2026, force: true });
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    const { rows: [feb] } = await pool.query('SELECT counted_to::text AS counted_to FROM payroll_attendance_summary WHERE employee_id = $1 AND month = 2 AND year = 2026', [empA]);
+    expect(feb.counted_to).toBe('2026-02-20');            // still stops where March took over
   });
 });

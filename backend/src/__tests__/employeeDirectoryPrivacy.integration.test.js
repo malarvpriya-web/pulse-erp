@@ -48,6 +48,8 @@ const fx = { tok: {}, user: {}, emp: {} };
 
 const app = express();
 app.use(express.json());
+const { employeeUploadForTests } = await import('./helpers/testApp.js');   // what server.js mounts first (§267 bank proof)
+app.use('/api/employees', employeeUploadForTests);
 app.use('/api/employees', router);
 const get = (who, path) => request(app).get(`/api/employees${path}`).set({ Authorization: `Bearer ${fx.tok[who]}` });
 

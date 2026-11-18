@@ -46,7 +46,8 @@ describe('fixture CTC-75K: monthly and annual gross', () => {
 describe('employer contributions are separate from employee deductions', () => {
   it('October 2026: employer PF 12% × 25,000 = 3,000 (EPS 2,083 + EPF 917); ESI nil (gross > 21,000); LWF nil (not December)', () => {
     const s = month(10);
-    expect(s.employer_contributions).toMatchObject({ pf_total: 3000, eps: 2083, epf: 917, esi: 0, lwf: 0, total: 3000 });
+    // + EDLI 0.5% and EPF administration 0.5% of 25,000 (employer-only, never deducted)
+    expect(s.employer_contributions).toMatchObject({ pf_total: 3000, eps: 2083, epf: 917, esi: 0, lwf: 0, edli: 125, pf_admin: 125, total: 3250 });
     expect(s.employee_pf).toBe(3000);
     expect(s.net_pay).toBe(75000 - 3000);           // employer PF never reduces take-home
   });
@@ -54,19 +55,19 @@ describe('employer contributions are separate from employee deductions', () => {
     expect(month(8).employer_contributions.pf_total).toBe(1800);
   });
   it('December: Karnataka LWF employer ₹100 is part of that month\'s employer cost', () => {
-    expect(month(12).employer_contributions).toMatchObject({ lwf: 100, total: 3100 });
+    expect(month(12).employer_contributions).toMatchObject({ lwf: 100, total: 3350 });
   });
 });
 
 describe('employer cost of a month (stored as ctc_monthly) — not a contractual CTC', () => {
   it('= gross earned this month + employer PF/ESI/LWF', () => {
     const oct = month(10);
-    expect(oct.ctc_monthly).toBe(78000);
+    expect(oct.ctc_monthly).toBe(78250);   // gross 75,000 + PF 3,000 + EDLI 125 + EPF admin 125
     expect(oct.employer_cost_month).toBe(oct.ctc_monthly);
   });
   it('a one-time bonus raises that month\'s employer cost; no annual figure is extrapolated from it', () => {
     const withBonus = month(10, 2026, { bonus: 50000 });
-    expect(withBonus.ctc_monthly).toBe(128000);
+    expect(withBonus.ctc_monthly).toBe(128250);
     // ctc_annual used to be ctc_monthly × 12 = 15,36,000 here — a bonus paid twelve times.
     expect(withBonus).not.toHaveProperty('ctc_annual');
   });
@@ -74,7 +75,7 @@ describe('employer cost of a month (stored as ctc_monthly) — not a contractual
     expect(month(10).gratuity_payable_if_exit_now).toBe(0);  // 2 years of service
     const senior = computePayroll({ ...FIXTURE, years_of_service: 6 }, { month: 10, year: 2026, structureComponents: STANDARD, professional_tax: false, tds_auto_calculate: false });
     expect(senior.gratuity_payable_if_exit_now).toBe(Math.round(30000 * 15 / 26 * 6));   // 1,03,846
-    expect(senior.ctc_monthly).toBe(78000);
+    expect(senior.ctc_monthly).toBe(78250);
     expect(senior).not.toHaveProperty('gratuity_provision');
   });
 });
@@ -116,6 +117,10 @@ describe('unit and labelling contracts (source)', () => {
     expect(ss).toMatch(/Basic Salary \(₹ per month\)/);
   });
   it('the auto-creation queue shows the offer as an annual CTC, not "/mo"', () => {
-    expect(src('../../../frontend/src/features/recruitment/pages/EmployeeAutoCreation.jsx')).toMatch(/\/yr \(annual CTC\)/);
+    // The column is headed "Annual CTC" (review 2026-11-17); what matters is
+    // that the offer figure is never presented as a monthly amount.
+    const page = src('../../../frontend/src/features/recruitment/pages/EmployeeAutoCreation.jsx');
+    expect(page).toMatch(/'Annual CTC'/);
+    expect(page).not.toMatch(/\/mo\b/);
   });
 });

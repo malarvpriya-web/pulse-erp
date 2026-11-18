@@ -13,7 +13,9 @@
  *     a reviewer id in the body is ignored;
  *   - neither step changes the employee record;
  *   - request and submission land in the audit trail;
- *   - company B never sees or touches company A's reviews.
+ *   - company B never sees or touches company A's reviews;
+ *   - HR's decision on a SUBMITTED review is applied to the employee in the
+ *     same transaction (confirm / extend / not confirmed -> exit), once.
  *
  * Fixtures live in two registry tenants (testTenantIds.contract.test.js) and
  * are deleted in afterAll; audit rows are kept, as every suite's are.
@@ -54,6 +56,7 @@ const api = {
   request: (who, body) => request(app).post('/api/probation-reviews').set(as(who)).send(body),
   mine: (who) => request(app).get('/api/probation-reviews/mine').set(as(who)),
   submit: (who, id, body) => request(app).post(`/api/probation-reviews/mine/${id}/submit`).set(as(who)).send(body),
+  decide: (who, id, body) => request(app).post(`/api/probation-reviews/${id}/decide`).set(as(who)).send(body),
 };
 const GOOD = { rating: 4, comments: 'Delivers on time; needs to document more.', recommendation: 'confirm' };
 
@@ -71,6 +74,9 @@ async function cleanup() {
   const users = `SELECT id FROM users WHERE email LIKE 'zz.prev.%@example.com'`;
   await pool.query(`DELETE FROM notifications WHERE user_id IN (${users})`);
   await pool.query(`DELETE FROM probation_reviews WHERE company_id = ANY($1::int[])`, [c]);
+  // The HR decision (not confirmed) opens an exit for the probationer.
+  await pool.query(`DELETE FROM exit_clearance WHERE employee_id IN (SELECT id FROM employees WHERE company_id = ANY($1::int[]))`, [c]);
+  await pool.query(`DELETE FROM exit_requests WHERE employee_id IN (SELECT id FROM employees WHERE company_id = ANY($1::int[]))`, [c]);
   await pool.query(`DELETE FROM department_heads WHERE company_id = ANY($1::int[])`, [c]);
   await pool.query(`DELETE FROM user_scope WHERE user_id IN (${users})`);
   await pool.query(`DELETE FROM user_roles WHERE user_id IN (${users})`);
@@ -368,5 +374,228 @@ describe('reviewer summary (drives the My Probation Reviews menu entry)', () => 
     expect((await summary('head')).body).toMatchObject({ is_head: false });
     // ...while the review already assigned to them is still theirs on the API (Task 3B rule).
     expect((await api.mine('head')).body.reviews.length).toBeGreaterThan(0);
+  });
+});
+
+describe('HR decision on a submitted review', () => {
+  let today;
+  const isoPlus = async (n) => (await pool.query(`SELECT (CURRENT_DATE + $1::int)::text AS d`, [n])).rows[0].d;
+  async function submitted(key, { recommendation = 'confirm', end = '2026-12-31' } = {}) {
+    await emp(key, A, 'mapped', { status: 'Probation', end, joining: '2026-07-01' });
+    const req = await api.request('hr', { employee_id: fx.emp[key] });
+    expect(req.status, JSON.stringify(req.body)).toBe(200);
+    const sub = await api.submit('head', req.body.review.id, { ...GOOD, recommendation });
+    expect(sub.status, JSON.stringify(sub.body)).toBe(200);
+    return req.body.review.id;
+  }
+
+  beforeAll(async () => {
+    today = (await pool.query(`SELECT CURRENT_DATE::text AS d`)).rows[0].d;
+    // The previous block ended the head's assignment; map them again.
+    await pool.query(`UPDATE employees SET status = 'Active' WHERE id = $1`, [fx.emp.head]);
+    await pool.query(
+      `UPDATE department_heads SET ended_at = NOW(), end_reason = 'test'
+        WHERE company_id = $1 AND department_id = $2 AND ended_at IS NULL`, [A, fx.dept.mapped.id]);
+    await mapHead(A, 'mapped', 'head');
+  }, 30000);
+
+  it('only hr:edit holders in the company can decide', async () => {
+    const id = await submitted('dAuth');
+    for (const who of ['head', 'manager', 'other']) {
+      expect((await api.decide(who, id, { decision: 'confirmed' })).status, who).toBe(403);
+    }
+    expect((await api.decide('noCompanyHr', id, { decision: 'confirmed' })).status).toBe(403);
+    expect((await api.decide('hrB', id, { decision: 'confirmed' })).status).toBe(404);
+    expect((await empRow(fx.emp.dAuth)).status).toBe('Probation');
+  });
+
+  it('refuses a review the head has not submitted yet, and bad input, changing nothing', async () => {
+    await emp('dOpen', A, 'mapped', { status: 'Probation', end: '2026-12-31' });
+    const req = await api.request('hr', { employee_id: fx.emp.dOpen });
+    const notYet = await api.decide('hr', req.body.review.id, { decision: 'confirmed' });
+    expect(notYet.status).toBe(409);
+    expect(notYet.body.error).toMatch(/not submitted/);
+
+    const id = await submitted('dBad');
+    expect((await api.decide('hr', id, { decision: 'Confirm' })).status).toBe(400);
+    expect((await api.decide('hr', id, { decision: 'extended', extension_months: 3 })).status).toBe(400);   // no reason
+    expect((await api.decide('hr', id, { decision: 'extended', extension_months: 30, notes: 'x' })).status).toBe(400);
+    expect((await api.decide('hr', id, { decision: 'not_confirmed', notes: 'x' })).status).toBe(400);      // no LWD
+    expect((await api.decide('hr', id, { decision: 'confirmed', effective_date: await isoPlus(5) })).status).toBe(400);
+    expect((await empRow(fx.emp.dBad)).status).toBe('Probation');
+    expect((await reviewsOf(fx.emp.dBad))[0].status).toBe('submitted');
+  });
+
+  it('confirmed → Active with a confirmation date, once, audited, head told', async () => {
+    const id = await submitted('dConfirm');
+    const res = await api.decide('hr', id, { decision: 'confirmed', notes: 'Good first months' });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.review).toMatchObject({ status: 'decided', decision: 'confirmed', decided_by: 'Zz hr' });
+    expect((await empRow(fx.emp.dConfirm)).status).toBe('Active');
+    const { rows: [c] } = await pool.query(`SELECT confirmation_date::text AS d FROM employees WHERE id = $1`, [fx.emp.dConfirm]);
+    expect(c.d).toBe(today);
+
+    expect((await api.decide('hr', id, { decision: 'confirmed' })).status).toBe(409);
+
+    const { rows: audit } = await pool.query(
+      `SELECT 1 FROM audit_logs
+        WHERE reference_type = 'probation_review' AND reference_id = $1 AND action_type = 'decide_review'`, [String(id)]);
+    expect(audit).toHaveLength(1);
+    const { rows: told } = await pool.query(
+      `SELECT 1 FROM notifications WHERE user_id = $1 AND notification_type = 'probation_review_decided'`, [fx.user.head]);
+    expect(told.length).toBeGreaterThan(0);
+  });
+
+  it('extended → a new end date by the calendar rule; status stays Probation; the next cycle follows it', async () => {
+    const id = await submitted('dExtend', { recommendation: 'extend', end: '2026-12-31' });
+    const res = await api.decide('hr', id, { decision: 'extended', extension_months: 3, notes: 'Needs more time on reporting' });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.new_end_date).toBe('2027-03-31');
+    expect(res.body.review).toMatchObject({ decision: 'extended', extension_months: 3, new_end_date: '2027-03-31' });
+    expect(await empRow(fx.emp.dExtend)).toMatchObject({ status: 'Probation', end: '2027-03-31' });
+
+    const next = await api.request('hr', { employee_id: fx.emp.dExtend });
+    expect(next.status).toBe(200);
+    expect(next.body.review).toMatchObject({ cycle_no: 2, period_start: '2027-01-01', original_end_date: '2027-03-31' });
+  });
+
+  it('not confirmed → a termination exit request, clearance row and status Notice', async () => {
+    const id = await submitted('dExit', { recommendation: 'not_confirm' });
+    const lwd = await isoPlus(10);
+    const res = await api.decide('hr', id,
+      { decision: 'not_confirmed', last_working_date: lwd, notice_days: 10, notes: 'Did not meet targets' });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect((await empRow(fx.emp.dExit)).status).toBe('Notice');
+    const { rows: [er] } = await pool.query(
+      `SELECT id, separation_type, last_working_date::text AS lwd, notice_period, status, reason
+         FROM exit_requests WHERE employee_id = $1`, [fx.emp.dExit]);
+    expect(er).toMatchObject({ id: res.body.exit_request_id, separation_type: 'termination', lwd, notice_period: 10, status: 'active' });
+    expect(er.reason).toMatch(/Did not meet targets/);
+    expect((await pool.query(`SELECT 1 FROM exit_clearance WHERE employee_id = $1`, [fx.emp.dExit])).rows).toHaveLength(1);
+  });
+
+  it('refuses not confirmed while an exit is already open, changing nothing', async () => {
+    const id = await submitted('dOpenExit', { recommendation: 'not_confirm' });
+    await pool.query(
+      `INSERT INTO exit_requests (employee_id, separation_type, last_working_date, status)
+       VALUES ($1, 'resignation', CURRENT_DATE + 30, 'active')`, [fx.emp.dOpenExit]);
+    const res = await api.decide('hr', id, { decision: 'not_confirmed', last_working_date: await isoPlus(5), notes: 'x' });
+    expect(res.status).toBe(409);
+    expect((await empRow(fx.emp.dOpenExit)).status).toBe('Probation');
+    expect((await reviewsOf(fx.emp.dOpenExit))[0].status).toBe('submitted');
+  });
+
+  it('an HR user cannot decide their own probation', async () => {
+    const id = await submitted('dSelf');
+    await login('hrSelf', 'hr', A, fx.emp.dSelf);
+    const res = await api.decide('hrSelf', id, { decision: 'confirmed' });
+    expect(res.status).toBe(403);
+    expect((await empRow(fx.emp.dSelf)).status).toBe('Probation');
+  });
+});
+
+describe('HR cancels an open review', () => {
+  const cancel = (who, id, body) => request(app).post(`/api/probation-reviews/${id}/cancel`).set(as(who)).send(body);
+
+  it('needs hr:edit in the company and a reason', async () => {
+    await emp('cAuth', A, 'mapped', { status: 'Probation', end: '2026-12-31' });
+    const id = (await api.request('hr', { employee_id: fx.emp.cAuth })).body.review.id;
+    for (const who of ['head', 'manager', 'other']) expect((await cancel(who, id, { reason: 'x' })).status, who).toBe(403);
+    expect((await cancel('noCompanyHr', id, { reason: 'x' })).status).toBe(403);
+    expect((await cancel('hrB', id, { reason: 'x' })).status).toBe(404);
+    expect((await cancel('hr', id, {})).status).toBe(400);
+    expect((await reviewsOf(fx.emp.cAuth))[0].status).toBe('requested');
+  });
+
+  it('a waiting review: cancelled with who/why, the head told, the employee untouched, a new request allowed', async () => {
+    await emp('cReq', A, 'mapped', { status: 'Probation', end: '2026-12-31' });
+    const before = await empRow(fx.emp.cReq);
+    const id = (await api.request('hr', { employee_id: fx.emp.cReq })).body.review.id;
+    const res = await cancel('hr', id, { reason: 'Employee resigned' });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.review).toMatchObject({ status: 'cancelled', cancel_reason: 'Employee resigned', cancelled_by: 'Zz hr' });
+    expect(await empRow(fx.emp.cReq)).toEqual(before);
+    const { rows: told } = await pool.query(
+      `SELECT 1 FROM notifications WHERE user_id = $1 AND notification_type = 'probation_review_cancelled'`, [fx.user.head]);
+    expect(told.length).toBeGreaterThan(0);
+    expect((await api.mine('head')).body.reviews.map((r) => r.id)).not.toContain(id);
+
+    const again = await api.request('hr', { employee_id: fx.emp.cReq });
+    expect(again.body.created).toBe(true);
+    expect(again.body.review.cycle_no).toBe(2);
+  });
+
+  it('a submitted review can be cancelled; a decided one cannot', async () => {
+    await emp('cSub', A, 'mapped', { status: 'Probation', end: '2026-12-31' });
+    const id = (await api.request('hr', { employee_id: fx.emp.cSub })).body.review.id;
+    await api.submit('head', id, GOOD);
+    expect((await cancel('hr', id, { reason: 'Moved to another department' })).status).toBe(200);
+    expect((await cancel('hr', id, { reason: 'again' })).status).toBe(409);
+    expect((await api.decide('hr', id, { decision: 'confirmed' })).status).toBe(409);
+  });
+});
+
+describe('confirmation and extension letters', () => {
+  const letter = (who, id) => request(app).get(`/api/probation-reviews/${id}/letter`).set(as(who))
+    .buffer(true).parse((res, cb) => { const b = []; res.on('data', (c) => b.push(c)); res.on('end', () => cb(null, Buffer.concat(b))); });
+  async function decided(key, decision, extra = {}) {
+    await emp(key, A, 'mapped', { status: 'Probation', end: '2026-12-31', joining: '2026-07-01' });
+    const id = (await api.request('hr', { employee_id: fx.emp[key] })).body.review.id;
+    await api.submit('head', id, GOOD);
+    if (decision) {
+      const d = await api.decide('hr', id, { decision, notes: 'ok', ...extra });
+      expect(d.status, JSON.stringify(d.body)).toBe(200);
+    }
+    return id;
+  }
+
+  it('a confirmed review gives a Confirmation Letter PDF; an extended one an Extension Letter', async () => {
+    const c = await letter('hr', await decided('lConfirm', 'confirmed'));
+    expect(c.status).toBe(200);
+    expect(c.headers['content-type']).toMatch(/application\/pdf/);
+    expect(c.headers['content-disposition']).toMatch(/Confirmation_Letter_/);
+    expect(c.body.subarray(0, 5).toString()).toBe('%PDF-');
+
+    const x = await letter('hr', await decided('lExtend', 'extended', { extension_months: 2 }));
+    expect(x.status).toBe(200);
+    expect(x.headers['content-disposition']).toMatch(/Probation_Extension_Letter_/);
+  });
+
+  it('none before the decision, none for not confirmed, none across companies or without hr:view', async () => {
+    const pending = await decided('lPending', null);
+    expect((await letter('hr', pending)).status).toBe(409);
+    const exit = await decided('lExit', 'not_confirmed', {
+      last_working_date: (await pool.query(`SELECT (CURRENT_DATE + 7)::text AS d`)).rows[0].d });
+    expect((await letter('hr', exit)).status).toBe(409);
+    const ok = await decided('lCross', 'confirmed');
+    expect((await letter('hrB', ok)).status).toBe(404);
+    expect((await letter('head', ok)).status).toBe(403);
+  });
+});
+
+describe('Approval Center: HR decisions waiting', () => {
+  it('lists each submitted review for hr:edit holders, never for the employee themself, and drops it once decided', async () => {
+    const { SOURCE_BY_TYPE } = await import('../modules/approvals/approvals.sources.js');
+    const src = SOURCE_BY_TYPE.probd ?? SOURCE_BY_TYPE.get?.('probd');
+    expect(src).toBeTruthy();
+    await emp('aSub', A, 'mapped', { status: 'Probation', end: '2026-12-31' });
+    const id = (await api.request('hr', { employee_id: fx.emp.aSub })).body.review.id;
+    const rowOf = async () => (await src.pending(A)).find((r) => r.id === `probd:${id}`);
+    expect(await rowOf()).toBeUndefined();           // still with the head
+
+    await api.submit('head', id, { ...GOOD, recommendation: 'extend' });
+    const row = await rowOf();
+    expect(row).toMatchObject({ source_id: String(id), requested_by: 'Zz head' });
+    expect(row.description).toMatch(/Head recommends Extend · 4\/5/);
+    expect((await src.pending(B)).find((r) => r.id === `probd:${id}`)).toBeUndefined();
+
+    const hrCtx = { perms: { hr: { can_edit: true } }, linkedEmployeeId: null };
+    expect(src.canAct(hrCtx, row)).toBe(true);
+    expect(src.canAct({ perms: { hr: { can_view: true } }, linkedEmployeeId: null }, row)).toBe(false);
+    expect(src.canAct({ ...hrCtx, linkedEmployeeId: fx.emp.aSub }, row)).toBe(false);
+    expect(src.actions(row)).toEqual({ open: { page: 'Probation', params: { review: String(id) } } });
+
+    await api.decide('hr', id, { decision: 'confirmed' });
+    expect(await rowOf()).toBeUndefined();
   });
 });

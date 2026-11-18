@@ -20,8 +20,8 @@ vi.mock('@/context/AuthContext', () => ({
   useAuth: () => ({ hasPermission: (m, a) => m === 'succession' && (a !== 'export' || auth.canExport) }),
 }));
 
-import SuccessionSettings from '../features/hr/pages/SuccessionSettings';
-import SuccessionReports from '../features/hr/pages/SuccessionReports';
+import SuccessionSettings from '../features/hr/succession/SuccessionSettings';
+import SuccessionReports from '../features/hr/succession/SuccessionReports';
 import { downloadSuccessionCsv } from '../features/hr/utils/successionCsv';
 
 const SAVED = {
@@ -75,13 +75,33 @@ describe('SuccessionSettings', () => {
     expect(api.put).not.toHaveBeenCalled();
   });
 
-  it('does not claim that alerts are sent', async () => {
+  it('says what is sent: notifications when someone leaves, nothing for successor-count alerts', async () => {
     api.get.mockResolvedValue({ data: SAVED });
     render(<SuccessionSettings />);
     await screen.findByText(/Potential Score ≥ 5/);
-    expect(document.body.textContent).not.toMatch(/receive succession alerts|will not be sent to anyone/);
-    expect(document.body.textContent).toMatch(/no message is sent/i);
-    expect(document.body.textContent).not.toMatch(/when notifications are switched on|notification preferences/);
+    const text = document.body.textContent;
+    expect(text).toMatch(/starts serving notice or leaves/);
+    expect(text).toMatch(/in-app notification/);
+    expect(text).toMatch(/For these alerts no message is sent/);
+    expect(text).toMatch(/No email is sent/);
+  });
+
+  it('recipients are the roles that can open Succession, with head counts; empty = everyone', async () => {
+    api.get.mockImplementation(async (url) => (url === '/succession/settings/recipient-roles'
+      ? { data: [{ code: 'hr', label: 'HR', user_count: 2 }, { code: 'hr_manager', label: 'HR Manager', user_count: 1 }] }
+      : { data: { ...SAVED, notify_roles: ['hr', 'chro'] } }));
+    api.put.mockImplementation(async (_url, body) => ({ data: body }));
+    render(<SuccessionSettings />);
+    const hr = await screen.findByRole('button', { name: /^HR \(2 people\)/ });
+    expect(hr.getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByRole('button', { name: /HR Manager \(1 person\)/ }).getAttribute('aria-pressed')).toBe('false');
+    // A stored code that is no longer offered can be removed.
+    fireEvent.click(screen.getByRole('button', { name: /chro \(remove\)/ }));
+    fireEvent.click(hr);
+    expect(document.body.textContent).toMatch(/everyone who can open the Succession Center is notified/);
+    fireEvent.click(screen.getByRole('button', { name: 'Save Settings' }));
+    await waitFor(() => expect(api.put).toHaveBeenCalledTimes(1));
+    expect(api.put.mock.calls[0][1].notify_roles).toEqual([]);
   });
 });
 
@@ -111,25 +131,25 @@ describe('SuccessionReports', () => {
     expect(screen.queryByText('Covered')).toBeNull();
   });
 
-  it('Bench Strength shows Not Ready and Unclassified columns, so the readiness columns add up', async () => {
+  it('Bench Strength shows Not Ready and Not rated columns, so the readiness columns add up', async () => {
     api.get.mockImplementation(async (url) => routes(url));
     render(<SuccessionReports />);
     await screen.findByText('CFO');
     const heads = [...document.querySelectorAll('th')].map(th => th.textContent);
-    expect(heads).toEqual(expect.arrayContaining(['Not Ready', 'Unclassified']));
+    expect(heads).toEqual(expect.arrayContaining(['Not Ready', 'Not rated']));
     const cells = [...screen.getByText('Head Eng').closest('tr').querySelectorAll('td')].map(td => td.textContent);
     const at = (h) => cells[heads.indexOf(h)];
-    expect([at('Successors'), at('Ready Now'), at('Unclassified')]).toEqual(['1', '0', '1']);
+    expect([at('Successors'), at('Ready Now'), at('Not rated')]).toEqual(['1', '0', '1']);
   });
 
-  it('an invalid stored readiness reads Unclassified, not the raw value', async () => {
+  it('an invalid stored readiness reads Not rated, not the raw value', async () => {
     api.get.mockImplementation(async (url) => (url === '/succession/reports/talent-risk'
       ? { data: [{ employee_name: 'Esha', flight_risk: 'low', readiness: 'SEED readiness level', performance_score: '3.00', potential_score: 3 }] }
       : routes(url)));
     render(<SuccessionReports />);
     fireEvent.click(await screen.findByText('Talent Risk'));
     const row = (await screen.findByText('Esha')).closest('tr');
-    expect(row.textContent).toContain('Unclassified');
+    expect(row.textContent).toContain('Not rated');
     expect(row.textContent).not.toContain('SEED readiness level');
   });
 

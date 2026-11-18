@@ -64,10 +64,13 @@ async function role(company, title) {
   return (await one(`INSERT INTO critical_roles (role_title, risk_level, company_id) VALUES ($1, 'high', $2) RETURNING id`,
     [`${PREFIX} ${title}`, company.companyId])).id;
 }
+// Readiness has one source: the candidate's 9-box rating (2026-11-12). A
+// readiness given here is stored on the ASSESSMENT; null = not rated.
 async function plan(company, roleId, employeeId, readiness) {
   await pool.query(
-    `INSERT INTO succession_plans (critical_role_id, candidate_employee_id, rank, readiness_level, company_id) VALUES ($1, $2, 1, $3, $4)`,
-    [roleId, employeeId, readiness, company.companyId]);
+    `INSERT INTO succession_plans (critical_role_id, candidate_employee_id, rank, company_id) VALUES ($1, $2, 1, $3)`,
+    [roleId, employeeId, company.companyId]);
+  if (readiness) await assess(company, employeeId, 3, 3, { readiness });
 }
 
 async function sweep(companyId) {
@@ -199,8 +202,8 @@ describe('critical-role coverage agrees with the succession plans', () => {
     R.ready = await role(B, 'Ready role');      await plan(B, R.ready, c1, 'ready-now'); await plan(B, R.ready, c2, '3-5-years');
     R.dev   = await role(B, 'Developing role'); await plan(B, R.dev, c3, '1-2-years');
     R.none  = await role(B, 'Empty role');
-    // A stored value outside the vocabulary, like Manifest's seeded rows.
-    R.legacy = await role(B, 'Legacy role');    await plan(B, R.legacy, c4, 'SEED readiness level');
+    // A successor with no 9-box rating has no readiness: Unclassified.
+    R.legacy = await role(B, 'Unrated role');   await plan(B, R.legacy, c4, null);
   });
 
   it('dashboard: 4 roles, 1 with a ready-now successor, 1 with none, bench 25%', async () => {
@@ -215,8 +218,8 @@ describe('critical-role coverage agrees with the succession plans', () => {
     expect(by['Ready role']).toMatchObject({ successor_count: 2, ready_now: 1, ready_1_2yr: 0, ready_3_5yr: 1, coverage_status: 'Ready Now' });
     expect(by['Developing role']).toMatchObject({ successor_count: 1, ready_now: 0, ready_1_2yr: 1, ready_3_5yr: 0, coverage_status: 'Developing' });
     expect(by['Empty role']).toMatchObject({ successor_count: 0, coverage_status: 'No Successor' });
-    // The legacy readiness counts as a successor, in Unclassified, in no readiness category.
-    expect(by['Legacy role']).toMatchObject({ successor_count: 1, ready_now: 0, ready_1_2yr: 0, ready_3_5yr: 0, not_ready: 0, ready_unclassified: 1, coverage_status: 'Developing' });
+    // An unrated successor counts as a successor, in Unclassified, in no readiness category.
+    expect(by['Unrated role']).toMatchObject({ successor_count: 1, ready_now: 0, ready_1_2yr: 0, ready_3_5yr: 0, not_ready: 0, ready_unclassified: 1, coverage_status: 'Developing' });
     expect(by['Ready role'].ready_unclassified).toBe(0);
     // Every successor is in exactly one column.
     for (const r of rows) {
@@ -240,27 +243,34 @@ describe('critical-role coverage agrees with the succession plans', () => {
     }
   });
 
-  it('readiness distribution counts each stored level', async () => {
+  it('readiness distribution counts each successor by their 9-box readiness', async () => {
     const d = (await call(U.hrB, 'get', '/dashboard')).body;
     const dist = Object.fromEntries(d.readiness_summary.map(r => [r.readiness, r.cnt]));
-    // §211: a missing or invalid stored readiness is reported as 'unclassified'.
+    // No rating (or a rating outside the vocabulary) is 'unclassified'.
     expect(dist).toEqual({ 'ready-now': 1, '3-5-years': 1, '1-2-years': 1, unclassified: 1 });
   });
 
-  it('the candidate slate accepts the stored legacy value unchanged, refuses a new or invented one', async () => {
-    const legacyEmp = (await one(`SELECT candidate_employee_id AS id FROM succession_plans WHERE critical_role_id = $1`, [R.legacy])).id;
-    const other = await addEmployee(B, 'Bharat');
+  it('readiness is the 9-box rating: a slate readiness is ignored, a new rating moves the role', async () => {
+    const unratedEmp = (await one(`SELECT candidate_employee_id AS id FROM succession_plans WHERE critical_role_id = $1`, [R.legacy])).id;
     const put = (candidates) => call(U.hrB, 'put', `/critical-roles/${R.legacy}/candidates`).send({ candidates });
-    expect((await put([{ candidate_employee_id: legacyEmp, rank: 1, readiness_level: 'SEED readiness level' }])).status).toBe(200);
-    const bad = await put([{ candidate_employee_id: other, rank: 1, readiness_level: 'SEED readiness level' }]);
-    expect(bad.status).toBe(400);
-    expect(bad.body.field).toBe('readiness_level');
-    expect((await put([{ candidate_employee_id: legacyEmp, rank: 1, readiness_level: 'soon' }])).status).toBe(400);
-    const dup = await put([{ candidate_employee_id: other, rank: 1, readiness_level: 'ready-now' }, { candidate_employee_id: other, rank: 2, readiness_level: '1-2-years' }]);
+    expect((await put([{ candidate_employee_id: unratedEmp, rank: 1, readiness_level: 'ready-now' }])).status).toBe(200);
+    expect((await one(`SELECT readiness_level FROM succession_plans WHERE critical_role_id = $1`, [R.legacy])).readiness_level).toBeNull();
+    let cands = (await call(U.hrB, 'get', `/critical-roles/${R.legacy}/candidates`)).body;
+    expect(cands[0]).toMatchObject({ readiness: 'unclassified', is_rated: false });
+    expect((await call(U.hrB, 'get', '/critical-roles')).body.find(r => r.id === R.legacy).has_ready_now).toBe(false);
+    // Rate the person ready-now on the 9-box: the role is now Ready Now everywhere.
+    expect((await call(U.hrB, 'post', '/assessments').send({ employee_id: unratedEmp, performance_score: 4, potential_score: 4, readiness: 'ready-now' })).status).toBe(201);
+    cands = (await call(U.hrB, 'get', `/critical-roles/${R.legacy}/candidates`)).body;
+    expect(cands[0]).toMatchObject({ readiness: 'ready-now', is_rated: true });
+    expect((await call(U.hrB, 'get', '/critical-roles')).body.find(r => r.id === R.legacy).has_ready_now).toBe(true);
+    const bench = (await call(U.hrB, 'get', '/reports/bench-strength')).body.find(r => r.role_title === `${PREFIX} Unrated role`);
+    expect(bench).toMatchObject({ ready_now: 1, ready_unclassified: 0, coverage_status: 'Ready Now' });
+    await pool.query(`DELETE FROM talent_assessments WHERE employee_id = $1`, [unratedEmp]);
+    const other = await addEmployee(B, 'Bharat');
+    const dup = await put([{ candidate_employee_id: other, rank: 1 }, { candidate_employee_id: other, rank: 2 }]);
     expect(dup.status).toBe(400);
     expect(dup.body.code).toBe('DUPLICATE_CANDIDATE');
-    const stored = await pool.query(`SELECT candidate_employee_id, readiness_level FROM succession_plans WHERE critical_role_id = $1`, [R.legacy]);
-    expect(stored.rows).toEqual([{ candidate_employee_id: legacyEmp, readiness_level: 'SEED readiness level' }]);
+    expect((await put([{ candidate_employee_id: other, rank: 1, successor_type: 'deputy' }])).status).toBe(400);
   });
 });
 
@@ -297,16 +307,36 @@ describe('writes outside the vocabulary are refused', () => {
     expect((await one(`SELECT risk_level FROM critical_roles WHERE id = $1`, [ok.body.id])).risk_level).toBe('low');
   });
 
-  it('pipeline entry readiness is checked; a stored legacy value may be re-sent unchanged', async () => {
-    const lvl = (await one(`INSERT INTO leadership_pipeline_levels (level_name, level_order, company_id) VALUES ('${PREFIX} L', 1, $1) RETURNING id`, [A.companyId])).id;
-    expect((await call(U.hr, 'post', '/pipeline/entries').send({ employee_id: emp, current_level_id: lvl, readiness: 'soon' })).status).toBe(400);
-    const e = await call(U.hr, 'post', '/pipeline/entries').send({ employee_id: emp, current_level_id: lvl, readiness: 'ready-now' });
+  it('pipeline entries: readiness comes from the rating, a second add is refused, fields can be cleared', async () => {
+    const lvl  = (await call(U.hr, 'post', '/pipeline/levels').send({ level_name: `${PREFIX} L1`, level_order: 1 })).body.id;
+    const lvl2 = (await call(U.hr, 'post', '/pipeline/levels').send({ level_name: `${PREFIX} L2`, level_order: 2 })).body.id;
+    const e = await call(U.hr, 'post', '/pipeline/entries').send({ employee_id: emp, current_level_id: lvl, target_level_id: lvl2, target_date: '2027-03-31', readiness: 'not_ready' });
     expect(e.status).toBe(201);
-    await pool.query(`UPDATE leadership_pipeline_entries SET readiness = 'SEED readiness 1' WHERE id = $1`, [e.body.id]);
-    expect((await call(U.hr, 'patch', `/pipeline/entries/${e.body.id}`).send({ readiness: 'SEED readiness 1', notes: 'kept' })).status).toBe(200);
-    expect((await call(U.hr, 'patch', `/pipeline/entries/${e.body.id}`).send({ readiness: 'SEED readiness 2' })).status).toBe(400);
+    expect(e.body.readiness).toBeNull();
+    const again = await call(U.hr, 'post', '/pipeline/entries').send({ employee_id: emp, current_level_id: lvl2 });
+    expect(again.status).toBe(409);
+    expect(again.body.code).toBe('ALREADY_IN_PIPELINE');
+    const listed = (await call(U.hr, 'get', '/pipeline/entries')).body.find(x => x.id === e.body.id);
+    // emp was rated ready-now by the PATCH test above.
+    expect(listed).toMatchObject({ readiness: 'ready-now', is_rated: true, employment_phase: 'employed' });
+    // Clearing the target used to be impossible (COALESCE kept the old value).
+    const cleared = await call(U.hr, 'patch', `/pipeline/entries/${e.body.id}`).send({ target_level_id: '', target_date: null, notes: 'kept' });
+    expect(cleared.status).toBe(200);
+    expect(cleared.body).toMatchObject({ target_level_id: null, target_date: null, notes: 'kept', current_level_id: lvl });
+    expect((await call(U.hr, 'patch', `/pipeline/entries/${e.body.id}`).send({ status: 'gone' })).status).toBe(400);
+    expect((await call(U.hr, 'patch', `/pipeline/entries/${e.body.id}`).send({ target_date: '31-03-2027' })).status).toBe(400);
+    // A level in use cannot be deleted; an unused one can.
+    const inUse = await call(U.hr, 'delete', `/pipeline/levels/${lvl}`);
+    expect(inUse.status).toBe(409);
+    expect(inUse.body.code).toBe('LEVEL_IN_USE');
+    expect((await call(U.hr, 'delete', `/pipeline/levels/${lvl2}`)).status).toBe(200);
+    expect((await call(U.hr, 'patch', `/pipeline/levels/${lvl}`).send({ level_order: 0 })).status).toBe(400);
+    expect((await call(U.hr, 'patch', `/pipeline/levels/${lvl}`).send({ is_active: false })).body.is_active).toBe(false);
+    expect((await call(U.hr, 'get', '/pipeline/levels')).body.some(l => l.id === lvl)).toBe(false);
+    expect((await call(U.hr, 'get', '/pipeline/levels?all=1')).body.find(l => l.id === lvl)).toMatchObject({ entry_count: 1, is_active: false });
     expect((await call(U.hr, 'delete', `/pipeline/entries/${e.body.id}`)).status).toBe(200);
     expect((await call(U.hr, 'delete', `/pipeline/entries/${e.body.id}`)).status).toBe(404);
+    expect((await call(U.hr, 'delete', `/pipeline/levels/${lvl}`)).status).toBe(200);
   });
 });
 
@@ -403,17 +433,40 @@ describe('development plan progress follows its actions', () => {
     expect((await call(U.hr, 'patch', `/development-plans/${planId}`).send({ status: 'paused' })).status).toBe(200);
   });
 
-  it('mentoring: status and session count are checked; active mentors are counted', async () => {
+  it('mentoring: status checked, no self-mentoring, sessions drive the count; active mentors are counted', async () => {
     const mentor = await addEmployee(A, 'Meena');
-    const m = await call(U.hr, 'post', '/mentoring').send({ mentee_employee_id: emp, mentor_employee_id: mentor, development_plan_id: planId });
+    expect((await call(U.hr, 'post', '/mentoring').send({ mentee_employee_id: emp, mentor_employee_id: emp })).body.code).toBe('SELF_MENTORING');
+    const m = await call(U.hr, 'post', '/mentoring').send({ mentee_employee_id: emp, mentor_employee_id: mentor, development_plan_id: planId, notes: 'weekly' });
     expect(m.status).toBe(201);
-    expect((await call(U.hr, 'patch', `/mentoring/${m.body.id}`).send({ session_count: -1 })).status).toBe(400);
+    expect(m.body.notes).toBe('weekly');
+    expect((await call(U.hr, 'post', '/mentoring').send({ mentee_employee_id: emp, mentor_employee_id: mentor, development_plan_id: planId })).status).toBe(409);
     expect((await call(U.hr, 'patch', `/mentoring/${m.body.id}`).send({ status: 'paused' })).status).toBe(400);
-    expect((await call(U.hr, 'patch', `/mentoring/${m.body.id}`).send({ session_count: 3 })).body.session_count).toBe(3);
+    // session_count is not typed in any more; it follows the logged sessions.
+    await call(U.hr, 'patch', `/mentoring/${m.body.id}`).send({ session_count: 3, notes: 'weekly' });
+    expect((await one(`SELECT session_count FROM mentoring_assignments WHERE id = $1`, [m.body.id])).session_count).toBe(0);
+    const log = (b) => call(U.hr, 'post', `/mentoring/${m.body.id}/sessions`).send(b);
+    expect((await log({})).status).toBe(400);
+    expect((await log({ session_date: '2026-11-01', duration_minutes: 0 })).status).toBe(400);
+    expect((await log({ session_date: '2026-11-01', next_session_date: '2026-10-01' })).status).toBe(400);
+    const s1 = await log({ session_date: '2026-11-01', duration_minutes: 45, topic: 'Goals', next_session_date: '2026-11-15' });
+    expect(s1.status).toBe(201);
+    await log({ session_date: '2026-11-08', topic: 'Review' });
+    await log({ session_date: '2026-10-20', topic: 'Kick-off', next_session_date: '2026-10-27' });
+    let a = await one(`SELECT session_count, to_char(next_session_date, 'YYYY-MM-DD') AS next FROM mentoring_assignments WHERE id = $1`, [m.body.id]);
+    expect(a).toEqual({ session_count: 3, next: null });   // the latest session (08 Nov) set no next date
+    const sessions = (await call(U.hr, 'get', `/mentoring/${m.body.id}/sessions`)).body;
+    expect(sessions.map(x => x.topic)).toEqual(['Review', 'Goals', 'Kick-off']);
+    expect((await call(U.hr, 'delete', `/mentoring/${m.body.id}/sessions/${sessions[0].id}`)).status).toBe(200);
+    a = await one(`SELECT session_count, to_char(next_session_date, 'YYYY-MM-DD') AS next FROM mentoring_assignments WHERE id = $1`, [m.body.id]);
+    expect(a).toEqual({ session_count: 2, next: '2026-11-15' });
+    expect((await call(U.hrB, 'get', `/mentoring/${m.body.id}/sessions`)).status).toBe(404);
     const listed = (await call(U.hr, 'get', '/mentoring')).body.find(x => x.id === m.body.id);
-    expect(listed.session_count).toBe(3);
+    expect(listed).toMatchObject({ session_count: 2, mentee_phase: 'employed', mentor_phase: 'employed' });
     expect((await call(U.hr, 'get', '/reports/development-progress')).body.find(p => p.plan_title === `${PREFIX} plan`).active_mentors).toBe(1);
-    expect((await call(U.hr, 'patch', `/mentoring/${m.body.id}`).send({ status: 'completed' })).status).toBe(200);
+    const done = await call(U.hr, 'patch', `/mentoring/${m.body.id}`).send({ status: 'completed' });
+    expect(done.status).toBe(200);
+    expect(done.body.end_date).not.toBeNull();
+    expect((await log({ session_date: '2026-11-20' })).body.code).toBe('ASSIGNMENT_CLOSED');
     expect((await call(U.hr, 'get', '/reports/development-progress')).body.find(p => p.plan_title === `${PREFIX} plan`).active_mentors).toBe(0);
     expect((await call(U.hr, 'delete', `/mentoring/${m.body.id}`)).status).toBe(200);
     expect((await call(U.hr, 'delete', `/mentoring/${m.body.id}`)).status).toBe(404);
@@ -457,6 +510,17 @@ describe('alerts are recorded per the switches and can be marked read', () => {
     expect((await call(U.hr, 'patch', `/alerts/${mine[0].id}/read`)).status).toBe(200);
     expect(await unread()).toBe(before - 1);
     expect((await call(U.hrB, 'patch', `/alerts/${mine[1].id}/read`)).status).toBe(404);
+
+    // The zero-successor alert closed itself when a successor was added.
+    expect(mine.find(a => a.alert_type === 'zero_successor').is_read).toBe(true);
+    // Saving the same slate again does not add another alert.
+    const count = async () => (await call(U.hr, 'get', '/alerts')).body.filter(a => a.role_id === roleId).length;
+    const c0 = await count();
+    await call(U.hr, 'put', `/critical-roles/${roleId}/candidates`).send({ candidates: [{ candidate_employee_id: cand, rank: 1 }] });
+    await call(U.hr, 'put', `/critical-roles/${roleId}/candidates`).send({ candidates: [{ candidate_employee_id: cand, rank: 1 }] });
+    expect(await count()).toBe(c0);
+    expect((await call(U.hr, 'patch', '/alerts/read-all')).status).toBe(200);
+    expect(await unread()).toBe(0);
 
     await call(U.hr, 'put', '/settings').send({ ...s, single_successor_alert: false, zero_successor_alert: false });
     const n = (await call(U.hr, 'get', '/alerts')).body.length;

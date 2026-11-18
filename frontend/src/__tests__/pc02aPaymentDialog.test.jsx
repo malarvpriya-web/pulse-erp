@@ -77,14 +77,15 @@ describe('Record payment (PD-1)', () => {
   });
 });
 
-describe('Export NEFT (PD-16)', () => {
-  it('is offered only with employee_bank:view', async () => {
+describe('Salary transfer file (PD-16)', () => {
+  it('is offered only to the payer — the file comes from the server, not built in the browser', async () => {
     renderPayroll();
-    expect(await screen.findByRole('button', { name: /Export NEFT/ })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: /Salary transfer file/ })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Export NEFT/ })).toBeNull();
     document.body.innerHTML = '';
-    auth.denied = new Set(['employee_bank:view']);
+    auth.permissions = [];
     renderPayroll();
     await screen.findByText('Asha K');
-    expect(screen.queryByRole('button', { name: /Export NEFT/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Salary transfer file/ })).toBeNull();
   });
 });

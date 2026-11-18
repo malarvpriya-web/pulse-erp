@@ -18,7 +18,6 @@ vi.mock('../components/core/VocabSelect', () => ({ default: () => null }));
 
 import api from '../services/api/client';
 import { storedFilename, downloadEmployeeFile, openEmployeeFile } from '../features/employees/shared/employeeFiles';
-import EmployeeSelfService from '../features/hr/pages/EmployeeSelfService.jsx';
 import EmployeeDocuments from '../features/hr/pages/EmployeeDocuments.jsx';
 
 const DOC = { id: 5, employee_id: 7, document_type: 'PAN Card', document_name: 'pan.pdf', file_url: '/uploads/1772020686985_pan card#1.pdf',
@@ -59,28 +58,8 @@ describe('stored file name → one safe path segment', () => {
   });
 });
 
-describe('Self-service Document Vault', () => {
-  it('the ⬇ control downloads through /files/<encoded name>; no raw /uploads link is rendered', async () => {
-    const { container } = render(<EmployeeSelfService />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Document Vault' }));
-    const btn = await screen.findByRole('button', { name: 'Download pan.pdf' });
-    expect(container.querySelector('a[href*="/uploads/"]')).toBeNull();
-    fireEvent.click(btn);
-    await waitFor(() => expect(api.get).toHaveBeenCalledWith(ENCODED, { responseType: 'blob' }));
-  });
-
-  it('a refused download shows the server\'s answer instead of a broken tab', async () => {
-    api.get.mockImplementation((url) => {
-      if (url.startsWith('/self-service/documents')) return Promise.resolve({ data: [DOC] });
-      if (url.startsWith('/files/')) return Promise.reject({ response: { status: 403 } });
-      return Promise.resolve({ data: [] });
-    });
-    render(<EmployeeSelfService />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Document Vault' }));
-    fireEvent.click(await screen.findByRole('button', { name: 'Download pan.pdf' }));
-    expect(await screen.findByText('You do not have permission to open this file.')).toBeTruthy();
-  });
-});
+// (The Self-service Document Vault was removed on 2026-11-11 — HR keeps
+// employees' documents in the register below.)
 
 describe('HR Employee Documents', () => {
   it('View opens an uploaded file through /files (inline), and a Drive link as-is', async () => {

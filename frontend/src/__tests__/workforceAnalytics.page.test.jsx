@@ -78,8 +78,8 @@ const DATA = {
 };
 
 const SETTINGS = {
-  min_employee_age: 18, max_employee_age: 80, analytics_min_sample: 5,
-  is_default: { min_employee_age: true, max_employee_age: true, analytics_min_sample: true },
+  min_employee_age: 18, max_employee_age: 80, analytics_min_sample: 5, default_notice_period_days: 90,
+  is_default: { min_employee_age: true, max_employee_age: true, analytics_min_sample: true, default_notice_period_days: true },
 };
 const SETTINGS_URL = '/analytics/workforce-settings';
 function mockApi(data = DATA, settings = SETTINGS) {
@@ -390,11 +390,15 @@ describe('without employees:view', () => {
     expect(document.querySelector('.wfa-caption').textContent).toMatch(/read-only for your role/);
   });
 
-  it('All Employees and Ex-Employees links are hidden; Employee Documents stays', async () => {
+  // The Employee Documents link went with the Employee Documents tab
+  // (2026-11-11; the old page key now redirects to Employee Records). With
+  // both remaining links hidden, the "Open the full lists" block is not shown.
+  it('All Employees and Ex-Employees links are hidden, and so is the empty list block', async () => {
     await renderPage();
     expect(screen.queryByRole('button', { name: /^All Employees/ })).toBeNull();
     expect(screen.queryByRole('button', { name: /^Ex-Employees/ })).toBeNull();
-    expect(screen.getByRole('button', { name: /^Employee Documents/ })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /^Employee Documents/ })).toBeNull();
+    expect(screen.queryByText('Open the full lists')).toBeNull();
   });
 });
 
@@ -449,7 +453,7 @@ describe('workforce settings', () => {
     fireEvent.change(input(LABELS[0]), { target: { value: '16' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save settings' }));
     await waitFor(() => expect(api.put).toHaveBeenCalledWith(SETTINGS_URL,
-      { min_employee_age: 16, max_employee_age: 80, analytics_min_sample: 5 }));
+      { min_employee_age: 16, max_employee_age: 80, analytics_min_sample: 5, default_notice_period_days: 90 }));
     await waitFor(() => expect(screen.getByText(/Saved\./)).toBeTruthy());
     await waitFor(() => expect(workforceCalls().length).toBeGreaterThan(before));
   });

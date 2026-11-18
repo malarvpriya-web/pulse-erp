@@ -1,8 +1,8 @@
 /**
- * HR → Employee Records (§207): Employee Documents is HR's register across
- * employees, so it follows employee_documents — tab AND direct URL. Everyone's
- * own documents are Self Service → Document Vault. Assets, Policies and HR
- * Documents (company forms) are unchanged.
+ * HR → Employee Records. The Employee Documents register was REMOVED on
+ * 11 Nov 26 (owner): an employee's documents are collected on Add Employee and
+ * uploaded by HR only. The old /EmployeeDocuments URL redirects to the hub and
+ * keeps its employee_documents gate. Assets, Policies and HR Documents stay.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
@@ -20,7 +20,6 @@ vi.mock('@/context/AuthContext', () => ({
   }),
 }));
 // The tab bodies are not under test here, only which tabs are drawn.
-vi.mock('@/features/hr/pages/EmployeeDocuments', () => ({ default: () => null }));
 vi.mock('@/features/hr/pages/EmployeeAssets', () => ({ default: () => null }));
 vi.mock('@/features/hr/pages/Policies', () => ({ default: () => null }));
 vi.mock('@/features/hr/pages/Downloads', () => ({ default: () => null }));
@@ -29,10 +28,8 @@ import EmployeeRecords from '@/features/hr/pages/EmployeeRecords';
 import { ROUTES } from '@/config/routes';
 import { canRenderPage, EMPLOYEE_SELF_SERVICE_PAGES } from '@/config/menuCatalog';
 
-// As seeded by migration 20261029000001 (employee_documents) plus each role's hr grant.
 const GRANTS = {
   hr_manager:    ['hr:view', 'employee_documents:view', 'employee_documents:add', 'employee_documents:edit'],
-  hr_exec:       ['hr:view', 'employee_documents:view', 'employee_documents:add'],
   payroll_admin: ['hr:view'],
   employee:      ['self_service:view'],
 };
@@ -41,32 +38,26 @@ const tabs = () => screen.queryAllByRole('tab').map(t => t.textContent.trim());
 
 beforeEach(() => { env.role = 'employee'; env.grants = new Set(); });
 
-describe('Employee Documents follows employee_documents', () => {
-  it.each(['hr_manager', 'hr_exec'])('%s sees the register tab and may open the URL', (role) => {
-    env.role = role; env.grants = new Set(GRANTS[role]);
-    render(<MemoryRouter><EmployeeRecords /></MemoryRouter>);
-    expect(tabs()).toContain('Employee Documents');
-    expect(canRenderPage(role, 'EmployeeDocuments', { route: ROUTES.EmployeeDocuments, hasPermission: (m, a) => env.grants.has(`${m}:${a}`) })).toBe(true);
-  });
-
-  it.each(['payroll_admin', 'employee'])('%s gets no register tab and the URL is refused; HR Documents stays', (role) => {
+describe('Employee Records without the Employee Documents register', () => {
+  it.each(['hr_manager', 'payroll_admin'])('%s sees Assets, Policies and HR Documents — no register tab', (role) => {
     env.role = role; env.grants = new Set(GRANTS[role]);
     render(<MemoryRouter><EmployeeRecords /></MemoryRouter>);
     expect(tabs()).not.toContain('Employee Documents');
-    expect(tabs()).toContain('HR Documents');
-    expect(tabs()).toContain('Policies');
-    expect(canRenderPage(role, 'EmployeeDocuments', { route: ROUTES.EmployeeDocuments, hasPermission: (m, a) => env.grants.has(`${m}:${a}`) })).toBe(false);
+    expect(tabs()).toEqual(expect.arrayContaining(['Policies', 'HR Documents']));
   });
 
-  it('the route carries the gate; admins pass it', () => {
+  it('employee gets no tab at all, and neither URL opens', () => {
+    env.role = 'employee'; env.grants = new Set(GRANTS.employee);
+    render(<MemoryRouter><EmployeeRecords /></MemoryRouter>);
+    expect(tabs()).toEqual([]);
+    expect(canRenderPage('employee', 'EmployeeDocuments', { route: ROUTES.EmployeeDocuments, hasPermission: () => false })).toBe(false);
+    expect(EMPLOYEE_SELF_SERVICE_PAGES.has('EmployeeRecords')).toBe(false);
+  });
+
+  it('the old URL is a gated redirect, and no report links to it', async () => {
     expect(ROUTES.EmployeeDocuments.module).toBe('employee_documents');
-    expect(canRenderPage('admin', 'EmployeeDocuments', { route: ROUTES.EmployeeDocuments, hasPermission: () => false })).toBe(true);
     expect(EMPLOYEE_SELF_SERVICE_PAGES.has('EmployeeDocuments')).toBe(false);
-    expect(EMPLOYEE_SELF_SERVICE_PAGES.has('EmployeeSelfService')).toBe(true);
-  });
-
-  it('the Workforce Analytics link to the register asks for the same grant', async () => {
     const { REPORT_LINKS } = await import('@/features/hr/pages/EmployeeReports');
-    expect(REPORT_LINKS.find(l => l.page === 'EmployeeDocuments').module).toBe('employee_documents');
+    expect(REPORT_LINKS.some(l => l.page === 'EmployeeDocuments')).toBe(false);
   });
 });

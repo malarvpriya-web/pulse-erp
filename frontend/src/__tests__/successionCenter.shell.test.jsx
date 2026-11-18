@@ -14,12 +14,12 @@ import { MemoryRouter } from 'react-router-dom';
 const { probe } = vi.hoisted(() => ({
   probe: (name) => ({ default: () => <div data-testid={`probe-${name}`} /> }),
 }));
-vi.mock('../features/hr/pages/SuccessionPlanning', () => probe('SuccessionPlanning'));
-vi.mock('../features/hr/pages/LeadershipPipeline', () => probe('LeadershipPipeline'));
-vi.mock('../features/hr/pages/DevelopmentPlans', () => probe('DevelopmentPlans'));
-vi.mock('../features/hr/pages/EmployeeSuccessionPools', () => probe('EmployeeSuccessionPools'));
-vi.mock('../features/hr/pages/SuccessionReports', () => probe('SuccessionReports'));
-vi.mock('../features/hr/pages/SuccessionSettings', () => probe('SuccessionSettings'));
+vi.mock('../features/hr/succession/SuccessionPlanning', () => probe('SuccessionPlanning'));
+vi.mock('../features/hr/succession/LeadershipPipeline', () => probe('LeadershipPipeline'));
+vi.mock('../features/hr/succession/DevelopmentPlans', () => probe('DevelopmentPlans'));
+vi.mock('../features/hr/succession/EmployeeSuccessionPools', () => probe('EmployeeSuccessionPools'));
+vi.mock('../features/hr/succession/SuccessionReports', () => probe('SuccessionReports'));
+vi.mock('../features/hr/succession/SuccessionSettings', () => probe('SuccessionSettings'));
 import SuccessionCenter from '../features/hr/pages/SuccessionCenter';
 
 const TABS = [

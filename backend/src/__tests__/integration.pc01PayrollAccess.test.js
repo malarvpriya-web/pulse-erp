@@ -502,7 +502,9 @@ describe('PC-01 self-service, role union and overrides', () => {
 
   it("an employee cannot read a colleague's payslip or salary history", async () => {
     expect((await call(U.employee, 'get', `/api/payroll/payslips?employee_id=${E.PAYV}&month=${M}&year=${Y}`)).status).toBe(403);
-    expect((await call(U.employee, 'get', `/api/employees/${E.SELF}/salary-revisions`)).status).toBe(403);
+    expect((await call(U.employee, 'get', `/api/employees/${E.PAYV}/salary-revisions`)).status).toBe(403);
+    // 2026-11-11: their OWN salary history opens (My Details → History) without payroll:view.
+    expect((await call(U.employee, 'get', `/api/employees/${E.SELF}/salary-revisions`)).status).toBe(200);
     expect((await call(U.employee, 'get', '/api/performance/increments/recommendations')).status).toBe(403);
   });
 

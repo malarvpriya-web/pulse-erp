@@ -63,9 +63,17 @@ export default defineConfig({
   ],
   projects: [
     { name: 'testdb-setup', testMatch: '**/auth.setup.ts' },
+    { name: 'settlement', testMatch: '**/suites/settlement.spec.ts' },
+    { name: 'statutory-rules', testMatch: '**/suites/statutory-rules.spec.ts' },
     {
       name: 'procurement-hardening',
       testMatch: '**/03-crud/procurement-hardening.spec.ts',
+      dependencies: ['testdb-setup'],
+      use: { storageState: AUTH_FILE },
+    },
+    {
+      name: 'department-heads',
+      testMatch: '**/suites/department-heads.testdb.spec.ts',
       dependencies: ['testdb-setup'],
       use: { storageState: AUTH_FILE },
     },

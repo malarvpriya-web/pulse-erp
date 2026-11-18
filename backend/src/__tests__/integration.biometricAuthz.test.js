@@ -1,5 +1,7 @@
 /**
- * Authorization on the biometric / gate-pass / visitor surface.
+ * Authorization on the biometric surface. Gate passes and visitors moved to
+ * hr/gateAccess.routes.js (§272) — their authorization is pinned in
+ * integration.biometricWorkflows.test.js (the "gate access" describes).
  *
  * server.js mounts hr/biometric.routes.js behind `verifyToken` only, scoped to
  * the /biometric, /gate-passes and /visitors prefixes. For every one of its 20
@@ -91,11 +93,11 @@ const ATTENDANCE_READS = [
   '/api/biometric/dashboard',
 ];
 const HR_READS = [
-  '/api/gate-passes',
-  '/api/visitors',
   '/api/biometric/employees/unmapped',
-  '/api/biometric/employees/options',
 ];
+// The employee picker serves the HR pages (hr:view), the gate register
+// (gate_access:view) and Attendance → Punch Import (attendance:edit). §272.
+const OPTIONS = '/api/biometric/employees/options';
 const ATTENDANCE_WRITES = [
   ['post',   '/api/biometric/devices'],
   ['put',    '/api/biometric/devices/1'],
@@ -105,11 +107,6 @@ const ATTENDANCE_WRITES = [
   ['post',   '/api/biometric/logs/import'],
 ];
 const HR_WRITES = [
-  ['post', '/api/gate-passes'],
-  ['post', '/api/visitors'],
-  ['put',  '/api/visitors/1/checkout'],
-  ['put',  '/api/gate-passes/1/complete'],
-  ['put',  '/api/visitors/1/badge'],
   ['post', '/api/biometric/employees/map'],
 ];
 
@@ -131,8 +128,6 @@ const HR_WRITES = [
  */
 const createdRows = [];
 const TABLE_FOR_PATH = {
-  '/api/gate-passes':        'gate_passes',
-  '/api/visitors':           'visitors',
   '/api/biometric/devices':  'biometric_devices',
 };
 
@@ -240,7 +235,7 @@ afterAll(async () => {
 });
 
 describe('the hole: an employee could read and write all of it', () => {
-  it.each([...ATTENDANCE_READS, ...HR_READS])('employee is denied GET %s', async (path) => {
+  it.each([...ATTENDANCE_READS, ...HR_READS, OPTIONS])('employee is denied GET %s', async (path) => {
     const res = await request(appAs(['employee'])).get(path);
     expect(res.status).toBe(403);
   });
@@ -270,33 +265,19 @@ describe('nobody lost their screen', () => {
   // the menu row leads to a page of empty panels.
   it.each(['hr', 'hr_manager', 'hr_exec', 'payroll_admin', 'admin', 'super_admin'])(
     '%s can perform every read BiometricAccess issues', async (role) => {
-      for (const path of [...HR_READS, ...ATTENDANCE_READS]) {
+      for (const path of [...HR_READS, ...ATTENDANCE_READS, OPTIONS]) {
         const res = await request(appAs([role])).get(path);
         expectReachedHandler(res, `${role} GET ${path}`);
       }
     });
 
   it.each(['hr', 'hr_manager', 'hr_exec'])(
-    '%s can still create gate passes and check visitors in/out', async (role) => {
+    '%s can still map device users to employees', async (role) => {
       for (const [method, path] of HR_WRITES) {
         const res = await send(appAs([role]), method, path);
         expectReachedHandler(res, `${role} ${method} ${path}`);
       }
     });
-
-  it('gate-pass approval stays open to the hr role, which holds no hr:approve', async () => {
-    // The reason the approve route takes hr:edit. If someone raises it to
-    // hr:approve, this fails and names the role that loses the ability.
-    const { rows } = await pool.query(
-      `SELECT BOOL_OR(can_approve) AS ap, BOOL_OR(can_edit) AS ed
-         FROM role_permissions p JOIN roles r ON r.id = p.role_id
-        WHERE LOWER(r.code) = 'hr' AND p.module = 'hr'`);
-    expect(rows[0].ap).toBe(false);
-    expect(rows[0].ed).toBe(true);
-
-    const res = await request(appAs(['hr'])).put('/api/gate-passes/1/approve').send({});
-    expectReachedHandler(res, 'hr PUT /gate-passes/1/approve');
-  });
 
   // The devices tab of Attendance → Settings is reached by roles holding
   // attendance and NO hr grant at all. Gating the device routes on `hr` would
@@ -309,7 +290,7 @@ describe('nobody lost their screen', () => {
           WHERE LOWER(r.code) = $1 AND p.module = 'hr'`, [role]);
       expect(rows[0]?.v ?? false, `${role} must hold no hr grant`).toBe(false);
 
-      for (const path of ['/api/biometric/devices', '/api/biometric/devices/stats']) {
+      for (const path of ['/api/biometric/devices', '/api/biometric/devices/stats', OPTIONS]) {
         const res = await request(appAs([role])).get(path);
         expectReachedHandler(res, `${role} GET ${path}`);
       }
@@ -321,44 +302,11 @@ describe('nobody lost their screen', () => {
     });
 });
 
-/**
- * Approve and cancel are NOT role-gated (§198). The approver comes from the
- * pass holder's department — its head, else the reporting manager, else HR —
- * and a department head holds no hr grant, so a role gate would lock the
- * actual approver out. The routes require a signed-in caller and then decide
- * per pass (shared/gatePassApprover.js); that decision is tested in
- * integration.biometricWorkflows.test.js. What is pinned here: any signed-in
- * role reaches the handler (id 1 is not a company-1 pass → 404), and an
- * unauthenticated request does not.
- */
-const APPROVER_WRITES = [
-  ['put', '/api/gate-passes/1/approve'],
-  ['put', '/api/gate-passes/1/cancel'],
-];
-
-describe('gate-pass approve/cancel are decided by the approver rule, not by role', () => {
-  it.each(['employee', 'sales_exec', 'department_head', 'hr'])('%s reaches the handler', async (role) => {
-    for (const [method, path] of APPROVER_WRITES) {
-      const res = await send(appAs([role]), method, path);
-      expect(res.status, `${role} ${method} ${path}`).toBe(404);
-    }
-  });
-
-  it('an unauthenticated request is refused', async () => {
-    const a = express();
-    a.use(express.json());
-    a.use('/api', biometricRtr);
-    for (const [method, path] of APPROVER_WRITES) {
-      expect((await request(a)[method](path).send({})).status).toBe(401);
-    }
-  });
-});
-
 describe('every route is gated', () => {
   it('leaves no route reachable by a role holding neither module', async () => {
     // sales_exec holds no hr and no attendance row that grants anything, so it
     // stands in for "any other authenticated account".
-    for (const path of [...ATTENDANCE_READS, ...HR_READS]) {
+    for (const path of [...ATTENDANCE_READS, ...HR_READS, OPTIONS]) {
       const res = await request(appAs(['sales_exec'])).get(path);
       expect(res.status, `sales_exec GET ${path}`).toBe(403);
     }
@@ -489,7 +437,7 @@ describe('biometric reads are a tier of their own', () => {
     const gates = [...src.matchAll(/^router\.(get|post|put|delete)\('(\/biometric\/[^']+)',\s*(\w+)/gm)]
       .map(m => ({ method: m[1], path: m[2], gate: m[3] }));
 
-    const reads = gates.filter(g => g.method === 'get' && g.gate !== 'hrView');
+    const reads = gates.filter(g => g.method === 'get' && g.gate !== 'hrView' && g.gate !== 'employeeOptionsRead');
     expect(reads.length, 'the biometric GETs should all be accounted for').toBeGreaterThanOrEqual(6);
     for (const g of reads) {
       // /devices/:id/users is the documented exception: it dials the hardware.
@@ -681,299 +629,5 @@ describe('tenant scope on the device-action and import routes', () => {
     const { rows } = await pool.query(
       'SELECT COUNT(*)::int AS n FROM biometric_logs WHERE employee_id = $1', [foreignEmployeeId]);
     expect(rows[0].n, 'no punch may exist for the foreign employee').toBe(0);
-  });
-
-  it('⚠ POST /gate-passes refuses a foreign employee_id, which was a name oracle', async () => {
-    // The row is stamped with the CALLER's company, so it was not a mis-filed
-    // row — GET /gate-passes joins employees unfiltered, so the foreign
-    // employee's NAME came back in this tenant's list.
-    const res = await request(appAs(['hr'])).post('/api/gate-passes').send({
-      employee_id: foreignEmployeeId, purpose: 'ZZBIO scope probe',
-    });
-    expect(res.status).toBe(404);
-
-    const { rows } = await pool.query(
-      'SELECT COUNT(*)::int AS n FROM gate_passes WHERE employee_id = $1', [foreignEmployeeId]);
-    expect(rows[0].n, 'no gate pass may reference the foreign employee').toBe(0);
-  });
-
-  it('⚠ POST /visitors refuses a foreign host_employee_id', async () => {
-    const res = await request(appAs(['hr'])).post('/api/visitors').send({
-      name: 'ZZBIO Walk-in', host_employee_id: foreignEmployeeId,
-    });
-    expect(res.status).toBe(404);
-
-    const { rows } = await pool.query(
-      'SELECT COUNT(*)::int AS n FROM visitors WHERE host_employee_id = $1', [foreignEmployeeId]);
-    expect(rows[0].n).toBe(0);
-  });
-
-  it('still accepts a gate pass with NO employee — the FK is nullable', async () => {
-    // The validation must only fire when an id is supplied: a gate pass may
-    // name a visitor and no employee at all. Asserting authorization/validation
-    // passed, not inserting: an empty-ish body reaches the handler.
-    const res = await request(appAs(['hr'])).post('/api/gate-passes').send({
-      visitor_name: 'ZZBIO Visitor', purpose: 'nullable-FK check',
-    });
-    expect([401, 403, 404]).not.toContain(res.status);
-    if (res.body?.id != null) createdRows.push(['gate_passes', res.body.id]);
-  });
-});
-
-/**
- * POST /gate-passes payload validation.
- *
- * This route validated nothing: an empty body inserted a row whose every
- * business column was NULL and answered 201. That is how 114 of the 119 rows in
- * `gate_passes` became debris — the write probes in this very file sent `{}`.
- *
- * What is required comes from the form that posts here (BiometricAccess.jsx →
- * `gateForm`), not from the schema, which is nullable throughout: one of
- * `employee_id` / `visitor_name` identifies the subject, and `purpose`,
- * `valid_from` and `valid_to` are optional because the form marks nothing
- * required. See validateGatePass in the router for the reasoning.
- */
-describe('POST /gate-passes validation', () => {
-  /**
-   * ⚠ Registers anything it creates, exactly like `send()` above.
-   *
-   * The first version called supertest directly. Under normal conditions that
-   * leaks nothing — these tests expect 400/403/404 and no row is written. But
-   * the whole point of them is to fail when validation regresses, and when they
-   * DID fail (mutation-testing the validator away) every rejected payload became
-   * a 201 and **9 rows leaked** in a few seconds, 6 of them all-NULL — the very
-   * debris this route's validation exists to prevent. A test that only cleans up
-   * on the happy path is how the 114 rows accumulated in the first place.
-   */
-  const post = async (body, role = 'hr') => {
-    const res = await request(appAs([role])).post('/api/gate-passes').send(body);
-    if (res.body?.id != null) createdRows.push(['gate_passes', res.body.id]);
-    return res;
-  };
-  // §221 — rows THIS request could have written: its own scope (company 1, see
-  // appAs) or the NULL-company debris these tests exist to catch. It used to
-  // count the whole table, so integration.biometricWorkflows inserting gate
-  // passes for its tenants (999943 / 999919) in a parallel worker made
-  // "no row created" fail at random (expected 15 to be 14).
-  const countAll = async () =>
-    (await pool.query('SELECT COUNT(*)::int n FROM gate_passes WHERE company_id = 1 OR company_id IS NULL')).rows[0].n;
-
-  it('⚠⚠ rejects an empty body with 400 and creates NO row', async () => {
-    const before = await countAll();
-    const res = await post({});
-    expect(res.status).toBe(400);
-    expect(await countAll(), 'an invalid request must not insert').toBe(before);
-  });
-
-  it('names the missing field, and `message` is populated for the UI', async () => {
-    const res = await post({});
-    // BiometricAccess renders err.response.data.message; without it the user
-    // sees a bare "Failed".
-    expect(res.body.message, 'message must carry the reason').toMatch(/employee_id or visitor_name/i);
-    expect(Array.isArray(res.body.errors), 'errors must be a field-level list').toBe(true);
-    expect(res.body.errors[0]).toBe(res.body.message);
-  });
-
-  it('⚠ treats the form\'s empty strings as absent, not as values', async () => {
-    // gateForm posts '' for every field the user left alone. '' is not NULL to
-    // Postgres: bound to employee_id (int) or valid_from (timestamptz) it raises
-    // and the route answered 500. So this exact body is what the real form sends
-    // when the user fills nothing in, and it must be a 400 — never a 500.
-    const before = await countAll();
-    const res = await post({ employee_id: '', visitor_name: '', purpose: '', valid_from: '', valid_to: '' });
-    expect(res.status, 'the real form\'s empty payload must 400, not 500').toBe(400);
-    expect(await countAll()).toBe(before);
-  });
-
-  it.each([
-    ['employee_id is not a number', { employee_id: 'abc' },                       /employee_id must be a positive integer/i],
-    ['employee_id is zero',         { employee_id: 0 },                           /employee_id must be a positive integer/i],
-    ['employee_id is negative',     { employee_id: -3 },                          /employee_id must be a positive integer/i],
-    ['valid_from is unparseable',   { visitor_name: 'V', valid_from: 'not-a-date' }, /valid_from must be a valid date/i],
-    ['valid_to is unparseable',     { visitor_name: 'V', valid_to: 'nonsense' },     /valid_to must be a valid date/i],
-    ['valid_to precedes valid_from',{ visitor_name: 'V', valid_from: '2026-10-12T10:00:00Z', valid_to: '2026-10-12T09:00:00Z' }, /valid_to must be after valid_from/i],
-    ['visitor_name is over 200 chars', { visitor_name: 'x'.repeat(201) },          /visitor_name must be 200 characters/i],
-  ])('rejects %s with 400 and no row', async (_label, body, pattern) => {
-    const before = await countAll();
-    const res = await post(body);
-    expect(res.status).toBe(400);
-    expect(res.body.message).toMatch(pattern);
-    expect(await countAll(), 'no row may be created').toBe(before);
-  });
-
-  it('accepts a visitor-only pass — employee_id is genuinely optional', async () => {
-    const before = await countAll();
-    const res = await post({ visitor_name: 'ZZGP Visitor Only', purpose: 'delivery' });
-    expect(res.status).toBe(201);
-    expect(res.body.id).toBeGreaterThan(0);
-    expect(res.body.visitor_name).toBe('ZZGP Visitor Only');
-    expect(res.body.employee_id).toBeNull();
-    expect(res.body.company_id, 'stamped with the caller\'s company').toBe(1);
-    expect(res.body.status, 'status comes from the column default').toBe('pending');
-    expect(await countAll()).toBe(before + 1);
-  });
-
-  it('accepts an employee pass with a valid window, and stores it', async () => {
-    const { rows: emp } = await pool.query(
-      'SELECT id FROM employees WHERE company_id = 1 OR company_id IS NULL ORDER BY id LIMIT 1');
-    if (!emp.length) return expect.unreachable('no company-1 employee to attach');
-    const res = await post({
-      employee_id: emp[0].id, visitor_name: 'ZZGP Employee Pass', purpose: 'site visit',
-      // In the future: a window that has already closed is refused (§197).
-      valid_from: new Date(Date.now() + 3600_000).toISOString(),
-      valid_to:   new Date(Date.now() + 9 * 3600_000).toISOString(),
-    });
-    expect(res.status).toBe(201);
-    expect(res.body.employee_id).toBe(emp[0].id);
-    expect(new Date(res.body.valid_to) > new Date(res.body.valid_from)).toBe(true);
-  });
-
-  it('accepts dates omitted entirely — an open-ended pass is legitimate', async () => {
-    const res = await post({ visitor_name: 'ZZGP Open Ended' });
-    expect(res.status).toBe(201);
-    expect(res.body.valid_from).toBeNull();
-    expect(res.body.valid_to).toBeNull();
-  });
-
-  it('⚠⚠ still refuses a FOREIGN employee_id — validation did not loosen tenancy', async () => {
-    // Validation runs before the tenant check, so this proves ordering did not
-    // turn the 404 into a 400 that lets the row through.
-    const before = await countAll();
-    const res = await post({ employee_id: foreignEmployeeId, visitor_name: 'ZZGP Cross Tenant' });
-    expect(res.status).toBe(404);
-    expect(await countAll()).toBe(before);
-    const { rows } = await pool.query(
-      'SELECT COUNT(*)::int n FROM gate_passes WHERE employee_id = $1', [foreignEmployeeId]);
-    expect(rows[0].n).toBe(0);
-  });
-
-  it('a valid payload from a role without hr:add is still 403, not 400', async () => {
-    // Validation must not run ahead of authorization: a denied caller should
-    // learn nothing about which fields the route wants.
-    const before = await countAll();
-    const res = await post({ visitor_name: 'ZZGP Denied' }, 'payroll_admin');
-    expect(res.status).toBe(403);
-    expect(await countAll()).toBe(before);
-  });
-});
-
-/**
- * POST /visitors payload validation.
- *
- * The defect: `visitorForm` initialises every field to '' and posts '' for
- * whatever the user left alone, and `host_employee_id` is an INTEGER column.
- * '' is not NULL to Postgres, so checking a visitor in WITHOUT naming a host —
- * a field the form does not mark required — answered 500.
- *
- * `name` is the only required field: the form labels it "Visitor Name *", it is
- * the one input carrying `required`, and `visitors.name` is NOT NULL. Everything
- * else stays optional, the host included.
- */
-describe('POST /visitors validation', () => {
-  /** Registers anything it creates, so a failing expectation cannot leak a row. */
-  const post = async (body, role = 'hr') => {
-    const res = await request(appAs([role])).post('/api/visitors').send(body);
-    if (res.body?.id != null) createdRows.push(['visitors', res.body.id]);
-    return res;
-  };
-  // §221 — same scoping as the gate-pass count above, same parallel race.
-  const countAll = async () =>
-    (await pool.query('SELECT COUNT(*)::int n FROM visitors WHERE company_id = 1 OR company_id IS NULL')).rows[0].n;
-
-  /** Exactly what visitorForm posts: every field '', id_type pre-selected. */
-  const UI_PAYLOAD = (over = {}) => ({
-    name: '', company: '', phone: '', email: '',
-    host_employee_id: '', purpose: '', id_type: 'Aadhaar', id_number: '', ...over,
-  });
-
-  it('⚠⚠ accepts the UI payload with a BLANK host — this used to be a 500', async () => {
-    // The regression. A walk-in with no host is legitimate and the form allows
-    // it; '' must reach the INSERT as NULL, not as a string bound to an int.
-    const before = await countAll();
-    const res = await post(UI_PAYLOAD({ name: 'ZZV Walk-in No Host' }));
-    expect(res.status, `expected 201, got ${res.status}: ${JSON.stringify(res.body)}`).toBe(201);
-    expect(res.body.host_employee_id, 'blank host must store as NULL').toBeNull();
-    expect(await countAll()).toBe(before + 1);
-  });
-
-  it('stores every other untouched field as NULL, not as an empty string', async () => {
-    const res = await post(UI_PAYLOAD({ name: 'ZZV Blank Fields' }));
-    expect(res.status).toBe(201);
-    for (const f of ['company', 'phone', 'email', 'purpose', 'id_number']) {
-      expect(res.body[f], `${f} should be NULL, not ''`).toBeNull();
-    }
-    // id_type is pre-selected by the form, so it is a real value and survives.
-    expect(res.body.id_type).toBe('Aadhaar');
-    expect(res.body.company_id, 'stamped with the caller\'s company').toBe(1);
-  });
-
-  it('accepts the UI payload WITH a host, and stores it', async () => {
-    const { rows: emp } = await pool.query(
-      'SELECT id FROM employees WHERE company_id = 1 OR company_id IS NULL ORDER BY id LIMIT 1');
-    if (!emp.length) return expect.unreachable('no company-1 employee to host');
-    const res = await post(UI_PAYLOAD({ name: 'ZZV Hosted', host_employee_id: String(emp[0].id) }));
-    expect(res.status).toBe(201);
-    expect(res.body.host_employee_id).toBe(emp[0].id);
-  });
-
-  it('⚠ rejects the UI payload when the name is left blank — 400, not a row', async () => {
-    const before = await countAll();
-    const res = await post(UI_PAYLOAD());
-    expect(res.status).toBe(400);
-    expect(res.body.message).toMatch(/name is required/i);
-    expect(Array.isArray(res.body.errors)).toBe(true);
-    expect(await countAll(), 'no row may be created').toBe(before);
-  });
-
-  it('rejects a whitespace-only name, which the old `!name` guard allowed', async () => {
-    const before = await countAll();
-    const res = await post(UI_PAYLOAD({ name: '   ' }));
-    expect(res.status).toBe(400);
-    expect(res.body.message).toMatch(/name is required/i);
-    expect(await countAll()).toBe(before);
-  });
-
-  it.each([
-    ['host is not a number',    { host_employee_id: 'abc' }, /host_employee_id must be a positive integer/i],
-    ['host is zero',            { host_employee_id: 0 },     /host_employee_id must be a positive integer/i],
-    ['host is negative',        { host_employee_id: -2 },    /host_employee_id must be a positive integer/i],
-    ['phone over 20 chars',     { phone: '1'.repeat(21) },   /phone must be 20 characters or fewer/i],
-    ['name over 200 chars',     { name: 'x'.repeat(201) },   /name must be 200 characters or fewer/i],
-    ['company over 200 chars',  { company: 'c'.repeat(201) },/company must be 200 characters or fewer/i],
-    ['id_number over 100',      { id_number: 'i'.repeat(101) }, /id_number must be 100 characters or fewer/i],
-  ])('rejects %s with 400 and no row', async (_label, over, pattern) => {
-    const before = await countAll();
-    const res = await post(UI_PAYLOAD({ name: 'ZZV Invalid', ...over }));
-    expect(res.status, `expected 400, got ${res.status}`).toBe(400);
-    expect(res.body.message).toMatch(pattern);
-    expect(await countAll(), 'no row may be created').toBe(before);
-  });
-
-  it('⚠⚠ still refuses a FOREIGN host_employee_id — tenancy did not loosen', async () => {
-    const before = await countAll();
-    const res = await post(UI_PAYLOAD({ name: 'ZZV Cross Tenant', host_employee_id: String(foreignEmployeeId) }));
-    expect(res.status).toBe(404);
-    expect(await countAll()).toBe(before);
-    const { rows } = await pool.query(
-      'SELECT COUNT(*)::int n FROM visitors WHERE host_employee_id = $1', [foreignEmployeeId]);
-    expect(rows[0].n).toBe(0);
-  });
-
-  it('a valid payload from a role without hr:add is still 403, not 400', async () => {
-    // Validation must not run ahead of authorization.
-    const before = await countAll();
-    const res = await post(UI_PAYLOAD({ name: 'ZZV Denied' }), 'payroll_admin');
-    expect(res.status).toBe(403);
-    expect(await countAll()).toBe(before);
-  });
-
-  it('leaves the five SEED visitors untouched', async () => {
-    const { rows } = await pool.query(
-      `SELECT id, name, host_employee_id FROM visitors
-        WHERE name LIKE 'SEED Visitors%' ORDER BY id`);
-    expect(rows.map(r => r.name)).toEqual([
-      'SEED Visitors 1', 'SEED Visitors 2', 'SEED Visitors 3', 'SEED Visitors 4', 'SEED Visitors 5',
-    ]);
-    expect(rows.map(r => r.host_employee_id)).toEqual([1, 2, 3, 4, 5]);
   });
 });

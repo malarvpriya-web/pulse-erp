@@ -144,9 +144,10 @@ describe('My Payslip stays a standalone page', () => {
     await screen.findByTestId(gate(role, 'PayslipViewer') ? 'page-PayslipViewer' : 'denied');
     expect(screen.queryByTestId('hub')).toBeNull();
   });
-  // NOTE (pre-existing, reported 2026-10-28, not changed here): PayslipViewer's
-  // only menu row is Finance → My Payslip, and 'Finance' is not in the employee
-  // allowlist, so canRenderPage refuses it for `employee` — Employee
-  // Dashboard's "View payslip" buttons open Access Denied. Granting it is an
-  // access decision; this suite only asserts the consolidation left it as is.
+  // 2026-11-11: PayslipViewer is a PERSONAL_PAGE — every role opens its own
+  // payslip (the server serves a self-service caller only their own released
+  // ones). Before, 'Finance' not being in the employee allowlist refused it.
+  it('an employee opens My Payslip', () => {
+    expect(canRenderPage('employee', 'PayslipViewer', { route: ROUTES.PayslipViewer, hasPermission: () => false })).toBe(true);
+  });
 });

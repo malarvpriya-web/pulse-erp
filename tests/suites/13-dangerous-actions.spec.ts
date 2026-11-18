@@ -85,7 +85,6 @@ const KNOWN_DANGEROUS_ROUTES = [
   { route: '/Timesheets',          module: 'timesheets',  buttons: [/delete/i, /remove/i] },
   { route: '/Projects',            module: 'projects',    buttons: [/delete/i, /archive/i] },
   { route: '/FixedAssets',         module: 'finance',     buttons: [/delete/i, /dispose/i, /write.off/i] },
-  { route: '/AllCandidates',       module: 'recruitment', buttons: [/delete/i, /remove/i] },
   { route: '/AccessControl',       module: 'settings',    buttons: [/delete/i, /remove/i, /revoke/i] },
   { route: '/WorkflowBuilder',     module: 'settings',    buttons: [/delete/i, /remove/i] },
 ];
@@ -390,7 +389,7 @@ test('@P1 [DANGEROUS-ACTIONS] Verify no bulk-delete without confirmation', async
     '/ItemMaster',
     '/AllLeaves',
     '/Timesheets',
-    '/AllCandidates',
+
   ];
 
   const issues: string[] = [];

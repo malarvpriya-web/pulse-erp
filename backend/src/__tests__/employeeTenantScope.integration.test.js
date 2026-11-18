@@ -57,13 +57,6 @@ const STATEMENTS = {
            WHERE id=$2 AND ($3::int IS NULL OR company_id=$3)`,
     params: (id, co) => ['Notice', id, co],
   },
-  'POST /hr/offboarding/:id/complete': {
-    sql: `UPDATE employees
-             SET status = $1, exit_date = COALESCE(exit_date, $2, CURRENT_DATE),
-                 updated_at = NOW()
-           WHERE id = $3 AND ($4::int IS NULL OR company_id = $4)`,
-    params: (id, co) => ['Left', null, id, co],
-  },
   'PUT /self-service/employees/:id/profile': {
     sql: `UPDATE employees SET
              current_address=COALESCE($1,current_address),

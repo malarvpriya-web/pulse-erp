@@ -11,8 +11,8 @@
  *
  * This tool does (2) and refuses to pretend about (1): it refuses a superuser,
  * CREATEROLE or BYPASSRLS application role, or one that can use the owner role.
- * The application role ends with SELECT and INSERT on the table, and USAGE on its
- * sequence. Run it AFTER migrations: a later migration of this table then needs
+ * The application role ends with SELECT and INSERT on the table, and USAGE and SELECT on its
+ * sequence, because pg_dump reads it. Run it AFTER migrations: a later migration of this table then needs
  * the same privileged credentials.
  *
  *   BANK_FILE_ADMIN_DATABASE_URL=postgresql://... \
@@ -49,7 +49,7 @@ export async function applyBankFileLeastPrivilege(client, appRole, ownerRole = D
     await client.query(`GRANT SELECT, INSERT ON payment_batch_files TO ${id(appRole)}`);
     const { rows: [{ seq }] } = await client.query(`SELECT pg_get_serial_sequence('payment_batch_files', 'id') AS seq`);
     await client.query(`REVOKE ALL ON SEQUENCE ${seq} FROM PUBLIC, ${id(appRole)}`);
-    await client.query(`GRANT USAGE ON SEQUENCE ${seq} TO ${id(appRole)}`);
+    await client.query(`GRANT USAGE, SELECT ON SEQUENCE ${seq} TO ${id(appRole)}`);
 
     const { rows: [p] } = await client.query(
       `SELECT has_table_privilege($1, 'payment_batch_files', 'SELECT')   AS can_select,

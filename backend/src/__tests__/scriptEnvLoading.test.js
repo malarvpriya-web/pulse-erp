@@ -199,6 +199,21 @@ describe('a target that differs from .env is warned about', () => {
   });
 });
 
+describe('reading psql output (a deploy run on Windows, 05 Nov 26)', () => {
+  // psql on Windows ends lines with CRLF. Splitting on LF left \r on every migration
+  // name and checksum, so a correct database reported 537 "Not applied".
+  it.each(['pre-deploy.js', 'post-deploy.js'])('%s splits on either line ending', (file) => {
+    const src = source(file);
+    expect(src).toMatch(/stdout\.trim\(\)\.split\(\/\\r\?\\n\/\)/);
+    expect(src).not.toMatch(/stdout[^\n]*split\('\\n'\)/);
+  });
+
+  it('render.yaml runs migrations before the backend starts', () => {
+    const yaml = readFileSync(path.resolve(here, '../../../render.yaml'), 'utf8').replace(/\r\n/g, '\n');
+    expect(yaml).toMatch(/rootDir: backend[\s\S]*?preDeployCommand: npm run migrate\n\s+startCommand: node server\.js/);
+  });
+});
+
 describe.each(['pre-deploy.js', 'post-deploy.js'])('%s fileChecksum', (file) => {
   const lift = () => {
     const src = source(file);

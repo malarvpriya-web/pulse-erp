@@ -37,6 +37,11 @@ const REVIEWS = [
     current_head: null, reassignable: false },
 ];
 
+const SUBMITTED = { ...base, id: 44, status: 'submitted', employee: 'Sita Pai', reviewer: 'Asha Rao',
+  rating: 4, recommendation: 'extend', reviewer_state: null, reassignable: false };
+const DECIDED = { ...base, id: 45, status: 'decided', employee: 'Done Person', reviewer: 'Asha Rao',
+  rating: 5, recommendation: 'confirm', decision: 'confirmed', reviewer_state: null, reassignable: false };
+
 function mockList(payload = { reviews: REVIEWS, awaiting_request: [] }, { status = 200 } = {}) {
   api.get.mockImplementation(async (url) => {
     if (url === '/probation-reviews') {
@@ -56,14 +61,16 @@ const listCalls = () => api.get.mock.calls.filter(([u]) => u === '/probation-rev
 beforeEach(() => { vi.clearAllMocks(); cleanup(); });
 
 describe('the worklist', () => {
-  it('asks for open reviews only and lists them with the details HR needs', async () => {
-    mockList();
+  it('lists open reviews only, with the details HR needs', async () => {
+    mockList({ reviews: [...REVIEWS, DECIDED], awaiting_request: [] });
     renderAs(true);
     await screen.findByText('Neha Iyer');
-    expect(api.get).toHaveBeenCalledWith('/probation-reviews', { params: { status: 'requested' } });
+    expect(api.get).toHaveBeenCalledWith('/probation-reviews');
+    // A decided review is History (on the page), never in this list.
+    expect(screen.queryByText('Done Person')).toBeNull();
     const r = rowOf(41).textContent;
     expect(r).toMatch(/Neha Iyer/); expect(r).toMatch(/Finance/); expect(r).toMatch(/Asha Rao/);
-    expect(r).toMatch(/30 Nov 26/); expect(r).toMatch(/Awaiting review/);
+    expect(r).toMatch(/30 Nov 26/); expect(r).toMatch(/Awaiting head/);
   });
 
   it('flags a replaced reviewer and a missing head with the server\'s reasons', async () => {
@@ -173,5 +180,56 @@ describe('the former reviewer\'s notification', () => {
   it('opens My Probation Reviews with no review reference', () => {
     expect(notificationTarget({ notification_type: 'probation_review_reassigned', module_name: 'probation', reference_id: null }))
       .toEqual({ page: 'MyProbationReviews', params: {} });
+  });
+});
+
+describe('a submitted review', () => {
+  it('shows the head\'s recommendation and hands it to the page to decide', async () => {
+    mockList({ reviews: [SUBMITTED], awaiting_request: [] });
+    const onDecide = vi.fn();
+    auth.grants = new Set(['hr:view', 'hr:edit']);
+    render(<ProbationReviewsPanel onDecide={onDecide} />);
+    await screen.findByText('Sita Pai');
+    const r = rowOf(44);
+    expect(r.textContent).toMatch(/Awaiting HR decision/);
+    expect(r.textContent).toMatch(/Recommends Extend · 4\/5/);
+    expect(r.textContent).not.toMatch(/Reassign/);
+    fireEvent.click(within(r).getByRole('button', { name: 'Record decision' }));
+    expect(onDecide).toHaveBeenCalledWith(expect.objectContaining({ id: 44 }));
+  });
+
+  it('offers no decision button when the page gives none (no hr:edit)', async () => {
+    mockList({ reviews: [SUBMITTED], awaiting_request: [] });
+    renderAs(false);
+    await screen.findByText('Sita Pai');
+    expect(within(rowOf(44)).queryByRole('button', { name: 'Record decision' })).toBeNull();
+  });
+});
+
+describe('cancelling a review', () => {
+  it('needs a reason, posts it, and reloads', async () => {
+    mockList();
+    api.post.mockResolvedValue({ data: { cancelled: true } });
+    const onChanged = vi.fn();
+    auth.grants = new Set(['hr:view', 'hr:edit']);
+    render(<ProbationReviewsPanel onChanged={onChanged} />);
+    await screen.findByText('Neha Iyer');
+    fireEvent.click(within(rowOf(41)).getByRole('button', { name: 'Cancel review' }));
+    fireEvent.click(within(rowOf(41)).getByRole('button', { name: 'Cancel review' }));   // confirm, empty reason
+    expect(await screen.findByText('A reason is required to cancel a review.')).toBeTruthy();
+    expect(api.post).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByLabelText("Reason to cancel Neha Iyer's review"), { target: { value: 'Resigned' } });
+    fireEvent.click(within(rowOf(41)).getByRole('button', { name: 'Cancel review' }));
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/probation-reviews/41/cancel', { reason: 'Resigned' }));
+    expect(await screen.findByText("Neha Iyer's review was cancelled.")).toBeTruthy();
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+  });
+
+  it('is not offered without hr:edit', async () => {
+    mockList();
+    renderAs(false);
+    await screen.findByText('Neha Iyer');
+    expect(screen.queryByRole('button', { name: 'Cancel review' })).toBeNull();
   });
 });

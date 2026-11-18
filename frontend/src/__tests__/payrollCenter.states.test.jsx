@@ -45,14 +45,16 @@ describe('resolvePayrollTab', () => {
 
   it.each([
     ['payroll', null, 'processing', null],
-    ['structure', null, 'structures', null],
+    ['structure', null, 'structures', 'salaries'],
     ['generate', null, 'payslips', 'generator'],
     ['view', null, 'payslips', 'viewer'],
     ['form16', null, 'statutory', 'form16'],
     ['form24q', null, 'statutory', 'form138'],
-    ['settings', null, 'settings', null],
+    ['settings', null, 'settings', 'general'],
+    ['settings', 'rules', 'settings', 'rules'],
+    ['statutory', 'rules', 'settings', 'rules'],
     ['statutory', 'form138', 'statutory', 'form138'],
-    ['statutory', 'nonsense', 'statutory', 'form16'],
+    ['statutory', 'nonsense', 'statutory', 'dues'],
     ['nonsense', null, 'overview', null],
     [null, null, 'overview', null],
   ])('?tab=%s&view=%s → %s / %s', (tab, view, section, v) => {
@@ -69,10 +71,11 @@ describe('PayrollOverview', () => {
     const go = vi.fn();
     render(<PayrollOverview go={go} />);
     expect((await screen.findAllByText(/Could not load: summary exploded/)).length).toBeGreaterThan(0);
-    expect(screen.getByText(/JURISDICTION_UNCONFIRMED — Statutory state not confirmed/)).toBeTruthy();
+    // the blocker's own words — not a code — are what a reader sees
+    expect(screen.getByText(/Statutory state not confirmed/)).toBeTruthy();
     expect(screen.queryByText(/0 of 0/)).toBeNull();
-    fireEvent.click(within(screen.getByRole('region', { name: '4 · Approve & release' })).getByRole('button', { name: /Open/ }));
-    expect(go).toHaveBeenCalledWith('processing');
+    fireEvent.click(within(screen.getByRole('region', { name: '4 · Approve' })).getByRole('button', { name: /Open/ }));
+    expect(go).toHaveBeenCalledWith('processing', undefined);
   });
 
   it('names the missing prerequisite when nobody is eligible', async () => {
@@ -298,7 +301,7 @@ describe('Payroll Settings load failure', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Retry' }, { timeout: 15000 }));
     expect(await screen.findByRole('button', { name: 'Save Changes' }, { timeout: 15000 })).toBeTruthy();
     expect(screen.queryByRole('alert')).toBeNull();
-    expect(screen.getByText('Round Net Pay to Nearest')).toBeTruthy();
+    expect(screen.getByText('Pay Day of Month')).toBeTruthy();
   }, 30000);
 
   it('a 200 that is not a settings object is treated as a failed load', async () => {

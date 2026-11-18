@@ -11,6 +11,9 @@ import { resolve } from 'node:path';
 
 vi.mock('../services/api/client', () => ({ default: { get: vi.fn(), post: vi.fn(), put: vi.fn() } }));
 vi.mock('../components/ResultDialog', () => ({ default: () => null }));
+vi.mock('../context/AuthContext', () => ({
+  useAuth: () => ({ hasPermission: () => true, permissions: [{ module: 'payroll_payment', can_approve: true }] }),
+}));
 
 import api from '../services/api/client';
 import SalaryStructure from '../features/hr/pages/SalaryStructure.jsx';
@@ -80,18 +83,18 @@ describe('Loans & Advances', () => {
     expect(api.post).toHaveBeenCalledTimes(1);
   });
 
-  it('Close on a loan with a balance records a prepayment only after confirmation', async () => {
+  it('a loan with a balance is settled by a prepayment of what was received (any part), not by Close', async () => {
     mockApi([LOAN]);
-    api.post.mockImplementation((url) => (url.endsWith('/close')
-      ? reject({ code: 'LOAN_OUTSTANDING', outstanding: 15000, message: 'outstanding' }, 409)
-      : Promise.resolve({ data: { success: true } })));
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    api.post.mockImplementation(() => Promise.resolve({ data: { success: true } }));
     render(<SalaryStructure />);
     fireEvent.click(await screen.findByRole('button', { name: /Loans & Advances/ }));
     expect(await screen.findByText(/3 installment\(s\) left/)).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
-    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/payroll/loan-advances/55/prepay', expect.objectContaining({ amount: 15000 })));
-    expect(confirm.mock.calls[0][0]).toMatch(/still outstanding/);
+    expect(screen.queryByRole('button', { name: 'Close' })).toBeNull();      // only an empty loan closes as-is
+    fireEvent.click(screen.getByRole('button', { name: 'Prepayment' }));
+    const dlg = screen.getByRole('dialog', { name: 'Loan action' });
+    fireEvent.change(dlg.querySelector('input[type="number"]'), { target: { value: '5000' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/payroll/loan-advances/55/prepay', expect.objectContaining({ amount: 5000 })));
   });
 
   it('the button opens the form; Cancel closes it and clears what was typed', async () => {

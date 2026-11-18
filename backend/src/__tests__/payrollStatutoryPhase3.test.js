@@ -56,11 +56,23 @@ describe('verification status is honest', () => {
     for (const k of ['esi.employee_rate', 'esi.employer_rate', 'pf.eps_age_limit', 'ot.max_multiplier']) expect(applied[k].status, k).toBe('verified');
     expect(applied['esi.employer_rate'].source).toMatch(/G\.S\.R\. 344\(E\)/);
   });
+  it('tax is verified only from tax year 2026-27, the year the enacted Finance Act 2026 covers', () => {
+    expect(resolveRules('2026-04-30').applied['tax.new'].status).toBe('verified');
+    expect(resolveRules('2026-04-30').applied['tax.old'].status).toBe('verified');
+    expect(resolveRules('2026-03-31').applied['tax.new'].status).toBe('unverified');
+    expect(resolveRules('2026-03-31').applied['tax.old'].status).toBe('unverified');
+    // Same slabs, rebate and cess either side: confirming a source changed no
+    // calculation. 2026-27 adds what was read from the enacted Act on 2026-11-09:
+    // surcharge bands and, for the old regime, the senior-citizen slabs.
+    const strip = ({ surcharge: _s, age_slabs: _a, ...v }) => v;
+    expect(strip(resolveRules('2026-04-30').values['tax.new'])).toEqual(resolveRules('2026-03-31').values['tax.new']);
+    expect(strip(resolveRules('2026-04-30').values['tax.old'])).toEqual(resolveRules('2026-03-31').values['tax.old']);
+    expect(resolveRules('2026-04-30').values['tax.new'].surcharge.map(b => b.rate)).toEqual([10, 15, 25]);
+    expect(resolveRules('2026-04-30').values['tax.old'].surcharge.map(b => b.rate)).toEqual([10, 15, 25, 37]);
+  });
   it('rules still blocking — not cleared by this pass', () => {
     expect(applied['pt.slabs'].status).toBe('unverified');        // other states unchecked
     expect(applied['lwf.rates'].status).toBe('unverified');       // deduction month, applicability
-    expect(applied['tax.new'].status).toBe('unverified');         // enacted Finance Act 2026 not read
-    expect(applied['tax.old'].status).toBe('unverified');
     expect(applied['pf.wage_floor_basis'].status).toBe('decision_required');
     expect(applied['esi.wage_basis'].status).toBe('decision_required');
   });

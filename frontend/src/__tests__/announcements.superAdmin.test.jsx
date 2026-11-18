@@ -17,15 +17,17 @@
  *   - An empty My Announcements is the valid empty state, not an error.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor, cleanup } from '@testing-library/react';
+import { render, screen, waitFor, cleanup, fireEvent } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 
-const api = vi.hoisted(() => ({ list: [] }));
+const api = vi.hoisted(() => ({ list: [], employees: [], archived: [] }));
 vi.mock('@/services/api/client', () => ({
   default: {
     get: vi.fn((url) => {
       if (url === '/announcements') return Promise.resolve({ data: api.list });
       if (url === '/announcements/active') return Promise.resolve({ data: [] });
+      if (url === '/employees') return Promise.resolve({ data: api.employees });
+      if (url === '/announcements/archived') return Promise.resolve({ data: api.archived });
       if (url === '/probation-reviews/mine/summary') return Promise.resolve({ data: { linked: false, is_head: false } });
       if (url === '/intern-evaluations/mine/summary') return Promise.resolve({ data: { linked: false, is_mentor: false } });
       return Promise.resolve({ data: [] });
@@ -202,5 +204,83 @@ describe('My Announcements — empty is a valid state', () => {
     renderPage(<MyAnnouncements />, '/MyAnnouncements');
     expect(await screen.findByText('No announcements right now')).toBeDefined();
     expect(screen.queryByRole('alert')).toBeNull();
+  }, 20000);
+});
+
+describe('HR administration page — audience and dates (2026-11-10)', () => {
+  const base = {
+    message: '<p>x</p>', from_date: '2026-10-01', to_date: '2099-01-05',
+    is_active: true, is_pinned: false, priority: 'medium', category: 'General',
+  };
+
+  it('names the addressed employee instead of showing the raw id', async () => {
+    seedSession('super_admin');
+    api.list = [{ ...base, id: 9, title: 'Zz one', target_type: 'employee', target_value: '42', target_name: 'Meena Ravi' }];
+    renderPage(<Announcements />);
+    await screen.findByText('Zz one');
+    expect(screen.getByText('Employee: Meena Ravi')).toBeDefined();
+    expect(screen.queryByText('Employee: 42')).toBeNull();
+  }, 20000);
+
+  it('shows dates as DD Mon YY', async () => {
+    seedSession('super_admin');
+    api.list = [{ ...base, id: 10, title: 'Zz dated', target_type: 'all' }];
+    renderPage(<Announcements />);
+    await screen.findByText('Zz dated');
+    expect(screen.getByText('01 Oct 26 → 05 Jan 99')).toBeDefined();
+  }, 20000);
+
+  it('the employee picker offers people serving notice (the server counts them in the audience), not people who left', async () => {
+    seedSession('super_admin');
+    api.list = [];
+    api.employees = [
+      { id: 1, first_name: 'Zz', last_name: 'Active', status: 'Active', department: 'Ops' },
+      { id: 2, first_name: 'Zz', last_name: 'Notice', status: 'Notice', department: 'Ops' },
+      { id: 3, first_name: 'Zz', last_name: 'NoticePeriod', status: 'notice_period', department: 'Ops' },
+      { id: 4, first_name: 'Zz', last_name: 'Left', status: 'Left', department: 'Ops' },
+    ];
+    renderPage(<Announcements />);
+    await screen.findByText(/No announcements/);
+    fireEvent.click(screen.getByRole('button', { name: /New Announcement/ }));
+    const audience = screen.getByDisplayValue('All Employees');
+    fireEvent.change(audience, { target: { value: 'employee' } });
+    await screen.findByText('Select employee');
+    expect(screen.getByRole('option', { name: 'Zz Active' })).toBeDefined();
+    expect(screen.getByRole('option', { name: 'Zz Notice' })).toBeDefined();
+    expect(screen.getByRole('option', { name: 'Zz NoticePeriod' })).toBeDefined();
+    expect(screen.queryByRole('option', { name: 'Zz Left' })).toBeNull();
+    api.employees = [];
+  }, 20000);
+});
+
+describe('HR administration page — Archived tab (2026-11-10)', () => {
+  const gone = {
+    id: 31, title: 'Zz archived one', message: '<p>x</p>', from_date: '2026-10-01', to_date: '2099-01-01',
+    target_type: 'all', is_active: true, is_pinned: false, priority: 'medium', category: 'General',
+    deleted_at: '2026-11-09T10:00:00Z', deleted_by_name: 'Zz Admin', lifecycle_status: 'archived',
+  };
+
+  it('Super Admin opens Archived and restores one: PUT /restore, then it leaves the archive', async () => {
+    const { default: client } = await import('@/services/api/client');
+    seedSession('super_admin');
+    api.list = [];
+    api.archived = [gone];
+    renderPage(<Announcements />);
+    fireEvent.click(await screen.findByRole('button', { name: /^Archived$/ }));
+    await screen.findByText('Zz archived one');
+    expect(screen.getByText(/Archived 09 Nov 26 by Zz Admin/)).toBeDefined();
+    expect(screen.queryByRole('button', { name: /^Edit$/ })).toBeNull();     // archive rows only restore
+    fireEvent.click(screen.getByRole('button', { name: /Restore/ }));
+    await waitFor(() => expect(client.put).toHaveBeenCalledWith('/announcements/31/restore'));
+    await waitFor(() => expect(screen.queryByText('Zz archived one')).toBeNull());
+    api.archived = [];
+  }, 20000);
+
+  it('HR Manager (no delete) is not offered the Archived tab', async () => {
+    seedSession('hr_manager', { permissions: [ANNOUNCEMENTS_ROW(false)], menuOverrides: {} });
+    api.list = [];
+    renderPage(<Announcements />);
+    await screen.findByRole('button', { name: /^Active/ });
+    expect(screen.queryByRole('button', { name: /^Archived$/ })).toBeNull();
   }, 20000);
 });

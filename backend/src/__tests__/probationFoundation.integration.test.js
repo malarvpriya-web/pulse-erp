@@ -189,22 +189,20 @@ describe('GET /probation is company-scoped', () => {
     expect((await request(app).get('/api/probation').set(as('globalSuper'))).status).toBe(403);
   });
 
-  it('cannot record a decision on another company\'s record', async () => {
-    const byId = await request(app).put(`/api/probation/${fx.log.foreign}`).set(as('hr'))
-      .send({ decision: 'confirmed', performance_rating: 5, comments: 'cross-tenant' });
-    expect(byId.status).toBe(404);
-    const byEmp = await request(app).put(`/api/probation/by-employee/${fx.emp.fSubject}`).set(as('hr'))
-      .send({ decision: 'confirmed' });
-    expect(byEmp.status).toBe(404);
-    const { rows: [r] } = await pool.query(`SELECT decision, status FROM probation_notifications WHERE id = $1`, [fx.log.foreign]);
-    expect(r).toEqual({ decision: null, status: 'pending' });
-  });
-
-  it('records a decision on its own record', async () => {
-    const res = await request(app).put(`/api/probation/${fx.log.own}`).set(as('hr'))
-      .send({ decision: 'extended', performance_rating: 3, comments: 'own' });
-    expect(res.status).toBe(200);
-    expect(res.body.decision).toBe('extended');
+  it('decisions on reminder-log rows are retired (410) and write nothing, in any company', async () => {
+    // The decision now lives on the probation REVIEW (POST /probation-reviews/:id/decide).
+    for (const [url, body] of [
+      [`/api/probation/${fx.log.foreign}`, { decision: 'confirmed', performance_rating: 5, comments: 'cross-tenant' }],
+      [`/api/probation/by-employee/${fx.emp.fSubject}`, { decision: 'confirmed' }],
+      [`/api/probation/${fx.log.own}`, { decision: 'extended', performance_rating: 3, comments: 'own' }],
+    ]) {
+      const res = await request(app).put(url).set(as('hr')).send(body);
+      expect(res.status, url).toBe(410);
+      expect(res.body.error).toMatch(/no longer recorded on notifications/i);
+    }
+    const { rows } = await pool.query(
+      `SELECT decision, status FROM probation_notifications WHERE id = ANY($1::int[]) ORDER BY id`, [[fx.log.own, fx.log.foreign]]);
+    expect(rows).toEqual([{ decision: null, status: 'pending' }, { decision: null, status: 'pending' }]);
   });
 });
 

@@ -8,7 +8,8 @@
  *
  *   - in the exact state that used to trigger the drop, rows and columns survive
  *     and no drop is attempted;
- *   - on a database without the tables, they are still created;
+ *   - on a database without the tables, loading the routes creates nothing: since
+ *     DB-01C3 (manual §248) only migrations change the schema;
  *   - on the current integer schema, rows are untouched.
  *
  * Scratch databases only (helpers/migrationFixtureDb.js).
@@ -77,6 +78,7 @@ const SUBS_UUID = `
            ('00000000-0000-4000-8000-000000000002', 'other tenant plan', 200, '2026-01-01');`;
 const subscriptionRows = async (c) => (await c.query(`SELECT id, company_id, plan_name FROM subscriptions ORDER BY plan_name`)).rows;
 const DROPS = (sql) => sql.filter((s) => /DROP\s+TABLE/i.test(s) && new RegExp(TABLES.join('|'), 'i').test(s));
+const schemaChanges = (sql) => sql.filter((s) => /^\s*(CREATE|ALTER|DROP|TRUNCATE)\b/i.test(s) || /\b(ALTER TABLE|CREATE TABLE|DROP TABLE|DROP COLUMN)\b/i.test(s));
 
 describe('subscriptions.company_id', () => {
   it('the risk: the old repair block kept the rows but erased which company owned them', async () => {
@@ -122,11 +124,11 @@ describe('subscriptions.company_id', () => {
     });
   }, 90000);
 
-  it('on a database without the table: it is still created, with an integer column', async () => {
+  it('on a database without the table: loading the routes creates nothing', async () => {
     await withFixtureDb('slsddl', async ({ client: c }) => {
       const sql = loadRoutesAgainst(c);
-      expect(sql.some((s) => s.startsWith('CREATE TABLE IF NOT EXISTS subscriptions '))).toBe(true);
-      expect(await companyType(c, 'subscriptions')).toBe('integer');
+      expect(schemaChanges(sql)).toEqual([]);
+      expect(await companyType(c, 'subscriptions')).toBeUndefined();
     });
   }, 90000);
 });
@@ -137,22 +139,17 @@ describe('loading the sales routes', () => {
       await legacyShape(c);
       const before = await rowsOf(c);
       const sql = loadRoutesAgainst(c);
-      expect(sql.length, 'the module issued no SQL at all, so this test proved nothing').toBeGreaterThan(0);
-      expect(DROPS(sql)).toEqual([]);
+      expect(schemaChanges(sql)).toEqual([]);
       expect(await rowsOf(c)).toEqual(before);
       for (const t of TABLES) expect(await companyType(c, t), t).toBe('uuid');
     });
   }, 90000);
 
-  it('on a database without the tables: they are still created', async () => {
+  it('on a database without the tables: loading the routes creates nothing', async () => {
     await withFixtureDb('slsddl', async ({ client: c }) => {
       const sql = loadRoutesAgainst(c);
-      expect(DROPS(sql)).toEqual([]);
-      for (const t of TABLES) {
-        expect(sql.some((s) => s.startsWith(`CREATE TABLE IF NOT EXISTS ${t} `)), `${t} is not created`).toBe(true);
-        expect(await companyType(c, t), t).toBe('integer');
-        expect((await c.query(`SELECT COUNT(*)::int AS n FROM ${t}`)).rows[0].n).toBe(0);
-      }
+      expect(schemaChanges(sql)).toEqual([]);
+      for (const t of TABLES) expect(await companyType(c, t), t).toBeUndefined();
     });
   }, 90000);
 

@@ -6,6 +6,9 @@
  * sent an unsupported rating (400 INVALID_RATING) could not tell why. A 4xx now
  * shows the server's message; a 5xx or network failure keeps the fallback, since
  * its text can be raw internals.
+ *
+ * 2026-11-11: the manager review is submitted from the My Team tab (a report's
+ * review), never from one's own review page, which used to offer it.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
@@ -20,7 +23,7 @@ vi.mock('@/context/ToastContext', () => ({ useToast: () => drawerToast }));
 import PerformanceReviews from '@/features/performance/pages/PerformanceReviews';
 import { submitErrorMessage } from '@/features/performance/submitErrorMessage';
 
-const FALLBACK = 'Failed to submit manager review';
+const FALLBACK = 'Failed to submit the review';
 const axiosError = (status, data) => Object.assign(new Error(`Request failed with status code ${status}`), { response: { status, data } });
 // The api client wraps 403 and 5xx into an Error carrying `status`.
 const wrapped = (status, message, data) => Object.assign(new Error(message), { status, response: { status, data } });
@@ -28,21 +31,25 @@ const wrapped = (status, message, data) => Object.assign(new Error(message), { s
 beforeEach(() => {
   api.get.mockReset();
   api.post.mockReset();
-  api.get.mockImplementation(async (url) => (url === '/performance/review/current'
-    ? { data: { id: 77, status: 'self_submitted', employee_name: 'Divya', cycle_name: 'FY26' } }
-    : { data: [] }));
+  api.get.mockImplementation(async (url) => {
+    if (url === '/performance/review/current') return { data: { id: 5, status: 'self_submitted', employee_name: 'Mgr', cycle_name: 'FY26' } };
+    if (url === '/performance/team-reviews') return { data: [{ id: 77, status: 'self_submitted', employee_name: 'Divya', cycle_name: 'FY26', self_rating: 4, achievements: 'Shipped it' }] };
+    return { data: [] };
+  });
 });
 
 async function submitWith(error) {
   api.post.mockRejectedValueOnce(error);
   const { container } = render(<MemoryRouter><PerformanceReviews /></MemoryRouter>);
-  fireEvent.click((await screen.findAllByRole('button', { name: /Submit Manager Review/ }))[0]);
+  fireEvent.click(await screen.findByRole('button', { name: /My Team \(1\)/ }));
+  fireEvent.click(await screen.findByRole('button', { name: /^Review$/ }));
+  // The manager sees what the employee wrote before rating them.
+  expect(container.querySelector('.prf-self-summary').textContent).toContain('Shipped it');
   const stars = container.querySelectorAll('.prf-mgr-modal .prf-star');
   expect(stars).toHaveLength(10);
   fireEvent.click(stars[3]);        // manager rating 4
   fireEvent.click(stars[5 + 3]);    // final rating 4
-  const buttons = screen.getAllByRole('button', { name: /Submit Manager Review/ });
-  fireEvent.click(buttons[buttons.length - 1]);
+  fireEvent.click(screen.getByRole('button', { name: 'Submit review' }));
   await waitFor(() => expect(api.post).toHaveBeenCalledWith('/performance/reviews/77/manager-review',
     expect.objectContaining({ manager_rating: 4, final_rating: 4 })));
   return container;
@@ -54,6 +61,12 @@ const toastText = async (container) => {
 };
 
 describe('manager-review submit error shown to the user', () => {
+  it('is not offered on your own review', async () => {
+    render(<MemoryRouter><PerformanceReviews /></MemoryRouter>);
+    await screen.findByRole('button', { name: /Edit Self Assessment/ });
+    expect(screen.queryByRole('button', { name: /Submit Manager Review/ })).toBeNull();
+  });
+
   it.each([
     ['400 NO_LINKED_EMPLOYEE', axiosError(400, {
       error: 'Your login is not linked to an employee record, so it cannot submit a manager review.', code: 'NO_LINKED_EMPLOYEE' }),
@@ -88,6 +101,9 @@ describe('self-assessment submit', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Submit Self Assessment' }));
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/performance/reviews/88/self-review',
       expect.objectContaining({ self_rating: 4 })));
+    // Highlights travel as `achievements`, the column the server saves.
+    expect(api.post.mock.calls[0][1]).toHaveProperty('achievements');
+    expect(api.post.mock.calls[0][1]).not.toHaveProperty('highlights');
     return container;
   }
   beforeEach(() => { drawerToast.error.mockReset(); });
@@ -113,7 +129,7 @@ describe('self-assessment submit', () => {
   it('a successful submit still closes the drawer and confirms', async () => {
     api.post.mockResolvedValueOnce({ data: {} });
     const container = await openDrawerAndSubmit();
-    await waitFor(() => expect(container.textContent).toContain('Self assessment submitted successfully'));
+    await waitFor(() => expect(container.textContent).toContain('Self assessment submitted'));
     expect(container.querySelector('.prf-drawer')).toBeNull();
     expect(drawerToast.error).not.toHaveBeenCalled();
   });

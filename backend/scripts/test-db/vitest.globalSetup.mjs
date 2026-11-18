@@ -24,4 +24,14 @@ export default async function assertSuiteDatabase() {
   } finally {
     await pool.end().catch(() => {});
   }
+  // Teardown: the fixture cheques helpers/testApp.js stores for JSON bank saves (§267).
+  // Inline (not imported from testApp.js) so the main process opens no pool.
+  return async () => {
+    const { readdirSync, rmSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const dir = fileURLToPath(new URL('../../uploads/', import.meta.url));
+    try {
+      for (const f of readdirSync(dir)) if (f.endsWith('_zz_test_bank_proof.pdf')) rmSync(dir + f, { force: true });
+    } catch { /* no upload dir */ }
+  };
 }

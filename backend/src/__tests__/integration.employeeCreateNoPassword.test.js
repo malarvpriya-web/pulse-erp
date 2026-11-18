@@ -70,6 +70,8 @@ const HR = { 'x-test-user': JSON.stringify({ roles: ['hr'], company_id: COMPANY 
 
 const app = express();
 app.use(express.json());
+const { employeeUploadForTests } = await import('./helpers/testApp.js');   // what server.js mounts first (§267 bank proof)
+app.use('/api/employees', employeeUploadForTests);
 app.use('/api/employees', employeeRoutes);
 
 const created = [];

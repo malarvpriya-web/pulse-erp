@@ -44,7 +44,9 @@ const { default: employeeRoutes }  = await import('../employees/employee.routes.
 const service                      = await import('../employees/employee.service.js');
 const { maskSensitive }            = await import('../services/AuditService.js');
 
-const app = buildApp(['/api/employees', employeeRoutes]);
+const { default: filesRoutes }    = await import('../modules/files/secureFiles.routes.js');
+const { LOCAL_UPLOAD_DIR }         = await import('../services/StorageService.js');
+const app = buildApp(['/api/employees', employeeRoutes], ['/api/files', filesRoutes]);
 
 const PREFIX = 'ZZBANK';
 const ACCT = '123456789012';
@@ -54,7 +56,8 @@ const E = {};
 const created = [];
 const call = (who, method, path) => request(app)[method](path).set('Authorization', `Bearer ${who.token()}`);
 const row = async (id) => (await pool.query(
-  `SELECT account_number, ifsc_code, bank_name, current_address, designation, emergency_name, bank_verified_at, bank_verified_by
+  `SELECT account_number, ifsc_code, bank_name, current_address, designation, emergency_name, bank_verified_at, bank_verified_by,
+          account_holder_name, cancelled_cheque_file
      FROM employees WHERE id = $1`, [id])).rows[0];
 const pending = async (id) => (await pool.query(
   `SELECT * FROM employee_bank_change_requests WHERE employee_id = $1 AND status = 'pending'`, [id])).rows[0];
@@ -73,10 +76,10 @@ async function sweep(companyId) {
 async function addEmployee(company, code, extra = {}) {
   const { rows: [r] } = await pool.query(
     `INSERT INTO employees (company_id, office_id, first_name, last_name, status, joining_date, department, designation,
-                            account_number, ifsc_code, bank_name, current_address, company_email)
-     VALUES ($1, $2, $2, 'Fixture', 'Active', '2025-04-01', $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
+                            account_number, ifsc_code, bank_name, current_address, company_email, account_holder_name)
+     VALUES ($1, $2, $2, 'Fixture', 'Active', '2025-04-01', $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`,
     [company.companyId, code, dept, desig, extra.account ?? null, extra.ifsc ?? null, extra.bank ?? null, extra.address ?? null,
-     `${code.toLowerCase()}.${company.companyId}.${Date.now()}@test.invalid`]);
+     `${code.toLowerCase()}.${company.companyId}.${Date.now()}@test.invalid`, extra.account ? `${code} Fixture` : null]);
   return r.id;
 }
 
@@ -158,6 +161,28 @@ describe('maker-checker', () => {
     expect((await row(E.A)).emergency_name).toBe('Kin 2');
   });
 
+  it('§266: the waiting change is listed for this employee (Edit page) and in the Approval Center for a different reviewer', async () => {
+    const mine = await call(hrMgr2, 'get', `/api/employees/bank-change-requests?status=pending&employee_id=${E.A}`);
+    expect(mine.status).toBe(200);
+    expect(mine.body.map(r => r.id)).toEqual([reqId]);
+    expect(mine.body[0]).toMatchObject({ can_decide: true });
+    expect((await call(hrMgr2, 'get', `/api/employees/bank-change-requests?status=pending&employee_id=${E.N}`)).body).toEqual([]);
+    expect((await call(hrMgr2, 'get', '/api/employees/bank-change-requests?employee_id=x')).status).toBe(400);
+    const { SOURCE_BY_TYPE } = await import('../modules/approvals/approvals.sources.js');
+    const src = SOURCE_BY_TYPE.bank;
+    const r = (await src.pending(co.companyId)).find(x => x.source_id === String(reqId));
+    expect(r.description).toContain('XXXX9012 → XXXX7777');
+    expect(r.description).not.toContain('555566667777');
+    const reviewer = { perms: { employee_bank: { can_edit: true } }, userId: hrMgr2.userId, roles: ['hr'] };
+    expect(src.canAct(reviewer, r)).toBe(true);
+    expect(src.canAct({ ...reviewer, userId: hrMgr.userId, roles: ['hr_manager'] }, r)).toBe(false);        // the maker
+    expect(src.canAct({ ...reviewer, userId: hrMgr.userId, roles: ['super_admin'] }, r)).toBe(true);        // §261
+    expect(src.canAct({ perms: {}, userId: 1, roles: [] }, r)).toBe(false);
+    expect(src.actions(r)).toMatchObject({ approve: { method: 'post', url: `/employees/bank-change-requests/${reqId}/approve` },
+      reject: { url: `/employees/bank-change-requests/${reqId}/reject`, commentKey: 'reason', commentRequired: true } });
+    expect((await src.pending(other.companyId)).find(x => x.source_id === String(reqId))).toBeUndefined();
+  });
+
   it('the maker cannot approve or reject their own change', async () => {
     const a = await call(hrMgr, 'post', `/api/employees/bank-change-requests/${reqId}/approve`);
     expect(a.status).toBe(403);
@@ -237,7 +262,7 @@ describe('maker-checker', () => {
 
 describe('propose-only (employee_bank:add)', () => {
   it('can enter details as a pending request, sees no full numbers, and cannot approve', async () => {
-    const r = await call(proposer, 'put', `/api/employees/${E.N}`).send({ account_number: '445566778899', ifsc_code: 'UTIB0001111' });
+    const r = await call(proposer, 'put', `/api/employees/${E.N}`).send({ account_number: '445566778899', ifsc_code: 'UTIB0001111', account_holder_name: 'EMP002 Fixture' });
     expect(r.status, JSON.stringify(r.body)).toBe(200);
     const id = r.body.bank_change_request.id;
     expect((await row(E.N)).account_number).toBeNull();
@@ -402,5 +427,119 @@ describe('verify as-is (§206)', () => {
     // a reviewer still sees everyone's
     const all = await call(hrMgr2, 'get', '/api/employees/bank-change-requests?status=all');
     expect(all.body.some(x => x.requested_by === hrMgr.userId)).toBe(true);
+  });
+});
+
+// Owner instruction 2026-11-10 (§261): a super admin needs no second person.
+describe('super admin — no second person', () => {
+  let sa, S = {};
+  beforeAll(async () => {
+    sa = await addUser(pool, co, { label: 'sa', roleCode: 'super_admin' });
+    S.edit = await addEmployee(co, 'EMP091', { account: '135792468000', ifsc: 'HDFC0001111', bank: 'HDFC Bank', address: 'x' });
+    S.verify = await addEmployee(co, 'EMP092', { account: '864213579000', ifsc: 'UTIB0002222', bank: 'Axis', address: 'x' });
+    S.queue = await addEmployee(co, 'EMP093', { account: '111133335555', ifsc: 'SBIN0003333', bank: 'SBI', address: 'x' });
+  }, 60000);
+
+  it("a super admin's own change takes effect at once, stamped verified by them and audited as self_approve", async () => {
+    notify.calls.length = 0;
+    const r = await call(sa, 'put', `/api/employees/${S.edit}`).send({ account_number: '222244446666', ifsc_code: 'icic0005555' });
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect(r.body.bank_change_request).toMatchObject({ status: 'approved', self_approved: true });
+    const after = await row(S.edit);
+    expect(after).toMatchObject({ account_number: '222244446666', ifsc_code: 'ICIC0005555', bank_verified_by: sa.userId });
+    expect(after.bank_verified_at).not.toBeNull();
+    expect(await pending(S.edit)).toBeUndefined();
+    const { rows: [req] } = await pool.query(`SELECT decided_by, decision_reason FROM employee_bank_change_requests WHERE employee_id = $1`, [S.edit]);
+    expect(req).toMatchObject({ decided_by: sa.userId });
+    expect(req.decision_reason).toMatch(/no second person/);
+    await settle();
+    const { rows } = await pool.query(
+      `SELECT action_type FROM audit_logs WHERE module_name = 'employees' AND reference_id = $1 AND reference_type = 'employee_bank_details' ORDER BY id`, [String(S.edit)]);
+    expect(rows.map(x => x.action_type)).toEqual(expect.arrayContaining(['propose', 'self_approve']));
+    expect(bankNotices()).toHaveLength(1);
+  });
+
+  it("a super admin's verify-as-is stamps the details at once", async () => {
+    const r = await call(sa, 'post', `/api/employees/${S.verify}/bank-verification-request`);
+    expect(r.status, JSON.stringify(r.body)).toBe(201);
+    expect(r.body.bank_change_request).toMatchObject({ status: 'approved', self_approved: true, source: 'verify' });
+    const after = await row(S.verify);
+    expect(after).toMatchObject({ account_number: '864213579000', bank_verified_by: sa.userId });
+    expect(after.bank_verified_at).not.toBeNull();
+  });
+
+  it('a super admin may approve or reject a request they made earlier; an HR manager still may not', async () => {
+    // A request left pending by a super admin (e.g. made before §261) — inserted directly.
+    const { rows: [p] } = await pool.query(
+      `INSERT INTO employee_bank_change_requests (employee_id, company_id, proposed_account_number, proposed_ifsc_code, proposed_bank_name, fields_changed, source, requested_by,
+                                                  proposed_account_holder_name)
+       VALUES ($1, $2, '111133335555', 'SBIN0003333', 'SBI', '{}', 'verify', $3, (SELECT account_holder_name FROM employees WHERE id = $1)) RETURNING id`, [S.queue, co.companyId, sa.userId]);
+    const list = await call(sa, 'get', '/api/employees/bank-change-requests');
+    expect(list.body.find(x => x.id === p.id)).toMatchObject({ can_decide: true });
+    const a = await call(sa, 'post', `/api/employees/bank-change-requests/${p.id}/approve`);
+    expect(a.status, JSON.stringify(a.body)).toBe(200);
+    expect((await row(S.queue)).bank_verified_by).toBe(sa.userId);
+    // hr_manager: own request still SAME_PERSON
+    const own = await call(hrMgr, 'put', `/api/employees/${S.queue}`).send({ account_number: '999988887777' });
+    expect(own.body.bank_change_request).toMatchObject({ status: 'pending' });
+    const id = own.body.bank_change_request.id;
+    expect((await call(hrMgr, 'post', `/api/employees/bank-change-requests/${id}/approve`)).body.code).toBe('SAME_PERSON');
+    // super admin rejects someone else's — allowed as before
+    expect((await call(sa, 'post', `/api/employees/bank-change-requests/${id}/reject`).send({ reason: 'wrong number' })).status).toBe(200);
+  });
+});
+
+describe('account-holder name and proof (§267)', () => {
+  let P;
+  const stored = [];
+  beforeAll(async () => { P = await addEmployee(co, 'EMP777', { account: '777700001111', ifsc: 'HDFC0007777', bank: 'HDFC Bank', address: 'x' }); });
+  afterAll(async () => {
+    const { rmSync } = await import('node:fs');
+    for (const p of stored) rmSync(resolve(LOCAL_UPLOAD_DIR, p.split('/').pop()), { force: true });
+  });
+
+  it('a new account without the holder name or a cheque / statement is refused, and nothing is saved', async () => {
+    const noProof = await call(hrMgr, 'put', `/api/employees/${P}`).set('x-test-bank-proof', 'none')
+      .send({ account_number: '888800002222', account_holder_name: 'EMP777 Fixture', emergency_name: 'Kin P' });
+    expect(noProof.status).toBe(400);
+    expect(noProof.body.code).toBe('BANK_PROOF_REQUIRED');
+    const noName = await call(hrMgr, 'put', `/api/employees/${P}`)
+      .send({ account_number: '888800002222', account_holder_name: '  ', emergency_name: 'Kin P' });
+    expect(noName.status).toBe(400);
+    expect(noName.body.code).toBe('ACCOUNT_HOLDER_REQUIRED');
+    expect(await row(P)).toMatchObject({ account_number: '777700001111', emergency_name: null });
+    expect(await pending(P)).toBeUndefined();
+    // a bank name or branch change alone is not a new account
+    const branch = await call(hrMgr, 'put', `/api/employees/${P}`).set('x-test-bank-proof', 'none').send({ branch_name: 'Anna Nagar' });
+    expect(branch.status, JSON.stringify(branch.body)).toBe(200);
+    await call(hrMgr, 'post', `/api/employees/bank-change-requests/${branch.body.bank_change_request.id}/withdraw`);
+  });
+
+  it('the proof uploaded with the change stays on the request, opens for reviewers only, and reaches the record on approval', async () => {
+    const r = await call(hrMgr, 'put', `/api/employees/${P}`)
+      .field('account_number', '888800002222').field('account_holder_name', 'Suresh P')
+      .attach('cancelled_cheque_file', Buffer.from('%PDF-1.4 cheque'), { filename: 'cheque.pdf', contentType: 'application/pdf' });
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    const req = await pending(P);
+    const full = (await pool.query('SELECT * FROM employee_bank_change_requests WHERE id = $1', [req.id])).rows[0];
+    expect(full.proposed_account_holder_name).toBe('Suresh P');
+    expect(full.proof_cheque_file).toMatch(/^\/uploads\/.*cheque\.pdf$/);
+    stored.push(full.proof_cheque_file);
+    expect((await row(P)).cancelled_cheque_file ?? null).toBeNull();      // not on the record yet
+    // the reviewer's queue: name, match flag, proof
+    const q = (await call(hrMgr2, 'get', `/api/employees/bank-change-requests?employee_id=${P}`)).body[0];
+    expect(q).toMatchObject({ proposed_account_holder_name: 'Suresh P', holder_name_matches: false, proof_cheque_file: full.proof_cheque_file });
+    // the proof file: employee_bank:view in the company only
+    const name = full.proof_cheque_file.split('/').pop();
+    expect((await call(hrMgr2, 'get', `/api/files/${name}`)).status).toBe(200);
+    for (const who of [payrollAdmin, empUser, otherHr]) expect((await call(who, 'get', `/api/files/${name}`)).status).toBe(403);
+    // the Approval Center row says whose account and what proof
+    const { SOURCE_BY_TYPE } = await import('../modules/approvals/approvals.sources.js');
+    const ac = (await SOURCE_BY_TYPE.bank.pending(co.companyId)).find(x => x.source_id === String(req.id));
+    expect(ac.description).toContain('Name on account: Suresh P');
+    expect(ac.description).toContain('Proof: cancelled cheque');
+    // approve → holder name and cheque on the record
+    expect((await call(hrMgr2, 'post', `/api/employees/bank-change-requests/${req.id}/approve`)).status).toBe(200);
+    expect(await row(P)).toMatchObject({ account_number: '888800002222', account_holder_name: 'Suresh P', cancelled_cheque_file: full.proof_cheque_file });
   });
 });

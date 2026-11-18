@@ -76,10 +76,11 @@ async function addEmployee(company, code) {
 }
 
 async function addDraft(employeeId, month, preparerUserId) {
-  await pool.query(
-    `INSERT INTO payroll_runs (employee_id, month, year, status, gross, net_pay, total_deductions, tds,
-                               employee_pf, employer_pf, employee_esi, employer_esi, professional_tax, ctc_monthly, is_test, generated_by)
-     VALUES ($1, $2, $3, 'pending', 30000, 30000, 0, 0, 0, 0, 0, 0, 0, 30000, false, $4)`, [employeeId, month, Y, preparerUserId]);
+  // The engine computes the draft (approval refuses figures that do not match
+  // today's inputs); the fixture then records who prepared it.
+  const g = await call(U.adminPreparer, 'post', '/api/payroll/generate').send({ month, year: Y, employee_id: employeeId });
+  if (g.status !== 200 || g.body.data.count !== 1) throw new Error(`generate: ${g.status} ${JSON.stringify(g.body)}`);
+  await pool.query('UPDATE payroll_runs SET generated_by = $4 WHERE employee_id = $1 AND month = $2 AND year = $3', [employeeId, month, Y, preparerUserId]);
 }
 
 /** Confirm every statutory rule version the period depends on, and record the jurisdiction. */
@@ -95,7 +96,9 @@ async function makeReady(who, company, month) {
     if (res.status !== 201) throw new Error(`confirm ${b.key}: ${res.status} ${JSON.stringify(res.body)}`);
   }
   const after = await call(who, 'get', `/api/payroll/release-readiness?month=${month}&year=${Y}`);
-  if (!after.body.data.ready) throw new Error(`not release-ready: ${JSON.stringify(after.body.data.blockers)}`);
+  // Month M+1 waits for month M — that order is tested on its own below.
+  const left = after.body.data.blockers.filter(b => b.code !== 'EARLIER_MONTH_OPEN');
+  if (left.length) throw new Error(`not release-ready: ${JSON.stringify(left)}`);
 }
 
 const statuses = async (company) => (await pool.query(
@@ -113,6 +116,10 @@ beforeAll(async () => {
   B.payroll_admin = await addUser(pool, other, { label: 'payroll_admin', roleCode: 'payroll_admin' });
   B.finance_manager = await addUser(pool, other, { label: 'finance_manager', roleCode: 'finance_manager' });
 
+  // State and settings first: they decide professional tax, so a draft made
+  // before them would be out of date (DRAFT_OUT_OF_DATE).
+  await pool.query(`UPDATE companies SET state = 'Karnataka' WHERE id = $1`, [co.companyId]);
+  await call(U.payroll_admin, 'post', '/api/settings/payroll').send({ statutory_state: 'Karnataka', pay_day_of_month: 25, payroll_cutoff_day: 20 });
   E.A1 = await addEmployee(co, 'EMP001');
   E.A2 = await addEmployee(co, 'EMP002');
   // Month M: prepared by payroll_admin. Month M+1: prepared by finance_manager.
@@ -158,11 +165,10 @@ describe('PC-01 payroll approval maker-checker', () => {
     expect(await statuses(co)).toEqual(['1:EMP001:pending', '1:EMP002:pending', '2:EMP001:pending']);
   });
 
-  it('a Finance approver who prepared a run cannot approve it either', async () => {
-    const res = await approve(U.finance_manager, M + 1);
-    expect(res.status, JSON.stringify(res.body)).toBe(403);
-    expect(res.body.code).toBe('MAKER_CHECKER');
-    expect(await statuses(co)).toEqual(['1:EMP001:pending', '1:EMP002:pending', '2:EMP001:pending']);
+  it('a later month waits for the earlier one', async () => {
+    const res = await approve(U.fm2, M + 1);
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.release_blockers.map(b => b.code)).toEqual(['EARLIER_MONTH_OPEN']);
   });
 
   it('a different authorised Finance user approves — that period only, that company only', async () => {
@@ -173,6 +179,13 @@ describe('PC-01 payroll approval maker-checker', () => {
     const { rows: [n] } = await pool.query(
       `SELECT COUNT(*)::int AS n FROM payroll_runs pr JOIN employees e ON e.id = pr.employee_id WHERE e.company_id = $1`, [other.companyId]);
     expect(n.n).toBe(0);
+  });
+
+  it('a Finance approver who prepared a run cannot approve it either', async () => {
+    const res = await approve(U.finance_manager, M + 1);
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.code).toBe('MAKER_CHECKER');
+    expect(await statuses(co)).toEqual(['1:EMP001:approved', '1:EMP002:approved', '2:EMP001:pending']);
   });
 
   it('the run prepared by one Finance user is approved by another', async () => {

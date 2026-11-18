@@ -132,25 +132,14 @@ describe('HR Analytics — Onboarding widget', () => {
   });
 });
 
-// §207: the Documents tile opens HR's register (employee_documents). The
-// dashboard itself is gated on employees:view, which managers also hold.
+// The Documents tile went with the Employee Documents register (removed
+// 11 Nov 26, owner: documents are collected on Add Employee).
 describe('Employees Dashboard — Documents tile', () => {
-  it('is drawn for employee_documents:view and opens the register', async () => {
-    mockDashboard();
-    const setPage = vi.fn();
-    render(<EmployeesDashboard setPage={setPage} setSelectedEmployee={vi.fn()} />);
-    await loadedTile();
-    fireEvent.click(screen.getByTitle('Open documents expiring soon'));
-    expect(setPage).toHaveBeenCalledWith('EmployeeDocuments');
-  });
-
-  it('is not drawn without the grant; the other tiles stay', async () => {
-    auth.grants = new Set();
+  it('is gone for every role; the other tiles stay', async () => {
     mockDashboard();
     render(<EmployeesDashboard setPage={vi.fn()} setSelectedEmployee={vi.fn()} />);
     await loadedTile();
     expect(screen.queryByTitle('Open documents expiring soon')).toBeNull();
-    expect(document.body.textContent).not.toMatch(/Documents/);
     expect(document.body.textContent).toMatch(/Exits/);
   });
 });

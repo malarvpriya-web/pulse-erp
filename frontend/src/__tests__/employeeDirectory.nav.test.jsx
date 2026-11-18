@@ -48,7 +48,7 @@ const EXPECTED = {
   hr:              [true,  false],
   manager:         [true,  false],
   department_head: [true,  false],
-  employee:        [false, true],
+  employee:        [false, false],   // neither, 2026-11-11 — Org Chart only
   hr_manager:      [false, true],
   hr_exec:         [false, true],
   payroll_admin:   [false, true],
@@ -71,8 +71,8 @@ describe('sidebar: one employee list per role', () => {
     const labels = await railFor(role);
     expect(labels.includes('Employees'), 'Employees menu').toBe(master);
     expect(labels.includes('Employee Directory'), 'Employee Directory row').toBe(directory);
-    // Exactly one of the two, for every role.
-    expect(master !== directory).toBe(true);
+    // Exactly one of the two, for every role but employee, who has neither.
+    if (role !== 'employee') expect(master !== directory).toBe(true);
   });
 
   it.each(Object.keys(EXPECTED))('%s: the visible list is one the route gate actually opens', (role) => {
@@ -80,7 +80,7 @@ describe('sidebar: one employee list per role', () => {
     const [master] = EXPECTED[role];
     expect(canOpenEmployeeMaster(role, { ...opts, route: ROUTES.EmployeesData })).toBe(master);
     if (!master) {
-      expect(canRenderPage(role, 'EmployeeDirectory', { ...opts, route: ROUTES.EmployeeDirectory })).toBe(true);
+      expect(canRenderPage(role, 'EmployeeDirectory', { ...opts, route: ROUTES.EmployeeDirectory })).toBe(EXPECTED[role][1]);
     }
   });
 });
@@ -99,11 +99,13 @@ describe('menu structure', () => {
     expect(getSectionForPage('EmployeeDirectory')).toBe('Employee Directory');
   });
 
-  it('its audience is exactly the roles that hold the HR section — none gained or lost', () => {
+  // security (§273) holds HR only for the gate register; it picks hosts in the
+  // visitor form and has no use for the phonebook.
+  it('its audience is the roles that hold the HR section, minus employee and security (2026-11-12)', () => {
     const holders = (s) => Object.keys(ROLE_SECTION_ALLOWLIST).filter(r => ROLE_SECTION_ALLOWLIST[r].includes(s)).sort();
-    expect(holders('Employee Directory')).toEqual(holders('HR'));
+    expect(holders('Employee Directory')).toEqual(holders('HR').filter(r => r !== 'employee' && r !== 'security'));
     expect(holders('Employee Directory')).toEqual(
-      ['employee', 'hr', 'hr_exec', 'hr_manager', 'manager', 'payroll_admin']);
+      ['hr', 'hr_exec', 'hr_manager', 'manager', 'payroll_admin']);
   });
 
   it('All Employees is still the Employees menu\'s master list, gated on employees:view', () => {
@@ -112,9 +114,9 @@ describe('menu structure', () => {
     expect(ROUTES.EmployeesData.module).toBe('employees');
   });
 
-  it('Employee Records keeps its four tabs', async () => {
+  it('Employee Records keeps its three tabs (Employee Documents removed 11 Nov 26)', async () => {
     const { TABS } = await import('@/features/hr/pages/EmployeeRecords');
-    expect(TABS.map(t => t.page)).toEqual(['EmployeeDocuments', 'EmployeeAssets', 'Policies', 'Downloads']);
+    expect(TABS.map(t => t.page)).toEqual(['EmployeeAssets', 'Policies', 'Downloads']);
     expect(hr.submenu.some(s => s.page === 'EmployeeRecords')).toBe(true);
   });
 

@@ -23,6 +23,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import crypto from 'crypto';
 import { resolveDbTarget, pgToolEnv, dbTargetOverrides } from '../src/config/dbTarget.js';
+import { baselineManifestNames } from '../src/config/baselineManifest.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -100,7 +101,7 @@ function psql(sql) {
 function psqlRows(sql, sep = '|') {
   const r = psql(sql);
   if (r.status !== 0) return null;
-  return r.stdout.trim().split('\n').filter(Boolean).map(l => l.split(sep));
+  return r.stdout.trim().split(/\r?\n/).filter(Boolean).map(l => l.split(sep));
 }
 
 // ── Check 1: all migration files applied ─────────────────────────────────────
@@ -152,7 +153,8 @@ function checkChecksums() {
     if (!name) continue;
     const filePath = path.join(MIGRATIONS_DIR, name);
     if (!fs.existsSync(filePath)) {
-      warn(`  ⚠️   Applied migration missing from disk: ${name}`);
+      if (baselineManifestNames().has(name)) note(`  ℹ️   Absorbed into baseline.sql: ${name}`);
+      else warn(`  ⚠️   Applied migration missing from disk: ${name}`);
       continue;
     }
     const current = fileChecksum(filePath);
@@ -167,10 +169,12 @@ function checkChecksums() {
   // Warn about rows without checksums (applied before versioning was added)
   const allRows = psqlRows('SELECT name, checksum FROM schema_migrations ORDER BY name');
   if (allRows) {
-    noChecksum = allRows.filter(([, cs]) => !cs).length;
+    // A row absorbed into the baseline whose file is gone has nothing to hash. It is accounted for.
+    const unstamped = allRows.filter(([name, cs]) => !cs && !(baselineManifestNames().has(name) && !fs.existsSync(path.join(MIGRATIONS_DIR, name))));
+    noChecksum = unstamped.length;
     if (noChecksum > 0) {
       warn(`  ⚠️   ${noChecksum} migration row(s) have no checksum — applied before versioning`);
-      warn('       Re-run npm run migrate to backfill (checksums are set on new applications only)');
+      warn('       Compare the schema with a fresh build, then run npm run migrate:backfill-checksums');
     }
   }
 

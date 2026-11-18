@@ -213,6 +213,63 @@ describe('payroll end to end (isolated company, synthetic employees)', () => {
     expect(r.status).toBe(409);
   });
 
+  it('a recorded bonus plan is paid by the next draft, and a later change needs a regenerate', async () => {
+    const period = { month: 3, year: 2027 };
+    const record = (plans, effective_from = '2027-03-01') => call(co, 'post', '/api/payroll/statutory-rules')
+      .send({ rule_key: 'bonus.plans', effective_from, value: { plans }, source_reference: 'E2E management note' });
+    const slip = async () => (await call(co, 'post', '/api/payroll/compute-slip').send({ employee_id: E.A, ...period })).body;
+    const before = await slip();
+    expect((await record([{ name: 'Year end', type: 'fixed', amount: 7000, months: [3], active: true }])).status).toBe(201);
+    const after = await slip();
+    expect(after.bonus).toBe(7000);
+    expect(after.gross).toBe(before.gross + 7000);
+    // The month before it applies keeps nothing from it.
+    const feb = (await call(co, 'post', '/api/payroll/compute-slip').send({ employee_id: E.A, month: 2, year: 2027 })).body;
+    expect(feb.bonus).toBe(0);
+    // A bad plan is refused and the good one stands.
+    expect((await record([{ name: '', type: 'fixed', amount: 1, months: [3], active: true }])).status).toBe(400);
+    await pool.query(`DELETE FROM payroll_statutory_rules WHERE company_id = $1 AND rule_key = 'bonus.plans'`, [co.companyId]);
+    expect((await slip()).bonus).toBe(0);
+  });
+
+  it('the statutory bonus report reads its figures from the rule', async () => {
+    const report = async () => (await call(co, 'get', '/api/payroll/statutory-bonus?year=2030')).body;
+    expect((await report()).bonus_wage_ceiling).toBe(21000);
+    const saved = await call(co, 'post', '/api/payroll/statutory-rules').send({
+      rule_key: 'bonus.statutory', effective_from: '2031-01-01', source_reference: 'E2E',
+      value: { wage_eligibility: 30000, calc_ceiling: 9000, min_pct: 8.33, max_pct: 20 },
+    });
+    expect(saved.status).toBe(201);
+    const after = await report();
+    expect(after).toMatchObject({ bonus_wage_ceiling: 30000, calc_wage_ceiling: 9000 });
+    await pool.query(`DELETE FROM payroll_statutory_rules WHERE company_id = $1 AND rule_key = 'bonus.statutory'`, [co.companyId]);
+  });
+
+  it('a decision rule accepts only its own options', async () => {
+    const res = await call(co, 'post', '/api/payroll/statutory-rules')
+      .send({ rule_key: 'esi.wage_basis', effective_from: '2025-11-21', value: 'net_pay', source_reference: 'typo' });
+    expect(res.status).toBe(400);
+    expect(res.body.message).toMatch(/gross, code_wages/);
+  });
+
+  it('a law change is a new dated version: earlier months keep the old value, and a same-date save corrects it', async () => {
+    const post = (value, source, effective_from = '2031-04-01') => call(co, 'post', '/api/payroll/statutory-rules')
+      .send({ rule_key: 'pf.wage_ceiling', effective_from, value, source_reference: source });
+    const on = async (date) => (await call(co, 'get', `/api/payroll/statutory-rules?date=${date}`)).body.data.resolved['pf.wage_ceiling'];
+    const before = await on('2031-03-31');
+    expect((await post(30000, 'law change')).status).toBe(201);
+    expect(await on('2031-04-01')).toBe(30000);
+    expect(await on('2031-03-31')).toBe(before);
+    // A typo: the second save replaces the first, leaving one version.
+    expect((await post(35000, 'typo corrected')).status).toBe(201);
+    expect(await on('2031-04-01')).toBe(35000);
+    const { rows } = await pool.query(
+      `SELECT value, source_reference FROM payroll_statutory_rules WHERE company_id = $1 AND rule_key = 'pf.wage_ceiling' AND effective_from = '2031-04-01'`, [co.companyId]);
+    expect(rows).toEqual([{ value: 35000, source_reference: 'typo corrected' }]);
+    expect((await post(NaN, 'bad')).status).toBe(400);
+    await pool.query(`DELETE FROM payroll_statutory_rules WHERE company_id = $1 AND effective_from = '2031-04-01'`, [co.companyId]);
+  });
+
   it('approval is gated on unverified statutory rules and undecided choices', async () => {
     const gated = await call(co, 'post', '/api/payroll/approve').send({ month: 8, year: 2026 });
     expect(gated.status).toBe(422);
@@ -232,7 +289,9 @@ describe('payroll end to end (isolated company, synthetic employees)', () => {
     expect(wrong).toEqual(expect.arrayContaining(['JURISDICTION_MISMATCH', 'PT_LOCAL_BODY']));
     expect((await call(co, 'post', '/api/settings/payroll').send({ statutory_state: 'Karnataka', pay_day_of_month: 25, payroll_cutoff_day: 20 })).status).toBe(200);
     const after = await call(co, 'get', '/api/payroll/release-readiness?month=8&year=2026');
-    expect(after.body.data).toMatchObject({ ready: true, blockers: [] });
+    // Only the employee data errors remain — EMP005's bank details, fixed in a later test.
+    expect(after.body.data.blockers.map(b => b.code)).toEqual(['EMPLOYEE_DATA']);
+    expect(after.body.data.blockers[0].employees).toEqual(['EMP005']);
     // confirming the values in force changed no figure
     const a = (await call(co, 'get', `/api/payroll/payslips?employee_id=${E.A}&month=8&year=2026`)).body.data;
     expect(a).toMatchObject({ gross: 95000, net_pay: 88000 });
@@ -394,6 +453,9 @@ describe('payroll end to end (isolated company, synthetic employees)', () => {
     expect(noState.status).toBe(422);
     expect(noState.body.release_blockers.map(b => b.code)).toContain('JURISDICTION_MISMATCH');
     await pool.query(`UPDATE companies SET state = 'Karnataka' WHERE id = $1`, [other.companyId]);
+    // the state decides professional tax, so the draft is regenerated (else DRAFT_OUT_OF_DATE)
+    expect((await call(otherChecker, 'post', '/api/payroll/approve').send({ month: 8, year: 2026 })).body.release_blockers.map(b => b.code)).toContain('DRAFT_OUT_OF_DATE');
+    await call(other, 'post', '/api/payroll/generate').send({ month: 8, year: 2026 });
     const ap = await call(otherChecker, 'post', '/api/payroll/approve').send({ month: 8, year: 2026 });
     expect(ap.status).toBe(200);
     const { rows } = await pool.query(`SELECT company_id FROM journal_entries WHERE reference_type = 'payroll_run' AND reference_id LIKE '2026-08:%' AND company_id = ANY($1)`, [[co.companyId, other.companyId]]);
@@ -424,14 +486,21 @@ describe('payroll end to end (isolated company, synthetic employees)', () => {
     expect(rows[0].company_id).toBe(co.companyId);
   });
 
-  it('a salary revision effective mid-month blocks approval until its treatment is decided', async () => {
+  it('a salary revision effective mid-month is paid day by day: old rate before, new rate from its date', async () => {
     await pool.query("INSERT INTO employee_salary_assignments (employee_id, structure_id, effective_from, basic_salary) VALUES ($1, NULL, '2026-11-15', 32000)", [E.A]);
     const g = await call(co, 'post', '/api/payroll/generate').send({ month: 11, year: 2026, employee_id: E.A });
+    const slip = g.body.data.data[0];
+    expect(slip.validation_issues.map(i => i.code)).not.toContain('REVISION_MID_PERIOD');
+    // 1–14 Nov at 30,000, 15–30 Nov at 32,000: 30,000 × 14/30 + 32,000 × 16/30 = 31,067
+    expect(slip.basic).toBe(31067);
+    await call(co, 'post', '/api/payroll/discard').send({ month: 11, year: 2026, employee_id: E.A });
+  });
+
+  it('a FIRST salary revision dated after the joining date still blocks: those days have no salary', async () => {
+    const id = await addEmployee('EMP007', {}, { from: '2026-11-15', basic: 20000 });
+    const g = await call(co, 'post', '/api/payroll/generate').send({ month: 11, year: 2026, employee_id: id });
     expect(g.body.data.data[0].validation_issues.map(i => i.code)).toContain('REVISION_MID_PERIOD');
-    await confirmRules(co, 11, 2026);
-    const ap = await call(checker, 'post', '/api/payroll/approve').send({ month: 11, year: 2026 });
-    expect(ap.status).toBe(422);
-    expect(ap.body.blocked[0].issues.map(i => i.code)).toContain('REVISION_MID_PERIOD');
+    await call(co, 'post', '/api/payroll/discard').send({ month: 11, year: 2026, employee_id: id });
   });
 
   it('form numbering follows the tax year: Form 138 from 2026-27, Form 24Q before', async () => {
@@ -461,14 +530,14 @@ describe('payroll end to end (isolated company, synthetic employees)', () => {
     await call(co, 'post', '/api/payroll/generate').send({ month: 12, year: 2026, employee_id: E.A });
     const { rows: [run] } = await pool.query(
       'SELECT gross, employer_pf, employer_esi, lwf_employer, ctc_monthly FROM payroll_runs WHERE employee_id = $1 AND month = 12 AND year = 2026', [E.A]);
-    // Basic 32,000 (revision of 15-Nov) → gross 80,000; employer PF 3,000; ESI 0; KA LWF 100 → 83,100.
-    expect(Number(run.ctc_monthly)).toBe(83100);
-    expect(Number(run.gross) + Number(run.employer_pf) + Number(run.employer_esi) + Number(run.lwf_employer)).toBe(83100);
+    // Basic 32,000 (revision of 15-Nov) → gross 80,000; employer PF 3,000 + EDLI 125 + EPF admin 125; ESI 0; KA LWF 100 → 83,350.
+    expect(Number(run.ctc_monthly)).toBe(83350);
+    expect(Number(run.gross) + Number(run.employer_pf) + Number(run.employer_esi) + Number(run.lwf_employer) + 250).toBe(83350);
     const d = await call(co, 'get', '/api/payroll/dept-cost?month=12&year=2026');
     expect(d.status).toBe(200);
     // December is a DRAFT here: it is reported in the separate draft section,
     // never in the finalised totals (Part 12).
-    expect(d.body.draft.grand_total).toMatchObject({ total_employer_cost: 83100, total_ctc: 83100 });
+    expect(d.body.draft.grand_total).toMatchObject({ total_employer_cost: 83350, total_ctc: 83350 });
     expect(d.body.grand_total.total_employer_cost).toBe(0);
     const o = await call(other, 'get', '/api/payroll/dept-cost?month=12&year=2026');
     expect(o.body.grand_total.total_employer_cost).toBe(0);

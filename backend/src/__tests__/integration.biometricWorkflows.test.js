@@ -4,8 +4,9 @@
  *
  * integration.biometricAuthz.test.js pins WHO may call each route. This file
  * pins WHAT each route does: CSV import into biometric_logs AND
- * attendance_records, device sync processing, punch-log / gate-pass / visitor
- * filters, every gate-pass and visitor transition, the dashboard counts, and
+ * attendance_records, device sync processing, punch-log
+ * filters, the dashboard counts, Gate Pass & Visitors (hr/gateAccess.routes.js,
+ * §272: person and material passes, visitors, notifications, history), and
  * that none of it crosses a tenant.
  *
  * Isolation. Everything runs in fixture tenant 999943 (ZZBAW) with a foreign
@@ -39,6 +40,7 @@ if (!process.env.DATABASE_URL) {
 const { default: pool } = await import('../config/db.js');
 const routes = await import('../modules/hr/biometric.routes.js');
 const { default: biometricRtr, deviceDriver } = routes;
+const { default: gateRtr } = await import('../modules/hr/gateAccess.routes.js');
 
 const CO = 999943;        // fixture tenant: ZZBAW
 const FOREIGN = 999919;   // foreign tenant: ZZBAF
@@ -46,7 +48,7 @@ const PROBE_USER_ID = -424243;
 
 const ids = {
   emp: {}, foreignEmp: null, device: null, deviceNoIp: null, foreignDevice: null,
-  leave: null, gatePasses: [], visitors: [], foreignPass: null, foreignVisitor: null,
+  leave: null, gatePasses: [], visitors: [], foreignPass: null, foreignVisitor: null, users: {},
 };
 
 let actingEmployeeId = null;
@@ -60,6 +62,7 @@ function appAs(roles, companyId = CO, employeeId = undefined) {
     next();
   });
   a.use('/api', biometricRtr);
+  a.use('/api', gateRtr);
   return a;
 }
 const hr = () => appAs(['hr']);
@@ -76,8 +79,8 @@ async function istDay(offsetDays) {
 }
 
 const track = (list, res) => { if (res.body?.id != null) list.push(res.body.id); return res; };
-const postPass = async (body, app = hr()) => track(ids.gatePasses, await request(app).post('/api/gate-passes').send(body));
-const postVisitor = async (body, app = hr()) => track(ids.visitors, await request(app).post('/api/visitors').send(body));
+const postPass = async (body, app) => track(ids.gatePasses, await request(app).post('/api/gate-passes').send(body));
+const postVisitor = async (body, app) => track(ids.visitors, await request(app).post('/api/visitors').send(body));
 const importCsv = (csv, extra = {}) =>
   request(attendanceAdmin()).post('/api/biometric/logs/import').send({ csv_data: csv, ...extra });
 const attendanceOf = async (empId, day) =>
@@ -160,11 +163,18 @@ beforeAll(async () => {
     `INSERT INTO attendance_records (employee_id, attendance_date, status, company_id, is_frozen, source)
      VALUES ($1, '2026-01-05', 'present', $2, true, 'manual')`, [ids.emp.second, CO]);
 
+  // Logins for the gate-pass approver fixtures, so notifications have a recipient (§272).
+  for (const key of ['engHead', 'mgr', 'engStaff']) {
+    ids.users[key] = (await pool.query(
+      'INSERT INTO users (email, employee_id, is_active) VALUES ($1, $2, true) RETURNING id',
+      [`zzbaw.${key.toLowerCase()}@e2e.invalid`, ids.emp[key]])).rows[0].id;
+  }
+  // A foreign tenant's pass and visitor, to be refused.
   ids.foreignPass = (await pool.query(
-    `INSERT INTO gate_passes (employee_id, visitor_name, purpose, status, company_id)
-     VALUES ($1, 'ZZBAF Pass', 'foreign', 'pending', $2) RETURNING id`, [ids.foreignEmp, FOREIGN])).rows[0].id;
+    `INSERT INTO gate_passes (employee_id, pass_type, category, purpose, status, company_id, pass_number)
+     VALUES ($1, 'person', 'official', 'ZZBAF foreign', 'pending', $2, 'ZZBAF-1') RETURNING id`, [ids.foreignEmp, FOREIGN])).rows[0].id;
   ids.foreignVisitor = (await pool.query(
-    `INSERT INTO visitors (name, phone, company_id) VALUES ('ZZBAF Visitor', '9000000019', $1) RETURNING id`,
+    `INSERT INTO visitors (name, phone, company_id, check_in_time) VALUES ('ZZBAF Visitor', '9000000019', $1, NOW()) RETURNING id`,
     [FOREIGN])).rows[0].id;
 });
 
@@ -174,8 +184,14 @@ async function deleteEmployeeFixture(id) {
   await pool.query('DELETE FROM biometric_logs     WHERE employee_id = $1', [id]);
   await pool.query('DELETE FROM attendance_records WHERE employee_id = $1', [id]);
   await pool.query('DELETE FROM leave_applications WHERE employee_id = $1', [id]);
-  await pool.query('DELETE FROM gate_passes        WHERE employee_id = $1', [id]);
-  await pool.query('DELETE FROM visitors           WHERE host_employee_id = $1', [id]);
+  const GP_REF = '$1 IN (employee_id, requested_by, approved_by, cancelled_by, completed_by, out_by, in_by)';
+  const V_REF = '$1 IN (host_employee_id, pre_registered_by, checked_in_by, checked_out_by, cancelled_by)';
+  await pool.query(`DELETE FROM access_events WHERE entity_type = 'gate_pass' AND entity_id IN (SELECT id FROM gate_passes WHERE ${GP_REF})`, [id]);
+  await pool.query(`DELETE FROM gate_passes WHERE ${GP_REF}`, [id]);
+  await pool.query(`DELETE FROM access_events WHERE entity_type = 'visitor' AND entity_id IN (SELECT id FROM visitors WHERE ${V_REF})`, [id]);
+  await pool.query(`DELETE FROM visitors WHERE ${V_REF}`, [id]);
+  await pool.query('DELETE FROM notifications WHERE user_id IN (SELECT id FROM users WHERE employee_id = $1)', [id]);
+  await pool.query(`DELETE FROM users WHERE employee_id = $1 AND email LIKE 'zzbaw.%@e2e.invalid'`, [id]);
   await pool.query('DELETE FROM employees          WHERE id = $1', [id]);
 }
 
@@ -183,6 +199,9 @@ afterAll(async () => {
   // Exact captured ids, batched. Each step runs even if an earlier one fails,
   // so one error cannot strand the rest; the first error is rethrown at the end.
   const steps = [
+    ["DELETE FROM access_events WHERE entity_type = 'gate_pass' AND entity_id = ANY($1::int[])", [...ids.gatePasses, ids.foreignPass].filter(Boolean)],
+    ["DELETE FROM access_events WHERE entity_type = 'visitor' AND entity_id = ANY($1::int[])", [...ids.visitors, ids.foreignVisitor].filter(Boolean)],
+    ['DELETE FROM notifications WHERE user_id = ANY($1::int[])', Object.values(ids.users)],
     ['DELETE FROM gate_passes WHERE id = ANY($1::int[])', [...ids.gatePasses, ids.foreignPass].filter(Boolean)],
     ['DELETE FROM visitors WHERE id = ANY($1::int[])', [...ids.visitors, ids.foreignVisitor].filter(Boolean)],
     ['DELETE FROM biometric_logs WHERE device_id = ANY($1::int[])', [ids.device, ids.deviceNoIp, ids.foreignDevice].filter(Boolean)],
@@ -480,190 +499,6 @@ describe('Recent Punch Log filters', () => {
   });
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-describe('gate passes — lifecycle, filters, tenancy', () => {
-  const soon  = (h) => new Date(Date.now() + h * 3600_000).toISOString();
-  const act = (id, verb, body = {}, app = hr()) => request(app).put(`/api/gate-passes/${id}/${verb}`).send(body);
-  const list = (qs = '', app = hr()) => request(app).get(`/api/gate-passes?${qs}`);
-
-  it('refuses a pass that would be born expired', async () => {
-    const res = await postPass({ employee_id: ids.emp.active, valid_from: soon(-5), valid_to: soon(-1) });
-    expect(res.status).toBe(400);
-    expect(res.body.message).toMatch(/already in the past/);
-  });
-
-  it('pending → approved/active (numbered, approver = caller) → completed', async () => {
-    const created = await postPass({ employee_id: ids.emp.active, purpose: 'ZZBAW bank visit', valid_from: soon(-1), valid_to: soon(3) });
-    expect(created.status).toBe(201);
-    expect(created.body.status).toBe('pending');
-
-    const approved = await act(created.body.id, 'approve', { approved_by: 1 });
-    expect(approved.status).toBe(200);
-    expect(approved.body).toMatchObject({ status: 'approved', effective_status: 'active', approved_by: ids.emp.second });
-    expect(approved.body.pass_number).toMatch(/^GP-\d{4}-\d{4,}$/);
-    expect(approved.body.approved_at).not.toBeNull();
-
-    const again = await act(created.body.id, 'approve');
-    expect(again.status).toBe(409);
-    expect(again.body.current_status).toBe('active');
-
-    const done = await act(created.body.id, 'complete');
-    expect(done.status).toBe(200);
-    expect(done.body).toMatchObject({ status: 'completed', effective_status: 'completed', completed_by: ids.emp.second });
-    expect((await act(created.body.id, 'cancel', { reason: 'late' })).status).toBe(409);
-  });
-
-  it('cancel needs a reason; a cancelled pass cannot be approved or completed', async () => {
-    const p = await postPass({ visitor_name: 'ZZBAW Courier', valid_to: soon(2) });
-    expect((await act(p.body.id, 'cancel', {})).status).toBe(400);
-    const c = await act(p.body.id, 'cancel', { reason: 'not needed' });
-    expect(c.body).toMatchObject({ status: 'cancelled', cancel_reason: 'not needed', cancelled_by: ids.emp.second });
-    expect((await act(p.body.id, 'approve')).status).toBe(409);
-    expect((await act(p.body.id, 'complete')).status).toBe(409);
-    expect((await act(p.body.id, 'cancel', { reason: 'again' })).status).toBe(409);
-  });
-
-  it('an approved pass whose window has not opened reads "approved" and cannot complete; pending cannot complete', async () => {
-    const future = await postPass({ employee_id: ids.emp.active, valid_from: soon(24), valid_to: soon(30) });
-    expect((await act(future.body.id, 'complete')).status, 'pending cannot complete').toBe(409);
-    const a = await act(future.body.id, 'approve');
-    expect(a.body.effective_status).toBe('approved');
-    const c = await act(future.body.id, 'complete');
-    expect(c.status).toBe(409);
-    expect(c.body.message).toMatch(/not started/);
-  });
-
-  it('an elapsed window reads "expired" whatever is stored, and cannot be approved', async () => {
-    const { rows: [row] } = await pool.query(
-      `INSERT INTO gate_passes (employee_id, purpose, valid_from, valid_to, status, company_id)
-       VALUES ($1, 'ZZBAW old', NOW() - interval '3 days', NOW() - interval '2 days', 'pending', $2) RETURNING id`,
-      [ids.emp.active, CO]);
-    ids.gatePasses.push(row.id);
-    const res = await list('status=expired');
-    expect(res.body.rows.map(r => r.id)).toContain(row.id);
-    expect(res.body.rows.every(r => r.effective_status === 'expired')).toBe(true);
-    expect((await act(row.id, 'approve')).status).toBe(409);
-  });
-
-  it('filters by search, status, employee and date range — and the result set changes', async () => {
-    const all = await list('page_size=100');
-    // bank visit (completed), courier (cancelled), future (approved), old (expired)
-    expect(all.body.total).toBe(4);
-    const completed = await list('status=completed');
-    expect(completed.body.total).toBe(1);
-    expect(completed.body.total).toBe(all.body.counts.completed);
-    const pn = completed.body.rows[0].pass_number;
-    expect((await list(`q=${encodeURIComponent(pn)}`)).body.rows.map(r => r.pass_number)).toEqual([pn]);
-    expect((await list('q=Courier')).body.rows.every(r => /Courier/.test(r.visitor_name))).toBe(true);
-    const mine = await list(`employee_id=${ids.emp.active}`);
-    expect(mine.body.rows.every(r => r.employee_id === ids.emp.active)).toBe(true);
-    expect(mine.body.total).toBeLessThan(all.body.total);
-    const ahead = await list(`from=${await istDay(1)}&to=${await istDay(2)}`);
-    expect(ahead.body.rows.length).toBeGreaterThan(0);
-    expect(ahead.body.total).toBeLessThan(all.body.total);
-    expect((await list('q=no-such-pass-zz')).body).toMatchObject({ rows: [], total: 0 });
-    expect((await list('status=lost')).status).toBe(400);
-  });
-
-  it('⚠⚠ another tenant\'s pass is invisible and every transition 404s, leaving it unchanged', async () => {
-    const all = await list('page_size=100');
-    expect(all.body.rows.map(r => r.id)).not.toContain(ids.foreignPass);
-    for (const verb of ['approve', 'complete', 'cancel']) {
-      expect((await act(ids.foreignPass, verb, { reason: 'x' })).status, verb).toBe(404);
-    }
-    const { rows } = await pool.query('SELECT status, approved_by FROM gate_passes WHERE id = $1', [ids.foreignPass]);
-    expect(rows[0]).toEqual({ status: 'pending', approved_by: null });
-  });
-
-  it('read-only payroll_admin cannot approve, cancel or complete', async () => {
-    const p = await postPass({ visitor_name: 'ZZBAW RO probe', valid_to: soon(2) });
-    for (const verb of ['approve', 'cancel', 'complete']) {
-      expect((await act(p.body.id, verb, { reason: 'x' }, appAs(['payroll_admin']))).status, verb).toBe(403);
-    }
-  });
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-describe('visitors — check-in/out, filters, counts, tenancy', () => {
-  const checkout = (id, app = hr()) => request(app).put(`/api/visitors/${id}/checkout`).send({});
-  const list = (qs = '') => request(hr()).get(`/api/visitors?${qs}`);
-
-  it('validates the contact number', async () => {
-    for (const phone of ['abc', '12345', '98400-1369x', '+91 98400 13696 0000 1']) {
-      const res = await postVisitor({ name: 'ZZBAW Phone Probe', phone });
-      expect(res.status, phone).toBe(400);
-    }
-    expect((await postVisitor({ name: 'ZZBAW Phone OK', phone: '+91 98400-13697' })).status).toBe(201);
-  });
-
-  it('⚠⚠ check-in → no second check-in while inside → check-out once → may return', async () => {
-    const v = await postVisitor({ name: 'ZZBAW Ravi', company: 'Acme', phone: '9840013601', host_employee_id: ids.emp.active, purpose: 'audit' });
-    expect(v.status).toBe(201);
-    expect(v.body.check_out_time).toBeNull();
-
-    const dup = await postVisitor({ name: 'Ravi K', phone: '+91 98400 13601' });   // same number, other format
-    expect(dup.status).toBe(409);
-    expect(dup.body.visitor_id).toBe(v.body.id);
-
-    const out = await checkout(v.body.id);
-    expect(out.status).toBe(200);
-    expect(out.body.check_out_time).not.toBeNull();
-    const second = await checkout(v.body.id);
-    expect(second.status).toBe(409);
-    const { rows } = await pool.query('SELECT check_out_time FROM visitors WHERE id = $1', [v.body.id]);
-    expect(rows[0].check_out_time.toISOString(), 'a repeated check-out must not move the time')
-      .toBe(new Date(out.body.check_out_time).toISOString());
-
-    expect((await postVisitor({ name: 'ZZBAW Ravi', company: 'Acme', phone: '9840013601' })).status, 'a new visit after leaving').toBe(201);
-  });
-
-  it('without a phone, the same name and company is the same visitor', async () => {
-    expect((await postVisitor({ name: 'ZZBAW Walk In', company: 'Beta' })).status).toBe(201);
-    expect((await postVisitor({ name: 'zzbaw walk in', company: 'BETA' })).status).toBe(409);
-    expect((await postVisitor({ name: 'ZZBAW Walk In', company: 'Gamma' })).status).toBe(201);
-  });
-
-  it('two simultaneous check-ins for one person produce exactly one visit', async () => {
-    const body = { name: 'ZZBAW Race', phone: '9840013699' };
-    const [a, b] = await Promise.all([postVisitor(body), postVisitor(body)]);
-    expect([a.status, b.status].sort()).toEqual([201, 409]);
-  });
-
-  it('filters change the result set; inside_total and the dashboard card agree with the rows', async () => {
-    const all = await list('page_size=100');
-    const inside = await list('status=inside&page_size=100');
-    const outside = await list('status=checked_out&page_size=100');
-    expect(inside.body.total + outside.body.total).toBe(all.body.total);
-    expect(inside.body.rows.every(r => r.check_out_time === null && r.inside === true)).toBe(true);
-    expect(outside.body.rows.every(r => r.check_out_time !== null)).toBe(true);
-    expect(inside.body.total).toBe(all.body.inside_total);
-
-    const host = await list(`host_employee_id=${ids.emp.active}`);
-    expect(host.body.rows.length).toBeGreaterThan(0);
-    expect(host.body.rows.every(r => r.host_employee_id === ids.emp.active)).toBe(true);
-    expect((await list('q=Acme')).body.rows.every(r => r.company === 'Acme')).toBe(true);
-    expect((await list('q=Asha')).body.rows.every(r => r.host_name?.startsWith('Asha'))).toBe(true);
-    expect((await list(`from=${await istDay(0)}&to=${await istDay(0)}`)).body.total).toBe(all.body.total);
-    expect((await list('from=2001-01-01&to=2001-01-01')).body).toMatchObject({ rows: [], total: 0 });
-    expect((await list('status=gone')).status).toBe(400);
-
-    const dash = await request(hr()).get('/api/biometric/dashboard');
-    expect(dash.body.visitors_inside).toBe(all.body.inside_total);
-    expect(all.body.rows.map(r => r.id)).not.toContain(ids.foreignVisitor);
-  });
-
-  it('records a printed badge; another tenant\'s visitor 404s on every action', async () => {
-    const v = await postVisitor({ name: 'ZZBAW Badge', phone: '9840013655' });
-    const b = await request(hr()).put(`/api/visitors/${v.body.id}/badge`).send({});
-    expect(b.body.badge_printed).toBe(true);
-    expect((await request(hr()).put(`/api/visitors/${ids.foreignVisitor}/badge`).send({})).status).toBe(404);
-    expect((await checkout(ids.foreignVisitor)).status).toBe(404);
-    const { rows } = await pool.query('SELECT check_out_time, badge_printed FROM visitors WHERE id = $1', [ids.foreignVisitor]);
-    expect(rows[0]).toEqual({ check_out_time: null, badge_printed: false });
-  });
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
 describe('dashboard — the population behind each card', () => {
   it('counts current employees only, sets aside approved leave, and reads the configured shift', async () => {
     // A punch three minutes ago for Asha, in company time.
@@ -704,87 +539,6 @@ describe('employee options for the pickers', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §198 — the gate-pass approver comes from the holder's department
-// ─────────────────────────────────────────────────────────────────────────────
-describe('gate-pass approver: department head, else reporting manager, else HR', () => {
-  const soon = (h) => new Date(Date.now() + h * 3600_000).toISOString();
-  const passFor = async (employeeId) => {
-    const res = await postPass({ employee_id: employeeId, purpose: 'ZZBAW approver probe', valid_to: soon(4) });
-    expect(res.status).toBe(201);
-    return res.body.id;
-  };
-  const listRow = async (id, app = hr()) =>
-    (await request(app).get('/api/gate-passes?page_size=100')).body.rows.find(r => r.id === id);
-  const approve = (id, app) => request(app).put(`/api/gate-passes/${id}/approve`).send({});
-
-  it('an Engineering pass waits for the Engineering head — HR cannot approve over them', async () => {
-    const id = await passFor(ids.emp.engStaff);
-    const row = await listRow(id);
-    expect(row).toMatchObject({ approver_kind: 'department_head', approver_employee_id: ids.emp.engHead, can_approve: false });
-    expect(row.approver_name).toMatch(/^Hema/);
-
-    const byHr = await approve(id, hr());
-    expect(byHr.status).toBe(403);
-    expect(byHr.body.code).toBe('NOT_THE_APPROVER');
-    expect(byHr.body.message).toMatch(/Hema .*Department head/);
-
-    // The head holds no hr grant at all — a plain employee login.
-    const byHead = await approve(id, appAs(['employee'], CO, ids.emp.engHead));
-    expect(byHead.status).toBe(200);
-    expect(byHead.body).toMatchObject({ status: 'approved', approved_by: ids.emp.engHead });
-  });
-
-  it('no head in the department → the reporting manager approves', async () => {
-    const id = await passFor(ids.emp.genStaff);
-    expect(await listRow(id)).toMatchObject({ approver_kind: 'reporting_manager', approver_employee_id: ids.emp.mgr });
-    expect((await approve(id, appAs(['employee'], CO, ids.emp.engHead))).status, 'another employee').toBe(403);
-    const ok = await approve(id, appAs(['manager'], CO, ids.emp.mgr));
-    expect(ok.status).toBe(200);
-    expect(ok.body.approved_by).toBe(ids.emp.mgr);
-  });
-
-  it("a head's own pass skips themselves; no head and no manager → HR; never self-approval", async () => {
-    const own = await passFor(ids.emp.engHead);
-    expect((await listRow(own)).approver_kind, 'the head has no manager').toBe('hr');
-    expect((await approve(own, appAs(['employee'], CO, ids.emp.engHead))).status, 'not by the holder').toBe(403);
-
-    const hrSelf = await passFor(ids.emp.second);           // Bala — the acting HR user
-    const r = await approve(hrSelf, hr());
-    expect(r.status).toBe(403);
-    expect(r.body.message).toMatch(/your own gate pass/);
-    expect((await approve(own, hr())).status, 'HR approves when nobody else can').toBe(200);
-  });
-
-  it('the designated approver can reject (cancel) a pending pass; nobody else outside HR can', async () => {
-    const id = await passFor(ids.emp.engStaff);
-    const cancel = (app, body = { reason: 'not needed' }) => request(app).put(`/api/gate-passes/${id}/cancel`).send(body);
-    expect((await cancel(appAs(['employee'], CO, ids.emp.genStaff))).status).toBe(403);
-    expect((await cancel(appAs(['employee'], CO, ids.emp.engHead), {})).status, 'reason still required').toBe(400);
-    const ok = await cancel(appAs(['employee'], CO, ids.emp.engHead));
-    expect(ok.status).toBe(200);
-    expect(ok.body).toMatchObject({ status: 'cancelled', cancelled_by: ids.emp.engHead });
-  });
-
-  it("the Approval Center lists the pass for its approver only, with the module's own endpoints", async () => {
-    const { SOURCE_BY_TYPE } = await import('../modules/approvals/approvals.sources.js');
-    const src = SOURCE_BY_TYPE.gate;
-    const id = await passFor(ids.emp.engStaff);
-    const row = (await src.pending(CO)).find(r => r.source_id === String(id));
-    expect(row, 'a pending pass appears in the inbox').toBeTruthy();
-    expect(src.stage(row)).toBe('Department head');
-    expect(src.canAct({ employeeId: ids.emp.engHead, perms: { hr: null } }, row)).toBe(true);
-    expect(src.canAct({ employeeId: ids.emp.second, perms: { hr: { can_edit: true } } }, row), 'HR over a head').toBe(false);
-    expect(src.actions(row).approve).toMatchObject({ method: 'put', url: `/gate-passes/${id}/approve` });
-    expect(src.actions(row).reject).toMatchObject({ url: `/gate-passes/${id}/cancel`, commentKey: 'reason', commentRequired: true });
-    expect((await src.pending(FOREIGN)).map(r => r.source_id)).not.toContain(String(id));
-    const mine = await src.mine({ employeeId: ids.emp.engStaff });
-    expect(mine.find(r => r.source_id === String(id))).toMatchObject({ raw_status: 'pending' });
-    expect(mine.find(r => r.source_id === String(id)).current_approver).toMatch(/^Hema/);
-  });
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// §198 — device setup needs only the address
 // ─────────────────────────────────────────────────────────────────────────────
 describe('device registration needs only the connection', () => {
   const created = [];
@@ -855,5 +609,567 @@ describe('the working day: 8 h + 30 min break = 8.5 h on site (§198)', () => {
       expect(src, f).not.toMatch(/totalHours\s*-\s*9\b|fullDayHours\s*=\s*9\b/);
       expect(src, f).toMatch(/getFullDayHours\(/);
     }
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Gate Pass & Visitors — hr/gateAccess.routes.js (§272)
+//
+// Fixtures above: Hema heads Engineering; Eswar (Engineering) and Gita
+// (General, no head here) report to Mohan; Bala's department (ZZBAW Ops) has no
+// head and Bala has no manager, so Bala's passes fall to HR. Hema, Mohan and
+// Eswar have logins, so their notifications can be read back. The gate desk
+// below is Mohan holding the `hr` role (gate_access view/add/edit/approve/export).
+// ═════════════════════════════════════════════════════════════════════════════
+const soon = (h) => new Date(Date.now() + h * 3600_000).toISOString();
+const asEmployee = (empId) => appAs(['employee'], CO, empId);
+const desk = () => appAs(['hr'], CO, ids.emp.mgr);
+const act = (app, id, verb, body = {}) => request(app).put(`/api/gate-passes/${id}/${verb}`).send(body);
+const personPass = (over = {}) => ({ category: 'official', purpose: 'ZZBAW client visit', valid_from: soon(-0.05), valid_to: soon(4), ...over });
+const notesFor = async (userId, refId) => (await pool.query(
+  'SELECT title, link FROM notifications WHERE user_id = $1 AND reference_id = $2 ORDER BY id', [userId, refId])).rows;
+
+describe('gate access — who may do what (§272)', () => {
+  it('an employee with no grant sees only their own passes, and none of the register', async () => {
+    const app = asEmployee(ids.emp.engStaff);
+    const list = await request(app).get('/api/gate-passes');
+    expect(list.status).toBe(200);
+    expect(list.body.scope).toBe('mine');
+    for (const path of ['/api/gate-access/summary', '/api/gate-passes/export', '/api/visitors/export', '/api/visitors/lookup?phone=9876543210']) {
+      expect((await request(app).get(path)).status, path).toBe(403);
+    }
+    expect((await request(app).post('/api/visitors').send({ name: 'ZZBAW Walk-in' })).status).toBe(403);
+  });
+
+  it('payroll_admin keeps hr:view but holds no gate_access — the register is not theirs', async () => {
+    const res = await request(appAs(['payroll_admin'], CO, ids.emp.active)).get('/api/gate-passes');
+    expect(res.status).toBe(200);
+    expect(res.body.scope).toBe('mine');
+    expect((await request(appAs(['payroll_admin'])).get('/api/gate-access/summary')).status).toBe(403);
+  });
+
+  it('the gate desk reads the whole register', async () => {
+    const res = await request(desk()).get('/api/gate-passes');
+    expect(res.status).toBe(200);
+    expect(res.body.scope).toBe('all');
+    expect((await request(desk()).get('/api/gate-access/summary')).status).toBe(200);
+  });
+
+  it('every route refuses an unauthenticated request', async () => {
+    const a = express(); a.use(express.json()); a.use('/api', gateRtr);
+    for (const [m, p] of [['get', '/api/gate-passes'], ['post', '/api/gate-passes'], ['put', '/api/gate-passes/1/approve'],
+      ['get', '/api/visitors'], ['post', '/api/visitors'], ['get', '/api/gate-access/summary']]) {
+      expect((await request(a)[m](p).send({})).status, `${m} ${p}`).toBe(401);
+    }
+  });
+
+  it("⚠⚠ another tenant's pass and visitor are 404 on every read and action, and stay unchanged", async () => {
+    for (const [m, p] of [['get', `/api/gate-passes/${ids.foreignPass}`], ['put', `/api/gate-passes/${ids.foreignPass}/approve`],
+      ['put', `/api/gate-passes/${ids.foreignPass}/cancel`], ['put', `/api/gate-passes/${ids.foreignPass}/out`],
+      ['put', `/api/gate-passes/${ids.foreignPass}`], ['get', `/api/visitors/${ids.foreignVisitor}`],
+      ['put', `/api/visitors/${ids.foreignVisitor}/checkout`], ['put', `/api/visitors/${ids.foreignVisitor}`]]) {
+      expect((await request(desk())[m](p).send({ reason: 'ZZBAW probe' })).status, `${m} ${p}`).toBe(404);
+    }
+    const { rows: [p] } = await pool.query('SELECT status FROM gate_passes WHERE id = $1', [ids.foreignPass]);
+    expect(p.status).toBe('pending');
+    const { rows: [v] } = await pool.query('SELECT check_out_time FROM visitors WHERE id = $1', [ids.foreignVisitor]);
+    expect(v.check_out_time).toBeNull();
+  });
+});
+
+describe('person gate passes (§272)', () => {
+  it('validates: type, reason and window are required; a window already over is refused', async () => {
+    const app = asEmployee(ids.emp.engStaff);
+    const res = await postPass({}, app);
+    expect(res.status).toBe(400);
+    const all = res.body.errors.join(' ');
+    expect(all).toMatch(/type of pass/);
+    expect(all).toMatch(/reason/);
+    expect(all).toMatch(/leaves/);
+    const past = await postPass(personPass({ valid_from: soon(-3), valid_to: soon(-1) }), app);
+    expect(past.status).toBe(400);
+    expect(past.body.message).toMatch(/past/);
+  });
+
+  it("an employee requests their OWN pass — never someone else's", async () => {
+    const app = asEmployee(ids.emp.engStaff);
+    expect((await postPass(personPass({ employee_id: ids.emp.genStaff }), app)).status).toBe(403);
+    const res = await postPass(personPass(), app);
+    expect(res.status).toBe(201);
+    expect(res.body).toMatchObject({ employee_id: ids.emp.engStaff, requested_by: ids.emp.engStaff, effective_status: 'pending' });
+    expect(res.body.pass_number).toMatch(/^GP-\d{4}-\d{5}$/);
+    expect(res.body.awaiting).toMatchObject({ kind: 'department_head' });
+    expect(res.body.awaiting.name).toMatch(/Hema/);
+  });
+
+  it('the department head is notified and approves; HR cannot approve over them; the holder is told', async () => {
+    const id = (await postPass(personPass({ purpose: 'ZZBAW bank visit' }), asEmployee(ids.emp.engStaff))).body.id;
+    const headNotes = await notesFor(ids.users.engHead, id);
+    expect(headNotes).toHaveLength(1);
+    expect(headNotes[0].link).toBe('/ApprovalCenter');
+    expect(headNotes[0].title).toMatch(/waiting for your approval/);
+    const hrTry = await act(desk(), id, 'approve');
+    expect(hrTry.status).toBe(403);
+    expect(hrTry.body.code).toBe('NOT_THE_APPROVER');
+    const ok = await act(asEmployee(ids.emp.engHead), id, 'approve');
+    expect(ok.status).toBe(200);
+    expect(ok.body).toMatchObject({ effective_status: 'approved', approved_by: ids.emp.engHead });
+    expect((await notesFor(ids.users.engStaff, id)).map(n => n.title).join(' ')).toMatch(/approved/);
+  });
+
+  it('the gate records the actual out and in, and only the gate desk may', async () => {
+    const id = (await postPass(personPass(), asEmployee(ids.emp.engStaff))).body.id;
+    await act(asEmployee(ids.emp.engHead), id, 'approve');
+    expect((await act(asEmployee(ids.emp.engStaff), id, 'out')).status).toBe(403);
+    const out = await act(desk(), id, 'out', { vehicle_number: 'tn01ab1234' });
+    expect(out.status).toBe(200);
+    expect(out.body).toMatchObject({ effective_status: 'out', out_by: ids.emp.mgr, vehicle_number: 'TN01AB1234' });
+    expect(out.body.out_at).toBeTruthy();
+    expect((await act(desk(), id, 'out')).status).toBe(409);
+    expect((await act(desk(), id, 'cancel', { reason: 'ZZBAW too late' })).status).toBe(409);
+    const back = await act(desk(), id, 'in');
+    expect(back.status).toBe(200);
+    expect(back.body.effective_status).toBe('completed');
+    expect(back.body.in_at).toBeTruthy();
+    const detail = await request(asEmployee(ids.emp.engStaff)).get(`/api/gate-passes/${id}`);
+    expect(detail.body.events.map(e => e.action)).toEqual(['created', 'approved', 'out', 'returned']);
+  });
+
+  it('a pass cannot go out before its window opens (30-minute grace)', async () => {
+    const id = (await postPass(personPass({ valid_from: soon(3), valid_to: soon(5) }), asEmployee(ids.emp.engStaff))).body.id;
+    await act(asEmployee(ids.emp.engHead), id, 'approve');
+    const res = await act(desk(), id, 'out');
+    expect(res.status).toBe(409);
+    expect(res.body.message).toMatch(/starts at/);
+  });
+
+  it('a pending pass can be edited by its requester, and not once it is decided', async () => {
+    const app = asEmployee(ids.emp.engStaff);
+    const created = (await postPass(personPass(), app)).body;
+    const edit = await request(app).put(`/api/gate-passes/${created.id}`).send({ ...personPass(), category: 'medical', purpose: 'ZZBAW clinic' });
+    expect(edit.status).toBe(200);
+    expect(edit.body).toMatchObject({ category: 'medical', purpose: 'ZZBAW clinic' });
+    expect((await request(asEmployee(ids.emp.genStaff)).put(`/api/gate-passes/${created.id}`).send(personPass())).status).toBe(404);
+    await act(asEmployee(ids.emp.engHead), created.id, 'approve');
+    expect((await request(app).put(`/api/gate-passes/${created.id}`).send(personPass())).status).toBe(409);
+    const ev = (await request(app).get(`/api/gate-passes/${created.id}`)).body.events.find(e => e.action === 'edited');
+    expect(ev.data.fields).toEqual(expect.arrayContaining(['category', 'purpose']));
+  });
+
+  it('withdraw (holder) and reject (approver) both need a reason and say which they were', async () => {
+    const app = asEmployee(ids.emp.engStaff);
+    const a = (await postPass(personPass(), app)).body.id;
+    expect((await act(app, a, 'cancel', {})).status).toBe(400);
+    expect((await act(app, a, 'cancel', { reason: 'ZZBAW not needed' })).body.effective_status).toBe('cancelled');
+    const b = (await postPass(personPass(), app)).body.id;
+    expect((await act(asEmployee(ids.emp.engHead), b, 'cancel', { reason: 'ZZBAW busy day' })).status).toBe(200);
+    expect((await notesFor(ids.users.engStaff, b)).map(n => n.title).join(' ')).toMatch(/rejected/);
+    const events = async (id) => (await request(app).get(`/api/gate-passes/${id}`)).body.events.map(e => e.action);
+    expect(await events(a)).toContain('withdrawn');
+    expect(await events(b)).toContain('rejected');
+    const c = (await postPass(personPass(), app)).body.id;
+    expect((await act(asEmployee(ids.emp.genStaff), c, 'cancel', { reason: 'ZZBAW not mine' })).status).toBe(404);
+  });
+
+  it('a pass out past its time reads overdue; the desk closes it with a reason', async () => {
+    const id = (await postPass(personPass(), asEmployee(ids.emp.engStaff))).body.id;
+    await act(asEmployee(ids.emp.engHead), id, 'approve');
+    await act(desk(), id, 'out');
+    await pool.query(`UPDATE gate_passes SET valid_to = NOW() - interval '1 minute' WHERE id = $1`, [id]);
+    const list = await request(desk()).get('/api/gate-passes?status=overdue&page_size=100');
+    expect(list.body.rows.map(r => r.id)).toContain(id);
+    expect(list.body.counts.overdue).toBeGreaterThanOrEqual(1);
+    expect((await act(desk(), id, 'close', {})).status).toBe(400);
+    const closed = await act(desk(), id, 'close', { reason: 'ZZBAW not returning today' });
+    expect(closed.body).toMatchObject({ effective_status: 'completed', close_reason: 'ZZBAW not returning today' });
+  });
+
+  it('the HR fallback needs gate_access:approve, and nobody approves their own pass', async () => {
+    const res = await postPass(personPass(), asEmployee(ids.emp.second));
+    expect(res.body.awaiting.kind).toBe('hr');
+    // Not the approver and no register grant: the pass is not theirs to see.
+    expect((await act(appAs(['employee'], CO, ids.emp.mgr), res.body.id, 'approve')).status).toBe(404);
+    expect((await act(appAs(['hr'], CO, ids.emp.second), res.body.id, 'approve')).status).toBe(403);
+    expect((await act(desk(), res.body.id, 'approve')).status).toBe(200);
+  });
+
+  it('the Approval Center lists a pending pass for its approver only, on the module endpoints', async () => {
+    const id = (await postPass(personPass({ purpose: 'ZZBAW inbox probe' }), asEmployee(ids.emp.engStaff))).body.id;
+    const { SOURCE_BY_TYPE } = await import('../modules/approvals/approvals.sources.js');
+    const src = SOURCE_BY_TYPE.gate;
+    expect(src).toMatchObject({ page: 'GatePassVisitors', myPage: 'MyGatePasses' });
+    const r = (await src.pending(CO)).find(x => x.source_id === String(id));
+    expect(r.request_title).toMatch(/^Gate pass · GP-/);
+    expect(src.canAct({ employeeId: ids.emp.engHead, perms: {} }, r)).toBe(true);
+    expect(src.canAct({ employeeId: ids.emp.mgr, perms: { gate_access: { can_approve: true } } }, r)).toBe(false);
+    expect(src.actions(r)).toMatchObject({ approve: { url: `/gate-passes/${id}/approve` }, reject: { url: `/gate-passes/${id}/cancel` } });
+    expect((await src.pending(FOREIGN)).find(x => x.source_id === String(id))).toBeUndefined();
+  });
+
+  it('the employee list is their own; the desk filters the register', async () => {
+    const mine = await request(asEmployee(ids.emp.engStaff)).get('/api/gate-passes?page_size=100');
+    expect(mine.body.rows.length).toBeGreaterThan(0);
+    expect(mine.body.rows.every(r => r.employee_id === ids.emp.engStaff || r.requested_by === ids.emp.engStaff)).toBe(true);
+    const byEmp = await request(desk()).get(`/api/gate-passes?employee_id=${ids.emp.second}&page_size=100`);
+    expect(byEmp.body.rows.length).toBeGreaterThan(0);
+    expect(byEmp.body.rows.every(r => r.employee_id === ids.emp.second)).toBe(true);
+    const cat = await request(desk()).get('/api/gate-passes?category=medical&page_size=100');
+    expect(cat.body.rows.length).toBeGreaterThan(0);
+    expect(cat.body.rows.every(r => r.category === 'medical')).toBe(true);
+    expect((await request(desk()).get('/api/gate-passes?status=bogus')).status).toBe(400);
+  });
+});
+
+describe('material gate passes (§272)', () => {
+  const goods = (over = {}) => ({
+    pass_type: 'material', purpose: 'ZZBAW repair', destination: 'ZZBAW Vendor, Chennai', returnable: true,
+    expected_return_at: soon(48), vehicle_number: 'tn02cd5678', carried_by: 'ZZBAW Transport',
+    items: [{ description: 'ZZBAW Motor 5HP', quantity: 2, unit: 'Nos', item_code: 'MTR-5' }, { description: 'ZZBAW Cable', quantity: 12.5, unit: 'm' }],
+    ...over,
+  });
+  const mohan = () => appAs(['employee'], CO, ids.emp.mgr);
+
+  it('validates goods, destination and the return date', async () => {
+    const app = asEmployee(ids.emp.genStaff);
+    const r = await postPass({ pass_type: 'material', purpose: 'ZZBAW x' }, app);
+    expect(r.status).toBe(400);
+    const all = r.body.errors.join(' ');
+    expect(all).toMatch(/returnable/);
+    expect(all).toMatch(/destination/);
+    expect(all).toMatch(/at least one item/);
+    expect((await postPass(goods({ expected_return_at: '' }), app)).body.message).toMatch(/due back/);
+    expect((await postPass(goods({ items: [{ description: 'ZZBAW x', quantity: 0 }] }), app)).body.message).toMatch(/quantity/);
+  });
+
+  it('non-returnable goods: the manager approves, and the pass completes when they leave', async () => {
+    const res = await postPass(goods({ returnable: false, expected_return_at: null }), asEmployee(ids.emp.genStaff));
+    expect(res.status).toBe(201);
+    expect(res.body.pass_number).toMatch(/^MGP-\d{4}-\d{5}$/);
+    expect(res.body.items).toHaveLength(2);
+    expect(res.body.awaiting.kind).toBe('reporting_manager');
+    expect(await notesFor(ids.users.mgr, res.body.id)).toHaveLength(1);
+    expect((await act(mohan(), res.body.id, 'approve')).status).toBe(200);
+    const out = await act(desk(), res.body.id, 'out');
+    expect(out.body.effective_status).toBe('completed');
+    expect(out.body.out_at).toBeTruthy();
+    expect(out.body.can_return).toBe(false);
+  });
+
+  it('returnable goods come back line by line; the pass completes when all are back', async () => {
+    const res = await postPass(goods(), asEmployee(ids.emp.genStaff));
+    const id = res.body.id;
+    await act(mohan(), id, 'approve');
+    await act(desk(), id, 'out');
+    const [motor, cable] = res.body.items;
+    expect((await act(desk(), id, 'in')).status).toBe(409);
+    const over = await act(desk(), id, 'return', { items: [{ item_id: motor.id, quantity: 3 }] });
+    expect(over.status).toBe(400);
+    expect(over.body.message).toMatch(/only 2/);
+    const part = await act(desk(), id, 'return', { items: [{ item_id: motor.id, quantity: 1 }] });
+    expect(part.body.effective_status).toBe('out');
+    expect(part.body.items.find(i => i.id === motor.id).returned_quantity).toBe(1);
+    const rest = await act(desk(), id, 'return', { items: [{ item_id: motor.id, quantity: 1 }, { item_id: cable.id, quantity: 12.5 }] });
+    expect(rest.body.effective_status).toBe('completed');
+    expect(rest.body.in_at).toBeTruthy();
+    const ev = (await request(desk()).get(`/api/gate-passes/${id}`)).body.events.map(e => e.action);
+    expect(ev).toEqual(['created', 'approved', 'out', 'items_returned', 'all_returned']);
+    expect((await act(desk(), id, 'return', { items: [{ item_id: cable.id, quantity: 1 }] })).status).toBe(409);
+  });
+
+  it('the register filters by type, searches the goods, and exports CSV with them', async () => {
+    const list = await request(desk()).get('/api/gate-passes?pass_type=material&page_size=100');
+    expect(list.body.rows.length).toBeGreaterThan(0);
+    expect(list.body.rows.every(r => r.pass_type === 'material')).toBe(true);
+    const search = await request(desk()).get(`/api/gate-passes?q=${encodeURIComponent('Motor 5HP')}&page_size=100`);
+    expect(search.body.rows.length).toBeGreaterThan(0);
+    const csv = await request(desk()).get('/api/gate-passes/export?pass_type=material');
+    expect(csv.status).toBe(200);
+    expect(csv.headers['content-type']).toMatch(/csv/);
+    expect(csv.text).toMatch(/Pass No\./);
+    expect(csv.text).toMatch(/ZZBAW Motor 5HP × 2 Nos/);
+  });
+});
+
+describe('visitors (§272, §273 — security approves entry)', () => {
+  const vis = (over = {}) => ({
+    name: 'ZZBAW Ravi', company: 'ZZBAW Supplies', phone: '98400 11223', host_employee_id: ids.emp.engStaff, purpose: 'ZZBAW audit', ...over,
+  });
+  const put = (app, id, verb, body = {}) => request(app).put(`/api/visitors/${id}${verb ? `/${verb}` : ''}`).send(body);
+  // The Security / Gate Desk role (migration 20261112000004): gate_access view/add/edit + gate_security approve.
+  const guard = () => appAs(['security'], CO, ids.emp.active);
+  /** Register at the desk, approve as security, check in. */
+  const inside = async (over) => {
+    const r = await postVisitor(vis(over), desk());
+    expect(r.status, JSON.stringify(r.body)).toBe(201);
+    expect((await put(guard(), r.body.id, 'approve')).status).toBe(200);
+    const c = await put(desk(), r.body.id, 'check-in');
+    expect(c.status, JSON.stringify(c.body)).toBe(200);
+    return c.body;
+  };
+
+  it('the security role holds exactly the gate grants; HR does not approve visitor entry', async () => {
+    const { rows } = await pool.query(
+      `SELECT p.module, p.can_view, p.can_add, p.can_edit, p.can_approve, p.can_export
+         FROM role_permissions p JOIN roles r ON r.id = p.role_id
+        WHERE LOWER(r.code) = 'security' AND (p.can_view OR p.can_add OR p.can_edit OR p.can_approve OR p.can_export)
+        ORDER BY p.module`);
+    expect(rows).toEqual([
+      { module: 'gate_access', can_view: true, can_add: true, can_edit: true, can_approve: false, can_export: false },
+      { module: 'gate_security', can_view: true, can_add: false, can_edit: false, can_approve: true, can_export: false },
+    ]);
+    const { rows: hrSec } = await pool.query(
+      `SELECT BOOL_OR(p.can_approve) AS ap FROM role_permissions p JOIN roles r ON r.id = p.role_id
+        WHERE LOWER(r.code) IN ('hr', 'hr_manager', 'hr_exec') AND p.module = 'gate_security'`);
+    expect(hrSec[0].ap).toBe(false);
+    // …and the guard is not the HR fallback approver of employee passes.
+    const pass = await postPass(personPass(), asEmployee(ids.emp.second));
+    expect((await act(guard(), pass.body.id, 'approve')).status).toBe(403);
+  });
+
+  it('a walk-in waits for security: no check-in before approval; security is notified, approves, the pass is numbered', async () => {
+    const reg = await postVisitor(vis({ name: 'ZZBAW Walk', phone: '9840099010' }), desk());
+    expect(reg.status).toBe(201);
+    expect(reg.body).toMatchObject({ effective_status: 'pending_approval', check_in_time: null, pass_number: null });
+    const early = await put(desk(), reg.body.id, 'check-in');
+    expect(early.status).toBe(409);
+    expect(early.body.code).toBe('NOT_APPROVED');
+    expect((await put(desk(), reg.body.id, 'approve')).status).toBe(403);       // HR is not security
+    const ok = await put(guard(), reg.body.id, 'approve');
+    expect(ok.status).toBe(200);
+    expect(ok.body.effective_status).toBe('approved');
+    expect(ok.body.pass_number).toMatch(/^VP-\d{4}-\d{5}$/);
+    expect(ok.body.approved_by).toBe(ids.emp.active);
+    expect((await notesFor(ids.users.engStaff, reg.body.id)).map(n => n.title).join(' ')).toMatch(/approved — pass VP-/);
+    expect((await put(guard(), reg.body.id, 'approve')).status).toBe(409);
+    const inn = await put(desk(), reg.body.id, 'check-in');
+    expect(inn.body.effective_status).toBe('inside');
+    const ev = (await request(desk()).get(`/api/visitors/${reg.body.id}`)).body.events.map(e => e.action);
+    expect(ev).toEqual(['registered', 'entry_approved', 'checked_in']);
+    await put(desk(), reg.body.id, 'checkout');
+  });
+
+  it('security rejects with a reason; a rejected visitor cannot be checked in; the host is told', async () => {
+    const reg = (await postVisitor(vis({ name: 'ZZBAW Refused', phone: '9840099011' }), desk())).body;
+    expect((await put(guard(), reg.id, 'reject')).status).toBe(400);
+    const rj = await put(guard(), reg.id, 'reject', { reason: 'ZZBAW no appointment' });
+    expect(rj.body).toMatchObject({ effective_status: 'rejected', reject_reason: 'ZZBAW no appointment' });
+    expect((await put(desk(), reg.id, 'check-in')).status).toBe(409);
+    expect((await notesFor(ids.users.engStaff, reg.id)).map(n => n.title).join(' ')).toMatch(/not approved/);
+  });
+
+  it('security at the gate can approve and check in at once; nobody else can', async () => {
+    expect((await postVisitor({ ...vis({ name: 'ZZBAW Fast', phone: '9840099012' }), approve_and_check_in: true }, desk())).status).toBe(403);
+    const v = await postVisitor({ ...vis({ name: 'ZZBAW Fast', phone: '9840099012' }), approve_and_check_in: true }, guard());
+    expect(v.status).toBe(201);
+    expect(v.body).toMatchObject({ effective_status: 'inside', checked_in_by: ids.emp.active });
+    expect(v.body.pass_number).toMatch(/^VP-/);
+    expect((await notesFor(ids.users.engStaff, v.body.id)).map(n => n.title).join(' ')).toMatch(/has arrived/);
+    await put(desk(), v.body.id, 'checkout');
+  });
+
+  it('an employee pre-registers their OWN visitor; security approves ahead; the desk checks them in and the host is told', async () => {
+    const host = asEmployee(ids.emp.engStaff);
+    expect((await postVisitor({ ...vis(), pre_register: true, expected_at: soon(2), host_employee_id: ids.emp.genStaff }, host)).status).toBe(403);
+    const pre = await postVisitor({ ...vis({ host_employee_id: '' }), pre_register: true, expected_at: soon(2) }, host);
+    expect(pre.status).toBe(201);
+    expect(pre.body).toMatchObject({ effective_status: 'pending_approval', host_employee_id: ids.emp.engStaff, check_in_time: null });
+    expect((await put(host, pre.body.id, 'approve')).status).toBe(403);
+    expect((await put(guard(), pre.body.id, 'approve')).status).toBe(200);
+    expect((await put(host, pre.body.id, 'check-in')).status).toBe(403);
+    const inn = await put(desk(), pre.body.id, 'check-in', { id_type: 'Aadhaar', id_number: '1234 5678 9012' });
+    expect(inn.status).toBe(200);
+    expect(inn.body).toMatchObject({ effective_status: 'inside', id_number: 'XXXXXXXX9012', checked_in_by: ids.emp.mgr });
+    expect((await notesFor(ids.users.engStaff, pre.body.id)).map(n => n.title).join(' ')).toMatch(/has arrived/);
+    const { rows: [raw] } = await pool.query('SELECT id_number FROM visitors WHERE id = $1', [pre.body.id]);
+    expect(raw.id_number).not.toMatch(/1234|5678/);
+    const mine = await request(host).get('/api/visitors?page_size=100');
+    expect(mine.status, JSON.stringify(mine.body)).toBe(200);
+    expect(mine.body.scope).toBe('mine');
+    expect(mine.body.rows.map(r => r.id)).toContain(pre.body.id);
+    await put(desk(), pre.body.id, 'checkout');
+  });
+
+  it('a host who changes an approved visit before arrival sends it back to security', async () => {
+    const host = asEmployee(ids.emp.genStaff);
+    const pre = (await postVisitor({ name: 'ZZBAW Change', pre_register: true, expected_at: soon(3) }, host)).body;
+    await put(guard(), pre.id, 'approve');
+    const purpose = await put(host, pre.id, null, { purpose: 'ZZBAW new agenda' });
+    expect(purpose.body.effective_status).toBe('approved');            // not an identity change
+    const moved = await put(host, pre.id, null, { name: 'ZZBAW Changed Person' });
+    expect(moved.body.effective_status).toBe('pending_approval');
+    expect((await request(desk()).get(`/api/visitors/${pre.id}`)).body.events.map(e => e.note)).toContain('Changed after approval — back to security');
+    await put(host, pre.id, 'cancel', { reason: 'ZZBAW done' });
+  });
+
+  it('the Approval Center lists visitors waiting for entry to security only', async () => {
+    const reg = (await postVisitor(vis({ name: 'ZZBAW Inbox', phone: '9840099013' }), desk())).body;
+    const { SOURCE_BY_TYPE } = await import('../modules/approvals/approvals.sources.js');
+    const src = SOURCE_BY_TYPE.visitor;
+    const r = (await src.pending(CO)).find(x => x.source_id === String(reg.id));
+    expect(r.request_title).toMatch(/^Visitor · ZZBAW Inbox \(ZZBAW Supplies\)/);
+    expect(src.canAct({ perms: { gate_security: { can_approve: true } } }, r)).toBe(true);
+    expect(src.canAct({ perms: { gate_access: { can_approve: true }, hr: { can_edit: true } } }, r)).toBe(false);
+    expect(src.actions(r)).toMatchObject({ approve: { url: `/visitors/${reg.id}/approve` }, reject: { url: `/visitors/${reg.id}/reject` } });
+    expect((await src.pending(FOREIGN)).find(x => x.source_id === String(reg.id))).toBeUndefined();
+    await put(guard(), reg.id, 'reject', { reason: 'ZZBAW tidy' });
+  });
+
+  it('ID numbers are checked against their type and never stored in full; email is checked', async () => {
+    const bad = await postVisitor(vis({ id_type: 'Aadhaar', id_number: '12345' }), desk());
+    expect(bad.status).toBe(400);
+    expect(bad.body.message).toMatch(/12 digits/);
+    const pan = await postVisitor(vis({ name: 'ZZBAW Pan', phone: '9840099001', id_type: 'PAN', id_number: 'abcde1234f' }), desk());
+    expect(pan.status).toBe(201);
+    expect(pan.body.id_number).toBe('XXXXXX234F');
+    expect((await postVisitor(vis({ name: 'ZZBAW NoType', phone: '9840099002', id_number: '123456789012' }), desk())).body.message).toMatch(/ID type/);
+    expect((await postVisitor(vis({ name: 'ZZBAW Mail', phone: '9840099007', email: 'not-an-email' }), desk())).body.message).toMatch(/email/);
+    await put(guard(), pan.body.id, 'reject', { reason: 'ZZBAW tidy' });
+  });
+
+  it("one open visit per person; check-out is the desk's, once; the person may return", async () => {
+    const v = await inside({ name: 'ZZBAW Dup', phone: '9840099003' });
+    const again = (await postVisitor(vis({ name: 'ZZBAW Dup again', phone: '+91 98400 99003' }), desk())).body;
+    await put(guard(), again.id, 'approve');
+    expect((await put(desk(), again.id, 'check-in')).status).toBe(409);
+    expect((await put(asEmployee(ids.emp.engStaff), v.id, 'checkout')).status).toBe(403);
+    const out = await put(desk(), v.id, 'checkout');
+    expect(out.body).toMatchObject({ effective_status: 'checked_out', checked_out_by: ids.emp.mgr });
+    expect((await put(desk(), v.id, 'checkout')).status).toBe(409);
+    expect((await put(desk(), v.id, null, { purpose: 'ZZBAW late edit' })).status).toBe(409);
+    expect((await put(desk(), again.id, 'check-in')).status).toBe(200);
+    await put(desk(), again.id, 'checkout');
+  });
+
+  it('an inside visitor can be edited; a badge is recorded; the history lists every step', async () => {
+    const v = await inside({ name: 'ZZBAW Edit', phone: '9840099004' });
+    const ed = await put(desk(), v.id, null, { purpose: 'ZZBAW changed', visitor_count: 3, vehicle_number: 'tn09xy0001' });
+    expect(ed.status).toBe(200);
+    expect(ed.body).toMatchObject({ purpose: 'ZZBAW changed', visitor_count: 3, vehicle_number: 'TN09XY0001', effective_status: 'inside' });
+    expect((await put(desk(), v.id, 'badge')).body.badge_printed).toBe(true);
+    await put(desk(), v.id, 'checkout');
+    expect((await put(desk(), v.id, 'badge')).status).toBe(409);
+    const d = await request(desk()).get(`/api/visitors/${v.id}`);
+    expect(d.body.events.map(e => e.action)).toEqual(['registered', 'entry_approved', 'checked_in', 'edited', 'badge_printed', 'checked_out']);
+  });
+
+  it('an expected visit can be cancelled with a reason, and then not approved or checked in', async () => {
+    const host = asEmployee(ids.emp.genStaff);
+    const pre = (await postVisitor({ name: 'ZZBAW Cancel', pre_register: true, expected_at: soon(5) }, host)).body;
+    expect(pre.host_employee_id).toBe(ids.emp.genStaff);
+    expect((await put(host, pre.id, 'cancel')).status).toBe(400);
+    expect((await put(host, pre.id, 'cancel', { reason: 'ZZBAW meeting moved' })).body.effective_status).toBe('cancelled');
+    expect((await put(guard(), pre.id, 'approve')).status).toBe(409);
+    expect((await put(desk(), pre.id, 'check-in')).status).toBe(409);
+  });
+
+  it('overstay, awaiting-security and the summary agree with the rows', async () => {
+    const v = await inside({ name: 'ZZBAW Night', phone: '9840099005' });
+    await pool.query(`UPDATE visitors SET check_in_time = NOW() - interval '2 days' WHERE id = $1`, [v.id]);
+    const over = await request(desk()).get('/api/visitors?status=overstay&page_size=100');
+    expect(over.body.rows.map(r => r.id)).toContain(v.id);
+    expect(over.body.rows.every(r => r.overstay)).toBe(true);
+    const sum = await request(desk()).get('/api/gate-access/summary');
+    expect(sum.body.overstay).toBe(over.body.total);
+    const inside_ = await request(desk()).get('/api/visitors?status=inside&page_size=100');
+    expect(sum.body.inside).toBe(inside_.body.total);
+    const waiting = await request(desk()).get('/api/visitors?status=pending_approval&page_size=100');
+    expect(sum.body.awaiting_security).toBe(waiting.body.total);
+    await put(desk(), v.id, 'checkout');
+  });
+
+  it('a returning visitor is found by phone, with only the masked ID on file', async () => {
+    const lk = await request(desk()).get('/api/visitors/lookup?phone=9840099001');
+    expect(lk.body).toMatchObject({ found: true, name: 'ZZBAW Pan', id_type: 'PAN', id_number_on_file: 'XXXXXX234F' });
+    expect((await request(desk()).get('/api/visitors/lookup?phone=9000000019')).body.found).toBe(false);
+  });
+
+  it('a photo is stored for the visit — images only', async () => {
+    const v = await inside({ name: 'ZZBAW Photo', phone: '9840099006' });
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64');
+    const bad = await request(desk()).put(`/api/visitors/${v.id}/photo`)
+      .attach('photo_file', Buffer.from('%PDF-1.4'), { filename: 'x.pdf', contentType: 'application/pdf' });
+    expect(bad.status).toBe(415);
+    const ok = await request(desk()).put(`/api/visitors/${v.id}/photo`)
+      .attach('photo_file', png, { filename: 'face.png', contentType: 'image/png' });
+    expect(ok.status).toBe(200);
+    expect(ok.body.photo_url).toBeTruthy();
+    const { deleteFile } = await import('../services/StorageService.js');
+    await deleteFile(ok.body.photo_url).catch(() => {});
+    await put(desk(), v.id, 'checkout');
+  });
+
+  it('the visitor CSV carries the visitor pass and the masked ID only', async () => {
+    const csv = await request(desk()).get('/api/visitors/export');
+    expect(csv.status).toBe(200);
+    expect(csv.text).toMatch(/Visitor pass/);
+    expect(csv.text).toMatch(/ID \(masked\)/);
+    expect(csv.text).toMatch(/XXXXXX234F/);
+    expect(csv.text).not.toMatch(/ABCDE1234F/);
+  });
+});
+
+describe('goods leaving with a visitor (§273 — host approves, security releases)', () => {
+  const vis = (over = {}) => ({ name: 'ZZBAW Supplier', company: 'ZZBAW Parts', phone: '9840099020', host_employee_id: ids.emp.genStaff, ...over });
+  const put = (app, id, verb, body = {}) => request(app).put(`/api/visitors/${id}${verb ? `/${verb}` : ''}`).send(body);
+  const guard = () => appAs(['security'], CO, ids.emp.active);
+  const goods = (visitorId, over = {}) => ({
+    pass_type: 'material', visitor_id: visitorId, purpose: 'ZZBAW returned part', destination: 'ZZBAW Parts, Chennai', returnable: false,
+    items: [{ description: 'ZZBAW Faulty relay', quantity: 4, unit: 'Nos' }], ...over,
+  });
+  const visitorInside = async (phone) => {
+    const r = await postVisitor(vis({ phone }), desk());
+    await put(guard(), r.body.id, 'approve');
+    return (await put(desk(), r.body.id, 'check-in')).body;
+  };
+
+  it('needs a visitor who is inside, and is goods only', async () => {
+    const pre = (await postVisitor({ name: 'ZZBAW Not yet', pre_register: true, expected_at: soon(4) }, asEmployee(ids.emp.genStaff))).body;
+    expect((await postPass(goods(pre.id), asEmployee(ids.emp.genStaff))).status).toBe(409);
+    const v = await visitorInside('9840099021');
+    expect((await postPass({ ...personPass(), visitor_id: v.id }, desk())).status).toBe(400);
+    expect((await postPass(goods(v.id), asEmployee(ids.emp.engStaff))).status).toBe(404);   // not their visitor
+    await put(guard(), pre.id, 'reject', { reason: 'ZZBAW tidy' });
+    await put(desk(), v.id, 'checkout');
+  });
+
+  it('raised by the host: approved at once; the visitor cannot leave until security releases the goods', async () => {
+    const v = await visitorInside('9840099022');
+    const gp = await postPass(goods(v.id), asEmployee(ids.emp.genStaff));
+    expect(gp.status, JSON.stringify(gp.body)).toBe(201);
+    expect(gp.body).toMatchObject({ effective_status: 'approved', employee_id: ids.emp.genStaff, approved_by: ids.emp.genStaff, visitor_id: v.id, is_visitor_goods: true });
+    expect(gp.body.carried_by).toBe('ZZBAW Supplier (ZZBAW Parts)');
+    const blocked = await put(desk(), v.id, 'checkout');
+    expect(blocked.status).toBe(409);
+    expect(blocked.body.code).toBe('GOODS_OPEN');
+    const out = await act(guard(), gp.body.id, 'out');
+    expect(out.body.effective_status).toBe('completed');
+    const d = await request(desk()).get(`/api/visitors/${v.id}`);
+    expect(d.body.goods_passes.map(g => g.pass_number)).toEqual([gp.body.pass_number]);
+    expect((await put(desk(), v.id, 'checkout')).status).toBe(200);
+  });
+
+  it('raised at the gate: the host is notified and approves — not the department chain, not HR', async () => {
+    // Gita's own passes go to her manager Mohan; her VISITOR's goods go to Gita.
+    const v = await visitorInside('9840099023');
+    const gp = await postPass(goods(v.id, { returnable: true, expected_return_at: soon(24) }), desk());
+    expect(gp.status).toBe(201);
+    expect(gp.body.effective_status).toBe('pending');
+    expect(gp.body.awaiting).toMatchObject({ kind: 'host' });
+    expect(gp.body.awaiting.name).toMatch(/Gita/);
+    expect((await act(appAs(['employee'], CO, ids.emp.mgr), gp.body.id, 'approve')).status).toBe(403);   // raised it at the desk, so sees it — but is not the host
+    expect((await act(desk(), gp.body.id, 'approve')).status).toBe(403);
+    const ok = await act(asEmployee(ids.emp.genStaff), gp.body.id, 'approve');
+    expect(ok.status).toBe(200);
+    expect(ok.body.approved_by).toBe(ids.emp.genStaff);
+    const { SOURCE_BY_TYPE } = await import('../modules/approvals/approvals.sources.js');
+    const g2 = await postPass(goods(v.id), desk());
+    const r = (await SOURCE_BY_TYPE.gate.pending(CO)).find(x => x.source_id === String(g2.body.id));
+    expect(r.request_title).toMatch(/^Visitor goods · MGP-/);
+    expect(SOURCE_BY_TYPE.gate.canAct({ employeeId: ids.emp.genStaff, perms: {} }, r)).toBe(true);
+    // The host can also refuse it — recorded as a rejection.
+    expect((await act(asEmployee(ids.emp.genStaff), g2.body.id, 'cancel', { reason: 'ZZBAW not ours' })).status).toBe(200);
+    expect((await request(desk()).get(`/api/gate-passes/${g2.body.id}`)).body.events.map(e => e.action)).toContain('rejected');
+    await act(guard(), gp.body.id, 'out');
+    expect((await put(desk(), v.id, 'checkout')).status).toBe(200);   // returnable goods out: the visitor may leave
   });
 });

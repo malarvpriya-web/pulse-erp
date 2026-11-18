@@ -43,6 +43,8 @@ const app = express();
 app.use(express.json());
 app.use('/api/interns', verifyToken, internRouter);
 app.use('/api/intern-evaluations', verifyToken, evalRouter);
+const { employeeUploadForTests } = await import('./helpers/testApp.js');   // what server.js mounts first (§267 bank proof)
+app.use('/api/employees', employeeUploadForTests);
 app.use('/api/employees', employeeRoutes);
 app.use('/api/files', verifyToken, filesRouter);
 
