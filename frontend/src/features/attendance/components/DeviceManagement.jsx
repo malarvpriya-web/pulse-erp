@@ -20,7 +20,7 @@ const DEVICE_TYPES = [
 ];
 // Live sync speaks the ZKTeco protocol only (node-zklib), which ZKTeco and
 // eSSL devices use. Other vendors can be registered, but their punches arrive
-// through CSV import (HR → Biometric & Access Control) — say so, not "supported".
+// through CSV import (Attendance → Punch Machines) — say so, not "supported".
 const VENDORS    = ['ZKTeco', 'eSSL', 'Matrix', 'Suprema', 'Hikvision', 'Realtime', 'Other'];
 const SYNC_VENDORS = ['ZKTeco', 'eSSL'];
 const DIRECTIONS = [
@@ -199,7 +199,7 @@ function DeviceForm({ device, onSave, onClose }) {
         )}
         {form.vendor && !SYNC_VENDORS.includes(form.vendor) && (
           <div style={{ fontSize: 12, color: '#b45309', marginTop: 10 }}>
-            {form.vendor} devices cannot be synced from Pulse yet. Export their punches to CSV and import them in HR → Biometric &amp; Access Control.
+            {form.vendor} devices cannot be synced from Pulse yet. Export their punches to CSV and import them under CSV import on this page.
           </div>
         )}
 
@@ -344,7 +344,39 @@ function TestResult({ result, onDismiss }) {
 }
 
 /* ─── Main component ─────────────────────────────────────────── */
-export default function DeviceManagement() {
+// Shown full-page (old bookmarks) or embedded in Attendance → Punch Machines,
+// which is the one place machines are added, tested and synced (§278).
+function MaybeShell({ embedded, onRefresh, onAdd, children }) {
+  if (embedded) {
+    return (
+      <div>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginBottom: 12, flexWrap: 'wrap' }}>
+          <button className="pulse-btn-secondary" onClick={onRefresh}><RefreshCw size={14} /> Refresh</button>
+          <button className="pulse-btn-primary" onClick={onAdd}><Plus size={16} /> Add Device</button>
+        </div>
+        {children}
+      </div>
+    );
+  }
+  return (
+    <PageShell dock={
+      <PageHero
+        icon={Cpu}
+        eyebrow="Attendance"
+        title="Punch Machines"
+        subtitle="Register, test and sync the punch machines"
+        actions={<>
+          <button className="plh-cta plh-cta--ghost" onClick={onRefresh}><RefreshCw size={14} /> Refresh</button>
+          <button className="plh-cta" onClick={onAdd}><Plus size={16} /> Add Device</button>
+        </>}
+      />
+    }>
+      {children}
+    </PageShell>
+  );
+}
+
+export default function DeviceManagement({ embedded = false, onChanged }) {
   const [devices, setDevices]       = useState([]);
   const [loading, setLoading]       = useState(true);
   const [showForm, setShowForm]     = useState(false);
@@ -443,22 +475,9 @@ export default function DeviceManagement() {
   const typeLabel = (t) => DEVICE_TYPES.find(x => x.id === t)?.label || t;
 
   return (
-    <PageShell dock={
-      <PageHero
-        icon={Cpu}
-        eyebrow="Attendance"
-        title="Device Management"
-        subtitle="Biometric device registration, health monitoring, and punch sync · Auto-refreshes every 30s"
-        actions={<>
-          <button className="plh-cta plh-cta--ghost" onClick={() => { setLoading(true); load(); }}>
-            <RefreshCw size={14} /> Refresh
-          </button>
-          <button className="plh-cta" onClick={() => { setEditDevice(null); setShowForm(true); }}>
-            <Plus size={16} /> Register Device
-          </button>
-        </>}
-      />
-    }>
+    <MaybeShell embedded={embedded}
+      onRefresh={() => { setLoading(true); load(); onChanged?.(); }}
+      onAdd={() => { setEditDevice(null); setShowForm(true); }}>
 
       {/* Header */}
 
@@ -501,8 +520,8 @@ export default function DeviceManagement() {
       {/* Vendor info bar */}
       <div style={{ background: '#f5f3ff', border: '1px solid #e9e4ff', borderRadius: 10, padding: '12px 16px', marginBottom: 20, fontSize: 13, color: '#4b5563' }}>
         <Shield size={13} color={P} style={{ verticalAlign: 'middle', marginRight: 6 }} />
-        <strong>To add a device:</strong> Register Device → enter its IP address → Test connection → Save. Port 4370 and the name are filled in for you; set the device&apos;s Comm Key to 0.
-        &nbsp;·&nbsp; <strong>Live sync:</strong> ZKTeco and eSSL (ZKTeco protocol). Other vendors: import their CSV export in HR → Biometric &amp; Access Control.
+        <strong>To add a device:</strong> Add Device → enter its IP address → Test connection → Save. Port 4370 and the name are filled in for you; set the device&apos;s Comm Key to 0.
+        &nbsp;·&nbsp; <strong>Live sync:</strong> ZKTeco and eSSL (ZKTeco protocol). Other vendors: import their CSV export below. A machine without an IP address is skipped by automatic sync until you enter one (Edit).
         &nbsp;·&nbsp; <span style={{ color: '#b45309', fontWeight: 600 }}>Sync has not yet been verified against a physical device.</span>
       </div>
 
@@ -547,7 +566,7 @@ export default function DeviceManagement() {
                   <div style={{ display: 'flex', gap: 14, fontSize: 12, color: '#6b7280', flexWrap: 'wrap' }}>
                     <span><Cpu size={11} style={{ verticalAlign: 'middle', marginRight: 3 }} />{typeLabel(d.device_type)}</span>
                     {d.location && <span><MapPin size={11} style={{ verticalAlign: 'middle', marginRight: 3 }} />{d.location}</span>}
-                    <span style={{ fontFamily: 'monospace' }}>IP: {d.ip_address}:{d.port}</span>
+                    <span style={{ fontFamily: 'monospace' }}>{d.ip_address ? `IP: ${d.ip_address}:${d.port}` : 'No IP address yet — use Edit to enter it'}</span>
                     {d.serial_number && <span style={{ fontFamily: 'monospace' }}>S/N: {d.serial_number}</span>}
                     <span title={d.last_sync ? formatDateTime(d.last_sync) : ''}><Clock size={11} style={{ verticalAlign: 'middle', marginRight: 3 }} />Last sync: {d.last_sync ? `${formatDateTime(d.last_sync)} (${timeSince(d.last_sync)})` : 'Never'}</span>
                     <span><Activity size={11} style={{ verticalAlign: 'middle', marginRight: 3 }} />{parseInt(d.total_punches_today) || 0} punches today</span>
@@ -618,7 +637,7 @@ export default function DeviceManagement() {
               Test Connection checks that the device&apos;s network port answers. Sync reads punches over the ZKTeco protocol
               (<code style={{ background: '#e0f2fe', padding: '1px 5px', borderRadius: 4 }}>node-zklib</code>) and applies them to attendance.
               It has been tested with simulated device data only — run the hardware acceptance test (manual §197) on a real device before relying on it.
-              CSV import in HR → Biometric &amp; Access Control is the verified alternative.
+              CSV import below is the verified alternative.
             </div>
           </div>
         </div>
@@ -658,6 +677,6 @@ export default function DeviceManagement() {
       {punchLogDevice && (
         <PunchLogModal device={punchLogDevice} onClose={() => setPunchLogDevice(null)} />
       )}
-    </PageShell>
+    </MaybeShell>
   );
 }

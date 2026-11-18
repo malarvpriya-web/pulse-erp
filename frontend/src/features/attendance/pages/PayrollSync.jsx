@@ -241,7 +241,7 @@ export default function PayrollSync({ setPage } = {}) {
             <button onClick={() => setShowConfirm(true)}
               disabled={syncing || records.length === 0}
               style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 20px', borderRadius: 8, border: 'none',
-                background: records.length === 0 ? '#d1d5db' : '#10b981', color: '#fff', fontWeight: 600, fontSize: 14,
+                background: records.length === 0 ? '#d1d5db' : 'var(--color-primary, #6B3FDB)', color: '#fff', fontWeight: 600, fontSize: 14,
                 cursor: syncing || records.length === 0 ? 'not-allowed' : 'pointer', opacity: syncing ? 0.7 : 1 }}>
               <Lock size={14} /> {syncing ? 'Freezing…' : selected.size > 0 ? `Freeze ${selected.size} Selected` : 'Freeze & Sync All'}
             </button>
@@ -342,7 +342,7 @@ export default function PayrollSync({ setPage } = {}) {
             </div>
             <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
               <button onClick={() => setShowConfirm(false)} style={{ padding: '9px 20px', borderRadius: 8, border: '1px solid #e5e7eb', background: '#fff', cursor: 'pointer', fontSize: 14 }}>Cancel</button>
-              <button onClick={() => handleSync(false)} style={{ padding: '9px 20px', borderRadius: 8, border: 'none', background: '#10b981', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: 14, display: 'flex', alignItems: 'center', gap: 6 }}>
+              <button onClick={() => handleSync(false)} style={{ padding: '9px 20px', borderRadius: 8, border: 'none', background: 'var(--color-primary, #6B3FDB)', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: 14, display: 'flex', alignItems: 'center', gap: 6 }}>
                 <Lock size={14} /> Freeze & Sync
               </button>
             </div>

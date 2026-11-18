@@ -1344,41 +1344,38 @@ Manual checks:
 
 ### Attendance
 
-Frontend: `frontend/src/features/attendance`  
-Backend: `backend/src/modules/attendance`, `backend/src/modules/holidays`
+Frontend: `frontend/src/features/attendance`
+Backend: `backend/src/modules/attendance`, `backend/src/modules/hr/biometric.routes.js` (punch machines), `backend/src/modules/holidays`, `backend/src/shared/attendanceRules.js` + `shiftResolve.js` + `weekend.js`
+
+How people punch (§278): office staff on the **punch machine** (Attendance → Punch Machines: device sync, automatic sync, CSV import); **field staff** (`employees.is_field_employee`) in My Attendance with camera selfie + GPS. QR punching and browser face recognition were removed.
 
 Features to test:
 
-- Live Workforce
-- My Attendance
-- QR Attendance
-- Team Attendance
-- Shift Calendar
-- Regularization
-- Overtime
-- Approval Delegation
-- Attendance Reports
-- Work Centres
-- Contract Labour
-- Payroll Sync
-- Attendance Settings
-- Attendance Audit Logs
-- Offline punch sync
-- Device/biometric settings
-- Geo-fencing and face attendance if enabled
+- My Attendance (employee: today, month calendar, regularization with the monthly allowance)
+- Live Workforce (HR: everyone today, filters by department / status / name, CSV)
+- Team Attendance (mark / correct; holidays are declared in Leaves → Holiday Calendar)
+- Shift Calendar (the shift each day resolves to; shift-change request: one day or from a date)
+- Punch Machines (add / test / sync / remove machines, automatic sync, CSV import, punch log)
+- Approvals: Regularization · Overtime · Shift Change · Delegation (also in the Approval Center: `reg`, `ot`, `shift`)
+- Reports: Analytics & Trends (12 / 24 months, this / last year, year vs year) · Monthly · Late Arrivals · Geo Violations · Leave & Early Exit
+- Audit Logs
+- Send to Payroll (month close → `payroll_attendance_summary`, freezes the month)
+- Configuration: Shifts & Rotations · Work Centres · Contract Labour · Geo Fencing (field staff) · Settings
 
 Connections:
 
-- Employees provide workforce records.
-- Leaves affects absence and payable days.
-- Payroll uses attendance, overtime, late marks, unpaid days.
+- Employees provide workforce records, `reporting_manager_id` (approver) and `is_field_employee` (punch mode).
+- Shifts (`hr_shifts`, assignments, rotations, date overrides) decide late / half day for both punch paths.
+- Leaves: approved leave is not absence; holidays write `holiday` rows for current employees.
+- Payroll reads `payroll_attendance_summary` (LOP) and approved `attendance_ot_records` (OT — none while overtime is switched off).
 - Reports/Analytics consume attendance data.
 
 Manual checks:
 
-- Punch appears in My Attendance and Team Attendance.
-- Regularization request appears for approval.
-- Approved overtime is available for payroll sync.
+- A machine punch (or CSV import) appears in Live Workforce and My Attendance, Late when after shift start + grace.
+- A 4th regularization in a month is refused; an approved one shows who approved it and corrects the day.
+- An approved one-day shift change shows as "changed" on that day only in Shift Calendar.
+- With overtime off no OT request is created; Send to Payroll then freezes the month.
 - Leave day is not treated as unapproved absence.
 
 ### Leaves
@@ -26312,4 +26309,48 @@ flowchart LR
   REG --> N["notification rd_input → R&D team"]
   N -->|"click"| RDH["RDHub?tab=inputs&ref=id → review drawer"]
 ```
+
+## §278 — Attendance consolidated: one settings row, machine punches marked late, regularization allowance, shift changes approvable, QR / face removed, sample data (2026-11-18)
+
+Owner review of the Attendance module (2026-11-18). Owner decisions: keep sample data and add more so pages and charts can be checked ("later I can delete it"); only field employees punch from the app, everyone else on the machine; start with one machine, add more later, sync automatically once the address is entered; keep overtime and comp off as options but **off** for now; regularization needs calculated hours, a record of who approved, and **at most 3 per employee per month**; reports need 1-year / 2-year / last-year graphs; QR Attendance not needed.
+
+**Settings (migration 20261118000005).** `attendance_general_settings` holds ONE row per company plus one global row (partial unique index `attendance_general_settings_one_global`). The screen read `WHERE company_id = $1` — never the global row — so it always showed defaults, and every global-scope save inserted another global row (two contradicting rows existed: Mon–Fri vs Mon–Sat). A save the same morning had created the company row with the column-default 60-min break (the screen never saved the break) → a 9.5 h full day; reset to the recorded policy 8 h + 30 min (§198). Saving working days rewrites `weekend_days`, so the two fields cannot disagree. New columns: `ot_enabled`, `comp_off_enabled` (both false), `regularization_monthly_limit` (3), `regularization_needs_hr` (false). One reader: `getAttendanceSettingsRow()` / `getAttendanceSwitches()` in `shared/attendanceRules.js`. Settings page = one page in Configuration with only fields something reads; removed: attendance mode, geo / report / work-centre JSON settings, face settings, the Policies tab (repeated grace + OT), the approval-matrix editor (`attendance_workflow_config` is no longer read; "HR after manager" is the switch).
+
+**One overtime writer.** `recordOvertime()` (shared) is used by the in-app clock-out, an approved regularization and the machine sync / CSV import (which made none before, so machine punchers could never earn OT). It does nothing while overtime is off. Comp-off auto-grant also checks its switch.
+
+**Machine punches marked late.** `parseTimeToMins` / `calcLateAndStatus` / `resolveEmployeeShift` moved to `shared/shiftResolve.js`; `applyPunch()` (biometric) now sets `late_minutes` and Late on the first check-in against the shift the employee works that day (default start + grace when no shift; default grace 10 like the app) and alerts the reporting manager for today's punches. The late alert matches `employees.reporting_manager_id`, not the free-text manager name.
+
+**Punch Machines.** One page: machines (DeviceManagement, moved to `features/attendance/components`), automatic sync, CSV import, punch log. `runDeviceSync()` is shared by Sync now and the new `jobs/deviceSync.cron.js` (every 5 min, honours `device_settings.auto_sync` / `sync_interval_minutes`, skips machines without an IP). The dev-only startup seeder that re-inserted five fake machines (192.168.1.101–105) whenever the table was empty was removed.
+
+**Regularization.** Allowance per calendar month of the date (pending + approved count, rejected does not; `GET /attendance/regularize/quota/:employee_id`), one pending request per day, hours shown (requested time, else the recorded time), recorded vs requested times on the approval card, who approved / rejected and when (`manager_*` = reporting-manager step, `hr_*` = HR; HR deciding at the first step is recorded once as HR), only pending requests can be decided, a rejection needs a reason, no self-approval. **Bug fixed:** five queries used `employees.reporting_to`, a column that does not exist — managers' lists were silently empty and their direct-report checks failed; now `reporting_manager_id`.
+
+**Shift change.** `shift_change_requests.change_type` 'day' | 'permanent'. Approval writes a date override (day) or replaces the assignment (permanent) — it used to replace the assignment for every request. List is scoped (own / direct reports / HR all), requests need a reason and cannot be filed for someone else. New tab Attendance → Approvals → Shift Change and Approval Center source `shift`. `GET /attendance/shift-calendar/:employee_id` returns each day's resolved shift; Shift Calendar shows it per day (it showed only the standing assignment), offers the request only on one's own calendar, and the Regularize link pointed at an API URL.
+
+**Removed.** QR Attendance (page, `/qr/*` routes, tables `qr_attendance_codes` / `_scans`), browser face recognition (Face tab, `/face*` routes, `FaceClockModal`), Settings → Shifts (`ShiftManagement`, duplicated Shifts & Rotations) and the `/attendance/shifts` write routes (hard DELETE, no company check; GET kept), `/attendance/early-exits` (no caller), the legacy `attendance` table (only the personal-data export read it), Team Attendance's "Mark Holiday" (Holiday Calendar is the one place), the five repeated reports under "All Reports", and the Sync-to-Payroll buttons on Monthly Report / All Reports (Payroll Sync is its own menu row). Old URLs redirect (`App.jsx`).
+
+**Other fixes.** Nightly auto-absent named `leave_applications.from_date/to_date` (columns are `start_date/end_date`) and swallowed the error — it never marked anyone; fixed, reads the work week from `shared/weekend.js`, and runs only for a company that has a punch machine with an address (until then no record ≠ absent). Live Workforce lists everyone expected today (status, in / out, late, source) with department / status / name filters and CSV. My Attendance % = attended (present + late + ½ half day) / working days so far (it divided by the whole month). Reports hub is a TabHub (it nested PageShells over its tab bar). Absenteeism trend takes `?period=12m|24m|this_year|last_year|YYYY` and returns every month.
+
+**Data.** Junk removed after a full backup (`_backups/attendance_2026-11-18/`, audit_logs 190768): the SEED rows with impossible values (89× OT, 100–200 LOP days on employees 1–5 that payroll would have read, 1-metre mandatory fences, …), the five fake machines, the terminated test employees' attendance. Samples (`scripts/samples/attendance-sample-data.mjs`, remarks / names "(Sample)"): Karthik Raja, Divya Shankar, Suresh Babu (field) "(Sample)" employees joined 2024; General / Night "(Sample)" shifts; attendance for every working day since joining (EMP001–003 present / late only — no LOP); "Main Gate Punch Machine" with no IP yet; regularizations, shift changes, an OT request, a late warning, a field-staff geo fence, work-centre and contract-labour records through the API.
+
+```mermaid
+flowchart LR
+  M["Punch machine / CSV import"] -->|"runDeviceSync / import"| AP["applyPunch: log → attendance_records, late vs shift, OT (if on)"]
+  F["Field staff app punch (selfie + GPS)"] -->|"POST /attendance/clock"| AR["attendance_records"]
+  AP --> AR
+  R["Regularization (≤3 / month)"] -->|"manager → HR if set"| AR
+  SC["Shift change (day / from date)"] -->|"approve"| SH["override / assignment"] --> AP
+  AR --> LW["Live Workforce · My Attendance · Reports (1–2 yr)"]
+  AR -->|"Payroll Sync (freeze)"| PAS["payroll_attendance_summary"] --> PC["Payroll Center"]
+  OT["attendance_ot_records (approved)"] --> PC
+```
+
+Tests: `integration.attendanceConsolidation.test.js` (settings row, allowance, HR decision, OT off/on, day vs permanent shift change, machine late), `punchImport.test.jsx`, `deviceManagement.test.jsx`, `nav.structure` / `nav.fixture` updated. Open: the owner enters the machine's IP; overtime / comp-off rules when they are switched on; `attendance_approval_delegations` holds two June test rows (EMP001 ↔ EMP002 to 2041 / 2050) — left as they are.
+
+### §278.1 — Owner follow-up (2026-11-18)
+
+- Menu row stays **Payroll Sync** (not "Send to Payroll"); its Freeze & Sync buttons and Team Attendance's Export CSV use the theme purple.
+- **My Attendance → My punctuality**: on time, inside grace (and grace minutes used), late (total minutes), left early, usual arrival, average hours, and a day-by-day list (in, out, hours, "On time / Grace n min / Late n min"). `GET /attendance/employee/:id?month&year` summary gained `on_time`, `within_grace`, `grace_minutes_used`, `late_minutes_total`, `early_exits`, `half_days`, `avg_check_in`, `avg_hours`.
+- **Live Workforce** takes `?date=` (no future dates): HR can look at yesterday or any past day; "Back to today".
+- **Team Attendance** is HR (whole company) or a manager / department head (direct reports + every department they head, via `department_heads` → `master_departments.name`). `GET /attendance/team/:manager_id` now refuses another manager's id for non-admins (anyone could read any team before). Role checks use `hasAnyRole`.
+- Confirmed, no change needed: Shift Calendar exists once (Configuration → Shifts & Rotations is where shifts are set up and HR can set a one-day override directly); timesheets auto-fill from `attendance_records` whatever the source, so machine punches reach timesheets; Approval Center and Attendance → Approvals show the same requests (inbox vs full history with filters) under the same rules; Delegation = an approver hands their approvals to someone else for a date range; one employee's late arrivals for a month = Reports → Late Arrivals, search the name.
 

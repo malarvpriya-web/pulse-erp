@@ -149,6 +149,7 @@ const MODULE_PAGE = {
   exp:             { approve: 'ExpenseReview', self: 'ExpenseClaims' },
   reg:             { approve: 'RegularizationApprovals', self: 'AttendanceDashboard' },
   ot:              { approve: 'OvertimeApprovals', self: 'AttendanceDashboard' },
+  shift:           { approve: 'ShiftChangeApprovals', self: 'ShiftCalendar' },
 
   hr:          'HRDashboard',
   payroll:     'PayrollCenter',

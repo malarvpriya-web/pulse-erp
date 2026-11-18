@@ -132,7 +132,7 @@ const STEPS = [
       'Map device to geo-fencing zone',
       'Enable auto-sync interval (every 15 min)',
     ],
-    page: 'DeviceManagement',
+    page: 'PunchImport',
     tip: 'If biometric is not yet available, enable manual attendance + selfie verification as fallback.',
   },
   {

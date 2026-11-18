@@ -446,6 +446,11 @@ function Toast({ msg, type }) {
 
 // ─── Main component ───────────────────────────────────────────────────────────
 export default function OvertimeApprovals() {
+  // §278: overtime is kept as a feature but switched off until configured.
+  const [otEnabled, setOtEnabled] = useState(null);
+  useEffect(() => {
+    api.get('/attendance/general-settings').then((r) => setOtEnabled(r.data?.ot_enabled === true)).catch(() => setOtEnabled(null));
+  }, []);
   // hasAnyRole, not user.role: `role` is only the PRIMARY role of a many-to-many
   // set, so gating on it alone hid the approval queue from anyone holding
   // manager/hr as a secondary role. See AuthContext.
@@ -656,6 +661,12 @@ export default function OvertimeApprovals() {
     }>
 
       {toast && <Toast msg={toast.msg} type={toast.type} />}
+      {otEnabled === false && (
+        <div role="status" style={{ marginBottom: 14, padding: '10px 14px', borderRadius: 8, background: '#fffbeb', border: '1px solid #fde68a', color: '#92400e', fontSize: 13 }}>
+          Overtime is switched off in Attendance → Configuration → Settings. No overtime is recorded or paid
+          until it is switched on; the requests below are kept for reference.
+        </div>
+      )}
 
       {/* ── Header ──────────────────────────────────────────────────────── */}
 

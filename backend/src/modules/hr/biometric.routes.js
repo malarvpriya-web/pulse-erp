@@ -9,7 +9,8 @@ import { companyOf } from '../../shared/scope.js';
 import { CURRENT_STATUSES, sqlList } from '../../shared/employeeStatus.js';
 import { LEAVE_APPROVED } from '../../shared/statusSets.js';
 import { getWeekendDays, dayIsWeekend } from '../../shared/weekend.js';
-import { getFullDayHours, isPeriodFrozen } from '../../shared/attendanceRules.js';
+import { getFullDayHours, isPeriodFrozen, recordOvertime, notifyLateArrival } from '../../shared/attendanceRules.js';
+import { resolveEmployeeShift, calcLateAndStatus } from '../../shared/shiftResolve.js';
 import { blank, listPage, dateRange, positiveIntOrNull } from './listQuery.js';
 
 const router = express.Router();
@@ -217,7 +218,7 @@ async function testZKDevice(ipAddress, port = 4370) {
 const DEFAULT_TZ = 'Asia/Kolkata';
 
 export async function dayRules(companyId, db = pool) {
-  const out = { tz: DEFAULT_TZ, workStart: '09:00:00', workEnd: '18:00:00', graceMinutes: 0 };
+  const out = { tz: DEFAULT_TZ, workStart: '09:00:00', workEnd: '18:00:00', graceMinutes: 10 };  // no late policy → 10 min, the in-app punch's default (§278)
   try {
     const { rows: [s] } = await db.query(
       `SELECT timezone, work_start_time::text AS ws, work_end_time::text AS we
@@ -352,13 +353,41 @@ async function applyPunch(client, p, ctx) {
         AND check_out_time > check_in_time`,
     [employeeId, day, ctx.fullDayHours.get(companyId)]
   );
+  // Late against the shift the employee actually works that day (§278 — the
+  // machine path never set late_minutes, so Late Arrivals could not show a
+  // single machine punch). Only the first check-in of the day decides it.
+  if (punchType === 'in') {
+    const { rows: [rec] } = await client.query(
+      `SELECT check_in_time::text AS cin, status, late_minutes FROM attendance_records
+        WHERE employee_id = $1 AND attendance_date = $2`, [employeeId, day]);
+    if (rec?.cin && ['present', 'late'].includes(String(rec.status).toLowerCase())) {
+      const { shift } = await resolveEmployeeShift(employeeId, day);
+      const sh = shift || { start_time: ctx.workStart || '09:00:00', grace_minutes: ctx.graceMinutes ?? 0 };
+      const { lateMinutes, derivedStatus } = calcLateAndStatus(rec.cin, sh, ctx.graceMinutes ?? 10);
+      await client.query(
+        `UPDATE attendance_records SET late_minutes = $3, status = $4 WHERE employee_id = $1 AND attendance_date = $2`,
+        [employeeId, day, lateMinutes, derivedStatus]);
+      if (derivedStatus === 'late' && String(rec.status).toLowerCase() !== 'late' && day === ctx.today) {
+        notifyLateArrival(employeeId, lateMinutes, 'punched in').catch(() => {});
+      }
+    }
+  }
+  // Overtime request (nothing happens while overtime is switched off).
+  const { rows: [h] } = await client.query(
+    `SELECT ot_hours FROM attendance_records WHERE employee_id = $1 AND attendance_date = $2`, [employeeId, day]);
+  if (Number(h?.ot_hours) >= 0.5) {
+    await recordOvertime(client, { companyId, employeeId, date: day, otHours: Number(h.ot_hours) });
+  }
+
   await client.query(
     'UPDATE biometric_logs SET processed = true, processed_at = NOW() WHERE id = $1', [logId]);
   return 'applied';
 }
 
-const newIngestContext = (companyId, tz) => ({
+const newIngestContext = (companyId, tz, rules = {}) => ({
   companyId, tz, frozenMonths: new Map(), fullDayHours: new Map(),
+  workStart: rules.workStart, graceMinutes: rules.graceMinutes,
+  today: new Date().toLocaleDateString('en-CA', { timeZone: tz || 'Asia/Kolkata' }),
 });
 
 const OUTCOMES = ['applied', 'duplicate', 'unmatched', 'frozen', 'locked'];
@@ -399,27 +428,11 @@ async function resolveDeviceUser(db, deviceUserId, deviceUserName, companyId) {
   return null;
 }
 
-/* ─── dev-only: seed sample biometric devices ───
- * Inserted WITHOUT a status or last_sync. The original wrote 'online' and a
- * last_sync of "two hours ago" — a connection nobody had made — and the page
- * rendered it as a live device. These now read "never verified". */
-if (process.env.NODE_ENV !== 'production') {
-  (async () => {
-    try {
-      const { rows } = await pool.query('SELECT COUNT(*) FROM biometric_devices');
-      if (parseInt(rows[0].count) === 0) {
-        await pool.query(`
-          INSERT INTO biometric_devices (device_name, device_type, location, ip_address, port, vendor, serial_number, attendance_direction) VALUES
-          ('Main Gate - In',   'fingerprint',  'Main Entrance',     '192.168.1.101', 4370, 'ZKTeco',  'SN-101', 'in'),
-          ('Main Gate - Out',  'fingerprint',  'Main Exit',         '192.168.1.102', 4370, 'ZKTeco',  'SN-102', 'out'),
-          ('Server Room',      'face+finger',  'IT Block Room 201', '192.168.1.103', 4370, 'Suprema', 'SN-103', 'both'),
-          ('Production Floor', 'fingerprint',  'Factory Entrance',  '192.168.1.104', 4370, 'eSSL',    'SN-104', 'both'),
-          ('HR Office',        'card_reader',  'HR Block Entry',    '192.168.1.105', 4370, 'Matrix',  'SN-105', 'both')
-        `);
-      }
-    } catch (e) { console.error('[biometric] seed error:', e.message); }
-  })();
-}
+/* The dev-only startup seeder that inserted five fake machines
+ * (192.168.1.101–105) whenever the table was empty was REMOVED in §278: it ran
+ * on every import of this module (tests included), so the owner's real device
+ * list kept refilling with machines that do not exist. The one real machine is
+ * added on Attendance → Punch Machines. */
 
 /* ─── GET /biometric/devices ─────────────────────────────────── */
 router.get('/biometric/devices', biometricRead, async (req, res) => {
@@ -658,28 +671,22 @@ router.post('/biometric/devices/:id/test', attendanceAdmin, async (req, res) => 
  * attempts. Now: reach the device first; only if data came back, process it
  * in ONE transaction; the response counts what actually landed. An
  * unreachable device is a 502 with status 'offline' — never a success. */
-router.post('/biometric/devices/:id/sync', attendanceAdmin, async (req, res) => {
-  const scopeId = cid(req);
-  let device;
-  try {
-    // ⚠⚠ TENANT SCOPE, and this one WRITES: a foreign id 404s before any
-    // socket is opened (it used to sync another tenant's hardware into that
-    // tenant's attendance).
-    ({ rows: [device] } = await pool.query(
-      'SELECT * FROM biometric_devices WHERE id=$1 AND ($2::int IS NULL OR company_id = $2)',
-      [req.params.id, scopeId]
-    ));
-  } catch (err) { return res.status(500).json({ error: err.message, message: err.message }); }
-  if (!device) return res.status(404).json({ error: 'Device not found', message: 'Device not found' });
-
+/**
+ * Pull punches from one device and apply them to attendance. Used by
+ * POST /biometric/devices/:id/sync ("Sync now") and by the automatic sync job
+ * (jobs/deviceSync.cron.js, Attendance → Punch Machines → Automatic sync).
+ * Returns { status, body } — the HTTP answer the route sends.
+ */
+export async function runDeviceSync(device, scopeId) {
+  const reply = (status, body) => ({ status, body });
   if (!device.ip_address) {
-    return res.status(422).json({
+    return reply(422, {
       synced: false, status: 'not_configured',
       message: `${device.device_name} has no IP address configured, so it cannot be synced.`,
     });
   }
   if (!deviceDriver.available()) {
-    return res.status(503).json({
+    return reply(503, {
       synced: false, status: 'not_configured', code: 'SDK_NOT_INSTALLED',
       message: 'Device sync is not available on this server: the ZKTeco SDK (node-zklib) is not installed.',
     });
@@ -699,7 +706,7 @@ router.post('/biometric/devices/:id/sync', attendanceAdmin, async (req, res) => 
         WHERE id=$2`,
       [why, device.id]
     ).catch(() => {});
-    return res.status(502).json({
+    return reply(502, {
       synced: false, status: 'offline', error: why,
       message: `Could not read ${device.device_name} at ${device.ip_address}:${device.port} — ${why}. No punches were imported.`,
       hint: 'Check the device IP address, port and network connectivity.',
@@ -715,7 +722,7 @@ router.post('/biometric/devices/:id/sync', attendanceAdmin, async (req, res) => 
   try {
     await client.query('BEGIN');
     const rules = await dayRules(companyId, client);
-    const ctx = newIngestContext(companyId, rules.tz);
+    const ctx = newIngestContext(companyId, rules.tz, rules);
     const people = new Map();
     for (const log of payload.logs || []) {
       const devUserId = String(log.deviceUserId || log.userId || '');
@@ -746,7 +753,7 @@ router.post('/biometric/devices/:id/sync', attendanceAdmin, async (req, res) => 
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
     client.release();
-    return res.status(500).json({
+    return reply(500, {
       synced: false, error: err.message,
       message: `Punches were read from ${device.device_name} but could not be saved — nothing was imported. ${err.message}`,
     });
@@ -754,7 +761,7 @@ router.post('/biometric/devices/:id/sync', attendanceAdmin, async (req, res) => 
   client.release();
 
   const total = (payload.logs || []).length;
-  res.json({
+  return reply(200, {
     device_id:    device.id,
     device_name:  device.device_name,
     synced:       true,
@@ -775,6 +782,23 @@ router.post('/biometric/devices/:id/sync', attendanceAdmin, async (req, res) => 
         + (tally.frozen + tally.locked ? `, ${tally.frozen + tally.locked} in a locked/frozen period` : '')
         + (skipped ? `, ${skipped} skipped (invalid or filtered by direction)` : '') + '.',
   });
+}
+
+router.post('/biometric/devices/:id/sync', attendanceAdmin, async (req, res) => {
+  const scopeId = cid(req);
+  let device;
+  try {
+    // ⚠⚠ TENANT SCOPE, and this one WRITES: a foreign id 404s before any
+    // socket is opened (it used to sync another tenant's hardware into that
+    // tenant's attendance).
+    ({ rows: [device] } = await pool.query(
+      'SELECT * FROM biometric_devices WHERE id=$1 AND ($2::int IS NULL OR company_id = $2)',
+      [req.params.id, scopeId]
+    ));
+  } catch (err) { return res.status(500).json({ error: err.message, message: err.message }); }
+  if (!device) return res.status(404).json({ error: 'Device not found', message: 'Device not found' });
+  const out = await runDeviceSync(device, scopeId);
+  res.status(out.status).json(out.body);
 });
 
 /* ─── GET /biometric/devices/:id/punches ─────────────────────── */
@@ -1054,7 +1078,7 @@ router.post('/biometric/logs/import', attendanceAdmin, async (req, res) => {
     const instant = new Map(times.map(r => [r.i, r.at]));
     const ceiling = Date.now() + 5 * 60 * 1000;
 
-    const ctx = newIngestContext(companyId, rules.tz);
+    const ctx = newIngestContext(companyId, rules.tz, rules);
     const tally = emptyTally();
     const seen = new Set();
     let duplicatesInFile = 0;

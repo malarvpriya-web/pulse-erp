@@ -74,28 +74,41 @@ describe('cards and devices', () => {
     expect((await screen.findAllByText('Holiday — Diwali')).length).toBeGreaterThan(0);
   });
 
+  // §278: the Machines list is DeviceManagement (embedded); the import panel no
+  // longer draws a second device list.
   it('a device no test or sync has checked reads "Not verified", not a green "online"', async () => {
     render(<PunchImport />);
-    const seeded = await screen.findByTestId('device-1');
-    expect(within(seeded).getByText('Not verified')).toBeTruthy();
-    expect(within(seeded).queryByText('Online')).toBeNull();
-    const checked = screen.getByTestId('device-2');
-    expect(within(checked).getByText('Offline')).toBeTruthy();
-    expect(within(checked).getByText(/ETIMEDOUT/)).toBeTruthy();
-    expect(within(checked).getByText(/Last sync: Never/)).toBeTruthy();
+    const unchecked = await screen.findAllByTitle('No Test or Sync has checked this device yet');
+    expect(unchecked).toHaveLength(1);
+    expect(unchecked[0].textContent).toContain('Not verified');
+    expect(screen.queryByTestId('device-1')).toBeNull();   // the old duplicate list is gone
   });
 
   it('sync shows the server\'s own outcome — success and failure', async () => {
-    api.post.mockResolvedValueOnce({ data: { message: 'Main Gate - In: 4 punch(es) received — 3 applied to attendance' } });
+    api.post.mockResolvedValueOnce({ data: { status: 'online', message: 'Main Gate - In: 4 punch(es) received — 3 applied to attendance' } });
     render(<PunchImport />);
-    const dev = await screen.findByTestId('device-1');
-    fireEvent.click(within(dev).getByText('↻ Sync Now'));
-    expect(await within(dev).findByText(/3 applied to attendance/)).toBeTruthy();
+    const buttons = await screen.findAllByTitle('Sync device');
+    fireEvent.click(buttons[0]);
+    expect(await screen.findByText(/3 applied to attendance/)).toBeTruthy();
 
-    api.post.mockRejectedValueOnce({ response: { status: 502, data: { message: 'Could not read Plant Gate at 10.0.0.5:4370 — ETIMEDOUT. No punches were imported.' } } });
-    const dev2 = screen.getByTestId('device-2');
-    fireEvent.click(within(dev2).getByText('↻ Sync Now'));
-    expect(await within(dev2).findByText(/No punches were imported/)).toBeTruthy();
+    api.post.mockRejectedValueOnce({ response: { status: 502, data: { status: 'offline', message: 'Could not read Plant Gate at 10.0.0.5:4370 — ETIMEDOUT. No punches were imported.' } } });
+    fireEvent.click(screen.getAllByTitle('Sync device')[1]);
+    expect(await screen.findByText(/No punches were imported/)).toBeTruthy();
+  });
+
+  it('automatic sync can be switched off and its interval changed', async () => {
+    api.get.mockImplementation((url, cfg) => {
+      if (url === '/attendance/device-settings') return Promise.resolve({ data: { auto_sync: true, sync_interval_minutes: 15 } });
+      if (url === '/biometric/dashboard') return Promise.resolve({ data: DASH });
+      if (url === '/biometric/devices') return Promise.resolve({ data: DEVICES });
+      if (url === '/biometric/logs') return Promise.resolve({ data: { rows: [], total: 0, page: 1, page_size: 50 } });
+      return Promise.resolve({ data: [] });
+    });
+    api.put.mockResolvedValueOnce({ data: { auto_sync: false, sync_interval_minutes: 15 } });
+    render(<PunchImport />);
+    const card = await screen.findByTestId('auto-sync');
+    fireEvent.click(within(card).getByRole('checkbox'));
+    await waitFor(() => expect(api.put).toHaveBeenCalledWith('/attendance/device-settings', { auto_sync: false, sync_interval_minutes: 15 }));
   });
 });
 

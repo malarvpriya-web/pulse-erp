@@ -115,6 +115,8 @@ const AttendanceDashboard = () => {
   const [regRequests, setRegRequests]         = useState([]);
   const [showRegForm, setShowRegForm]         = useState(false);
   const [regForm, setRegForm]                 = useState({ date: '', reason: '', check_in: '', check_out: '' });
+  // §278: monthly allowance (Attendance Settings, default 3) for the form's month.
+  const [regQuota, setRegQuota]               = useState(null);
   const [clocking, setClocking]               = useState(false);
   const [cameraOpen, setCameraOpen]           = useState(false);
   const [loading, setLoading]                 = useState(false);
@@ -375,15 +377,33 @@ const AttendanceDashboard = () => {
       setShowRegForm(false);
       setRegForm({ date: '', reason: '', check_in: '', check_out: '' });
       loadData();
-    } catch {
-      showToast('Failed to submit. Please try again.', 'error');
+    } catch (err) {
+      showToast(err?.response?.data?.message || err?.response?.data?.error || 'Failed to submit. Please try again.', 'error');
     }
   };
 
+  const loadRegQuota = useCallback((dateStr) => {
+    if (!user?.employee_id) return;
+    api.get(`/attendance/regularize/quota/${user.employee_id}${dateStr ? `?date=${dateStr}` : ''}`)
+      .then((r) => setRegQuota(r.data))
+      .catch(() => setRegQuota(null));
+  }, [user?.employee_id]);
+
   const openRegDrawer = (dateStr) => {
     setRegForm({ date: dateStr, reason: '', check_in: '', check_out: '' });
+    loadRegQuota(dateStr);
     setShowRegForm(true);
   };
+
+  // Hours the corrected times give (check-out minus check-in; overnight-safe).
+  const regHours = (() => {
+    const { check_in: a, check_out: b } = regForm;
+    if (!a || !b) return null;
+    const [ah, am] = a.split(':').map(Number); const [bh, bm] = b.split(':').map(Number);
+    let mins = (bh * 60 + bm) - (ah * 60 + am);
+    if (mins < 0) mins += 1440;
+    return `${Math.floor(mins / 60)}h ${String(mins % 60).padStart(2, '0')}m`;
+  })();
 
   // ── CSV download ───────────────────────────────────────────────────────────
   const downloadCSV = () => {
@@ -971,6 +991,64 @@ const AttendanceDashboard = () => {
         </div>
       </div>
 
+      {/* ── My punctuality + day by day (§278: the employee sees when they came,
+            how often on time, inside the grace time, late, and early exits) ── */}
+      {monthlySummary && (
+        <div className="atd-card" style={{ marginBottom: 12 }} data-testid="my-punctuality">
+          <div className="atd-card-hd">
+            <span className="atd-card-title">My punctuality — {currentDate.toLocaleString('en-GB', { month: 'long', year: 'numeric' })}</span>
+            <Clock size={16} color="#9ca3af" />
+          </div>
+          <div className="atd-card-body" style={{ padding: '12px 15px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10, marginBottom: 14 }}>
+              {[
+                { label: 'On time', value: monthlySummary.on_time ?? 0, hint: 'at or before shift start', color: '#059669' },
+                { label: 'Inside grace time', value: monthlySummary.within_grace ?? 0, hint: `${monthlySummary.grace_minutes_used ?? 0} min of grace used`, color: '#b45309' },
+                { label: 'Late', value: monthlySummary.late ?? 0, hint: `${monthlySummary.late_minutes_total ?? 0} min late in total`, color: '#dc2626' },
+                { label: 'Left early', value: monthlySummary.early_exits ?? 0, hint: 'before shift end', color: '#7c3aed' },
+                { label: 'Usual arrival', value: monthlySummary.avg_check_in || '--', hint: 'average check-in', color: '#374151' },
+                { label: 'Average hours', value: monthlySummary.avg_hours != null ? `${monthlySummary.avg_hours} h` : '--', hint: 'per day worked', color: '#374151' },
+              ].map((k) => (
+                <div key={k.label} style={{ background: '#faf9ff', border: '1px solid #efeafd', borderRadius: 10, padding: '10px 12px' }}>
+                  <div style={{ fontSize: 20, fontWeight: 800, color: k.color }}>{k.value}</div>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: '#374151' }}>{k.label}</div>
+                  <div style={{ fontSize: 11, color: '#9ca3af' }}>{k.hint}</div>
+                </div>
+              ))}
+            </div>
+            {attendanceRecords.length > 0 && (
+              <div style={{ maxHeight: 320, overflowY: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                  <thead>
+                    <tr style={{ textAlign: 'left', color: '#6b7280', fontSize: 12, position: 'sticky', top: 0, background: '#fff' }}>
+                      {['Date', 'In', 'Out', 'Hours', 'Arrival', 'Status'].map((h) => <th key={h} style={{ padding: '6px 8px', fontWeight: 600 }}>{h}</th>)}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {[...attendanceRecords].reverse().filter((r) => r.status !== 'holiday').map((r) => {
+                      const arrival = r.status === 'absent' ? '—'
+                        : r.status === 'late' ? `Late ${r.late_minutes} min`
+                        : r.late_minutes > 0 ? `Grace ${r.late_minutes} min` : r.check_in ? 'On time' : '—';
+                      const tone = r.status === 'late' ? '#dc2626' : r.late_minutes > 0 ? '#b45309' : '#059669';
+                      return (
+                        <tr key={r.date} style={{ borderTop: '1px solid #f3f4f6' }}>
+                          <td style={{ padding: '6px 8px' }}>{fmtDate(r.date)}</td>
+                          <td style={{ padding: '6px 8px' }}>{r.check_in || '—'}</td>
+                          <td style={{ padding: '6px 8px' }}>{r.check_out || '—'}{r.early_leave_minutes > 0 ? <span style={{ color: '#7c3aed', fontSize: 11 }}> (early {r.early_leave_minutes} min)</span> : null}</td>
+                          <td style={{ padding: '6px 8px' }}>{r.hours_worked ? `${r.hours_worked} h` : '—'}</td>
+                          <td style={{ padding: '6px 8px', color: arrival === '—' ? '#9ca3af' : tone, fontWeight: 600 }}>{arrival}</td>
+                          <td style={{ padding: '6px 8px', textTransform: 'capitalize', color: '#374151' }}>{String(r.status || '').replace('_', ' ')}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* ── My Regularization Requests ── */}
       {regRequests.length > 0 && (
         <div className="atd-card" style={{ marginBottom: 12 }}>
@@ -995,6 +1073,17 @@ const AttendanceDashboard = () => {
                       )}
                     </div>
                     <p className="atd-reg-reason">{req.reason}</p>
+                    {req.requested_hours != null && (
+                      <span className="atd-reg-times">{Number(req.requested_hours).toFixed(2)} h</span>
+                    )}
+                    {(req.hr_name || req.manager_name) && req.status !== 'pending' && (
+                      <span className="atd-reg-times">
+                        {req.status === 'approved' ? 'Approved' : 'Rejected'} by {req.hr_name || req.manager_name}
+                      </span>
+                    )}
+                    {req.status === 'pending' && req.approval_level === 'hr' && (
+                      <span className="atd-reg-times">Manager approved · waiting for HR</span>
+                    )}
                     <span
                       className="atd-reg-status"
                       style={{ background: sc.bg, color: sc.text }}
@@ -1084,8 +1173,15 @@ const AttendanceDashboard = () => {
                 >
                   <AlertCircle size={14} style={{ marginTop: 1, flexShrink: 0 }} />
                   <span>
-                    Regularization requests are subject to manager approval.
-                    You will be notified once reviewed.
+                    {regHours && <><strong>Hours: {regHours}</strong><br /></>}
+                    {regQuota && (
+                      <>
+                        {regQuota.used} of {regQuota.limit} corrections used for this month
+                        {regQuota.used >= regQuota.limit ? ' — the limit is reached, no more can be raised.' : '.'}
+                        <br />
+                      </>
+                    )}
+                    Your reporting manager approves the correction. You will be notified once reviewed.
                   </span>
                 </div>
               </form>

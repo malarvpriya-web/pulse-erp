@@ -346,6 +346,55 @@ const overtime = {
   },
 };
 
+// Shift change requests (Shift Calendar → Request Shift Change, §278). The
+// reporting manager or HR decides; approval writes a one-day override or a new
+// shift assignment (attendance.routes.js).
+const shiftChange = {
+  type: 'shift', label: 'Shift change', page: 'AttendanceApprovals', myPage: 'ShiftCalendar',
+  pending(companyId) {
+    return q(`
+      SELECT 'shift:' || r.id AS id, r.id::text AS source_id,
+             CONCAT('Shift change · ', COALESCE(rs.name, 'shift'), ' · ', TO_CHAR(r.request_date, 'DD Mon YY'),
+                    CASE WHEN r.change_type = 'permanent' THEN ' onwards' ELSE '' END) AS request_title,
+             r.reason AS description, NULL::numeric AS amount,
+             e.id AS requester_emp_id, ${name('e')} AS requested_by, e.company_email AS requester_email,
+             e.department, r.created_at AS request_date, r.company_id
+        FROM shift_change_requests r
+        LEFT JOIN employees e ON e.id = r.employee_id
+        LEFT JOIN hr_shifts rs ON rs.id = r.requested_shift_id
+       WHERE r.status = 'pending' ${cf(companyId, 'r.company_id')}`, cp(companyId));
+  },
+  stage: () => 'Reporting manager',
+  canAct: (ctx, r) => isAttendanceApprover(ctx.req) && attendanceDecides(ctx, r.requester_emp_id, r.company_id, 'shift'),
+  actions: (r) => ({
+    approve: req_('put', `/attendance/shift-change-requests/${r.source_id}/approve`, {}, 'remarks'),
+    reject:  req_('put', `/attendance/shift-change-requests/${r.source_id}/reject`,  {}, 'remarks', { commentRequired: true }),
+  }),
+  mine(ctx) {
+    return q(`
+      SELECT 'shift:' || r.id AS id, r.id::text AS source_id,
+             CONCAT('Shift change · ', COALESCE(rs.name, 'shift'), ' · ', TO_CHAR(r.request_date, 'DD Mon YY')) AS request_title,
+             NULL::numeric AS amount, r.created_at AS request_date, r.status AS raw_status,
+             r.review_remarks AS comments,
+             CASE WHEN r.status = 'pending' THEN COALESCE(${name('m')}, 'Reporting manager') END AS current_approver,
+             r.reviewed_at AS decided_at
+        FROM shift_change_requests r
+        LEFT JOIN employees e ON e.id = r.employee_id
+        LEFT JOIN employees m ON m.id = e.reporting_manager_id
+        LEFT JOIN hr_shifts rs ON rs.id = r.requested_shift_id
+       WHERE r.employee_id = $1`, [ctx.employeeId]);
+  },
+  decided(ctx) {
+    return q(`
+      SELECT 'shift:' || r.id AS id, r.id::text AS source_id,
+             CONCAT('Shift change · ', TO_CHAR(r.request_date, 'DD Mon YY')) AS request_title,
+             ${name('e')} AS requested_by, r.created_at AS request_date,
+             r.status AS decision, r.reviewed_at AS decision_date, r.review_remarks AS comments
+        FROM shift_change_requests r LEFT JOIN employees e ON e.id = r.employee_id
+       WHERE r.reviewed_by = $1 AND r.status IN ('approved', 'rejected')`, [ctx.userId]);
+  },
+};
+
 // Reimbursement workflow (travel-reimbursement.routes.js): each status is a level.
 const EXP_LEVEL = {
   'Submitted':         { key: 'manager',  stage: 'L1 — Reporting manager',   path: 'manager-approve' },
@@ -1277,7 +1326,7 @@ const internStipend = {
   actions: () => ({ open: { page: 'InternStipends' } }),
 };
 
-export const SOURCES = [leave, regularization, overtime, expense, purchase, ecn, payment, travel, advance, requisition, offer,
+export const SOURCES = [leave, regularization, overtime, shiftChange, expense, purchase, ecn, payment, travel, advance, requisition, offer,
   internEval, interviewFeedback, probationReview, probationDecision, gatePass, visitorEntry, itDeclaration, bankChangeSrc, correction, timesheet,
   fnfSettlement, internStipend];
 export const SOURCE_BY_TYPE = Object.fromEntries(SOURCES.map(s => [s.type, s]));

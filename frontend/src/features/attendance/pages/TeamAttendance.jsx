@@ -116,16 +116,18 @@ function exportWeeklyCSV(weekData, weekDates) {
 }
 
 export default function TeamAttendance() {
-  const { user, role } = useAuth();
+  const { user, hasAnyRole, isEmployeeOnly } = useAuth();
   const toast = useToast();
   const navigate = useNavigate();
   const userId  = user?.employee_id;
-  const isAdmin = role === 'super_admin' || role === 'admin' || role === 'hr';
+  // HR / admin see the whole company; a manager or department head sees their
+  // team (direct reports + the departments they head). Roles are many-to-many.
+  const isAdmin = !!hasAnyRole?.('super_admin', 'admin', 'hr', 'hr_manager');
 
   // Employees have no team — redirect to My Attendance
   useEffect(() => {
-    if (role === 'employee') navigate('/AttendanceDashboard', { replace: true });
-  }, [role, navigate]);
+    if (isEmployeeOnly) navigate('/AttendanceDashboard', { replace: true });
+  }, [isEmployeeOnly, navigate]);
 
   // ── Core state ──────────────────────────────────────────────────────────────
   const [records, setRecords]           = useState([]);
@@ -149,13 +151,6 @@ export default function TeamAttendance() {
   const [editingRow, setEditingRow] = useState(null);
   const [editStatus, setEditStatus] = useState('');
   const [editSaving, setEditSaving] = useState(false);
-
-  // ── Mark Holiday ────────────────────────────────────────────────────────────
-  const [showHolidayModal, setShowHolidayModal] = useState(false);
-  const [holidayName, setHolidayName]           = useState('');
-  const [holidayType, setHolidayType]           = useState('National');
-  const [holidayDesc, setHolidayDesc]           = useState('');
-  const [holidaySaving, setHolidaySaving]       = useState(false);
 
   // ── Regularize ──────────────────────────────────────────────────────────────
   const [regRow, setRegRow]           = useState(null);
@@ -283,26 +278,6 @@ export default function TeamAttendance() {
     }
   }
 
-  async function handleMarkHoliday() {
-    if (!holidayName.trim()) { toast.error('Holiday name is required'); return; }
-    setHolidaySaving(true);
-    try {
-      await api.post('/holidays', {
-        name: holidayName.trim(),
-        date,
-        type: holidayType,
-        description: holidayDesc.trim(),
-      });
-      toast.success(`${holidayName.trim()} marked as holiday on ${date}`);
-      setShowHolidayModal(false);
-      setHolidayName(''); setHolidayDesc(''); setHolidayType('National');
-      fetchDaily();
-    } catch (e) {
-      toast.error('Failed to mark holiday: ' + (e?.response?.data?.error || e.message));
-    } finally {
-      if (isMounted.current) setHolidaySaving(false);
-    }
-  }
 
   async function handleRegularize() {
     if (!regReason.trim()) { toast.error('Reason is required'); return; }
@@ -335,7 +310,7 @@ export default function TeamAttendance() {
 
   const weekDates = getWeekDates(date);
 
-  if (role === 'employee') return null;
+  if (isEmployeeOnly) return null;
 
   // ── Shared input/label styles ────────────────────────────────────────────────
   const inputStyle = { width: '100%', padding: '8px 12px', border: '1px solid #e5e7eb', borderRadius: 8, fontSize: 13, outline: 'none', boxSizing: 'border-box' };
@@ -384,12 +359,12 @@ export default function TeamAttendance() {
           <input type="date" value={date} max={TODAY} onChange={e => setDate(e.target.value)}
             style={{ padding: '7px 12px', border: '1px solid #e5e7eb', borderRadius: 8, fontSize: 13, outline: 'none', color: '#374151', background: '#fff' }} />
 
-          {/* Mark Holiday — admin only */}
+          {/* Holidays are declared in Leaves → Holiday Calendar (one place; §278). */}
           {isAdmin && (
-            <button onClick={() => setShowHolidayModal(true)}
-              style={{ padding: '7px 14px', background: '#8b5cf6', color: '#fff', border: 'none', borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }}>
-              <Calendar size={13} /> Mark Holiday
-            </button>
+            <a href="/HolidayCalendar"
+              style={{ padding: '7px 14px', background: '#fff', color: '#6B3FDB', border: '1px solid #ddd6fe', borderRadius: 8, fontSize: 12, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap', textDecoration: 'none' }}>
+              <Calendar size={13} /> Holiday Calendar
+            </a>
           )}
 
           {/* Bulk mark — admin only */}
@@ -403,7 +378,7 @@ export default function TeamAttendance() {
           {/* CSV export */}
           <button
             onClick={() => viewMode === 'daily' ? exportDailyCSV(filtered, date) : exportWeeklyCSV(weekData, weekDates)}
-            style={{ padding: '7px 14px', background: '#10b981', color: '#fff', border: 'none', borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4 }}>
+            style={{ padding: '7px 14px', background: 'var(--color-primary, #6B3FDB)', color: '#fff', border: 'none', borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4 }}>
             <Download size={13} /> Export CSV
           </button>
         </div>
@@ -523,7 +498,7 @@ export default function TeamAttendance() {
                                 Edit
                               </button>
                             )}
-                            {(isAdmin || role === 'manager') && r.status !== 'Weekend' && (
+                            {(isAdmin || hasAnyRole?.('manager', 'department_head')) && r.status !== 'Weekend' && (
                               <button
                                 onClick={() => {
                                   setRegRow(r);
@@ -631,49 +606,6 @@ export default function TeamAttendance() {
               <button onClick={handleBulkMark} disabled={bulkLoading}
                 style={{ flex: 1, padding: '9px 0', background: bulkLoading ? '#8b5cf6' : '#7c5cf0', color: '#fff', border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: bulkLoading ? 'not-allowed' : 'pointer' }}>
                 {bulkLoading ? 'Marking…' : 'Mark All Employees'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ── Mark Holiday Modal ── */}
-      {showHolidayModal && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
-          <div style={{ background: '#fff', borderRadius: 14, padding: 28, width: 400, boxShadow: '0 20px 60px rgba(0,0,0,0.15)' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-              <h2 style={{ fontSize: 16, fontWeight: 700, color: '#1f2937', margin: 0 }}>Mark Holiday</h2>
-              <button onClick={() => setShowHolidayModal(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#9ca3af', padding: 4 }}><X size={18} /></button>
-            </div>
-            <p style={{ fontSize: 13, color: '#6b7280', marginBottom: 18 }}>
-              Mark <strong>{date}</strong> as a company holiday. This will be visible in the Holiday Calendar.
-            </p>
-            <div style={{ marginBottom: 14 }}>
-              <label style={labelStyle}>Holiday Name *</label>
-              <input value={holidayName} onChange={e => setHolidayName(e.target.value)}
-                placeholder="e.g. Republic Day"
-                style={inputStyle} />
-            </div>
-            <div style={{ marginBottom: 14 }}>
-              <label style={labelStyle}>Type</label>
-              <select value={holidayType} onChange={e => setHolidayType(e.target.value)} style={inputStyle}>
-                {HOLIDAY_TYPES.map(t => <option key={t}>{t}</option>)}
-              </select>
-            </div>
-            <div style={{ marginBottom: 22 }}>
-              <label style={labelStyle}>Description (optional)</label>
-              <input value={holidayDesc} onChange={e => setHolidayDesc(e.target.value)}
-                placeholder="Additional notes"
-                style={inputStyle} />
-            </div>
-            <div style={{ display: 'flex', gap: 10 }}>
-              <button onClick={() => setShowHolidayModal(false)}
-                style={{ flex: 1, padding: '9px 0', background: '#f3f4f6', color: '#374151', border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
-                Cancel
-              </button>
-              <button onClick={handleMarkHoliday} disabled={holidaySaving}
-                style={{ flex: 1, padding: '9px 0', background: holidaySaving ? '#a78bfa' : '#8b5cf6', color: '#fff', border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: holidaySaving ? 'not-allowed' : 'pointer' }}>
-                {holidaySaving ? 'Saving…' : 'Mark as Holiday'}
               </button>
             </div>
           </div>

@@ -102,7 +102,7 @@ describe('employee self-service pages inside the shared menus', () => {
     expect(keep(section)).toEqual(pages);
   });
 
-  it.each(['EmployeeRecords', 'Policies', 'Downloads', 'EmployeeAssets', 'QRAttendance',
+  it.each(['EmployeeRecords', 'Policies', 'Downloads', 'EmployeeAssets',
     'ShiftCalendar', 'LeaveCalendar', 'LeaveEncashment', 'MyAnalytics', 'CompOff'])(
     '%s is refused by URL too', (page) => {
       expect(canEmployeeAccessPage(page)).toBe(false);

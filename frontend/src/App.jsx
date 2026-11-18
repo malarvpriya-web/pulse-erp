@@ -131,18 +131,22 @@ function App() {
         <Route path="/BudgetVsActuals"       element={<Navigate to="/BudgetManagement" replace />} />
         <Route path="/Tickets"              element={<Navigate to="/SupportDashboard" replace />} />
 
-        {/* Attendance settings consolidation redirects */}
-        <Route path="/GeneralSettings"    element={<Navigate to="/AttendanceSettings?tab=general"     replace />} />
-        <Route path="/AttendancePolicies" element={<Navigate to="/AttendanceSettings?tab=policies"    replace />} />
-        <Route path="/ShiftManagement"    element={<Navigate to="/AttendanceSettings?tab=shifts"      replace />} />
-        <Route path="/GeoFencing"         element={<Navigate to="/AttendanceSettings?tab=geo-fencing" replace />} />
-        <Route path="/DeviceManagement"   element={<Navigate to="/AttendanceSettings?tab=devices"     replace />} />
-        <Route path="/FaceAttendance"     element={<Navigate to="/AttendanceSettings?tab=face"        replace />} />
+        {/* Attendance consolidation redirects (§278). Settings is one page in
+            Attendance → Configuration; devices live on Punch Machines; QR
+            punching and the browser face-recognition setup were removed. */}
+        <Route path="/AttendanceSettings" element={<Navigate to="/AttendanceConfig?tab=settings" replace />} />
+        <Route path="/GeneralSettings"    element={<Navigate to="/AttendanceConfig?tab=settings" replace />} />
+        <Route path="/AttendancePolicies" element={<Navigate to="/AttendanceConfig?tab=settings" replace />} />
+        <Route path="/ShiftManagement"    element={<Navigate to="/AttendanceConfig?tab=shifts"   replace />} />
+        <Route path="/GeoFencing"         element={<Navigate to="/AttendanceConfig?tab=geo"      replace />} />
+        <Route path="/DeviceManagement"   element={<Navigate to="/PunchImport"                   replace />} />
+        <Route path="/FaceAttendance"     element={<Navigate to="/PunchImport"                   replace />} />
+        <Route path="/QRAttendance"       element={<Navigate to="/AttendanceDashboard"           replace />} />
         {/* BiometricAccess is NOT a duplicate of the devices tab, and this
             redirect used to be one — same mistake as the ChartOfAccounts /
             PeriodClosing / CostCenters redirects removed above (§24). Its three
             tabs are Attendance Import, Gate Passes and Visitor Management;
-            AttendanceSettings?tab=devices renders DeviceManagement, which covers
+            the devices tab rendered DeviceManagement, which covers
             /biometric/devices* only. So /gate-passes and /visitors — both with
             live tables and routes (hr/biometric.routes.js) — had no reachable
             screen anywhere in the app. Since §272 /BiometricAccess redirects

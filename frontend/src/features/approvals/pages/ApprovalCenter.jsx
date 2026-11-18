@@ -42,7 +42,7 @@ const SUBMIT_IN = [
 ];
 
 const TYPE_TONE = {
-  leave: 'indigo', reg: 'amber', ot: 'violet', exp: 'violet', pr: 'pink', ecn: 'sky',
+  leave: 'indigo', reg: 'amber', ot: 'violet', shift: 'cyan', exp: 'violet', pr: 'pink', ecn: 'sky',
   pay: 'green', travel: 'green', adv: 'green', requisition: 'cyan', offer: 'cyan', appr: 'grey',
   ieval: 'amber', ivfb: 'amber', prob: 'indigo', probd: 'indigo', gate: 'cyan', itdecl: 'violet', bank: 'amber',
   fnf: 'green', stip: 'green',

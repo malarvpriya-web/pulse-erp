@@ -116,8 +116,10 @@ const inputStyle = {
 
 // ── Main component ────────────────────────────────────────────────────────────
 export default function ShiftCalendar() {
-  const { user, role } = useAuth();
-  const isAdminRole = ['super_admin', 'admin', 'hr'].includes(role);
+  const { user, hasAnyRole } = useAuth();
+  // Roles are many-to-many: a single-role check missed hr_manager and anyone
+  // holding HR as a second role (§278).
+  const isAdminRole = !!hasAnyRole?.('super_admin', 'admin', 'hr', 'hr_manager');
 
   const [currentDate, setCurrentDate]       = useState(new Date());
   const [myShift, setMyShift]               = useState(null);
@@ -128,7 +130,11 @@ export default function ShiftCalendar() {
   const [loadError, setLoadError]           = useState(null);
   const [selectedCell, setSelectedCell]     = useState(null);
   const [showSCR, setShowSCR]               = useState(false);
-  const [scrForm, setScrForm]               = useState({ date: '', shift_id: '', reason: '' });
+  const [scrForm, setScrForm]               = useState({ date: '', shift_id: '', reason: '', change_type: 'day' });
+  const [scrError, setScrError]             = useState('');
+  // The shift each day actually resolves to (override > assignment >
+  // rotation > default), from GET /attendance/shift-calendar/:id.
+  const [dayShifts, setDayShifts]           = useState({});
   const [scrLoading, setScrLoading]         = useState(false);
   const [scrSuccess, setScrSuccess]         = useState(false);
   // Admin-only: employee selector
@@ -163,9 +169,12 @@ export default function ShiftCalendar() {
     const attCall = effectiveEmpId
       ? api.get(`/attendance/employee/${effectiveEmpId}?month=${month}&year=${year}`)
       : Promise.resolve(null);
+    const calCall = effectiveEmpId
+      ? api.get(`/attendance/shift-calendar/${effectiveEmpId}?month=${month}&year=${year}`)
+      : Promise.resolve(null);
 
-    const [shiftRes, assignRes, holRes, empRes, attRes] = await Promise.allSettled(
-      [...baseCalls, attCall]
+    const [shiftRes, assignRes, holRes, empRes, attRes, calRes] = await Promise.allSettled(
+      [...baseCalls, attCall, calCall]
     );
 
     if (!isMounted.current) return;
@@ -185,7 +194,16 @@ export default function ShiftCalendar() {
     const myAssign = targetId
       ? assignList.find(a => String(a.employee_id) === String(targetId) && a.is_active)
       : null;
-    setMyShift(myAssign ? (shiftList.find(s => s.id === myAssign.shift_id) || null) : null);
+    const full = (id) => shiftList.find(s => String(s.id) === String(id)) || null;
+    const days = calRes.status === 'fulfilled' ? (calRes.value?.data?.days || []) : [];
+    const dmap = {};
+    days.forEach(d => { if (d.shift) dmap[d.date] = { ...(full(d.shift.id) || {}), ...d.shift, source: d.source }; });
+    setDayShifts(dmap);
+    // Banner: the shift for today when it is in this month, else the first
+    // resolved day; fall back to the standing assignment.
+    const todayKey = new Date().toLocaleDateString('en-CA');
+    const pick = dmap[todayKey] || Object.values(dmap)[0] || null;
+    setMyShift(pick || (myAssign ? full(myAssign.shift_id) : null));
 
     if (attRes.status === 'fulfilled' && attRes.value?.data?.records) {
       const map = {};
@@ -253,30 +271,39 @@ export default function ShiftCalendar() {
     : '—';
 
   // ── Shift change request helpers ─────────────────────────────────────────────
+  // Only on one's own calendar — HR viewing someone else must not file a
+  // request for themselves by mistake (it used to post the viewer's id).
+  const isOwnCalendar = !!user?.employee_id && String(effectiveEmpId) === String(user.employee_id);
+
   const openSCR = (date = todayYMD) => {
-    setScrForm({ date, shift_id: '', reason: '' });
+    setScrForm({ date, shift_id: '', reason: '', change_type: 'day' });
     setScrSuccess(false);
+    setScrError('');
     setShowSCR(true);
   };
   const closeSCR = () => {
     setShowSCR(false);
     setScrSuccess(false);
-    setScrForm({ date: '', shift_id: '', reason: '' });
+    setScrError('');
+    setScrForm({ date: '', shift_id: '', reason: '', change_type: 'day' });
   };
   const submitSCR = async () => {
     if (!scrForm.shift_id || !scrForm.date || !scrForm.reason.trim()) return;
     setScrLoading(true);
+    setScrError('');
     try {
       await api.post('/attendance/shift-change-requests', {
         employee_id:        user.employee_id,
         request_date:       scrForm.date,
-        current_shift_id:   myShift?.id || null,
         requested_shift_id: parseInt(scrForm.shift_id, 10),
+        change_type:        scrForm.change_type,
         reason:             scrForm.reason,
       });
       setScrSuccess(true);
       setTimeout(closeSCR, 2000);
-    } catch { /* keep modal open for retry */ }
+    } catch (e) {
+      setScrError(e?.response?.data?.message || e?.response?.data?.error || 'Could not send the request');
+    }
     setScrLoading(false);
   };
 
@@ -304,7 +331,7 @@ export default function ShiftCalendar() {
           <button className="plh-cta plh-cta--ghost" onClick={() => window.print()}>
             <Printer size={13} /> Print
           </button>
-          {effectiveEmpId && (
+          {isOwnCalendar && (
             <button className="plh-cta plh-cta--ghost" onClick={() => openSCR()}>
               <ArrowRightLeft size={13} /> Request Shift Change
             </button>
@@ -383,7 +410,7 @@ export default function ShiftCalendar() {
           </div>
           <div style={{ flex: 1 }}>
             <div style={{ fontSize: 11, fontWeight: 600, opacity: 0.7, textTransform: 'uppercase', letterSpacing: 0.5 }}>
-              {isAdminRole ? 'Assigned Shift' : 'My Assigned Shift'}
+              {isOwnCalendar ? 'My Shift' : 'Shift'}{myShift?.source === 'rotation' ? ' (team rotation)' : myShift?.source === 'date_override' ? ' (changed for the day)' : ''}
             </div>
             <div style={{ fontSize: 20, fontWeight: 700, marginTop: 2 }}>
               {myShift?.name || 'No shift assigned'}
@@ -532,9 +559,12 @@ export default function ShiftCalendar() {
                   </div>
                 ) : isOff ? (
                   <div style={{ fontSize: 9, color: '#d1d5db', marginTop: 2, fontWeight: 600 }}>OFF</div>
-                ) : myShift ? (
-                  <ShiftBadge shift={myShift} />
+                ) : dayShifts[ymd] ? (
+                  <ShiftBadge shift={dayShifts[ymd]} />
                 ) : null}
+                {dayShifts[ymd]?.source === 'date_override' && !isOff && !isHoliday && (
+                  <div style={{ fontSize: 9, color: '#92400e', fontWeight: 600 }}>changed</div>
+                )}
 
                 {!isFuture && att && (
                   <div style={{ fontSize: 9, color: '#9ca3af', marginTop: 2, lineHeight: 1.4 }}>
@@ -583,7 +613,8 @@ export default function ShiftCalendar() {
       {selectedCell && (
         <DayDetailModal
           cell={selectedCell}
-          myShift={myShift}
+          myShift={dayShifts[selectedCell.ymd] || null}
+          canRequest={isOwnCalendar}
           onClose={() => setSelectedCell(null)}
           onShiftChange={date => { setSelectedCell(null); openSCR(date); }}
         />
@@ -593,7 +624,8 @@ export default function ShiftCalendar() {
       {showSCR && (
         <ShiftChangeModal
           shifts={shifts}
-          myShift={myShift}
+          myShift={dayShifts[scrForm.date] || myShift}
+          error={scrError}
           form={scrForm}
           setForm={setScrForm}
           loading={scrLoading}
@@ -616,7 +648,7 @@ export default function ShiftCalendar() {
 }
 
 // ── Day Detail Modal ──────────────────────────────────────────────────────────
-function DayDetailModal({ cell, myShift, onClose, onShiftChange }) {
+function DayDetailModal({ cell, myShift, canRequest, onClose, onShiftChange }) {
   const { d, ymd, dow, isOff, isHoliday, holidayName, att, isToday, isFuture } = cell;
   const [yr, mo] = ymd.split('-');
   const dateLabel  = `${DAY_FULL[dow]}, ${MONTH_NAMES[parseInt(mo, 10) - 1]} ${d}, ${yr}`;
@@ -720,11 +752,11 @@ function DayDetailModal({ cell, myShift, onClose, onShiftChange }) {
         </div>
 
         {/* Footer actions */}
-        {!isHoliday && !isOff && (
+        {canRequest && !isHoliday && !isOff && (
           <div style={{ padding: '12px 20px', borderTop: '1px solid #f0f0f4', display: 'flex', gap: 8 }}>
             {canRegularize && (
               <a
-                href="/attendance/regularize"
+                href="/AttendanceDashboard"
                 style={{ flex: 1, padding: '9px 0', borderRadius: 8, background: '#fff', border: '1px solid #e5e7eb', color: '#374151', fontSize: 13, fontWeight: 500, textAlign: 'center', textDecoration: 'none', display: 'block' }}
               >
                 <Edit3 size={12} style={{ display: 'inline', marginRight: 4, verticalAlign: 'middle' }} />
@@ -746,7 +778,7 @@ function DayDetailModal({ cell, myShift, onClose, onShiftChange }) {
 }
 
 // ── Shift Change Request Modal ────────────────────────────────────────────────
-function ShiftChangeModal({ shifts, myShift, form, setForm, loading, success, onSubmit, onClose }) {
+function ShiftChangeModal({ shifts, myShift, error, form, setForm, loading, success, onSubmit, onClose }) {
   const available = shifts.filter(s => s.id !== myShift?.id);
   const canSubmit = form.shift_id && form.date && form.reason.trim();
 
@@ -784,6 +816,17 @@ function ShiftChangeModal({ shifts, myShift, form, setForm, loading, success, on
                 />
               </div>
               <div>
+                <label style={labelStyle}>For *</label>
+                <select
+                  value={form.change_type}
+                  onChange={e => setForm(f => ({ ...f, change_type: e.target.value }))}
+                  style={{ ...inputStyle, background: '#fff' }}
+                >
+                  <option value="day">This day only</option>
+                  <option value="permanent">From this date onwards</option>
+                </select>
+              </div>
+              <div>
                 <label style={labelStyle}>Current Shift</label>
                 <div style={{ ...inputStyle, background: '#f9fafb', color: '#6b7280' }}>
                   {myShift
@@ -795,7 +838,7 @@ function ShiftChangeModal({ shifts, myShift, form, setForm, loading, success, on
                 <label style={labelStyle}>Requested Shift *</label>
                 {available.length === 0 ? (
                   <div style={{ ...inputStyle, background: '#f9fafb', color: '#9ca3af' }}>
-                    No other shifts available — create shifts in HR {'→'} Shift Management
+                    No other shifts available — HR creates shifts in Attendance {'→'} Configuration {'→'} Shifts &amp; Rotations
                   </div>
                 ) : (
                   <select
@@ -822,6 +865,9 @@ function ShiftChangeModal({ shifts, myShift, form, setForm, loading, success, on
                   style={{ ...inputStyle, resize: 'vertical', fontFamily: 'inherit', lineHeight: 1.5 }}
                 />
               </div>
+              {error && (
+                <div role="alert" style={{ padding: '8px 10px', borderRadius: 8, background: '#fee2e2', color: '#991b1b', fontSize: 12 }}>{error}</div>
+              )}
               <div style={{ display: 'flex', gap: 8 }}>
                 <button
                   onClick={onClose}

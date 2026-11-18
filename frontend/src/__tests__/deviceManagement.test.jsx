@@ -7,7 +7,7 @@ import { render, screen, fireEvent, waitFor, within, cleanup } from '@testing-li
 const api = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(), put: vi.fn(), delete: vi.fn() }));
 vi.mock('../services/api/client', () => ({ default: api }));
 
-import DeviceManagement from '../features/attendance/pages/DeviceManagement';
+import DeviceManagement from '../features/attendance/components/DeviceManagement';
 
 const SEEDED = { id: 1, device_name: 'Main Gate - In', ip_address: '192.168.1.101', port: 4370, status: 'online', status_checked_at: null, last_sync: '2026-04-05T07:42:53Z', total_punches_today: '0' };
 const CHECKED = { id: 2, device_name: 'Plant Gate', ip_address: '10.0.0.5', port: 4370, status: 'offline', status_checked_at: new Date().toISOString(), last_error: 'connect ETIMEDOUT', last_sync: null, total_punches_today: '0' };
@@ -43,7 +43,7 @@ describe('Device Management', () => {
   it('registering needs only the IP: port and name fill themselves in, and Test works before saving', async () => {
     render(<DeviceManagement />);
     await screen.findByTestId('device-row-1');
-    fireEvent.click(screen.getAllByText('Register Device')[0]);
+    fireEvent.click(screen.getAllByText('Add Device')[0]);
     fireEvent.change(screen.getByLabelText('DEVICE IP ADDRESS *'), { target: { value: '192.168.1.50' } });
 
     api.post.mockResolvedValueOnce({ data: { connected: false, message: '192.168.1.50:4370 did not answer: ETIMEDOUT' } });
@@ -63,7 +63,7 @@ describe('Device Management', () => {
   it('a vendor sync cannot read says so instead of claiming support', async () => {
     render(<DeviceManagement />);
     await screen.findByTestId('device-row-1');
-    fireEvent.click(screen.getAllByText('Register Device')[0]);
+    fireEvent.click(screen.getAllByText('Add Device')[0]);
     fireEvent.click(screen.getByText(/More details/));
     fireEvent.change(screen.getByLabelText('VENDOR'), { target: { value: 'Suprema' } });
     expect(screen.getByText(/Suprema devices cannot be synced from Pulse yet/)).toBeTruthy();

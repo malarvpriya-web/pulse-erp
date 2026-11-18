@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   FileEdit, CheckCircle, X, Clock, AlertCircle, RefreshCw, User,
   ChevronDown, Calendar, Filter, CheckSquare,
@@ -18,6 +18,52 @@ const STATUS_META = {
 };
 
 function fmt(t) { return t ? String(t).slice(0, 5) : '--'; }
+function hrs(h) {
+  if (h == null || h === '') return '--';
+  const n = Number(h); if (!Number.isFinite(n)) return '--';
+  const hh = Math.floor(n); const mm = Math.round((n - hh) * 60);
+  return `${hh}h ${String(mm).padStart(2, '0')}m`;
+}
+const stamp = (d) => d ? new Date(d).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
+
+// Recorded (machine / app) vs requested times, and the hours requested.
+function TimeCompare({ req }) {
+  const cell = (label, value, strong) => (
+    <div>
+      <div style={{ fontSize: 11, color: '#9ca3af', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 2 }}>{label}</div>
+      <div style={{ fontSize: 14, fontWeight: strong ? 700 : 500, color: strong ? '#111827' : '#6b7280' }}>{value}</div>
+    </div>
+  );
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0,1fr))', gap: 10, background: '#f9fafb', borderRadius: 8, padding: 12, marginBottom: 12 }}>
+      {cell('Recorded in / out', `${fmt(req.recorded_check_in)} → ${fmt(req.recorded_check_out)}`)}
+      {cell('Requested in / out', `${fmt(req.check_in)} → ${fmt(req.check_out)}`, true)}
+      {cell('Hours (requested)', hrs(req.requested_hours), true)}
+    </div>
+  );
+}
+
+// Who decided, at which step, when — kept on the request for the record.
+function DecisionTrail({ req }) {
+  const rows = [];
+  if (req.manager_actioned_at) {
+    const verb = req.status === 'rejected' && !req.hr_actioned_at ? 'Rejected' : 'Approved';
+    rows.push({ k: 'm', text: `${verb} by ${req.manager_name || 'reporting manager'} · ${stamp(req.manager_actioned_at)}`, note: req.manager_remarks });
+  }
+  if (req.hr_actioned_at) {
+    rows.push({ k: 'h', text: `${req.status === 'rejected' ? 'Rejected' : 'Approved'} by ${req.hr_name || 'HR'} (HR) · ${stamp(req.hr_actioned_at)}`, note: req.hr_remarks });
+  }
+  if (!rows.length) return null;
+  return (
+    <div style={{ marginBottom: 8 }}>
+      {rows.map(r => (
+        <div key={r.k} style={{ fontSize: 13, color: '#374151', marginBottom: 4 }}>
+          <strong>{r.text}</strong>{r.note ? ` — ${r.note}` : ''}
+        </div>
+      ))}
+    </div>
+  );
+}
 
 // ─── Individual request card ───────────────────────────────────────────────
 
@@ -32,9 +78,8 @@ function RequestCard({ req, onApprove, onReject }) {
   const act = async (type) => {
     setBusy(true);
     try {
-      await (type === 'approve' ? onApprove(req.id, remarks) : onReject(req.id, remarks));
-      setShowModal(null);
-      setRemarks('');
+      const ok = await (type === 'approve' ? onApprove(req.id, remarks) : onReject(req.id, remarks));
+      if (ok !== false) { setShowModal(null); setRemarks(''); }
     } finally {
       setBusy(false);
     }
@@ -73,8 +118,11 @@ function RequestCard({ req, onApprove, onReject }) {
         {/* Times + status + actions */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
           <span style={{ fontSize: 12, color: '#6b7280', whiteSpace: 'nowrap' }}>
-            {fmt(req.check_in)} → {fmt(req.check_out)}
+            {fmt(req.check_in)} → {fmt(req.check_out)} · <strong style={{ color: '#111827' }}>{hrs(req.requested_hours)}</strong>
           </span>
+          {req.status === 'pending' && req.approval_level === 'hr' && (
+            <span style={{ padding: '2px 8px', borderRadius: 99, fontSize: 11, fontWeight: 600, background: '#fef3c7', color: '#92400e' }}>Waiting for HR</span>
+          )}
 
           <span style={{
             padding: '2px 8px', borderRadius: 99, fontSize: 11, fontWeight: 600,
@@ -110,29 +158,16 @@ function RequestCard({ req, onApprove, onReject }) {
       {/* ── Expanded detail ── */}
       {expanded && (
         <div style={{ borderTop: '1px solid #f0f0f4', padding: '14px 18px', background: '#fafafa' }}>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
-            <div>
-              <div style={{ fontSize: 11, color: '#9ca3af', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 2 }}>Requested In</div>
-              <div style={{ fontSize: 15, fontWeight: 700, color: '#111827' }}>{fmt(req.check_in)}</div>
-            </div>
-            <div>
-              <div style={{ fontSize: 11, color: '#9ca3af', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 2 }}>Requested Out</div>
-              <div style={{ fontSize: 15, fontWeight: 700, color: '#111827' }}>{fmt(req.check_out)}</div>
-            </div>
-          </div>
+          <TimeCompare req={req} />
 
           <div style={{ fontSize: 13, color: '#374151', marginBottom: 8 }}>
             <strong>Reason: </strong>{req.reason}
           </div>
 
-          {req.manager_remarks && (
-            <div style={{ fontSize: 13, color: '#374151', marginBottom: 6 }}>
-              <strong>Remarks: </strong>{req.manager_remarks}
-            </div>
-          )}
+          <DecisionTrail req={req} />
 
           <div style={{ fontSize: 12, color: '#9ca3af' }}>
-            Submitted: {new Date(req.created_at).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: '2-digit', hour: '2-digit', minute: '2-digit' })}
+            Submitted: {stamp(req.created_at)}
           </div>
         </div>
       )}
@@ -157,17 +192,8 @@ function RequestCard({ req, onApprove, onReject }) {
               <strong>{req.employee_name}</strong> &nbsp;·&nbsp; {fmtDate(req.date)}
             </div>
 
-            {/* Times summary */}
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, background: '#f9fafb', borderRadius: 8, padding: 12, marginBottom: 12 }}>
-              <div>
-                <div style={{ fontSize: 11, color: '#9ca3af' }}>IN TIME</div>
-                <div style={{ fontWeight: 700, color: '#111827', fontSize: 15 }}>{fmt(req.check_in)}</div>
-              </div>
-              <div>
-                <div style={{ fontSize: 11, color: '#9ca3af' }}>OUT TIME</div>
-                <div style={{ fontWeight: 700, color: '#111827', fontSize: 15 }}>{fmt(req.check_out)}</div>
-              </div>
-            </div>
+            {/* Recorded vs requested times, with the hours worked */}
+            <TimeCompare req={req} />
 
             {/* Employee's reason */}
             <div style={{ fontSize: 13, color: '#374151', background: '#f9fafb', borderRadius: 8, padding: '10px 12px', marginBottom: 16 }}>
@@ -214,7 +240,8 @@ function RequestCard({ req, onApprove, onReject }) {
 // ─── Main page ─────────────────────────────────────────────────────────────
 
 export default function RegularizationApprovals() {
-  const { user, role } = useAuth();
+  const { hasAnyRole } = useAuth();
+  const isHR = hasAnyRole?.('hr', 'hr_manager', 'admin', 'super_admin');
 
   const [requests,  setRequests]  = useState([]);
   const [stats,     setStats]     = useState({ pending: 0, approved: 0, rejected: 0 });
@@ -273,18 +300,24 @@ export default function RegularizationApprovals() {
     setTimeout(() => { if (isMounted.current) setToast(null); }, 3500);
   };
 
+  const errText = (e) => e?.response?.data?.message || e?.response?.data?.error || 'Could not save — please try again';
+
   const handleApprove = async (id, remarks) => {
-    await api.put(`/attendance/regularize/${id}/approve`, { remarks, actor_id: user?.employee_id });
-    showMsg('Approved — attendance record corrected');
-    load();
-    loadStats();
+    try {
+      const { data } = await api.put(`/attendance/regularize/${id}/approve`, { remarks });
+      showMsg(data?.status === 'approved' ? 'Approved — attendance record corrected' : 'Approved — now waiting for HR');
+      load(); loadStats();
+      return true;
+    } catch (e) { showMsg(errText(e), 'error'); return false; }
   };
 
   const handleReject = async (id, remarks) => {
-    await api.put(`/attendance/regularize/${id}/reject`, { remarks, actor_id: user?.employee_id });
-    showMsg('Request rejected');
-    load();
-    loadStats();
+    try {
+      await api.put(`/attendance/regularize/${id}/reject`, { remarks });
+      showMsg('Request rejected');
+      load(); loadStats();
+      return true;
+    } catch (e) { showMsg(errText(e), 'error'); return false; }
   };
 
   const clearFilters = () => { setDept(''); setFromDate(''); setToDate(''); };
@@ -302,7 +335,7 @@ export default function RegularizationApprovals() {
         icon={CheckSquare}
         eyebrow="Attendance"
         title="Regularization Approvals"
-        subtitle="· Showing your direct reports only"
+        subtitle={isHR ? 'Attendance corrections from every employee' : 'Attendance corrections from your direct reports'}
         actions={<button className="plh-cta"
           onClick={() => { load(); loadStats(); }}>
           <RefreshCw size={13} /> Refresh

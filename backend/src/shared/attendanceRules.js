@@ -12,6 +12,7 @@
  * the default.
  */
 import pool from '../config/db.js';
+import { getWeekendDays, dayIsWeekend } from './weekend.js';
 
 /**
  * The working day as Attendance Settings define it:
@@ -83,4 +84,124 @@ export async function isPeriodFrozen(dateStr, companyId, db = pool) {
   } catch {
     return false;
   }
+}
+
+/**
+ * The company's Attendance Settings row: the company's own row when there is
+ * one, else the global row (company_id IS NULL). Every reader uses this one
+ * lookup. ⚠ The settings screen used `WHERE company_id = $1`, which never
+ * matched the global row, so it always showed hardcoded defaults and every
+ * save inserted ANOTHER global row (the unique index treats NULLs as
+ * distinct) — two contradicting global rows existed until §278.
+ */
+export async function getAttendanceSettingsRow(companyId, db = pool) {
+  try {
+    const { rows: [s] } = await db.query(
+      `SELECT * FROM attendance_general_settings
+        WHERE ($1::int IS NULL AND company_id IS NULL) OR company_id = $1 OR company_id IS NULL
+        ORDER BY (company_id IS NULL), id LIMIT 1`,
+      [companyId ?? null]
+    );
+    return s || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Switches the owner turns on later (§278): overtime and comp off are kept as
+ * features but OFF until configured. Regularisation is limited per employee
+ * per month (default 3) and can need HR after the manager.
+ */
+export async function getAttendanceSwitches(companyId, db = pool) {
+  const s = await getAttendanceSettingsRow(companyId, db);
+  const lim = parseInt(s?.regularization_monthly_limit, 10);
+  return {
+    otEnabled: s?.ot_enabled === true,
+    compOffEnabled: s?.comp_off_enabled === true,
+    regularizationLimit: Number.isFinite(lim) && lim >= 0 ? lim : 3,
+    regularizationNeedsHr: s?.regularization_needs_hr === true,
+  };
+}
+
+/**
+ * Record overtime for one employee-day — the ONE place an OT request is made.
+ *
+ * Used by the in-app clock-out, an approved regularisation and the punch
+ * machine sync/import. Before §278 each had its own copy (the machine path had
+ * none, so machine punchers could never earn OT). Does nothing while overtime
+ * is switched off in Attendance Settings.
+ *
+ * `opts.status` forces a status (regularisation always asks for approval);
+ * otherwise the overtime policy's requires_approval decides.
+ * Returns the hours recorded, or 0.
+ */
+export async function recordOvertime(db, { companyId, employeeId, date, otHours, isNightShift = false, status = null }) {
+  const sw = await getAttendanceSwitches(companyId, db);
+  if (!sw.otEnabled) return 0;
+  let hours = Math.max(0, Number(otHours) || 0);
+  if (hours < 0.5) return 0;
+
+  const { rows: [pol] } = await db.query(
+    `SELECT rules FROM attendance_policies
+      WHERE policy_type = 'overtime' AND is_active = true
+        AND (company_id = $1 OR company_id IS NULL)
+      ORDER BY company_id DESC NULLS LAST LIMIT 1`, [companyId ?? null]
+  ).catch(() => ({ rows: [] }));
+  const rules = pol?.rules || { requires_approval: true, weekday_multiplier: 2.0 };
+
+  const maxDaily = parseFloat(rules.max_daily_ot_hours || 0);
+  if (maxDaily > 0) hours = Math.min(hours, maxDaily);
+  if (rules.max_monthly_ot_hours) {
+    const { rows: [u] } = await db.query(
+      `SELECT COALESCE(SUM(ot_hours), 0) AS used FROM attendance_ot_records
+        WHERE employee_id = $1 AND attendance_date >= date_trunc('month', $2::date)
+          AND attendance_date < $2::date AND status IN ('approved', 'auto_approved')`,
+      [employeeId, date]
+    ).catch(() => ({ rows: [{ used: 0 }] }));
+    hours = Math.min(hours, Math.max(0, parseFloat(rules.max_monthly_ot_hours) - parseFloat(u?.used || 0)));
+  }
+  if (hours < 0.5) return 0;
+
+  const weekend = dayIsWeekend(date, await getWeekendDays(companyId));
+  const { rows: hol } = await db.query(
+    'SELECT 1 FROM holidays WHERE date = $1::date AND (company_id = $2 OR company_id IS NULL) LIMIT 1',
+    [date, companyId ?? null]
+  ).catch(() => ({ rows: [] }));
+  let type = 'weekday';
+  let mult = parseFloat(rules.weekday_multiplier || 2.0);
+  if (hol.length) { type = 'holiday'; mult = parseFloat(rules.holiday_multiplier || 2.0); }
+  else if (weekend) { type = 'weekend'; mult = parseFloat(rules.weekend_multiplier || 2.0); }
+  else if (isNightShift) { type = 'night'; mult = parseFloat(rules.night_multiplier || 2.0); }
+
+  const st = status || (rules.requires_approval === false ? 'auto_approved' : 'pending');
+  await db.query(
+    `INSERT INTO attendance_ot_records
+       (company_id, employee_id, attendance_date, ot_hours, ot_type, multiplier, status)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
+     ON CONFLICT (employee_id, attendance_date) DO UPDATE
+       SET ot_hours = $4, ot_type = $5, multiplier = $6, status = $7, updated_at = NOW()
+     WHERE attendance_ot_records.status NOT IN ('approved', 'rejected')`,
+    [companyId ?? null, employeeId, date, hours.toFixed(2), type, mult, st]
+  );
+  return hours;
+}
+
+// Late-arrival alert to the reporting manager (employees.reporting_manager_id).
+// Shared by the in-app clock-in and the punch machine sync.
+export async function notifyLateArrival(employeeId, lateMinutes, how = 'punched in') {
+  const { rows: [row] } = await pool.query(`
+    SELECT COALESCE(e.name, CONCAT(e.first_name,' ',COALESCE(e.last_name,''))) AS emp_name,
+           mu.id AS mgr_user_id
+      FROM employees e
+      JOIN employees m ON m.id = e.reporting_manager_id AND m.deleted_at IS NULL
+      JOIN users mu ON mu.employee_id = m.id AND mu.is_active = true
+     WHERE e.id = $1
+     ORDER BY mu.id LIMIT 1`, [employeeId]);
+  if (!row?.mgr_user_id) return;
+  const delay = lateMinutes > 0 ? `${lateMinutes} minute${lateMinutes !== 1 ? 's' : ''} late` : 'late (within grace)';
+  await pool.query(`
+    INSERT INTO notifications (user_id, title, message, module_name, reference_id, notification_type)
+    VALUES ($1, 'Late Arrival Alert', $2, 'attendance', $3, 'late_arrival')`,
+    [row.mgr_user_id, `${row.emp_name} ${how} ${delay} today.`, employeeId]);
 }

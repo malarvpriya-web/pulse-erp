@@ -84,13 +84,25 @@ const StatCard = ({ icon: Icon, label, value, sub, color, bg, index = 0 }) => (
   </div>
 );
 
+const FILTER = { padding: '7px 10px', borderRadius: 8, border: '1px solid #e5e7eb', fontSize: 13, background: '#fff' };
+const STATUS_LABEL = {
+  present: 'Present', late: 'Late', half_day: 'Half day', absent: 'Absent', not_punched: 'Not punched',
+  on_leave: 'On leave', holiday: 'Holiday', weekly_off: 'Weekly off', wfh: 'WFH',
+};
+const SOURCE_LABEL = { biometric: 'Machine', manual: 'HR (manual)', regularization: 'Regularization', holiday_sync: 'Holiday', auto_absent: 'Auto (absent)', offline: 'App (offline)' };
+
 const StatusBadge = ({ status }) => {
   const map = {
-    present: { bg: '#dcfce7', color: '#166534', label: 'Present' },
-    late:    { bg: '#ede9fe', color: '#5b21b6', label: 'Late' },
-    absent:  { bg: '#fee2e2', color: '#991b1b', label: 'Absent' },
-    wfh:     { bg: '#dbeafe', color: '#1e40af', label: 'WFH' },
-    field:   { bg: '#e0f2fe', color: '#0369a1', label: 'Field' },
+    present:     { bg: '#dcfce7', color: '#166534', label: 'Present' },
+    late:        { bg: '#ede9fe', color: '#5b21b6', label: 'Late' },
+    half_day:    { bg: '#fef3c7', color: '#92400e', label: 'Half day' },
+    absent:      { bg: '#fee2e2', color: '#991b1b', label: 'Absent' },
+    not_punched: { bg: '#fff7ed', color: '#9a3412', label: 'Not punched' },
+    on_leave:    { bg: '#f3e8ff', color: '#6b21a8', label: 'On leave' },
+    holiday:     { bg: '#f3f4f6', color: '#4b5563', label: 'Holiday' },
+    weekly_off:  { bg: '#f3f4f6', color: '#4b5563', label: 'Weekly off' },
+    wfh:         { bg: '#dbeafe', color: '#1e40af', label: 'WFH' },
+    field:       { bg: '#e0f2fe', color: '#0369a1', label: 'Field' },
   };
   const s = map[status] || { bg: '#f3f4f6', color: '#6b7280', label: status };
   return (
@@ -107,7 +119,13 @@ export default function LiveWorkforceDashboard() {
   const [data, setData]               = useState(null);
   const [loading, setLoading]         = useState(true);
   const [lastRefresh, setLastRefresh] = useState(null);
-  const [activeTab, setActiveTab]     = useState('overview');
+  // §278: HR filters today's list by department, status and name.
+  const [activeTab, setActiveTab]     = useState('people');
+  const [department, setDepartment]   = useState('');
+  const [departments, setDepartments] = useState([]);
+  const [statusF, setStatusF]         = useState('');
+  const [q, setQ]                     = useState('');
+  const [day, setDay]                 = useState(localDay());   // today by default
   const [geoViolations, setGeoViolations] = useState(0);
   const intervalRef = useRef(null);
   const isMounted   = useRef(true);
@@ -116,10 +134,11 @@ export default function LiveWorkforceDashboard() {
 
   const load = useCallback(async () => {
     try {
-      const today = localDay();
+      const qs = new URLSearchParams({ date: day });
+      if (department) qs.set('department', department);
       const [res, geoViolRes] = await Promise.all([
-        api.get('/attendance/live-dashboard'),
-        api.get(`/attendance/geo-violations?from_date=${today}&to_date=${today}`).catch(() => ({ data: { summary: { today_violations: 0 } } })),
+        api.get(`/attendance/live-dashboard?${qs}`),
+        api.get(`/attendance/geo-violations?from_date=${day}&to_date=${day}`).catch(() => ({ data: { summary: { today_violations: 0 } } })),
       ]);
       if (isMounted.current) {
         setData(res.data);
@@ -130,6 +149,12 @@ export default function LiveWorkforceDashboard() {
     } catch {
       if (isMounted.current) setLoading(false);
     }
+  }, [department, day]);
+
+  useEffect(() => {
+    api.get('/attendance/departments')
+      .then((r) => setDepartments((Array.isArray(r.data) ? r.data : []).map((d) => (typeof d === 'string' ? d : d.department)).filter(Boolean)))
+      .catch(() => setDepartments([]));
   }, []);
 
   useEffect(() => {
@@ -147,9 +172,30 @@ export default function LiveWorkforceDashboard() {
   const field          = presence.field   || 0;
   const onOT           = presence.on_overtime || 0;
   const stillInside    = presence.still_inside || 0;
+  const isToday        = day === localDay();
   const attendancePct  = totalEmployees > 0 ? Math.round((present / totalEmployees) * 100) : 0;
 
+  const people = (data?.people || []).filter((r) => {
+    if (statusF === 'inside' ? !r.inside : statusF && r.today_status !== statusF) return false;
+    if (q.trim()) {
+      const t = q.trim().toLowerCase();
+      if (![r.name, r.emp_code, r.designation].some((v) => String(v || '').toLowerCase().includes(t))) return false;
+    }
+    return true;
+  });
+  const exportCsv = () => {
+    const head = ['Code', 'Name', 'Department', 'Designation', 'Status', 'In', 'Out', 'Late (min)', 'Source'];
+    const lines = people.map((r) => [r.emp_code, r.name, r.department, r.designation, STATUS_LABEL[r.today_status] || r.today_status,
+      String(r.check_in || '').slice(0, 5), String(r.check_out || '').slice(0, 5), r.late_minutes || 0, r.source || '']);
+    const csv = [head, ...lines].map((row) => row.map((v) => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+    a.download = `live-workforce-${data?.date || 'today'}.csv`;
+    a.click();
+  };
+
   const tabs = [
+    { id: 'people',    label: `Employees (${people.length})` },
     { id: 'overview',  label: 'Overview' },
     { id: 'shifts',    label: 'Shift Occupancy' },
     { id: 'field',     label: 'Field Engineers' },
@@ -161,7 +207,8 @@ export default function LiveWorkforceDashboard() {
       <PageHero
         icon={LayoutDashboard}
         eyebrow="Attendance"
-        title="Live Workforce Dashboard"
+        title="Live Workforce"
+        subtitle={day === localDay() ? 'Who is in today — filter by day, department, status or name' : `Attendance on ${new Date(`${day}T00:00:00`).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}`}
         actions={<button className="plh-cta"
           onClick={load}
           disabled={loading}>
@@ -180,14 +227,14 @@ export default function LiveWorkforceDashboard() {
           {/* KPI Grid */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(185px, 1fr))', gap: 10, marginBottom: 12 }}>
             <StatCard index={0} icon={Users}         label="Total Employees" value={totalEmployees} color="#6B3FDB" bg="#f5f3ff" />
-            <StatCard index={1} icon={CheckCircle}   label="Present Today"   value={present}  sub={`${attendancePct}% attendance`} color="#10b981" bg="#dcfce7" />
-            <StatCard index={2} icon={XCircle}       label="Absent Today"    value={absent}   color="#ef4444" bg="#fee2e2" />
+            <StatCard index={1} icon={CheckCircle}   label={isToday ? 'Present Today' : 'Present'}   value={present}  sub={`${attendancePct}% attendance`} color="#10b981" bg="#dcfce7" />
+            <StatCard index={2} icon={XCircle}       label={isToday ? 'Absent Today' : 'Absent'}    value={absent}   color="#ef4444" bg="#fee2e2" />
             <StatCard index={3} icon={Clock}         label="Late Arrivals"   value={late}     color="#7c5cf0" bg="#ede9fe" />
             <StatCard index={4} icon={MapPin}        label="WFH"             value={wfh}      color="#3b82f6" bg="#dbeafe" />
             <StatCard index={5} icon={Activity}      label="Field Engineers" value={field}    color="#0369a1" bg="#e0f2fe" />
             <StatCard index={6} icon={Zap}           label="On Overtime"     value={onOT}     color="#8b5cf6" bg="#ede9fe" />
-            <StatCard index={7} icon={Building}      label="Still Inside"    value={stillInside} sub="not yet punched out" color="#059669" bg="#ecfdf5" />
-            <StatCard index={8} icon={AlertTriangle} label="Geo Violations"  value={geoViolations} sub="today" color="#6d28d9" bg="#ede9fe" />
+            <StatCard index={7} icon={Building}      label={isToday ? 'Still Inside' : 'No punch-out'}    value={stillInside} sub={isToday ? 'not yet punched out' : 'missing punch-out'} color="#059669" bg="#ecfdf5" />
+            <StatCard index={8} icon={AlertTriangle} label="Geo Violations"  value={geoViolations} sub={isToday ? 'today' : 'that day'} color="#6d28d9" bg="#ede9fe" />
           </div>
 
           {/* Attendance gauge */}
@@ -213,6 +260,30 @@ export default function LiveWorkforceDashboard() {
             </div>
           </div>
 
+          {/* Filters (§278) */}
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }} data-testid="live-filters">
+            <input type="date" aria-label="Day" value={day} max={localDay()} onChange={(e) => e.target.value && setDay(e.target.value)} style={FILTER} />
+            {day !== localDay() && (
+              <button className="pulse-btn-secondary" onClick={() => setDay(localDay())}>Back to today</button>
+            )}
+            <select aria-label="Department" value={department} onChange={(e) => setDepartment(e.target.value)} style={FILTER}>
+              <option value="">All departments</option>
+              {departments.map((d) => <option key={d} value={d}>{d}</option>)}
+            </select>
+            <select aria-label="Status" value={statusF} onChange={(e) => { setStatusF(e.target.value); setActiveTab('people'); }} style={FILTER}>
+              <option value="">All statuses</option>
+              {Object.entries(STATUS_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+              <option value="inside">Still inside</option>
+            </select>
+            <input type="search" aria-label="Search" placeholder="Search name, code, designation" value={q}
+              onChange={(e) => { setQ(e.target.value); setActiveTab('people'); }} style={{ ...FILTER, minWidth: 220 }} />
+            {(department || statusF || q) && (
+              <button className="pulse-btn-secondary" onClick={() => { setDepartment(''); setStatusF(''); setQ(''); }}>Clear</button>
+            )}
+            <div style={{ flex: 1 }} />
+            <button className="pulse-btn-secondary" onClick={exportCsv} disabled={!people.length}>Export CSV</button>
+          </div>
+
           {/* Tabs */}
           <div style={{ display: 'flex', gap: 4, marginBottom: 12, borderBottom: '1px solid #f0f0f4', paddingBottom: 0 }}>
             {tabs.map(t => (
@@ -231,6 +302,42 @@ export default function LiveWorkforceDashboard() {
               </button>
             ))}
           </div>
+
+          {/* Tab: Employees — everyone expected today, filterable */}
+          {activeTab === 'people' && (
+            <div style={{ ...CARD, padding: 0, overflowX: 'auto' }}>
+              {data?.is_weekly_off && (
+                <div style={{ padding: '10px 14px', fontSize: 12, color: '#6b7280', background: '#f9fafb' }}>{data?.is_today === false ? 'This day was a weekly off.' : 'Today is a weekly off.'}</div>
+              )}
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                <thead>
+                  <tr style={{ background: '#faf9ff', textAlign: 'left', color: '#6b7280', fontSize: 12 }}>
+                    {['Employee', 'Department', 'Status', 'In', 'Out', 'Late', 'Punched by'].map((h) => (
+                      <th key={h} style={{ padding: '10px 12px', fontWeight: 600 }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {people.length === 0 ? (
+                    <tr><td colSpan={7} style={{ padding: 28, textAlign: 'center', color: '#9ca3af' }}>No employees match these filters</td></tr>
+                  ) : people.map((r) => (
+                    <tr key={r.id} style={{ borderTop: '1px solid #f3f4f6' }}>
+                      <td style={{ padding: '9px 12px' }}>
+                        <div style={{ fontWeight: 600, color: '#111827' }}>{r.name}</div>
+                        <div style={{ fontSize: 11, color: '#9ca3af' }}>{[r.emp_code, r.designation].filter(Boolean).join(' · ')}</div>
+                      </td>
+                      <td style={{ padding: '9px 12px', color: '#374151' }}>{r.department || '—'}</td>
+                      <td style={{ padding: '9px 12px' }}><StatusBadge status={r.today_status} />{r.inside && <span style={{ marginLeft: 6, fontSize: 11, color: '#059669' }}>inside</span>}</td>
+                      <td style={{ padding: '9px 12px' }}>{String(r.check_in || '').slice(0, 5) || '—'}</td>
+                      <td style={{ padding: '9px 12px' }}>{String(r.check_out || '').slice(0, 5) || '—'}</td>
+                      <td style={{ padding: '9px 12px', color: r.late_minutes > 0 ? '#7c3aed' : '#9ca3af' }}>{r.late_minutes > 0 ? `${r.late_minutes} min` : '—'}</td>
+                      <td style={{ padding: '9px 12px', color: '#6b7280' }}>{SOURCE_LABEL[r.source] || (r.is_field_employee ? 'App (field)' : r.source ? r.source : '—')}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
 
           {/* Tab: Overview — department breakdown */}
           {activeTab === 'overview' && (

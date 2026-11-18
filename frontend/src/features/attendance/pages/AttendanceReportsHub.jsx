@@ -1,58 +1,40 @@
-import { useState, useEffect } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { lazy } from 'react';
 import { BarChart3, Calendar, Clock, MapPin, FileText, LayoutDashboard } from 'lucide-react';
-import AttendanceAnalytics from './AttendanceAnalytics';
-import MonthlyAttendanceReport from './MonthlyAttendanceReport';
-import LateArrivals from './LateArrivals';
-import GeoViolationsReport from './GeoViolationsReport';
-import AttendanceReports from './AttendanceReports';
-import { PageHero, PageShell } from '@/components/pulse-ui';
+import { TabHub } from '@/components/pulse-ui';
 
-const TABS = [
-  { id: 'analytics', label: 'Analytics',       icon: BarChart3 },
-  { id: 'monthly',   label: 'Monthly Report',  icon: Calendar  },
-  { id: 'late',      label: 'Late Arrivals',   icon: Clock     },
-  { id: 'geo',       label: 'Geo Violations',  icon: MapPin    },
-  { id: 'all',       label: 'All Reports',     icon: FileText  },
+/**
+ * Attendance → Reports.
+ *
+ * §278: a TabHub like the other attendance hubs. It was a PageShell wrapping
+ * five PageShell pages directly, so each child's sticky header sat over the
+ * hub's tab buttons (the nested-shell click trap). "All Reports" repeated
+ * five of its seven reports from the tabs beside it; it keeps only the two
+ * nothing else has. Each tab's page keeps an `inHub: 'AttendanceReportsHub'`
+ * NAV_ITEMS row so TabHub can gate it.
+ */
+const AttendanceAnalytics = lazy(() => import('./AttendanceAnalytics'));
+const MonthlyAttendanceReport = lazy(() => import('./MonthlyAttendanceReport'));
+const LateArrivals = lazy(() => import('./LateArrivals'));
+const GeoViolationsReport = lazy(() => import('./GeoViolationsReport'));
+const AttendanceReports = lazy(() => import('./AttendanceReports'));
+
+export const TABS = [
+  { id: 'analytics', label: 'Analytics & Trends', icon: BarChart3, page: 'AttendanceAnalytics', Component: AttendanceAnalytics },
+  { id: 'monthly', label: 'Monthly Report', icon: Calendar, page: 'MonthlyAttendanceReport', Component: MonthlyAttendanceReport },
+  { id: 'late', label: 'Late Arrivals', icon: Clock, page: 'LateArrivals', Component: LateArrivals },
+  { id: 'geo', label: 'Geo Violations', icon: MapPin, page: 'GeoViolationsReport', Component: GeoViolationsReport },
+  { id: 'all', label: 'Leave & Early Exit', icon: FileText, page: 'AttendanceReports', Component: AttendanceReports },
 ];
-const IDS = TABS.map(t => t.id);
 
-export default function AttendanceReportsHub() {
-  const [sp, setSp] = useSearchParams();
-  const urlTab = sp.get('tab');
-  const [active, setActive] = useState(IDS.includes(urlTab) ? urlTab : IDS[0]);
-
-  useEffect(() => {
-    if (IDS.includes(urlTab) && urlTab !== active) setActive(urlTab);
-  }, [urlTab]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const go = id => { setActive(id); setSp({ tab: id }, { replace: true }); };
-
+export default function AttendanceReportsHub({ setPage }) {
   return (
-    <PageShell dock={
-      <PageHero
-        icon={LayoutDashboard}
-        eyebrow="Attendance"
-        title="Attendance Reports"
-        subtitle="Analytics, monthly summaries, late arrivals, geo violations and comprehensive attendance reports"
-        actions={TABS.map(({ id, label, icon: Icon }) => {
-            const on = active === id;
-            return (
-              <button className="plh-cta" key={id} onClick={() => go(id)}>
-                <Icon size={14} />{label}
-              </button>
-            );
-          })}
-      />
-    }>
-
-      <div>
-        {active === 'analytics' && <AttendanceAnalytics />}
-        {active === 'monthly'   && <MonthlyAttendanceReport />}
-        {active === 'late'      && <LateArrivals />}
-        {active === 'geo'       && <GeoViolationsReport />}
-        {active === 'all'       && <AttendanceReports />}
-      </div>
-    </PageShell>
+    <TabHub
+      icon={LayoutDashboard}
+      eyebrow="Attendance"
+      title="Attendance Reports"
+      subtitle="Trends over 1–2 years, the monthly summary, late arrivals, field geo violations, leave reconciliation and early exits"
+      tabs={TABS}
+      setPage={setPage}
+    />
   );
 }

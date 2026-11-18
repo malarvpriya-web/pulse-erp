@@ -86,13 +86,12 @@ describe('attendance — the defects this suite exists for', () => {
     }
   });
 
-  it('`attendance` is frozen — nothing in the repo writes it, so nothing should read it for "today"', async () => {
-    const { rows } = await pool.query(
-      `SELECT COUNT(*)::int AS n FROM attendance WHERE date = CURRENT_DATE`
-    );
-    // If this ever becomes non-zero, someone has started writing the old table
-    // and the two-table split is live again — which is the bug, not the fix.
-    expect(rows[0].n).toBe(0);
+  it('the old `attendance` table is gone — attendance_records is the only attendance table (§278)', async () => {
+    // It was frozen for months and only the personal-data export still read
+    // it (so the export missed every real record). Dropped by migration
+    // 20261118000005; if it ever comes back, the two-table split is live again.
+    const { rows } = await pool.query(`SELECT to_regclass('public.attendance') AS t`);
+    expect(rows[0].t).toBeNull();
   });
 
   it('the production present predicate matches any casing, and counts Late as present — and only as present', async () => {

@@ -1,13 +1,13 @@
 import express from 'express';
-import jwt from 'jsonwebtoken';
 import pool from '../../shared/db.js';
 import attendanceRepository from '../repositories/attendance.repository.js';
 import { clockRateLimit } from '../../../middlewares/attendanceRateLimit.js';
 import { hasRole, can } from '../../../middlewares/auth.middleware.js';
 import { dimension } from '../../../shared/dashboardFilters.js';
 import { getWeekendDays, dayIsWeekend } from '../../../shared/weekend.js';
-import { getFullDayHours, isPeriodFrozen } from '../../../shared/attendanceRules.js';
+import { getFullDayHours, getAttendanceSwitches, getAttendanceSettingsRow, recordOvertime, notifyLateArrival } from '../../../shared/attendanceRules.js';
 import { loadPunchProfile, assertCanSelfPunch, describePunchMode } from '../../../shared/punchMode.js';
+import { parseTimeToMins, calcLateAndStatus, resolveEmployeeShift } from '../../../shared/shiftResolve.js';
 import {
   requireAttendanceAdmin,
   requireAttendanceApprover,
@@ -62,149 +62,6 @@ function parseLocation(loc) {
     }
   } catch { /* unparseable */ }
   return null;
-}
-
-// ── parseTimeToMins: "HH:MM", "HH:MM:SS", "H:MM AM/PM" → minutes since midnight
-function parseTimeToMins(str) {
-  if (!str) return null;
-  const ampm = String(str).match(/^(\d{1,2}):(\d{2})(?::\d{2})?\s*(AM|PM)$/i);
-  const hr24  = String(str).match(/^(\d{1,2}):(\d{2})/);
-  let h, m;
-  if (ampm) {
-    h = parseInt(ampm[1]); m = parseInt(ampm[2]);
-    const ap = ampm[3].toUpperCase();
-    if (ap === 'PM' && h !== 12) h += 12;
-    if (ap === 'AM' && h === 12) h = 0;
-  } else if (hr24) {
-    h = parseInt(hr24[1]); m = parseInt(hr24[2]);
-  } else return null;
-  return h * 60 + m;
-}
-
-// ── calcLateAndStatus: handles night-shifts crossing midnight (e.g. 21:00–06:00)
-function calcLateAndStatus(arrivalTimeStr, shift, fallbackGrace = 10) {
-  const arrivalMins  = parseTimeToMins(arrivalTimeStr);
-  if (arrivalMins === null) return { lateMinutes: 0, derivedStatus: 'present' };
-  const [sh, sm]      = shift.start_time.split(':').map(Number);
-  const scheduledMins = sh * 60 + sm;
-  let   arrival       = arrivalMins;
-  // Night-shift: start ≥ 18:00 and employee arrives before 06:00 (crossed midnight)
-  if (shift.is_night_shift && scheduledMins >= 18 * 60 && arrival < 6 * 60) {
-    arrival += 1440;
-  }
-  const lateMinutes  = Math.max(0, arrival - scheduledMins);
-  const grace        = parseInt(shift.grace_minutes ?? fallbackGrace);
-  return { lateMinutes, derivedStatus: lateMinutes > grace ? 'late' : 'present' };
-}
-
-// ── resolveEmployeeShift: 4-level priority chain
-// Returns { shift, source }. shift = { id, name, start_time, end_time,
-//   grace_minutes, is_night_shift, half_day_hours } or null.
-// Priority: date_override > assignment > dept_rotation > employee_default
-async function resolveEmployeeShift(employee_id, date) {
-  // 1 — single-date override
-  try {
-    const r = await pool.query(`
-      SELECT s.id, s.name, s.start_time, s.end_time,
-             s.grace_minutes, s.is_night_shift, s.half_day_hours
-        FROM hr_shift_date_overrides o
-        JOIN hr_shifts s ON s.id = o.shift_id
-       WHERE o.employee_id = $1 AND o.override_date = $2
-         AND o.is_active = TRUE
-         AND (s.deleted_at IS NULL OR s.deleted_at > NOW())
-       LIMIT 1
-    `, [employee_id, date]);
-    if (r.rows.length) return { shift: r.rows[0], source: 'date_override' };
-  } catch { /* table may not exist yet */ }
-
-  // 2 — direct permanent assignment
-  try {
-    const r = await pool.query(`
-      SELECT s.id, s.name, s.start_time, s.end_time,
-             s.grace_minutes, s.is_night_shift, s.half_day_hours
-        FROM hr_shift_assignments sa
-        JOIN hr_shifts s ON s.id = sa.shift_id
-       WHERE sa.employee_id = $1 AND sa.is_active = TRUE
-         AND (sa.effective_from IS NULL OR sa.effective_from <= $2)
-         AND (s.deleted_at IS NULL OR s.deleted_at > NOW())
-       ORDER BY sa.effective_from DESC NULLS LAST LIMIT 1
-    `, [employee_id, date]);
-    if (r.rows.length) return { shift: r.rows[0], source: 'assignment' };
-  } catch { /* non-blocking */ }
-
-  // 3 — department rotation (2-week or 4-week cycle from effective_from)
-  try {
-    const empRow = await pool.query(
-      `SELECT department FROM employees WHERE id = $1 LIMIT 1`, [employee_id]
-    );
-    const dept = empRow.rows[0]?.department;
-    if (dept) {
-      const rot = await pool.query(`
-        SELECT r.effective_from,
-               s1.id AS w1_id, s1.name AS w1_name,
-               s1.start_time AS w1_start, s1.end_time AS w1_end,
-               s1.grace_minutes AS w1_grace, s1.is_night_shift AS w1_night,
-               s1.half_day_hours AS w1_half,
-               s2.id AS w2_id, s2.name AS w2_name,
-               s2.start_time AS w2_start, s2.end_time AS w2_end,
-               s2.grace_minutes AS w2_grace, s2.is_night_shift AS w2_night,
-               s2.half_day_hours AS w2_half,
-               s3.id AS w3_id, s3.name AS w3_name,
-               s3.start_time AS w3_start, s3.end_time AS w3_end,
-               s3.grace_minutes AS w3_grace, s3.is_night_shift AS w3_night,
-               s3.half_day_hours AS w3_half,
-               s4.id AS w4_id, s4.name AS w4_name,
-               s4.start_time AS w4_start, s4.end_time AS w4_end,
-               s4.grace_minutes AS w4_grace, s4.is_night_shift AS w4_night,
-               s4.half_day_hours AS w4_half
-          FROM hr_shift_rotations r
-          JOIN hr_shifts s1 ON s1.id = r.week_1_shift_id
-          JOIN hr_shifts s2 ON s2.id = r.week_2_shift_id
-          LEFT JOIN hr_shifts s3 ON s3.id = r.week_3_shift_id
-          LEFT JOIN hr_shifts s4 ON s4.id = r.week_4_shift_id
-         WHERE r.team = $1 AND r.is_active = TRUE
-           AND (r.effective_from IS NULL OR r.effective_from <= $2)
-           AND (s1.deleted_at IS NULL OR s1.deleted_at > NOW())
-           AND (s2.deleted_at IS NULL OR s2.deleted_at > NOW())
-         ORDER BY r.effective_from DESC NULLS LAST LIMIT 1
-      `, [dept, date]);
-      if (rot.rows.length) {
-        const row    = rot.rows[0];
-        const refMs  = row.effective_from
-          ? new Date(row.effective_from).setHours(0, 0, 0, 0)
-          : 0;
-        const weeks  = Math.floor((new Date(date).setHours(0, 0, 0, 0) - refMs) / (7 * 86400000));
-        // 4-week cycle if week_3 and week_4 shifts are configured, else 2-week
-        const is4Week = row.w3_id && row.w4_id;
-        const cycle   = is4Week ? 4 : 2;
-        const weekIdx = ((weeks % cycle) + cycle) % cycle; // 0-indexed, always positive
-        const weekShifts = [
-          row.w1_id ? { id: row.w1_id, name: row.w1_name, start_time: row.w1_start, end_time: row.w1_end, grace_minutes: row.w1_grace, is_night_shift: row.w1_night, half_day_hours: row.w1_half } : null,
-          row.w2_id ? { id: row.w2_id, name: row.w2_name, start_time: row.w2_start, end_time: row.w2_end, grace_minutes: row.w2_grace, is_night_shift: row.w2_night, half_day_hours: row.w2_half } : null,
-          row.w3_id ? { id: row.w3_id, name: row.w3_name, start_time: row.w3_start, end_time: row.w3_end, grace_minutes: row.w3_grace, is_night_shift: row.w3_night, half_day_hours: row.w3_half } : null,
-          row.w4_id ? { id: row.w4_id, name: row.w4_name, start_time: row.w4_start, end_time: row.w4_end, grace_minutes: row.w4_grace, is_night_shift: row.w4_night, half_day_hours: row.w4_half } : null,
-        ];
-        const s = weekShifts[weekIdx] || weekShifts[0];
-        if (s) return { shift: s, source: 'rotation' };
-      }
-    }
-  } catch { /* non-blocking */ }
-
-  // 4 — employee default shift
-  try {
-    const r = await pool.query(`
-      SELECT s.id, s.name, s.start_time, s.end_time,
-             s.grace_minutes, s.is_night_shift, s.half_day_hours
-        FROM employees e
-        JOIN hr_shifts s ON s.id = e.default_shift_id
-       WHERE e.id = $1 AND e.default_shift_id IS NOT NULL
-         AND (s.deleted_at IS NULL OR s.deleted_at > NOW())
-       LIMIT 1
-    `, [employee_id]);
-    if (r.rows.length) return { shift: r.rows[0], source: 'employee_default' };
-  } catch { /* non-blocking */ }
-
-  return { shift: null, source: 'none' };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -290,7 +147,14 @@ router.get('/today', async (req, res) => {
 router.get('/live-dashboard', async (req, res) => {
   try {
     const companyId = scopeCompanyId(req);
-    const today     = new Date().toISOString().split('T')[0];
+    // ?date=YYYY-MM-DD shows a past day (§278: HR looks back at yesterday etc.);
+    // default today. A future date is refused.
+    const nowDay    = new Date().toLocaleDateString('en-CA');
+    const qd        = String(req.query.date || '');
+    if (qd && (!/^\d{4}-\d{2}-\d{2}$/.test(qd) || qd > nowDay)) {
+      return res.status(400).json({ error: 'date must be YYYY-MM-DD and not in the future' });
+    }
+    const today     = qd || nowDay;
     const cidClause = companyId != null ? `AND e.company_id = ${parseInt(companyId)}` : '';
     // Dashboard filter bar: ?department only. This is a LIVE view of today's
     // presence — a date range would contradict what the page is, so it renders
@@ -381,6 +245,32 @@ router.get('/live-dashboard', async (req, res) => {
     const weekendDays    = await getWeekendDays(companyId);
     const isWeekendToday = dayIsWeekend(today, weekendDays);
 
+    // Everyone expected today, with their status — the list HR filters
+    // (department / status / name) on Live Workforce. §278.
+    const { rows: people } = await pool.query(`
+      SELECT e.id, e.office_id AS emp_code,
+             COALESCE(e.name, CONCAT(e.first_name,' ',COALESCE(e.last_name,''))) AS name,
+             e.department, e.designation, e.is_field_employee,
+             ar.check_in_time::text AS check_in, ar.check_out_time::text AS check_out,
+             ar.late_minutes, ar.work_mode, ar.source, ar.total_hours,
+             CASE
+               WHEN ar.id IS NOT NULL AND LOWER(ar.status) IN ('present','late','half_day','wfh','on_leave','holiday','absent') THEN LOWER(ar.status)
+               WHEN EXISTS (SELECT 1 FROM leave_applications la WHERE la.employee_id = e.id AND la.status = 'approved'
+                             AND $1::date BETWEEN la.start_date AND la.end_date) THEN 'on_leave'
+               WHEN ar.id IS NOT NULL THEN LOWER(COALESCE(ar.status, 'present'))
+               ELSE 'not_punched'
+             END AS today_status,
+             (ar.check_in_time IS NOT NULL AND ar.check_out_time IS NULL) AS inside
+        FROM employees e
+        LEFT JOIN attendance_records ar
+          ON ar.employee_id = e.id AND ar.attendance_date = $1 AND ar.deleted_at IS NULL
+       WHERE LOWER(e.status) IN ('active','probation','notice') AND e.deleted_at IS NULL
+         AND ($2::text IS NULL OR e.department = $2)
+         ${cidClause}
+       ORDER BY e.department NULLS LAST, name
+       LIMIT 2000
+    `, [today, department]).catch(() => ({ rows: [] }));
+
     res.json({
       date: today,
       presence: {
@@ -405,6 +295,9 @@ router.get('/live-dashboard', async (req, res) => {
       })),
       field_engineers: fieldEngineers.rows,
       latest_punches:  latestPunches.rows,
+      is_weekly_off:   isWeekendToday,
+      is_today:        today === nowDay,
+      people:          people.map((r) => ({ ...r, today_status: isWeekendToday && r.today_status === 'not_punched' ? 'weekly_off' : r.today_status })),
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -561,6 +454,11 @@ router.get('/team/:manager_id', async (req, res) => {
   try {
     const companyId = scopeCompanyId(req);
     const { date } = req.query;
+    // §278: a manager / department head sees only THEIR team — the id in the
+    // URL used to be taken as given, so anyone could read any team.
+    if (!isAttendanceAdmin(req) && String(req.user?.employee_id ?? '') !== String(req.params.manager_id)) {
+      return res.status(403).json({ error: 'Forbidden', message: 'You can only see your own team.' });
+    }
     const team = await attendanceRepository.getTeamSummary(
       req.params.manager_id,
       date || new Date().toISOString().split('T')[0],
@@ -650,7 +548,7 @@ router.post('/clock', clockRateLimit, async (req, res) => {
       if (String(callerEmpId) !== String(employee_id)) {
         if (hasRole(req, 'manager', 'department_head')) {
           const directReportCheck = await pool.query(
-            `SELECT 1 FROM employees WHERE id = $1 AND reporting_to = $2 AND deleted_at IS NULL LIMIT 1`,
+            `SELECT 1 FROM employees WHERE id = $1 AND reporting_manager_id = $2 AND deleted_at IS NULL LIMIT 1`,
             [employee_id, callerEmpId]
           ).catch(() => ({ rows: [] }));
           if (!directReportCheck.rows.length) {
@@ -848,41 +746,10 @@ router.post('/clock', clockRateLimit, async (req, res) => {
         performedBy: employee_id, req,
       });
 
-      // Notify reporting manager of late arrival (fire-and-forget, non-blocking)
-      if (derivedStatus === 'late') {
-        pool.query(`
-          SELECT
-            COALESCE(e.name, CONCAT(e.first_name,' ',COALESCE(e.last_name,''))) AS emp_name,
-            e.reporting_manager,
-            mu.id AS mgr_user_id
-          FROM employees e
-          LEFT JOIN employees m
-            ON LOWER(TRIM(COALESCE(m.name, CONCAT(m.first_name,' ',COALESCE(m.last_name,'')))))
-               = LOWER(TRIM(e.reporting_manager))
-            AND (m.company_id = $2 OR $2::integer IS NULL)
-          LEFT JOIN users mu ON mu.employee_id = m.id AND mu.is_active = true
-          WHERE e.id = $1
-          LIMIT 1
-        `, [employee_id, companyId])
-          .then(r => {
-            const row = r.rows[0];
-            if (!row?.mgr_user_id) return;
-            const delayMsg = lateMinutes > 0
-              ? `${lateMinutes} minute${lateMinutes !== 1 ? 's' : ''} late`
-              : 'late (within grace)';
-            return pool.query(`
-              INSERT INTO notifications
-                (user_id, title, message, module_name, reference_id, notification_type)
-              VALUES ($1, $2, $3, 'attendance', $4, 'late_arrival')
-            `, [
-              row.mgr_user_id,
-              'Late Arrival Alert',
-              `${row.emp_name} clocked in ${delayMsg} today.`,
-              employee_id,
-            ]);
-          })
-          .catch(() => {});
-      }
+      // Notify reporting manager of late arrival (fire-and-forget, non-blocking).
+      // Through employees.reporting_manager_id — it matched the free-text
+      // reporting_manager NAME before, which misses on any spelling difference.
+      if (derivedStatus === 'late') notifyLateArrival(employee_id, lateMinutes, 'clocked in').catch(() => {});
 
       return res.json({ ...(result.rows[0] || {}), geo_warning: geoViolation });
     } else {
@@ -964,86 +831,28 @@ router.post('/clock', clockRateLimit, async (req, res) => {
              WHERE employee_id = $1 AND attendance_date = $2
           `, [employee_id, today, Math.abs(totalHours).toFixed(2), otHours.toFixed(2)]);
 
-          // Only create OT records for OT-eligible shifts
+          // Only OT-eligible shifts earn overtime; recordOvertime() does
+          // nothing while overtime is switched off in Attendance Settings.
           const shiftEligible = await pool.query(
             'SELECT COALESCE(ot_eligible, TRUE) AS ot_eligible FROM hr_shifts WHERE id = (SELECT shift_id FROM hr_shift_assignments WHERE employee_id=$1 AND is_active=TRUE ORDER BY effective_from DESC LIMIT 1)',
             [employee_id]
           ).catch(() => ({ rows: [{ ot_eligible: true }] }));
           if (otHours >= 0.5 && (shiftEligible.rows[0]?.ot_eligible !== false)) {
-            const otPolicy = await pool.query(`
-              SELECT rules FROM attendance_policies
-               WHERE policy_type = 'overtime' AND is_active = true
-                 AND (company_id = $1 OR company_id IS NULL)
-               ORDER BY company_id DESC NULLS LAST LIMIT 1
-            `, [companyId]).catch(() => ({ rows: [] }));
-
-            const otRules  = otPolicy.rows[0]?.rules || { requires_approval: true, weekday_multiplier: 2.0 };
-            const autoApprove = !otRules.requires_approval;
-
-            // Apply OT caps (daily and monthly) from policy rules
-            const maxDailyOt = parseFloat(otRules.max_daily_ot_hours || 0); // 0 = no cap
-            let effectiveOtHours = maxDailyOt > 0 ? Math.min(otHours, maxDailyOt) : otHours;
-
-            if (otRules.max_monthly_ot_hours) {
-              try {
-                const monthStart = today.slice(0, 8) + '01';
-                const monthlyQ = await pool.query(
-                  `SELECT COALESCE(SUM(ot_hours),0) AS used FROM attendance_ot_records
-                    WHERE employee_id=$1 AND attendance_date >= $2 AND attendance_date < $3
-                      AND status IN ('approved','auto_approved')`,
-                  [employee_id, monthStart, today]
-                );
-                const monthlyUsed = parseFloat(monthlyQ.rows[0]?.used || 0);
-                const maxMonthly  = parseFloat(otRules.max_monthly_ot_hours);
-                effectiveOtHours  = Math.min(effectiveOtHours, Math.max(0, maxMonthly - monthlyUsed));
-              } catch { /* non-blocking */ }
-            }
-            if (effectiveOtHours < 0.5) {
-              // Below minimum threshold after cap — skip OT record
-              throw new Error('ot_capped'); // caught by outer try/catch which is non-blocking
-            }
-
-            const weekendDaysOt = await getWeekendDays(companyId);
-            const isWeekend = dayIsWeekend(today, weekendDaysOt);
-            // Check if today is a holiday
-            const holidayCheck = await pool.query(
-              'SELECT 1 FROM holidays WHERE date=$1::date AND (company_id=$2 OR company_id IS NULL) LIMIT 1',
-              [today, companyId]
-            ).catch(() => ({ rows: [] }));
-            const isHoliday = holidayCheck.rows.length > 0;
-            // Check if employee is on a night shift
-            let isNightShift = false;
-            try {
-              const { shift: otShift } = await resolveEmployeeShift(employee_id, today);
-              isNightShift = !!otShift?.is_night_shift;
-            } catch { /* non-blocking */ }
-            let otType = 'weekday';
-            let otMultiplier = parseFloat(otRules.weekday_multiplier || 2.0);
-            if (isHoliday) { otType = 'holiday'; otMultiplier = parseFloat(otRules.holiday_multiplier || 2.0); }
-            else if (isWeekend) { otType = 'weekend'; otMultiplier = parseFloat(otRules.weekend_multiplier || 2.0); }
-            else if (isNightShift) { otType = 'night'; otMultiplier = parseFloat(otRules.night_multiplier || 2.0); }
-
-            await pool.query(`
-              INSERT INTO attendance_ot_records
-                (company_id, employee_id, attendance_date, ot_hours, ot_type, multiplier, status)
-              VALUES ($1,$2,$3,$4,$5,$6,$7)
-              ON CONFLICT (employee_id, attendance_date)
-              DO UPDATE SET ot_hours=$4, ot_type=$5, multiplier=$6, status=$7, updated_at=NOW()
-            `, [
-              companyId, employee_id, today,
-              effectiveOtHours.toFixed(2),
-              otType,
-              otMultiplier,
-              autoApprove ? 'auto_approved' : 'pending',
-            ]);
+            const { shift: otShift } = await resolveEmployeeShift(employee_id, today).catch(() => ({ shift: null }));
+            await recordOvertime(pool, {
+              companyId, employeeId: employee_id, date: today, otHours,
+              isNightShift: !!otShift?.is_night_shift,
+            });
           }
         } catch { /* non-blocking OT calc */ }
 
         // Auto-grant comp-off if employee worked on a holiday with sufficient hours
+        // Comp off is switched off until the owner configures it (§278).
         try {
+          const { compOffEnabled } = await getAttendanceSwitches(companyId);
           const weekendDaysComp = await getWeekendDays(companyId);
           const isWeekend2 = dayIsWeekend(today, weekendDaysComp);
-          if (!isWeekend2) {
+          if (compOffEnabled && !isWeekend2) {
             const hQ = await pool.query(
               `SELECT id FROM holidays WHERE date=$1::date AND (company_id=$2 OR company_id IS NULL) LIMIT 1`,
               [today, companyId]
@@ -1420,6 +1229,36 @@ router.put('/overtime/:id/reject', requireAttendanceApprover, captureBefore('att
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Submit a regularization request (employee-facing)
+// Hours a regularisation asks for: check-out minus check-in (overnight-safe).
+// With `ar` (the day's attendance row) an end the request leaves unchanged
+// falls back to the recorded time, so "forgot to punch out" still shows hours.
+const REG_HOURS_SQL = (r, ar = null) => {
+  const cin = ar ? `COALESCE(${r}.check_in, ${ar}.check_in_time)` : `${r}.check_in`;
+  const cout = ar ? `COALESCE(${r}.check_out, ${ar}.check_out_time)` : `${r}.check_out`;
+  return `CASE WHEN ${cin} IS NOT NULL AND ${cout} IS NOT NULL THEN
+  ROUND((EXTRACT(EPOCH FROM (${cout} - ${cin})) / 3600
+         + CASE WHEN ${cout} < ${cin} THEN 24 ELSE 0 END)::numeric, 2) END`;
+};
+// Who decided: manager_id / hr_id hold users.id.
+const REG_DECIDERS_SQL = (r) => `
+  (SELECT COALESCE(ee.name, u.name, u.email) FROM users u LEFT JOIN employees ee ON ee.id = u.employee_id WHERE u.id = ${r}.manager_id) AS manager_name,
+  (SELECT COALESCE(ee.name, u.name, u.email) FROM users u LEFT JOIN employees ee ON ee.id = u.employee_id WHERE u.id = ${r}.hr_id) AS hr_name`;
+const YMD = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * How many regularisations an employee has raised for the month of `date`
+ * (pending + approved — a rejected one does not use up the allowance).
+ * The limit is Attendance Settings → Regularization (default 3, §278).
+ */
+async function regularizationQuota(employeeId, date, companyId) {
+  const { regularizationLimit } = await getAttendanceSwitches(companyId);
+  const { rows: [u] } = await pool.query(`
+    SELECT COUNT(*)::int AS used FROM attendance_regularization_requests
+     WHERE employee_id = $1 AND status IN ('pending', 'approved')
+       AND date_trunc('month', date) = date_trunc('month', $2::date)`, [employeeId, date]);
+  return { limit: regularizationLimit, used: u?.used || 0, month: String(date).slice(0, 7) };
+}
+
 router.post('/regularize', async (req, res) => {
   try {
     const { employee_id, date, check_in, check_out, reason } = req.body;
@@ -1429,18 +1268,55 @@ router.post('/regularize', async (req, res) => {
     const ownership = assertSelfOrPrivileged(req, employee_id);
     if (ownership) return res.status(ownership.status).json(ownership.body);
 
+    if (!employee_id || !YMD.test(String(date || ''))) {
+      return res.status(400).json({ error: 'employee_id and date (YYYY-MM-DD) are required' });
+    }
+    if (String(date) > new Date().toISOString().slice(0, 10)) {
+      return res.status(400).json({ error: 'A regularization can only be raised for a past or current day' });
+    }
+    if (!String(reason || '').trim()) return res.status(400).json({ error: 'Give a reason for the correction' });
+    if (!check_in && !check_out) return res.status(400).json({ error: 'Give the correct check-in and/or check-out time' });
+
+    // One open request per day, and the monthly allowance.
+    const { rows: dup } = await pool.query(`
+      SELECT id FROM attendance_regularization_requests
+       WHERE employee_id = $1 AND date = $2::date AND status = 'pending' LIMIT 1`, [employee_id, date]);
+    if (dup.length) {
+      return res.status(409).json({ error: 'duplicate_request', message: `A correction for ${date} is already waiting for approval.` });
+    }
+    const quota = await regularizationQuota(employee_id, date, companyId);
+    if (quota.used >= quota.limit) {
+      return res.status(409).json({
+        error: 'regularization_limit',
+        message: `Only ${quota.limit} attendance correction${quota.limit === 1 ? '' : 's'} can be raised per month; ${quota.used} already raised for ${quota.month}.`,
+        ...quota,
+      });
+    }
+
     const result = await pool.query(`
       INSERT INTO attendance_regularization_requests
-        (employee_id, date, check_in, check_out, reason, company_id, approval_level)
-      VALUES ($1, $2, $3, $4, $5, $6, 'manager')
-      RETURNING *
-    `, [employee_id, date, check_in || null, check_out || null, reason, companyId]);
+        (employee_id, date, check_in, check_out, reason, company_id, approval_level, status)
+      VALUES ($1, $2, $3, $4, $5, $6, 'manager', 'pending')
+      RETURNING *, ${REG_HOURS_SQL('attendance_regularization_requests')} AS requested_hours
+    `, [employee_id, date, check_in || null, check_out || null, String(reason).trim(), companyId]);
     await writeAuditLog({
       companyId, employeeId: employee_id, action: 'regularize_submit',
       afterData: { date, check_in, check_out, reason },
-      performedBy: employee_id, req,
+      performedBy: req.user?.userId, req,
     });
-    res.json(result.rows[0]);
+    res.json({ ...result.rows[0], quota: { ...quota, used: quota.used + 1 } });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// The employee's allowance for the month of ?date (default today): { limit, used, month }.
+router.get('/regularize/quota/:employee_id', async (req, res) => {
+  try {
+    const ownership = assertSelfOrPrivileged(req, req.params.employee_id);
+    if (ownership) return res.status(ownership.status).json(ownership.body);
+    const date = YMD.test(String(req.query.date || '')) ? req.query.date : new Date().toISOString().slice(0, 10);
+    res.json(await regularizationQuota(req.params.employee_id, date, scopeCompanyId(req)));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1468,7 +1344,7 @@ router.get('/regularize/stats', async (req, res) => {
         });
       }
       if (hasRole(req, 'manager', 'department_head')) {
-        where += ` AND e.reporting_to = $2`;
+        where += ` AND e.reporting_manager_id = $2`;
       } else {
         where += ` AND r.employee_id = $2`;
       }
@@ -1514,9 +1390,14 @@ router.get('/regularize/list', async (req, res) => {
              r.check_out::text AS check_out,
              COALESCE(e.name, CONCAT(e.first_name,' ',e.last_name)) AS employee_name,
              e.department, e.designation,
-             e.office_id AS emp_code
+             e.office_id AS emp_code,
+             ${REG_HOURS_SQL('r', 'ar')} AS requested_hours,
+             ar.check_in_time::text AS recorded_check_in, ar.check_out_time::text AS recorded_check_out,
+             ar.total_hours AS recorded_hours,
+             ${REG_DECIDERS_SQL('r')}
         FROM attendance_regularization_requests r
         JOIN employees e ON e.id = r.employee_id
+        LEFT JOIN attendance_records ar ON ar.employee_id = r.employee_id AND ar.attendance_date = r.date AND ar.deleted_at IS NULL
        WHERE r.status = $1
          AND ($2::integer IS NULL OR r.company_id = $2)
     `;
@@ -1537,7 +1418,7 @@ router.get('/regularize/list', async (req, res) => {
         });
       }
       q += hasRole(req, 'manager', 'department_head')
-        ? ` AND e.reporting_to = $${n++}`
+        ? ` AND e.reporting_manager_id = $${n++}`
         : ` AND r.employee_id = $${n++}`;
       params.push(actorEmpId);
     }
@@ -1587,9 +1468,14 @@ router.get('/regularize/pending', async (req, res) => {
              r.check_out::text AS check_out,
              COALESCE(e.name, CONCAT(e.first_name,' ',e.last_name)) AS employee_name,
              e.department, e.designation,
-             e.office_id AS emp_code
+             e.office_id AS emp_code,
+             ${REG_HOURS_SQL('r', 'ar')} AS requested_hours,
+             ar.check_in_time::text AS recorded_check_in, ar.check_out_time::text AS recorded_check_out,
+             ar.total_hours AS recorded_hours,
+             ${REG_DECIDERS_SQL('r')}
         FROM attendance_regularization_requests r
         JOIN employees e ON e.id = r.employee_id
+        LEFT JOIN attendance_records ar ON ar.employee_id = r.employee_id AND ar.attendance_date = r.date AND ar.deleted_at IS NULL
        WHERE r.status = 'pending'
          AND ($1::integer IS NULL OR r.company_id = $1)
     `;
@@ -1605,7 +1491,7 @@ router.get('/regularize/pending', async (req, res) => {
         });
       }
       q += hasRole(req, 'manager', 'department_head')
-        ? ` AND e.reporting_to = $${n++}`
+        ? ` AND e.reporting_manager_id = $${n++}`
         : ` AND r.employee_id = $${n++}`;
       params.push(actorEmpId);
     }
@@ -1635,7 +1521,7 @@ router.get('/regularize/:employee_id', async (req, res) => {
       if (String(callerEmpId) !== String(req.params.employee_id)) {
         // Managers may view their direct reports' history
         const managerCheck = await pool.query(
-          `SELECT 1 FROM employees WHERE id = $1 AND reporting_to = $2 LIMIT 1`,
+          `SELECT 1 FROM employees WHERE id = $1 AND reporting_manager_id = $2 LIMIT 1`,
           [req.params.employee_id, callerEmpId]
         ).catch(() => ({ rows: [] }));
         if (!managerCheck.rows.length) {
@@ -1645,13 +1531,16 @@ router.get('/regularize/:employee_id', async (req, res) => {
     }
 
     const result = await pool.query(`
-      SELECT id, employee_id, date::text, check_in::text, check_out::text,
-             reason, status, approval_level, manager_remarks, hr_remarks,
-             manager_actioned_at, hr_actioned_at, created_at
-        FROM attendance_regularization_requests
-       WHERE employee_id = $1
-         AND ($2::integer IS NULL OR company_id = $2)
-       ORDER BY created_at DESC
+      SELECT r.id, r.employee_id, r.date::text, r.check_in::text, r.check_out::text,
+             r.reason, r.status, r.approval_level, r.manager_remarks, r.hr_remarks,
+             r.manager_actioned_at, r.hr_actioned_at, r.created_at,
+             ${REG_HOURS_SQL('r', 'ar')} AS requested_hours,
+             ${REG_DECIDERS_SQL('r')}
+        FROM attendance_regularization_requests r
+        LEFT JOIN attendance_records ar ON ar.employee_id = r.employee_id AND ar.attendance_date = r.date AND ar.deleted_at IS NULL
+       WHERE r.employee_id = $1
+         AND ($2::integer IS NULL OR r.company_id = $2)
+       ORDER BY r.created_at DESC
        LIMIT 30
     `, [req.params.employee_id, companyId]);
     res.json(result.rows);
@@ -1660,142 +1549,133 @@ router.get('/regularize/:employee_id', async (req, res) => {
   }
 });
 
-// Approve — 2-level: manager L1 → HR L2 (if configured), applies attendance correction on final approval
+// Approve — reporting manager, then HR when Attendance Settings say
+// "Regularization needs HR after the manager". HR (and admin) may approve at
+// any level. Who decided is kept: manager_id/manager_actioned_at for the
+// manager step, hr_id/hr_actioned_at for HR (both users.id), shown as
+// manager_name / hr_name on the lists.
 router.put('/regularize/:id/approve', requireAttendanceApprover, async (req, res) => {
   try {
     const { remarks }  = req.body;
-    const actorId      = req.user?.userId || req.body.actor_id;
+    const actorId      = req.user?.userId ?? null;
     const before       = (await pool.query(
       `SELECT * FROM attendance_regularization_requests WHERE id = $1`, [req.params.id]
     )).rows[0];
     if (!before) return res.status(404).json({ error: 'Request not found' });
+    const scope = scopeCompanyId(req);
+    if (scope != null && before.company_id != null && String(before.company_id) !== String(scope)) {
+      return res.status(404).json({ error: 'Request not found' });
+    }
+    if (before.status !== 'pending') {
+      return res.status(409).json({ error: 'not_pending', message: `This request is already ${before.status}.` });
+    }
+    if (req.user?.employee_id != null && String(req.user.employee_id) === String(before.employee_id)
+        && !hasRole(req, 'admin', 'super_admin')) {
+      return res.status(403).json({ error: 'Forbidden', message: 'You cannot approve your own attendance correction.' });
+    }
 
-    // Determine if this needs HR escalation based on approval_level
     const currentLevel = before.approval_level || 'manager';
-    // hasRole unions ALL roles held, not just the primary one — an approver
-    // holding `hr` as a secondary role was previously treated as a line manager,
-    // so their approval escalated instead of completing.
+    // hasRole unions ALL roles held, not just the primary one.
     const isHR = hasRole(req, 'hr', 'hr_manager', 'admin', 'super_admin');
 
-    let newStatus = 'pending';
-    let newLevel = 'manager';
-    let applyCorrection = false;
-
-    if (currentLevel === 'manager' && isHR) {
-      // HR can approve at any level
-      newStatus = 'approved'; newLevel = 'done'; applyCorrection = true;
-    } else if (currentLevel === 'manager' && !isHR) {
-      // Manager L1 approval — actor must be the direct manager or an active delegate.
-      // Was guarded by `if (actorEmpId)`, skipping the check for unlinked logins.
-      {
-        const decide = await assertCanDecideFor(pool, req, before.employee_id, before.company_id, 'regularization');
-        if (decide) return res.status(decide.status).json(decide.body);
-      }
-      // Escalate to HR if HR approval required
-      const wfConfig = await pool.query(
-        "SELECT levels FROM attendance_workflow_config WHERE workflow_type='regularization' AND (company_id=$1 OR company_id IS NULL) ORDER BY company_id DESC NULLS LAST LIMIT 1",
-        [before.company_id]
-      ).catch(() => ({ rows: [] }));
-      const levels = wfConfig.rows[0]?.levels || [];
-      const needsHR = Array.isArray(levels) && levels.some(l => l.role === 'hr' || l.role === 'hr_manager');
-      if (needsHR) {
-        newStatus = 'pending'; newLevel = 'hr'; applyCorrection = false;
-      } else {
-        newStatus = 'approved'; newLevel = 'done'; applyCorrection = true;
-      }
-    } else if (currentLevel === 'hr' && isHR) {
-      newStatus = 'approved'; newLevel = 'done'; applyCorrection = true;
-    } else if (currentLevel === 'hr' && !isHR) {
-      return res.status(403).json({ error: 'This regularization is pending HR approval' });
+    let newLevel;
+    if (currentLevel === 'hr') {
+      if (!isHR) return res.status(403).json({ error: 'This regularization is pending HR approval' });
+      newLevel = 'done';
+    } else if (isHR) {
+      newLevel = 'done';
+    } else {
+      const decide = await assertCanDecideFor(pool, req, before.employee_id, before.company_id, 'regularization');
+      if (decide) return res.status(decide.status).json(decide.body);
+      const { regularizationNeedsHr } = await getAttendanceSwitches(before.company_id);
+      newLevel = regularizationNeedsHr ? 'hr' : 'done';
     }
+    const applyCorrection = newLevel === 'done';
+    // The manager columns are the reporting manager's step; HR (or admin)
+    // deciding straight away is recorded once, as HR.
+    const managerStep = currentLevel === 'manager' && !isHR;
 
     const updated = await pool.query(`
       UPDATE attendance_regularization_requests
-         SET status=$2, manager_id=$3, manager_remarks=$4, manager_actioned_at=NOW(),
-             approval_level=$5, hr_id=$6, hr_actioned_at=$7
-       WHERE id=$1 RETURNING *
-    `, [req.params.id, newStatus, actorId, remarks || null, newLevel,
-        (newLevel === 'done' && isHR) ? actorId : null,
-        (newLevel === 'done' && isHR) ? 'NOW()' : null]);
+         SET status              = $2,
+             approval_level      = $3,
+             manager_id          = CASE WHEN $4 THEN $5::int ELSE manager_id END,
+             manager_remarks     = CASE WHEN $4 THEN $6 ELSE manager_remarks END,
+             manager_actioned_at = CASE WHEN $4 THEN NOW() ELSE manager_actioned_at END,
+             hr_id               = CASE WHEN $7 THEN $5::int ELSE hr_id END,
+             hr_remarks          = CASE WHEN $7 THEN $6 ELSE hr_remarks END,
+             hr_actioned_at      = CASE WHEN $7 THEN NOW() ELSE hr_actioned_at END
+       WHERE id = $1 AND status = 'pending'
+       RETURNING *
+    `, [req.params.id, applyCorrection ? 'approved' : 'pending', newLevel,
+        managerStep, actorId, remarks || null, isHR]);
+    if (!updated.rows.length) return res.status(409).json({ error: 'not_pending', message: 'This request was decided by someone else just now.' });
 
     if (applyCorrection) {
-      // Upsert attendance record — create if absent, correct times if already exists
+      // Upsert attendance record — create if absent, correct times if already
+      // exists. Approved leave/holiday is not overwritten by a time correction.
       await pool.query(`
         INSERT INTO attendance_records
-          (employee_id, attendance_date, status, company_id)
-        VALUES ($1, $2, 'present', $3)
+          (employee_id, attendance_date, status, company_id, check_in_time, check_out_time, source, approved_by, remarks)
+        VALUES ($1, $2, 'present', $3, $4::time, $5::time, 'regularization', $6, $7)
         ON CONFLICT (employee_id, attendance_date) DO UPDATE
-          SET status         = 'present',
+          SET status         = CASE WHEN LOWER(attendance_records.status) IN ('on_leave','leave','holiday')
+                                    THEN attendance_records.status ELSE 'present' END,
               check_in_time  = COALESCE($4::time, attendance_records.check_in_time),
               check_out_time = COALESCE($5::time, attendance_records.check_out_time),
+              approved_by    = $6,
+              remarks        = $7,
               updated_at     = NOW()
       `, [before.employee_id, before.date, before.company_id,
-          before.check_in || null, before.check_out || null]);
+          before.check_in || null, before.check_out || null, actorId,
+          `Regularized: ${String(before.reason || '').slice(0, 200)}`]);
 
-      // Recalculate OT if both check_in and check_out times were corrected
-      if (before.check_in && before.check_out) {
-        try {
-          const hoursRes = await pool.query(
+      // Recompute hours (and request OT when overtime is on) from the final times.
+      try {
+        const { rows: [rec] } = await pool.query(`
+          SELECT check_in_time, check_out_time FROM attendance_records
+           WHERE employee_id = $1 AND attendance_date = $2`, [before.employee_id, before.date]);
+        if (rec?.check_in_time && rec?.check_out_time) {
+          const { rows: [h] } = await pool.query(
             `SELECT EXTRACT(EPOCH FROM ($1::time - $2::time)) / 3600 AS hours`,
-            [before.check_out, before.check_in]
-          );
-          const totalHours = parseFloat(hoursRes.rows[0]?.hours || 0);
-          const fullDayHours = await getFullDayHours(before.company_id);
-          const otHours = Math.max(0, totalHours - fullDayHours);
+            [rec.check_out_time, rec.check_in_time]);
+          let totalHours = parseFloat(h?.hours || 0);
+          if (totalHours < 0) totalHours += 24;
+          const otHours = Math.max(0, totalHours - await getFullDayHours(before.company_id));
           await pool.query(
-            `UPDATE attendance_records SET total_hours=$3, ot_hours=$4 WHERE employee_id=$1 AND attendance_date=$2`,
-            [before.employee_id, before.date, totalHours.toFixed(2), otHours.toFixed(2)]
-          );
-          if (otHours >= 0.5) {
-            const otPol = await pool.query(
-              `SELECT rules FROM attendance_policies WHERE policy_type='overtime' AND is_active=true AND (company_id=$1 OR company_id IS NULL) ORDER BY company_id DESC NULLS LAST LIMIT 1`,
-              [before.company_id]
-            ).catch(() => ({ rows: [] }));
-            const otRules = otPol.rows[0]?.rules || { requires_approval: true, weekday_multiplier: 2.0 };
-            const weekendDaysRec = await getWeekendDays(before.company_id);
-            const isWknd   = dayIsWeekend(before.date, weekendDaysRec);
-            const holCheck = await pool.query(
-              'SELECT 1 FROM holidays WHERE date=$1::date AND (company_id=$2 OR company_id IS NULL) LIMIT 1',
-              [before.date, before.company_id]
-            ).catch(() => ({ rows: [] }));
-            let otType = 'weekday';
-            let otMult = parseFloat(otRules.weekday_multiplier || 2.0);
-            if (holCheck.rows.length > 0) { otType = 'holiday'; otMult = parseFloat(otRules.holiday_multiplier || 2.0); }
-            else if (isWknd) { otType = 'weekend'; otMult = parseFloat(otRules.weekend_multiplier || 2.0); }
-            await pool.query(`
-              INSERT INTO attendance_ot_records
-                (company_id, employee_id, attendance_date, ot_hours, ot_type, multiplier, status)
-              VALUES ($1,$2,$3,$4,$5,$6,'pending')
-              ON CONFLICT (employee_id, attendance_date)
-              DO UPDATE SET ot_hours=$4, ot_type=$5, multiplier=$6, status='pending', updated_at=NOW()
-            `, [before.company_id, before.employee_id, before.date, otHours.toFixed(2), otType, otMult]);
-          }
-        } catch { /* non-blocking OT recalc */ }
-      }
+            `UPDATE attendance_records SET total_hours = $3, ot_hours = $4 WHERE employee_id = $1 AND attendance_date = $2`,
+            [before.employee_id, before.date, totalHours.toFixed(2), otHours.toFixed(2)]);
+          await recordOvertime(pool, {
+            companyId: before.company_id, employeeId: before.employee_id,
+            date: String(before.date instanceof Date ? before.date.toISOString() : before.date).slice(0, 10),
+            otHours, status: 'pending',
+          });
+        }
+      } catch { /* non-blocking hours / OT recalc */ }
 
       await notifyEmployee(before.employee_id, {
         title:   'Regularization Approved',
         message: `Your attendance correction for ${before.date} has been approved.`,
         refId:   before.id,
       });
-    }
-
-    // Notify HR users if escalated
-    if (newLevel === 'hr') {
+    } else {
+      // Escalated to HR — tell the HR users (roles are many-to-many: user_roles).
       await pool.query(`
         INSERT INTO notifications (user_id, title, message, module_name, reference_id, notification_type)
-        SELECT u.id, 'Regularization Awaiting HR Approval', $2, 'attendance', $3, 'regularization_hr'
-        FROM employees e JOIN users u ON u.employee_id = e.id
-        WHERE LOWER(e.status) IN ('active') AND LOWER(COALESCE(e.department,'')) != ''
-          AND LOWER(COALESCE(u.role,'')) IN ('hr','hr_admin','hr_manager')
-          AND (e.company_id = $1 OR $1::integer IS NULL)
-        LIMIT 5
-      `, [before.company_id, `Regularization from ${before.date} is awaiting HR approval.`, before.id]).catch(() => {});
+        SELECT DISTINCT u.id, 'Regularization Awaiting HR Approval', $2, 'attendance', $3, 'regularization_hr'
+          FROM users u
+          JOIN user_roles ur ON ur.user_id = u.id
+          JOIN roles r ON r.id = ur.role_id
+         WHERE u.is_active AND LOWER(r.code) IN ('hr', 'hr_manager')
+           AND ($1::integer IS NULL OR u.company_id = $1 OR u.company_id IS NULL)
+         LIMIT 10
+      `, [before.company_id, `Attendance correction for ${before.date} is awaiting HR approval.`, before.id]).catch(() => {});
     }
 
     await writeAuditLog({
       companyId: before.company_id, employeeId: before.employee_id,
-      action: 'regularize_approved', beforeData: before, afterData: updated.rows[0],
+      action: applyCorrection ? 'regularize_approved' : 'regularize_escalated_hr',
+      beforeData: before, afterData: updated.rows[0],
       performedBy: actorId, reason: remarks, req,
     });
     res.json(updated.rows[0]);
@@ -1804,42 +1684,52 @@ router.put('/regularize/:id/approve', requireAttendanceApprover, async (req, res
   }
 });
 
-// Reject — records reason, notifies employee
+// Reject — records who rejected and why, notifies the employee.
 router.put('/regularize/:id/reject', requireAttendanceApprover, captureBefore('attendance_regularization_requests'), async (req, res) => {
   try {
     const { remarks } = req.body;
-    const actorId     = req.user?.userId || req.body.actor_id;
+    const actorId     = req.user?.userId ?? null;
     const before      = (await pool.query(
       `SELECT * FROM attendance_regularization_requests WHERE id = $1`, [req.params.id]
     )).rows[0];
     if (!before) return res.status(404).json({ error: 'Request not found' });
+    const scope = scopeCompanyId(req);
+    if (scope != null && before.company_id != null && String(before.company_id) !== String(scope)) {
+      return res.status(404).json({ error: 'Request not found' });
+    }
+    if (before.status !== 'pending') {
+      return res.status(409).json({ error: 'not_pending', message: `This request is already ${before.status}.` });
+    }
+    if (!String(remarks || '').trim()) return res.status(400).json({ error: 'Give a reason for rejecting' });
 
-    // Authorization: same check as approve — HR/admin always allowed; manager must own the reporting line
-    // hasRole unions ALL roles held, not just the primary one — an approver
-    // holding `hr` as a secondary role was previously treated as a line manager,
-    // so their approval escalated instead of completing.
     const isHR = hasRole(req, 'hr', 'hr_manager', 'admin', 'super_admin');
     if (!isHR) {
-      // Was guarded by `if (actorEmpId)`, skipping the check for unlinked logins.
-      {
-        const decide = await assertCanDecideFor(pool, req, before.employee_id, before.company_id, 'regularization');
-        if (decide) return res.status(decide.status).json(decide.body);
+      if ((before.approval_level || 'manager') === 'hr') {
+        return res.status(403).json({ error: 'This regularization is pending HR approval' });
       }
+      const decide = await assertCanDecideFor(pool, req, before.employee_id, before.company_id, 'regularization');
+      if (decide) return res.status(decide.status).json(decide.body);
     }
+    const hrStep = isHR;
 
     const result = await pool.query(`
       UPDATE attendance_regularization_requests
          SET status              = 'rejected',
-             manager_id          = $2,
-             manager_remarks     = $3,
-             manager_actioned_at = NOW()
-       WHERE id = $1
+             approval_level      = 'done',
+             manager_id          = CASE WHEN $4 THEN manager_id ELSE $2::int END,
+             manager_remarks     = CASE WHEN $4 THEN manager_remarks ELSE $3 END,
+             manager_actioned_at = CASE WHEN $4 THEN manager_actioned_at ELSE NOW() END,
+             hr_id               = CASE WHEN $4 THEN $2::int ELSE hr_id END,
+             hr_remarks          = CASE WHEN $4 THEN $3 ELSE hr_remarks END,
+             hr_actioned_at      = CASE WHEN $4 THEN NOW() ELSE hr_actioned_at END
+       WHERE id = $1 AND status = 'pending'
        RETURNING *
-    `, [req.params.id, actorId, remarks || null]);
+    `, [req.params.id, actorId, String(remarks).trim(), hrStep]);
+    if (!result.rows.length) return res.status(409).json({ error: 'not_pending', message: 'This request was decided by someone else just now.' });
 
     await notifyEmployee(before.employee_id, {
       title:   'Regularization Rejected',
-      message: `Your attendance correction request for ${before.date} was rejected${remarks ? ': ' + remarks : '.'}`,
+      message: `Your attendance correction request for ${before.date} was rejected: ${String(remarks).trim()}`,
       refId:   before.id,
     });
 
@@ -2049,33 +1939,62 @@ router.get('/analytics/heatmap', async (req, res) => {
   }
 });
 
-// Absenteeism trends — monthly absenteeism rate for past 12 months
+// Absenteeism / attendance trend, one row per month (empty months included).
+// ?period = 12m (default) | 24m | this_year | last_year | YYYY ; ?department.
+// Holidays and weekly offs are not working days, so they are left out of the
+// rate; late and half-day count as attended (shared/statusSets.js).
 router.get('/analytics/absenteeism', async (req, res) => {
   try {
     const companyId = scopeCompanyId(req);
-    const cidClause = companyId != null ? `AND e.company_id = ${parseInt(companyId)}` : '';
+    const department = dimension(req.query, 'department');
+    const now = new Date();
+    const thisYear = now.getFullYear();
+    const period = String(req.query.period || '12m');
+    let from; let to;
+    const monthStart = (y, m) => `${y}-${String(m).padStart(2, '0')}-01`;
+    if (period === '24m' || period === '12m') {
+      const n = period === '24m' ? 24 : 12;
+      const d = new Date(thisYear, now.getMonth() - (n - 1), 1);
+      from = monthStart(d.getFullYear(), d.getMonth() + 1);
+      to = monthStart(thisYear, now.getMonth() + 1);
+    } else {
+      const y = period === 'this_year' ? thisYear : period === 'last_year' ? thisYear - 1 : parseInt(period, 10);
+      if (!Number.isInteger(y) || y < 2000 || y > thisYear) return res.status(400).json({ error: 'period must be 12m, 24m, this_year, last_year or a year' });
+      from = monthStart(y, 1);
+      to = monthStart(y, y === thisYear ? now.getMonth() + 1 : 12);
+    }
 
     const { rows } = await pool.query(`
-      SELECT
-        EXTRACT(YEAR  FROM ar.attendance_date) AS year,
-        EXTRACT(MONTH FROM ar.attendance_date) AS month,
-        COUNT(*)                                              AS total_records,
-        COUNT(*) FILTER (WHERE ar.status = 'absent')          AS absent_count,
-        COUNT(*) FILTER (WHERE ar.status = 'present')         AS present_count,
-        COUNT(*) FILTER (WHERE ar.status = 'late')            AS late_count,
-        COUNT(DISTINCT ar.employee_id)                        AS unique_employees,
-        ROUND(
-          COUNT(*) FILTER (WHERE ar.status = 'absent')::numeric
-          / NULLIF(COUNT(*),0) * 100, 2
-        )                                                     AS absenteeism_rate
-      FROM attendance_records ar
-      JOIN employees e ON e.id = ar.employee_id
-      WHERE ar.attendance_date >= NOW() - INTERVAL '12 months'
-        AND ar.deleted_at IS NULL
-        ${cidClause}
-      GROUP BY year, month
-      ORDER BY year DESC, month DESC
-    `);
+      WITH months AS (
+        SELECT generate_series($1::date, $2::date, INTERVAL '1 month')::date AS m
+      ), recs AS (
+        SELECT date_trunc('month', ar.attendance_date)::date AS m, LOWER(ar.status) AS st, ar.employee_id, ar.late_minutes
+          FROM attendance_records ar
+          JOIN employees e ON e.id = ar.employee_id
+         WHERE ar.attendance_date >= $1::date AND ar.attendance_date < ($2::date + INTERVAL '1 month')
+           AND ar.deleted_at IS NULL
+           AND ($3::int IS NULL OR e.company_id = $3)
+           AND ($4::text IS NULL OR e.department = $4)
+      )
+      SELECT EXTRACT(YEAR FROM mo.m)::int AS year, EXTRACT(MONTH FROM mo.m)::int AS month,
+             COUNT(r.st) FILTER (WHERE r.st NOT IN ('holiday', 'weekend', 'week_off'))::int            AS total_records,
+             COUNT(r.st) FILTER (WHERE r.st = 'absent')::int                                           AS absent_count,
+             COUNT(r.st) FILTER (WHERE r.st IN ('present', 'wfh', 'work_from_home', 'on_duty'))::int  AS present_count,
+             COUNT(r.st) FILTER (WHERE r.st = 'late')::int                                             AS late_count,
+             COUNT(r.st) FILTER (WHERE r.st = 'half_day')::int                                         AS half_day_count,
+             COUNT(r.st) FILTER (WHERE r.st IN ('on_leave', 'leave'))::int                             AS leave_count,
+             COUNT(DISTINCT r.employee_id)::int                                                        AS unique_employees,
+             ROUND(COUNT(r.st) FILTER (WHERE r.st = 'absent')::numeric
+                   / NULLIF(COUNT(r.st) FILTER (WHERE r.st NOT IN ('holiday', 'weekend', 'week_off')), 0) * 100, 2) AS absenteeism_rate,
+             ROUND(COUNT(r.st) FILTER (WHERE r.st IN ('present', 'late', 'half_day', 'wfh', 'work_from_home', 'on_duty'))::numeric
+                   / NULLIF(COUNT(r.st) FILTER (WHERE r.st NOT IN ('holiday', 'weekend', 'week_off')), 0) * 100, 2) AS attendance_rate,
+             ROUND(COUNT(r.st) FILTER (WHERE r.st = 'late')::numeric
+                   / NULLIF(COUNT(r.st) FILTER (WHERE r.st NOT IN ('holiday', 'weekend', 'week_off')), 0) * 100, 2) AS late_rate
+        FROM months mo
+        LEFT JOIN recs r ON r.m = mo.m
+       GROUP BY mo.m
+       ORDER BY mo.m DESC
+    `, [from, to, companyId, department]);
     res.json(rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -3639,120 +3558,9 @@ router.get('/shifts', async (req, res) => {
   }
 });
 
-// ── Create shift ──────────────────────────────────────────────────────────
-router.post('/shifts', requireAttendanceAdmin, async (req, res) => {
-  try {
-    const companyId = scopeCompanyId(req);
-    const {
-      name, start_time, end_time, grace_minutes = 15, color = '#7c3aed',
-      departments = [], ot_eligible = true, weekly_off = ['sunday'],
-      capacity = 0, is_night_shift = false, break_duration = 30,
-    } = req.body;
-    if (!name || !start_time || !end_time)
-      return res.status(400).json({ error: 'name, start_time, end_time required' });
-    const { rows } = await pool.query(`
-      INSERT INTO hr_shifts
-        (name, start_time, end_time, grace_minutes, color, departments,
-         ot_eligible, weekly_off, capacity, is_night_shift, break_duration, company_id)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
-      RETURNING *
-    `, [name, start_time, end_time, grace_minutes, color, JSON.stringify(departments),
-        ot_eligible, JSON.stringify(weekly_off), capacity, is_night_shift, break_duration, companyId]);
-    res.status(201).json(rows[0]);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ── Update shift ──────────────────────────────────────────────────────────
-router.put('/shifts/:id', requireAttendanceAdmin, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const {
-      name, start_time, end_time, grace_minutes, color,
-      departments, ot_eligible, weekly_off, capacity, is_night_shift, break_duration,
-    } = req.body;
-    const { rows } = await pool.query(`
-      UPDATE hr_shifts
-         SET name=$1, start_time=$2, end_time=$3, grace_minutes=$4, color=$5,
-             departments=$6, ot_eligible=$7, weekly_off=$8, capacity=$9,
-             is_night_shift=$10, break_duration=$11
-       WHERE id=$12
-      RETURNING *
-    `, [name, start_time, end_time, grace_minutes, color,
-        JSON.stringify(departments || []), ot_eligible, JSON.stringify(weekly_off || []),
-        capacity, is_night_shift, break_duration, id]);
-    if (!rows.length) return res.status(404).json({ error: 'Shift not found' });
-    res.json(rows[0]);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ── Delete shift ──────────────────────────────────────────────────────────
-router.delete('/shifts/:id', requireAttendanceAdmin, captureBefore('hr_shifts'), async (req, res) => {
-  try {
-    const { rows } = await pool.query(
-      'DELETE FROM hr_shifts WHERE id=$1 RETURNING id',
-      [req.params.id]
-    );
-    if (!rows.length) return res.status(404).json({ error: 'Shift not found' });
-    res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ── Get assignments for a shift ───────────────────────────────────────────
-router.get('/shifts/:id/assignments', async (req, res) => {
-  try {
-    const { rows } = await pool.query(`
-      SELECT sa.*, COALESCE(e.name, CONCAT(e.first_name,' ',e.last_name)) AS employee_name,
-             e.department, e.designation, e.office_id AS emp_code
-        FROM hr_shift_assignments sa
-        JOIN employees e ON e.id = sa.employee_id
-       WHERE sa.shift_id = $1 AND sa.is_active = TRUE
-       ORDER BY e.name, e.first_name
-    `, [req.params.id]);
-    res.json(rows);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ── Assign employees to a shift ───────────────────────────────────────────
-router.post('/shifts/:id/assign', requireAttendanceAdmin, async (req, res) => {
-  try {
-    const shiftId = req.params.id;
-    const { employee_ids = [], effective_from } = req.body;
-    const results = [];
-    for (const empId of employee_ids) {
-      const { rows } = await pool.query(`
-        INSERT INTO hr_shift_assignments (employee_id, shift_id, effective_from, created_by, is_active)
-        VALUES ($1,$2,$3,$4,TRUE)
-        ON CONFLICT (employee_id, shift_id, effective_from) DO UPDATE SET is_active=TRUE
-        RETURNING *
-      `, [empId, shiftId, effective_from || new Date().toISOString().split('T')[0], req.user?.userId]);
-      results.push(rows[0]);
-    }
-    res.status(201).json({ assigned: results.length, records: results });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ── Remove employee from shift ────────────────────────────────────────────
-router.delete('/shifts/assign/:assignmentId', requireAttendanceAdmin, async (req, res) => {
-  try {
-    await pool.query(
-      'UPDATE hr_shift_assignments SET is_active=FALSE, updated_at=NOW() WHERE id=$1',
-      [req.params.assignmentId]
-    );
-    res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+// Shift create/edit/delete/assign is HR → /hr/shifts* (Attendance → Configuration →
+// Shifts & Rotations). The attendance copies here duplicated it on the same
+// tables with a hard DELETE and no company check; removed in §278.
 
 // ── My shift assignment — returns the calling user's active assignment ─────────
 // No HR permission required; any authenticated user can fetch their own record.
@@ -3778,586 +3586,172 @@ router.get('/my-shift-assignment', async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// FACE ATTENDANCE SETTINGS
+// ATTENDANCE SETTINGS — one row per company (§278)
+//
+// Every field here is READ somewhere; settings that nothing read (geo, report,
+// work-centre JSON, attendance mode, face) were removed from the screen and
+// the API. Readers: shared/attendanceRules.js (full day, switches, limits),
+// shared/weekend.js (weekend days), hr/biometric.routes.js dayRules (default
+// start/end, timezone), jobs/attendance.cron.js (working days, auto check-out).
 // ─────────────────────────────────────────────────────────────────────────────
-router.get('/face-settings', async (req, res) => {
-  try {
-    const companyId = scopeCompanyId(req);
-    const { rows } = await pool.query(
-      'SELECT * FROM attendance_face_settings WHERE company_id=$1 OR company_id IS NULL LIMIT 1',
-      [companyId]
-    );
-    res.json(rows[0]?.settings || {
-      enabled: false,
-      selfie_required: false,
-      anti_spoof: true,
-      anti_spoof_threshold: 0.7,
-      confidence_threshold: 0.85,
-      allowed_devices: 'all',
-      max_attempts: 3,
-      lock_duration_minutes: 15,
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+const ALL_DAYS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+const SETTINGS_FIELDS = {
+  working_days:                 'jsonb',
+  timezone:                     'text',
+  work_start_time:              'time',
+  work_end_time:                'time',
+  full_day_hours:               'num',
+  break_duration:               'int',
+  half_day_hours:               'num',
+  auto_checkout:                'bool',
+  auto_checkout_time:           'time',
+  ot_enabled:                   'bool',
+  comp_off_enabled:             'bool',
+  regularization_monthly_limit: 'int',
+  regularization_needs_hr:      'bool',
+  device_settings:              'jsonb',
+};
+const DEVICE_DEFAULTS = { auto_sync: true, sync_interval_minutes: 15 };
 
-router.put('/face-settings', requireAttendanceAdmin, async (req, res) => {
-  try {
-    const companyId = scopeCompanyId(req);
-    const { rows } = await pool.query(`
-      INSERT INTO attendance_face_settings (company_id, settings, updated_by)
-      VALUES ($1, $2, $3)
-      ON CONFLICT (company_id) DO UPDATE
-        SET settings=$2, updated_by=$3, updated_at=NOW()
-      RETURNING *
-    `, [companyId, JSON.stringify(req.body), req.user?.userId]);
-    res.json(rows[0].settings);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// FACE ATTENDANCE — STATS, ENROLLMENT, VALIDATE, ATTEMPTS
-// ─────────────────────────────────────────────────────────────────────────────
-
-async function incrementFailCount(companyId, employeeId, settings) {
-  try {
-    const cid = companyId ?? 0;
-    const result = await pool.query(`
-      INSERT INTO face_locked_accounts (company_id, employee_id, fail_count, last_attempt)
-      VALUES ($1, $2, 1, NOW())
-      ON CONFLICT (company_id, employee_id)
-      DO UPDATE SET fail_count = face_locked_accounts.fail_count + 1, last_attempt = NOW()
-      RETURNING fail_count
-    `, [cid, employeeId]);
-    const failCount  = parseInt(result.rows[0]?.fail_count || 0);
-    const maxAttempts = parseInt(settings.max_attempts || 3);
-    if (failCount >= maxAttempts) {
-      const lockMins = parseInt(settings.lock_duration_minutes || 15);
-      await pool.query(`
-        UPDATE face_locked_accounts
-           SET locked_until = NOW() + ($3 * INTERVAL '1 minute'), fail_count = 0
-         WHERE company_id = $1 AND employee_id = $2
-      `, [cid, employeeId, lockMins]);
-    }
-  } catch { /* non-blocking */ }
-}
-
-// GET /attendance/face-stats — real KPI counts for today
-router.get('/face-stats', async (req, res) => {
-  try {
-    const companyId = scopeCompanyId(req);
-    const today = new Date().toISOString().split('T')[0];
-    const [statsRes, lockedRes] = await Promise.all([
-      pool.query(`
-        SELECT
-          COUNT(*) FILTER (WHERE action = 'face_success')                  AS successful_today,
-          COUNT(*) FILTER (WHERE action IN ('face_failed', 'face_spoof'))   AS failed_today,
-          COUNT(*) FILTER (WHERE action = 'face_spoof')                    AS spoof_attempts
-        FROM attendance_audit_logs
-        WHERE ($1::integer IS NULL OR company_id = $1)
-          AND DATE(performed_at) = $2
-      `, [companyId, today]),
-      pool.query(`
-        SELECT COUNT(*) AS locked_accounts
-        FROM face_locked_accounts
-        WHERE company_id = COALESCE($1, 0)
-          AND locked_until > NOW()
-      `, [companyId]),
-    ]);
-    const s = statsRes.rows[0] || {};
-    res.json({
-      successful_today: parseInt(s.successful_today || 0),
-      failed_today:     parseInt(s.failed_today     || 0),
-      spoof_attempts:   parseInt(s.spoof_attempts   || 0),
-      locked_accounts:  parseInt(lockedRes.rows[0]?.locked_accounts || 0),
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// GET /attendance/face-attempts — suspicious attempts with filters
-router.get('/face-attempts', async (req, res) => {
-  try {
-    const companyId = scopeCompanyId(req);
-    const { from_date, to_date, employee_id, action } = req.query;
-    let q = `
-      SELECT al.*,
-             COALESCE(e.name, CONCAT(e.first_name,' ',e.last_name)) AS employee_name,
-             e.department
-        FROM attendance_audit_logs al
-        LEFT JOIN employees e ON e.id = al.employee_id
-       WHERE ($1::integer IS NULL OR al.company_id = $1)
-         AND al.action IN ('face_failed', 'face_spoof', 'face_locked')
-    `;
-    const params = [companyId];
-    let n = 2;
-    if (employee_id) { q += ` AND al.employee_id = $${n++}`;                    params.push(employee_id); }
-    if (from_date)   { q += ` AND al.performed_at >= $${n++}`;                  params.push(from_date); }
-    if (to_date)     { q += ` AND al.performed_at <= $${n++}`;                  params.push(to_date + ' 23:59:59'); }
-    if (action)      { q += ` AND al.action = $${n++}`;                         params.push(action); }
-    q += ` ORDER BY al.performed_at DESC LIMIT 200`;
-    const result = await pool.query(q, params).catch(() => ({ rows: [] }));
-    res.json(result.rows);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// GET /attendance/face-enrollment — enrollment status per employee
-router.get('/face-enrollment', async (req, res) => {
-  try {
-    const companyId = scopeCompanyId(req);
-    const cid = companyId ?? 0;
-    const { status } = req.query; // 'enrolled' | 'unenrolled'
-    let q = `
-      SELECT
-        e.id AS employee_id,
-        COALESCE(e.name, CONCAT(e.first_name,' ',e.last_name)) AS employee_name,
-        e.department, e.designation, e.company_email,
-        ft.id AS template_id,
-        ft.enrolled_at,
-        COALESCE(eb.name, CONCAT(eb.first_name,' ',eb.last_name)) AS enrolled_by_name,
-        CASE WHEN ft.id IS NOT NULL THEN 'enrolled' ELSE 'unenrolled' END AS enrollment_status
-      FROM employees e
-      LEFT JOIN face_templates ft
-        ON ft.employee_id = e.id AND ft.company_id = $1 AND ft.is_active = TRUE
-      LEFT JOIN employees eb ON eb.id = ft.enrolled_by
-      WHERE e.deleted_at IS NULL
-        AND LOWER(e.status) IN ('active','probation','notice')
-        AND ($2::integer IS NULL OR e.company_id = $2)
-    `;
-    const params = [cid, companyId];
-    if (status === 'enrolled')   q += ` AND ft.id IS NOT NULL`;
-    if (status === 'unenrolled') q += ` AND ft.id IS NULL`;
-    q += ` ORDER BY enrollment_status DESC, e.department, e.name`;
-    const result = await pool.query(q, params).catch(() => ({ rows: [] }));
-    const total    = result.rows.length;
-    const enrolled = result.rows.filter(r => r.enrollment_status === 'enrolled').length;
-    res.json({
-      total,
-      enrolled,
-      unenrolled: total - enrolled,
-      enrollment_pct: total > 0 ? Math.round((enrolled / total) * 100) : 0,
-      employees: result.rows,
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// POST /attendance/face-enroll — HR marks an employee as enrolled
-router.post('/face-enroll', requireAttendanceAdmin, async (req, res) => {
-  try {
-    const { employee_id, notes } = req.body;
-    if (!employee_id) return res.status(400).json({ error: 'employee_id required' });
-    const companyId = scopeCompanyId(req);
-    const cid = companyId ?? 0;
-    const enrolledBy = req.user?.userId ?? null;
-    const { rows } = await pool.query(`
-      INSERT INTO face_templates (company_id, employee_id, enrolled_by, notes, is_active)
-      VALUES ($1, $2, $3, $4, TRUE)
-      ON CONFLICT (company_id, employee_id)
-      DO UPDATE SET is_active = TRUE, enrolled_by = $3, enrolled_at = NOW(), notes = COALESCE($4, face_templates.notes)
-      RETURNING *
-    `, [cid, employee_id, enrolledBy, notes || null]);
-    await writeAuditLog({
-      companyId, employeeId: parseInt(employee_id),
-      action: 'face_enrolled',
-      afterData: { enrolled_by: enrolledBy, notes },
-      performedBy: enrolledBy, req,
-    });
-    res.json(rows[0]);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ── Browser face-recognition (self-service, descriptor-based) ────────────────
-// Euclidean distance between two 128-float face descriptors. Lower = more alike.
-// face-api convention: distance <= 0.5 is a confident same-person match.
-function faceDistance(a, b) {
-  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return Infinity;
-  let sum = 0;
-  for (let i = 0; i < a.length; i++) { const d = a[i] - b[i]; sum += d * d; }
-  return Math.sqrt(sum);
-}
-
-// Only the signed-in employee may enroll / verify their own face (HR uses the
-// separate /face-enroll flag route). Managers/admins are allowed through too.
-function faceSelfEmployeeId(req, bodyEmpId) {
-  const self = req.user?.employee_id ?? null;
-
-  // Privileged callers may enrol/verify on behalf of a named employee.
-  if (isAttendanceOperator(req) && bodyEmpId) return parseInt(bodyEmpId);
-
-  // Everyone else is pinned to their own employee record. The previous version
-  // fell back to `bodyEmpId` when `self` was null, so a login not linked to an
-  // employee could enrol ITS OWN FACE against any employee_id it named — i.e.
-  // register itself as another person for face-recognition clock-in. Returning
-  // null instead makes callers fail closed; they already handle a null id by
-  // returning the "login not linked" error.
-  return self != null ? parseInt(self) : null;
-}
-
-async function loadFaceSettings(companyId) {
-  const row = await pool.query(
-    `SELECT settings FROM attendance_face_settings WHERE company_id=$1 OR company_id IS NULL LIMIT 1`,
-    [companyId]
-  ).catch(() => ({ rows: [] }));
+function settingsResponse(row, policies = {}) {
+  const r = row || {};
   return {
-    enabled: true, match_threshold: 0.5,
-    anti_spoof: true, anti_spoof_threshold: 0.7,
-    max_attempts: 3, lock_duration_minutes: 15,
-    ...(row.rows[0]?.settings || {}),
+    company_id:                   r.company_id ?? null,
+    working_days:                 Array.isArray(r.working_days) ? r.working_days : ['monday', 'tuesday', 'wednesday', 'thursday', 'friday'],
+    weekend_days:                 Array.isArray(r.weekend_days) ? r.weekend_days : ['saturday', 'sunday'],
+    timezone:                     r.timezone || 'Asia/Kolkata',
+    work_start_time:              String(r.work_start_time || '09:00').slice(0, 5),
+    work_end_time:                String(r.work_end_time || '18:00').slice(0, 5),
+    full_day_hours:               r.full_day_hours != null ? Number(r.full_day_hours) : 8,
+    break_duration:               r.break_duration != null ? Number(r.break_duration) : 30,
+    half_day_hours:               r.half_day_hours != null ? Number(r.half_day_hours) : 4.5,
+    auto_checkout:                r.auto_checkout === true,
+    auto_checkout_time:           String(r.auto_checkout_time || '21:00').slice(0, 5),
+    ot_enabled:                   r.ot_enabled === true,
+    comp_off_enabled:             r.comp_off_enabled === true,
+    regularization_monthly_limit: r.regularization_monthly_limit != null ? Number(r.regularization_monthly_limit) : 3,
+    regularization_needs_hr:      r.regularization_needs_hr === true,
+    device_settings:              { ...DEVICE_DEFAULTS, ...(r.device_settings || {}) },
+    // Late rules and overtime rules live in attendance_policies (the engine reads them there).
+    grace_minutes:                Number(policies.late?.grace_minutes ?? 10),
+    clock_window_early_minutes:   Number(policies.clock_window?.early_minutes ?? 15),
+    clock_window_late_minutes:    Number(policies.clock_window?.late_minutes ?? 15),
+    ot_requires_approval:         policies.overtime?.requires_approval !== false,
+    ot_weekday_multiplier:        Number(policies.overtime?.weekday_multiplier ?? 2),
+    ot_weekend_multiplier:        Number(policies.overtime?.weekend_multiplier ?? 2),
+    ot_holiday_multiplier:        Number(policies.overtime?.holiday_multiplier ?? 2),
+    ot_max_daily_hours:           Number(policies.overtime?.max_daily_ot_hours ?? 0),
+    ot_max_monthly_hours:         Number(policies.overtime?.max_monthly_ot_hours ?? 0),
   };
 }
 
-// GET /attendance/face/status — is the caller (or ?employee_id=) enrolled with a descriptor?
-router.get('/face/status', async (req, res) => {
-  try {
-    const companyId = scopeCompanyId(req);
-    const cid = companyId ?? 0;
-    const empId = faceSelfEmployeeId(req, req.query.employee_id);
-    if (!empId) return res.status(400).json({ error: 'employee_id required' });
-    const { rows } = await pool.query(
-      `SELECT id, (descriptor IS NOT NULL) AS has_descriptor, enrolled_at
-         FROM face_templates
-        WHERE company_id=$1 AND employee_id=$2 AND is_active=TRUE`,
-      [cid, empId]
-    );
-    const cfg = await loadFaceSettings(companyId);
-    res.json({
-      enrolled: !!(rows[0]?.has_descriptor),
-      flagged:  rows.length > 0,
-      enabled:  cfg.enabled !== false,
-      enrolled_at: rows[0]?.enrolled_at || null,
-    });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
+async function loadPolicies(companyId) {
+  const { rows } = await pool.query(`
+    SELECT DISTINCT ON (policy_type) policy_type, rules FROM attendance_policies
+     WHERE is_active = true AND policy_type IN ('late', 'clock_window', 'overtime')
+       AND (company_id = $1 OR company_id IS NULL)
+     ORDER BY policy_type, company_id DESC NULLS LAST, id`, [companyId ?? null]).catch(() => ({ rows: [] }));
+  return Object.fromEntries(rows.map((r) => [r.policy_type, r.rules || {}]));
+}
 
-// POST /attendance/face/self-enroll — store the caller's 128-float descriptor
-router.post('/face/self-enroll', async (req, res) => {
-  try {
-    const companyId = scopeCompanyId(req);
-    const cid = companyId ?? 0;
-    const empId = faceSelfEmployeeId(req, req.body.employee_id);
-    if (!empId) return res.status(400).json({ error: 'employee_id required' });
-    const descriptor = req.body.descriptor;
-    if (!Array.isArray(descriptor) || descriptor.length < 64) {
-      return res.status(400).json({ error: 'invalid_descriptor', message: 'A valid face descriptor is required' });
-    }
-    const enrolledBy = req.user?.userId ?? null;
-    const { rows } = await pool.query(`
-      INSERT INTO face_templates (company_id, employee_id, enrolled_by, descriptor, is_active)
-      VALUES ($1, $2, $3, $4, TRUE)
-      ON CONFLICT (company_id, employee_id)
-      DO UPDATE SET descriptor = $4, is_active = TRUE, enrolled_at = NOW(), enrolled_by = $3
-      RETURNING id, enrolled_at
-    `, [cid, empId, enrolledBy, JSON.stringify(descriptor)]);
-    await writeAuditLog({
-      companyId, employeeId: empId, action: 'face_enrolled',
-      afterData: { self_enrolled: true, dims: descriptor.length },
-      performedBy: enrolledBy, req,
-    }).catch(() => {});
-    res.json({ success: true, enrolled_at: rows[0]?.enrolled_at });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// POST /attendance/face/verify — match a live descriptor against the enrolled one.
-// On success the client then calls /attendance/clock (reuses geo/shift/late logic).
-router.post('/face/verify', async (req, res) => {
-  try {
-    const companyId = scopeCompanyId(req);
-    const cid = companyId ?? 0;
-    const empId = faceSelfEmployeeId(req, req.body.employee_id);
-    if (!empId) return res.status(400).json({ error: 'employee_id required' });
-    const { descriptor, liveness_score } = req.body;
-    if (!Array.isArray(descriptor) || descriptor.length < 64) {
-      return res.status(400).json({ error: 'invalid_descriptor' });
-    }
-
-    const cfg = await loadFaceSettings(companyId);
-    if (cfg.enabled === false) return res.status(403).json({ error: 'face_attendance_disabled' });
-
-    // Lockout gate
-    const lockRow = await pool.query(
-      `SELECT locked_until FROM face_locked_accounts WHERE company_id=$1 AND employee_id=$2 AND locked_until > NOW()`,
-      [cid, empId]
-    );
-    if (lockRow.rows.length) {
-      return res.status(423).json({ error: 'account_locked', locked_until: lockRow.rows[0].locked_until });
-    }
-
-    // Load enrolled descriptor
-    const tpl = await pool.query(
-      `SELECT descriptor FROM face_templates WHERE company_id=$1 AND employee_id=$2 AND is_active=TRUE`,
-      [cid, empId]
-    );
-    const enrolled = tpl.rows[0]?.descriptor;
-    if (!enrolled) {
-      return res.status(403).json({ error: 'employee_not_enrolled', message: 'No enrolled face — please enroll first' });
-    }
-
-    // Liveness (client-supplied score; anti-spoof settings honoured)
-    const liveness = liveness_score !== undefined ? parseFloat(liveness_score) : null;
-    if (cfg.anti_spoof && liveness !== null && liveness < parseFloat(cfg.anti_spoof_threshold)) {
-      await writeAuditLog({
-        companyId, employeeId: empId, action: 'face_spoof',
-        afterData: { liveness_score: liveness, reason: 'liveness_check_failed' }, performedBy: null, req,
-      }).catch(() => {});
-      await incrementFailCount(companyId, empId, cfg);
-      return res.status(403).json({ error: 'spoof_detected', liveness_score: liveness });
-    }
-
-    const distance   = faceDistance(descriptor, Array.isArray(enrolled) ? enrolled : []);
-    const threshold  = parseFloat(cfg.match_threshold ?? 0.5);
-    const confidence = Math.max(0, Math.min(1, 1 - distance));
-
-    if (distance > threshold) {
-      await writeAuditLog({
-        companyId, employeeId: empId, action: 'face_failed',
-        afterData: { distance, confidence, reason: 'no_match' }, performedBy: null, req,
-      }).catch(() => {});
-      await incrementFailCount(companyId, empId, cfg);
-      return res.status(403).json({ error: 'no_match', distance, confidence, threshold });
-    }
-
-    // SUCCESS — clear fail counter and log
-    await pool.query(
-      `UPDATE face_locked_accounts SET fail_count=0, last_attempt=NOW() WHERE company_id=$1 AND employee_id=$2`,
-      [cid, empId]
-    ).catch(() => {});
-    await writeAuditLog({
-      companyId, employeeId: empId, action: 'face_success',
-      afterData: { distance, confidence }, performedBy: empId, req,
-    }).catch(() => {});
-
-    // Short-lived proof-of-face for /attendance/clock — the clock endpoint
-    // rejects self clock-ins that don't carry a valid face_token.
-    const faceToken = jwt.sign(
-      { typ: 'face_verify', employee_id: empId, company_id: cid },
-      process.env.JWT_SECRET,
-      { expiresIn: '3m' }
-    );
-    res.json({ match: true, distance, confidence, employee_id: empId, face_token: faceToken });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// DELETE /attendance/face-data/:employee_id — GDPR biometric data deletion
-router.delete('/face-data/:employee_id', requireAttendanceAdmin, async (req, res) => {
-  try {
-    const companyId = scopeCompanyId(req);
-    const cid = companyId ?? 0;
-    const empId = parseInt(req.params.employee_id);
-    await pool.query(
-      `UPDATE face_templates SET is_active = FALSE WHERE employee_id = $1 AND company_id = $2`,
-      [empId, cid]
-    );
-    await pool.query(
-      `DELETE FROM face_locked_accounts WHERE employee_id = $1 AND company_id = $2`,
-      [empId, cid]
-    );
-    await writeAuditLog({
-      companyId, employeeId: empId,
-      action: 'face_data_deleted',
-      afterData: { deleted_by: req.user?.userId },
-      performedBy: req.user?.userId ?? null, req,
-    });
-    res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+// Merge rule values into the company's active policy of that type (created if missing).
+async function savePolicyRules(companyId, type, name, patch, userId) {
+  if (!Object.keys(patch).length) return;
+  const { rows: [p] } = await pool.query(`
+    SELECT id, company_id FROM attendance_policies
+     WHERE policy_type = $1 AND is_active = true AND (company_id = $2 OR company_id IS NULL)
+     ORDER BY company_id DESC NULLS LAST, id LIMIT 1`, [type, companyId ?? null]);
+  if (p) {
+    await pool.query(`UPDATE attendance_policies SET rules = COALESCE(rules, '{}'::jsonb) || $2::jsonb, updated_at = NOW() WHERE id = $1`,
+      [p.id, JSON.stringify(patch)]);
+  } else {
+    await pool.query(`INSERT INTO attendance_policies (company_id, policy_type, name, rules, is_active, created_by) VALUES ($1, $2, $3, $4, true, $5)`,
+      [companyId ?? null, type, name, JSON.stringify(patch), userId ?? null]);
   }
-});
+}
 
-// POST /attendance/face-validate — inbound punch from biometric device
-router.post('/face-validate', async (req, res) => {
-  try {
-    const { device_id, employee_id, confidence, liveness_score, timestamp } = req.body;
-    if (!employee_id)         return res.status(400).json({ error: 'employee_id required' });
-    if (confidence === undefined) return res.status(400).json({ error: 'confidence required' });
-    const companyId = scopeCompanyId(req);
-    const cid = companyId ?? 0;
-    const punchTime = timestamp ? new Date(timestamp) : new Date();
-
-    // Load settings
-    const settingsRow = await pool.query(
-      `SELECT settings FROM attendance_face_settings WHERE company_id=$1 OR company_id IS NULL LIMIT 1`,
-      [companyId]
-    );
-    const cfg = {
-      enabled: true, confidence_threshold: 0.85,
-      anti_spoof: true, anti_spoof_threshold: 0.7,
-      max_attempts: 3, lock_duration_minutes: 15,
-      ...( settingsRow.rows[0]?.settings || {} ),
-    };
-
-    if (!cfg.enabled) return res.status(403).json({ error: 'face_attendance_disabled' });
-
-    // Check lockout
-    const lockRow = await pool.query(
-      `SELECT locked_until FROM face_locked_accounts WHERE company_id=$1 AND employee_id=$2 AND locked_until > NOW()`,
-      [cid, employee_id]
-    );
-    if (lockRow.rows.length) {
-      return res.status(423).json({
-        error: 'account_locked',
-        message: `Account locked until ${lockRow.rows[0].locked_until}`,
-        locked_until: lockRow.rows[0].locked_until,
-      });
+/**
+ * Write settings to the company's row (created from the global defaults the
+ * first time), or to the single global row for a global-scope login. Unknown
+ * keys are ignored; working_days also rewrites weekend_days so the two can
+ * never disagree again.
+ */
+async function saveAttendanceSettings(companyId, body, userId) {
+  const sets = []; const vals = [];
+  for (const [k, kind] of Object.entries(SETTINGS_FIELDS)) {
+    if (body[k] === undefined) continue;
+    let v = body[k];
+    if (k === 'working_days') {
+      v = (Array.isArray(v) ? v : []).map((d) => String(d).toLowerCase()).filter((d) => ALL_DAYS.includes(d));
+      if (!v.length) throw Object.assign(new Error('Choose at least one working day'), { status: 400 });
+      vals.push(JSON.stringify(ALL_DAYS.filter((d) => !v.includes(d))));
+      sets.push(`weekend_days = $${vals.length}::jsonb`);
     }
-
-    // Enrollment check
-    const enrolled = await pool.query(
-      `SELECT id FROM face_templates WHERE company_id=$1 AND employee_id=$2 AND is_active=TRUE`,
-      [cid, employee_id]
-    );
-    if (!enrolled.rows.length) {
-      return res.status(403).json({ error: 'employee_not_enrolled', message: 'Employee face not enrolled in this company' });
+    if (k === 'device_settings') v = { ...DEVICE_DEFAULTS, ...(v || {}) };
+    if (kind === 'num' || kind === 'int') {
+      v = Number(v);
+      if (!Number.isFinite(v) || v < 0) throw Object.assign(new Error(`${k} must be a number`), { status: 400 });
+      if (kind === 'int') v = Math.round(v);
     }
-
-    const conf     = parseFloat(confidence);
-    const liveness = liveness_score !== undefined ? parseFloat(liveness_score) : null;
-
-    // Spoof check
-    if (cfg.anti_spoof && liveness !== null && liveness < parseFloat(cfg.anti_spoof_threshold)) {
-      await writeAuditLog({
-        companyId, employeeId: parseInt(employee_id), action: 'face_spoof',
-        afterData: { confidence: conf, liveness_score: liveness, device_id, reason: 'liveness_check_failed' },
-        performedBy: null, req,
-      });
-      await incrementFailCount(companyId, employee_id, cfg);
-      return res.status(403).json({ error: 'spoof_detected', confidence: conf, liveness_score: liveness });
-    }
-
-    // Confidence check
-    if (conf < parseFloat(cfg.confidence_threshold)) {
-      await writeAuditLog({
-        companyId, employeeId: parseInt(employee_id), action: 'face_failed',
-        afterData: { confidence: conf, liveness_score: liveness, device_id, reason: 'low_confidence' },
-        performedBy: null, req,
-      });
-      await incrementFailCount(companyId, employee_id, cfg);
-      return res.status(403).json({ error: 'low_confidence', confidence: conf, threshold: cfg.confidence_threshold });
-    }
-
-    // SUCCESS — reset fail counter
-    await pool.query(
-      `UPDATE face_locked_accounts SET fail_count=0, last_attempt=NOW() WHERE company_id=$1 AND employee_id=$2`,
-      [cid, employee_id]
-    ).catch(() => {});
-
-    // Mark attendance
-    const today   = punchTime.toISOString().slice(0, 10);
-    const timeStr = punchTime.toTimeString().slice(0, 5);
+    if (kind === 'bool') v = v === true || v === 'true';
+    vals.push(kind === 'jsonb' ? JSON.stringify(v) : v);
+    sets.push(`${k} = $${vals.length}${kind === 'jsonb' ? '::jsonb' : kind === 'time' ? '::time' : ''}`);
+  }
+  if (companyId != null) {
     await pool.query(`
-      INSERT INTO attendance_records
-        (employee_id, attendance_date, check_in_time, status, company_id, work_mode)
-      VALUES ($1, $2, $3::time, 'present', $4, 'office')
-      ON CONFLICT (employee_id, attendance_date)
-      DO UPDATE SET
-        check_in_time = CASE WHEN attendance_records.check_in_time IS NULL THEN $3::time ELSE attendance_records.check_in_time END,
-        status = COALESCE(NULLIF(attendance_records.status,'absent'), 'present'),
-        updated_at = NOW()
-    `, [employee_id, today, timeStr, companyId]).catch(() => {});
+      INSERT INTO attendance_general_settings
+        (company_id, working_days, weekend_days, timezone, work_start_time, work_end_time, full_day_hours,
+         break_duration, half_day_hours, auto_checkout, auto_checkout_time, device_settings)
+      SELECT $1::int, working_days, weekend_days, timezone, work_start_time, work_end_time, full_day_hours,
+             break_duration, half_day_hours, auto_checkout, auto_checkout_time, device_settings
+        FROM attendance_general_settings WHERE company_id IS NULL
+      UNION ALL
+      SELECT $1::int, '["monday","tuesday","wednesday","thursday","friday"]'::jsonb, '["saturday","sunday"]'::jsonb,
+             'Asia/Kolkata', '09:00'::time, '18:00'::time, 8, 30, 4.5, false, '21:00'::time, '{}'::jsonb
+       WHERE NOT EXISTS (SELECT 1 FROM attendance_general_settings WHERE company_id IS NULL)
+      LIMIT 1
+      ON CONFLICT (company_id) DO NOTHING`, [companyId]);
+  } else {
+    await pool.query(`
+      INSERT INTO attendance_general_settings (company_id) SELECT NULL
+       WHERE NOT EXISTS (SELECT 1 FROM attendance_general_settings WHERE company_id IS NULL)`);
+  }
+  if (sets.length) {
+    vals.push(userId ?? null);
+    sets.push(`updated_by = $${vals.length}`, 'updated_at = NOW()');
+    vals.push(companyId ?? null);
+    await pool.query(
+      `UPDATE attendance_general_settings SET ${sets.join(', ')}
+        WHERE ${companyId != null ? `company_id = $${vals.length}` : `company_id IS NULL AND $${vals.length}::int IS NULL`}`, vals);
+  }
 
-    if (device_id) {
-      await pool.query(
-        `INSERT INTO biometric_logs (employee_id, device_id, punch_time, punch_type, raw_data)
-         VALUES ($1, $2, $3, 'in', $4) ON CONFLICT DO NOTHING`,
-        [employee_id, device_id, punchTime.toISOString(),
-         JSON.stringify({ confidence: conf, liveness_score: liveness, source: 'face' })]
-      ).catch(() => {});
+  // Rules that live in attendance_policies.
+  const late = {}; const win = {}; const ot = {};
+  if (body.grace_minutes != null) late.grace_minutes = Math.max(0, Math.round(Number(body.grace_minutes) || 0));
+  if (body.clock_window_early_minutes != null) win.early_minutes = Math.max(0, Math.round(Number(body.clock_window_early_minutes) || 0));
+  if (body.clock_window_late_minutes != null) win.late_minutes = Math.max(0, Math.round(Number(body.clock_window_late_minutes) || 0));
+  if (body.ot_requires_approval != null) ot.requires_approval = body.ot_requires_approval === true || body.ot_requires_approval === 'true';
+  for (const [src, dst] of [['ot_weekday_multiplier', 'weekday_multiplier'], ['ot_weekend_multiplier', 'weekend_multiplier'],
+    ['ot_holiday_multiplier', 'holiday_multiplier'], ['ot_max_daily_hours', 'max_daily_ot_hours'], ['ot_max_monthly_hours', 'max_monthly_ot_hours']]) {
+    if (body[src] == null) continue;
+    const n = Number(body[src]);
+    if (!Number.isFinite(n) || n < 0 || (dst.endsWith('multiplier') && n > 5)) {
+      throw Object.assign(new Error(`${src} must be between 0 and ${dst.endsWith('multiplier') ? 5 : 'any positive number'}`), { status: 400 });
     }
-
-    await writeAuditLog({
-      companyId, employeeId: parseInt(employee_id), action: 'face_success',
-      afterData: { confidence: conf, liveness_score: liveness, device_id, punch_time: punchTime },
-      performedBy: null, req,
-    });
-
-    res.json({ success: true, employee_id, punch_time: punchTime, confidence: conf });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+    ot[dst] = n;
   }
-});
+  await savePolicyRules(companyId, 'late', 'Late arrival rules', late, userId);
+  await savePolicyRules(companyId, 'clock_window', 'Clock-in window', win, userId);
+  await savePolicyRules(companyId, 'overtime', 'Overtime rules', ot, userId);
+}
 
-// ─────────────────────────────────────────────────────────────────────────────
-// WORKFLOW CONFIGURATION
-// ─────────────────────────────────────────────────────────────────────────────
-router.get('/workflow-config', async (req, res) => {
-  try {
-    const companyId = scopeCompanyId(req);
-    const { rows } = await pool.query(
-      'SELECT * FROM attendance_workflow_config WHERE company_id=$1 ORDER BY workflow_type',
-      [companyId]
-    );
-    res.json(rows);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+async function readAttendanceSettings(companyId) {
+  return settingsResponse(await getAttendanceSettingsRow(companyId), await loadPolicies(companyId));
+}
 
-router.put('/workflow-config/:type', requireAttendanceAdmin, async (req, res) => {
-  try {
-    const companyId = scopeCompanyId(req);
-    const { type } = req.params;
-    const { levels, is_active = true } = req.body;
-    const { rows } = await pool.query(`
-      INSERT INTO attendance_workflow_config (company_id, workflow_type, levels, is_active, updated_by)
-      VALUES ($1,$2,$3,$4,$5)
-      ON CONFLICT (company_id, workflow_type) DO UPDATE
-        SET levels=$3, is_active=$4, updated_by=$5, updated_at=NOW()
-      RETURNING *
-    `, [companyId, type, JSON.stringify(levels || []), is_active, req.user?.userId]);
-    res.json(rows[0]);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// GENERAL ATTENDANCE SETTINGS
-// ─────────────────────────────────────────────────────────────────────────────
 router.get('/general-settings', async (req, res) => {
   try {
-    const companyId = scopeCompanyId(req);
-    const { rows } = await pool.query(
-      'SELECT * FROM attendance_general_settings WHERE company_id=$1 LIMIT 1',
-      [companyId]
-    );
-    if (rows[0]) {
-      // Merge late-policy grace_minutes into the response as default_grace_minutes
-      const policyRow = await pool.query(`
-        SELECT rules->>'grace_minutes' AS grace_minutes,
-               rules->>'ot_multiplier' AS ot_multiplier
-          FROM attendance_policies
-         WHERE policy_type = 'late' AND is_active = true
-           AND (company_id = $1 OR company_id IS NULL)
-         ORDER BY company_id DESC NULLS LAST LIMIT 1
-      `, [scopeCompanyId(req)]).catch(() => ({ rows: [] }));
-      const p = policyRow.rows[0];
-      res.json({
-        ...rows[0],
-        default_grace_minutes: rows[0].default_grace_minutes ?? parseInt(p?.grace_minutes ?? 10),
-        ot_multiplier: rows[0].ot_multiplier ?? parseFloat(p?.ot_multiplier ?? 2),
-      });
-    } else {
-      res.json({
-        working_days: ['monday','tuesday','wednesday','thursday','friday'],
-        timezone: 'Asia/Kolkata',
-        attendance_mode: 'manual',
-        auto_checkout: false,
-        auto_checkout_time: '21:00',
-        half_day_hours: 4.5,
-        full_day_hours: 9.0,
-        default_grace_minutes: 10,
-        ot_multiplier: 2,
-      });
-    }
+    res.json(await readAttendanceSettings(scopeCompanyId(req)));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -4366,137 +3760,44 @@ router.get('/general-settings', async (req, res) => {
 router.put('/general-settings', requireAttendanceAdmin, async (req, res) => {
   try {
     const companyId = scopeCompanyId(req);
-    const {
-      working_days, timezone, attendance_mode, auto_checkout, auto_checkout_time,
-      half_day_hours, full_day_hours, default_grace_minutes, ot_multiplier,
-    } = req.body;
-    const { rows } = await pool.query(`
-      INSERT INTO attendance_general_settings
-        (company_id, working_days, timezone, attendance_mode, auto_checkout, auto_checkout_time,
-         half_day_hours, full_day_hours, updated_by)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-      ON CONFLICT (company_id) DO UPDATE
-        SET working_days=$2, timezone=$3, attendance_mode=$4, auto_checkout=$5,
-            auto_checkout_time=$6, half_day_hours=$7, full_day_hours=$8, updated_by=$9, updated_at=NOW()
-      RETURNING *
-    `, [companyId, JSON.stringify(working_days), timezone, attendance_mode, auto_checkout,
-        auto_checkout_time, half_day_hours, full_day_hours, req.user?.userId]);
-    // Save grace_minutes + ot_multiplier to late attendance policy if provided
-    if (default_grace_minutes != null || ot_multiplier != null) {
-      await pool.query(`
-        UPDATE attendance_policies
-           SET rules = rules
-               || jsonb_build_object(
-                    'grace_minutes', $2::text,
-                    'ot_multiplier', $3::text
-                  ),
-               updated_at = NOW()
-         WHERE policy_type = 'late' AND is_active = true
-           AND (company_id = $1 OR company_id IS NULL)
-      `, [companyId, String(default_grace_minutes ?? 10), String(ot_multiplier ?? 2)]).catch(() => {});
-    }
-    res.json({
-      ...rows[0],
-      default_grace_minutes: default_grace_minutes ?? 10,
-      ot_multiplier: ot_multiplier ?? 2,
-    });
+    const before = await readAttendanceSettings(companyId);
+    await saveAttendanceSettings(companyId, req.body || {}, req.user?.userId);
+    const after = await readAttendanceSettings(companyId);
+    await writeAuditLog({ companyId, action: 'settings_updated', beforeData: before, afterData: after, performedBy: req.user?.userId, req });
+    res.json(after);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.status || 500).json({ error: err.message, message: err.message });
   }
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// GEO / DEVICE / REPORT / WORK-CENTRE MODULE SETTINGS
-// Each setting group is stored as a JSONB column on attendance_general_settings
-// ─────────────────────────────────────────────────────────────────────────────
-const SETTINGS_DEFAULTS = {
-  geo: { geo_mandatory: false, default_radius: 200, block_outside: true },
-  device: { auto_sync: true, sync_interval_minutes: 15, duplicate_window_minutes: 5, offline_sync: true },
-  report: { auto_monthly_report: true, report_email: '', export_format: 'xlsx', include_photos: false },
-  workcentre: { track_work_centres: false, require_wc_for_factory: true, units_produced_tracking: false, include_in_reports: true },
-};
-
-async function getModuleSetting(companyId, key) {
-  const { rows } = await pool.query(
-    `SELECT ${key}_settings AS val FROM attendance_general_settings WHERE company_id=$1 LIMIT 1`,
-    [companyId]
-  ).catch(() => ({ rows: [] }));
-  return rows[0]?.val || SETTINGS_DEFAULTS[key] || {};
-}
-
-async function putModuleSetting(companyId, key, value, userId) {
-  await pool.query(`
-    INSERT INTO attendance_general_settings (company_id, ${key}_settings, updated_by)
-    VALUES ($1, $2, $3)
-    ON CONFLICT (company_id) DO UPDATE SET ${key}_settings = $2, updated_by = $3, updated_at = NOW()
-  `, [companyId, JSON.stringify(value), userId || null]);
-}
-
-router.get('/geo-settings', async (req, res) => {
-  try {
-    res.json(await getModuleSetting(scopeCompanyId(req), 'geo'));
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-router.put('/geo-settings', requireAttendanceAdmin, async (req, res) => {
-  try {
-    await putModuleSetting(scopeCompanyId(req), 'geo', req.body, req.user?.userId);
-    res.json({ ok: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
+// Punch-machine sync settings (auto sync on/off, interval) — used by the
+// device auto-sync job and shown on Attendance → Punch Machines.
 router.get('/device-settings', async (req, res) => {
   try {
-    res.json(await getModuleSetting(scopeCompanyId(req), 'device'));
+    res.json((await readAttendanceSettings(scopeCompanyId(req))).device_settings);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 router.put('/device-settings', requireAttendanceAdmin, async (req, res) => {
   try {
-    await putModuleSetting(scopeCompanyId(req), 'device', req.body, req.user?.userId);
-    res.json({ ok: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+    const companyId = scopeCompanyId(req);
+    const cur = (await readAttendanceSettings(companyId)).device_settings;
+    const interval = Number(req.body?.sync_interval_minutes ?? cur.sync_interval_minutes);
+    if (!Number.isFinite(interval) || interval < 5 || interval > 1440) {
+      return res.status(400).json({ error: 'Sync interval must be between 5 and 1440 minutes' });
+    }
+    const next = { auto_sync: req.body?.auto_sync ?? cur.auto_sync, sync_interval_minutes: Math.round(interval) };
+    await saveAttendanceSettings(companyId, { device_settings: next }, req.user?.userId);
+    res.json((await readAttendanceSettings(companyId)).device_settings);
+  } catch (err) { res.status(err.status || 500).json({ error: err.message }); }
 });
 
-router.get('/report-settings', async (req, res) => {
-  try {
-    res.json(await getModuleSetting(scopeCompanyId(req), 'report'));
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-router.put('/report-settings', requireAttendanceAdmin, async (req, res) => {
-  try {
-    await putModuleSetting(scopeCompanyId(req), 'report', req.body, req.user?.userId);
-    res.json({ ok: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-router.get('/workcentre-settings', async (req, res) => {
-  try {
-    res.json(await getModuleSetting(scopeCompanyId(req), 'workcentre'));
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-router.put('/workcentre-settings', requireAttendanceAdmin, async (req, res) => {
-  try {
-    await putModuleSetting(scopeCompanyId(req), 'workcentre', req.body, req.user?.userId);
-    res.json({ ok: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// COMPANY TIMINGS — wizard step 1, source of truth for weekend detection
-// ─────────────────────────────────────────────────────────────────────────────
+// Setup Wizard step "Company timings" — same row, same saver.
 router.get('/settings/company-timings', async (req, res) => {
   try {
-    const companyId = scopeCompanyId(req);
-    const { rows } = await pool.query(
-      `SELECT work_start_time, work_end_time, break_duration, min_working_hours, weekend_days
-         FROM attendance_general_settings WHERE company_id=$1 LIMIT 1`,
-      [companyId]
-    );
-    res.json(rows[0] ?? {
-      work_start_time: '09:00',
-      work_end_time: '18:00',
-      break_duration: 60,
-      min_working_hours: 9.0,
-      weekend_days: ['saturday', 'sunday'],
+    const s = await readAttendanceSettings(scopeCompanyId(req));
+    res.json({
+      work_start_time: s.work_start_time, work_end_time: s.work_end_time,
+      break_duration: s.break_duration, min_working_hours: s.full_day_hours, weekend_days: s.weekend_days,
     });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -4504,25 +3805,19 @@ router.get('/settings/company-timings', async (req, res) => {
 router.post('/settings/company-timings', requireAttendanceAdmin, async (req, res) => {
   try {
     const companyId = scopeCompanyId(req);
-    const {
-      work_start_time  = '09:00',
-      work_end_time    = '18:00',
-      break_duration   = 60,
-      min_working_hours = 9.0,
-      weekend_days     = ['saturday', 'sunday'],
-    } = req.body;
-    const { rows } = await pool.query(`
-      INSERT INTO attendance_general_settings
-        (company_id, work_start_time, work_end_time, break_duration, min_working_hours, weekend_days, updated_by)
-      VALUES ($1,$2,$3,$4,$5,$6,$7)
-      ON CONFLICT (company_id) DO UPDATE
-        SET work_start_time=$2, work_end_time=$3, break_duration=$4,
-            min_working_hours=$5, weekend_days=$6, updated_by=$7, updated_at=NOW()
-      RETURNING work_start_time, work_end_time, break_duration, min_working_hours, weekend_days
-    `, [companyId, work_start_time, work_end_time, break_duration,
-        min_working_hours, JSON.stringify(weekend_days), req.user?.userId]);
-    res.json(rows[0]);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+    const b = req.body || {};
+    const weekend = Array.isArray(b.weekend_days) ? b.weekend_days.map((d) => String(d).toLowerCase()) : null;
+    await saveAttendanceSettings(companyId, {
+      work_start_time: b.work_start_time, work_end_time: b.work_end_time,
+      break_duration: b.break_duration, full_day_hours: b.min_working_hours,
+      working_days: weekend ? ALL_DAYS.filter((d) => !weekend.includes(d)) : undefined,
+    }, req.user?.userId);
+    const s = await readAttendanceSettings(companyId);
+    res.json({
+      work_start_time: s.work_start_time, work_end_time: s.work_end_time,
+      break_duration: s.break_duration, min_working_hours: s.full_day_hours, weekend_days: s.weekend_days,
+    });
+  } catch (err) { res.status(err.status || 500).json({ error: err.message }); }
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -4597,244 +3892,59 @@ router.delete('/approval-delegations/:id', requireAttendanceAdmin, captureBefore
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// QR ATTENDANCE
-// ─────────────────────────────────────────────────────────────────────────────
-
-/* ── POST /attendance/qr/generate — create a QR code for a shift/site ── */
-router.post('/qr/generate', requireAttendanceAdmin, async (req, res) => {
-  try {
-    const role = (req.user?.role || '').toLowerCase();
-    if (!['admin', 'super_admin', 'manager'].includes(role)) {
-      return res.status(403).json({ error: 'Only admin or manager can generate QR codes' });
-    }
-    const { location, shift_id, valid_from, valid_until, scan_type = 'both' } = req.body;
-    if (!valid_from || !valid_until) {
-      return res.status(400).json({ error: 'valid_from and valid_until are required' });
-    }
-    const companyId = scopeCompanyId(req);
-    const { randomBytes } = await import('crypto');
-    const code_token = randomBytes(24).toString('hex');
-
-    const { rows: [code] } = await pool.query(
-      `INSERT INTO qr_attendance_codes
-         (code_token, location, shift_id, valid_from, valid_until, scan_type, is_active, created_by, company_id)
-       VALUES ($1,$2,$3,$4,$5,$6,true,$7,$8) RETURNING *`,
-      [code_token, location || null, shift_id || null, valid_from, valid_until, scan_type,
-       req.user?.userId ?? null, companyId]
-    );
-    res.status(201).json({ success: true, data: code });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-/* ── GET /attendance/qr/codes — list QR codes for admin ── */
-router.get('/qr/codes', async (req, res) => {
-  try {
-    const companyId = scopeCompanyId(req);
-    const { rows } = await pool.query(
-      `SELECT qc.*, s.name AS shift_name
-       FROM qr_attendance_codes qc
-       LEFT JOIN hr_shifts s ON s.id = qc.shift_id
-       WHERE qc.is_active = true
-         ${companyId ? 'AND qc.company_id = $1' : ''}
-       ORDER BY qc.valid_until DESC LIMIT 100`,
-      companyId ? [companyId] : []
-    );
-    res.json({ success: true, data: rows });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-/* ── POST /attendance/qr/scan — employee scans QR code to mark attendance ── */
-router.post('/qr/scan', async (req, res) => {
-  try {
-    const { code_token, scan_type = 'in', latitude, longitude } = req.body;
-    if (!code_token) return res.status(400).json({ error: 'code_token is required' });
-
-    const employeeId = req.user?.employeeId ?? req.user?.employee_id ?? null;
-    if (!employeeId) return res.status(401).json({ error: 'Employee ID not found in session' });
-
-    // Validate QR code — scoped to caller's company to prevent cross-company token reuse
-    const companyId = scopeCompanyId(req);
-    const { rows: [code] } = await pool.query(
-      `SELECT * FROM qr_attendance_codes WHERE code_token=$1 AND is_active=true
-       ${companyId ? 'AND company_id=$2' : ''}`,
-      companyId ? [code_token, companyId] : [code_token]
-    );
-    if (!code) return res.status(404).json({ error: 'QR code not found or inactive' });
-
-    const now = new Date();
-    if (now < new Date(code.valid_from) || now > new Date(code.valid_until)) {
-      return res.status(400).json({ error: 'QR code is expired or not yet valid', status: 'expired' });
-    }
-
-    // Refuse to write into a payroll-frozen month. /mark and /bulk-mark have
-    // always returned 423 here; this path did not, so a scan could silently
-    // alter attendance that payroll had already been paid on. Unlike the admin
-    // routes there is no override — a self-service punch is never a correction.
-    if (await isPeriodFrozen(new Date().toISOString().slice(0, 10), code.company_id)) {
-      return res.status(423).json({
-        error: 'attendance_frozen',
-        status: 'frozen',
-        message: 'Attendance for this period is frozen (synced to payroll). Ask HR to record this punch as a regularization.',
-      });
-    }
-
-    // Prevent duplicate scans within 30 seconds
-    const { rows: [recent] } = await pool.query(
-      `SELECT id FROM qr_attendance_scans
-       WHERE employee_id=$1 AND qr_code_id=$2 AND scan_type=$3
-         AND scan_time > NOW() - INTERVAL '30 seconds'`,
-      [employeeId, code.id, scan_type]
-    );
-    if (recent) {
-      return res.status(409).json({ error: 'Duplicate scan detected', status: 'duplicate' });
-    }
-
-    const { rows: [scan] } = await pool.query(
-      `INSERT INTO qr_attendance_scans
-         (qr_code_id, employee_id, scan_time, scan_type, latitude, longitude, device_info, status, company_id)
-       VALUES ($1,$2,NOW(),$3,$4,$5,$6,'valid',$7) RETURNING *`,
-      [code.id, employeeId, scan_type,
-       latitude ? parseFloat(latitude) : null,
-       longitude ? parseFloat(longitude) : null,
-       req.headers['user-agent'] || null,
-       code.company_id]
-    );
-
-    // Auto-mark attendance record.
-    //
-    // Three rules this path must share with the other capture paths (/clock,
-    // biometric sync, offline sync) — it previously honoured none of them:
-    //
-    //  1. Never overwrite a non-'absent' status. Approved leave, holidays,
-    //     half-days and WFH are set by leave_sync/holiday_sync; an unconditional
-    //     status='present' here silently converted an approved leave day into a
-    //     present day and dropped it from the monthly report and payroll LOP.
-    //     Matches the biometric/offline rule: promote 'absent' → 'present' only.
-    //  2. An 'out' scan must not populate check_in_time. The old VALUES list
-    //     always wrote check_in_time, so the first scan of the day being a
-    //     check-OUT recorded it as a check-IN.
-    //  3. LOCALTIME, not NOW(). check_in_time/check_out_time are
-    //     `time without time zone`; NOW() is timestamptz and relied on an
-    //     implicit assignment cast. LOCALTIME pairs correctly with the
-    //     CURRENT_DATE used for attendance_date.
-    const isOut = scan_type === 'out';
-    await pool.query(
-      `INSERT INTO attendance_records
-         (employee_id, attendance_date, check_in_time, check_out_time, status, company_id, source)
-       VALUES ($1, CURRENT_DATE,
-               CASE WHEN $3::boolean THEN NULL ELSE LOCALTIME END,
-               CASE WHEN $3::boolean THEN LOCALTIME ELSE NULL END,
-               'present', $2, 'qr')
-       ON CONFLICT (employee_id, attendance_date) DO UPDATE
-         SET check_in_time  = CASE WHEN NOT $3::boolean AND attendance_records.check_in_time IS NULL
-                                   THEN LOCALTIME ELSE attendance_records.check_in_time END,
-             check_out_time = CASE WHEN $3::boolean THEN LOCALTIME ELSE attendance_records.check_out_time END,
-             status         = CASE WHEN attendance_records.status = 'absent'
-                                   THEN 'present' ELSE attendance_records.status END,
-             updated_at     = NOW()`,
-      [employeeId, code.company_id, isOut]
-    );
-
-    // On check-out, compute worked/OT hours. Without this a QR-only site produced
-    // attendance rows that read 0 hours in the monthly report and in payroll LOP.
-    // OT *records* (attendance_ot_records, with caps and multipliers) are still
-    // only created by /clock — see ATTENDANCE_DUPLICATION_FLOW_AUDIT.md §1.
-    if (isOut) {
-      try {
-        const fullDayHours = await getFullDayHours(code.company_id);
-        await pool.query(`
-          UPDATE attendance_records
-             SET total_hours = ROUND(h.worked::numeric, 2),
-                 ot_hours    = ROUND(GREATEST(0::numeric, h.worked::numeric - $2::numeric), 2),
-                 updated_at  = NOW()
-            FROM (
-              SELECT CASE WHEN check_out_time >= check_in_time
-                          THEN EXTRACT(EPOCH FROM (check_out_time - check_in_time)) / 3600
-                          ELSE (86400 + EXTRACT(EPOCH FROM (check_out_time - check_in_time))) / 3600
-                     END AS worked
-                FROM attendance_records
-               WHERE employee_id = $1 AND attendance_date = CURRENT_DATE
-            ) h
-           WHERE employee_id = $1 AND attendance_date = CURRENT_DATE
-             AND check_in_time IS NOT NULL AND check_out_time IS NOT NULL
-        `, [employeeId, fullDayHours]);
-      } catch { /* non-blocking — the punch itself is already recorded */ }
-    }
-
-    res.json({ success: true, data: scan, message: `Attendance marked as ${scan_type}` });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-/* ── GET /attendance/qr/scans — admin view all scans for a QR code ── */
-router.get('/qr/scans', async (req, res) => {
-  try {
-    const { qr_code_id, date, employee_id } = req.query;
-    const companyId = scopeCompanyId(req);
-    const params = [];
-    let idx = 1;
-    let where = 'WHERE 1=1';
-
-    if (companyId)   { where += ` AND qs.company_id = $${idx++}`; params.push(companyId); }
-    if (qr_code_id)  { where += ` AND qs.qr_code_id = $${idx++}`; params.push(qr_code_id); }
-    if (employee_id) { where += ` AND qs.employee_id = $${idx++}`; params.push(employee_id); }
-    if (date)        { where += ` AND DATE(qs.scan_time) = $${idx++}`; params.push(date); }
-
-    const { rows } = await pool.query(
-      `SELECT qs.*, e.name AS employee_name, e.department, qc.location AS qr_location
-       FROM qr_attendance_scans qs
-       JOIN employees e ON e.id = qs.employee_id
-       JOIN qr_attendance_codes qc ON qc.id = qs.qr_code_id
-       ${where}
-       ORDER BY qs.scan_time DESC LIMIT 200`,
-      params
-    );
-    res.json({ success: true, data: rows });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-/* ── DELETE /attendance/qr/codes/:id — deactivate a QR code ── */
-router.delete('/qr/codes/:id', requireAttendanceAdmin, captureBefore('qr_attendance_codes'), async (req, res) => {
-  try {
-    const role = (req.user?.role || '').toLowerCase();
-    if (!['admin', 'super_admin', 'manager'].includes(role)) {
-      return res.status(403).json({ error: 'Only admin or manager can deactivate QR codes' });
-    }
-    const companyId = scopeCompanyId(req);
-    const { rowCount } = await pool.query(
-      `UPDATE qr_attendance_codes SET is_active=false
-       WHERE id=$1 ${companyId ? 'AND company_id=$2' : ''}`,
-      companyId ? [req.params.id, companyId] : [req.params.id]
-    );
-    if (rowCount === 0) return res.status(404).json({ error: 'QR code not found' });
-    res.json({ success: true, message: 'QR code deactivated' });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
 // 17. SHIFT CHANGE REQUESTS
 // ─────────────────────────────────────────────────────────────────────────────
+// An employee asks (Shift Calendar) for another shift on one day ('day' → a
+// date override on approval) or from a date onwards ('permanent' → their shift
+// assignment). The reporting manager or HR decides it on Attendance →
+// Approvals → Shift Change, or in the Approval Center (source `shift`). §278.
 
-// List — employee sees own; hr/admin sees all
+// The shift each day of a month actually resolves to, for one employee:
+// override > assignment > rotation > default. Shift Calendar shows this.
+router.get('/shift-calendar/:employee_id', async (req, res) => {
+  try {
+    const empId = req.params.employee_id;
+    if (!isAttendanceOperator(req)) {
+      const own = assertSelfOrPrivileged(req, empId);
+      if (own) {
+        const mgr = await pool.query(
+          'SELECT 1 FROM employees WHERE id = $1 AND reporting_manager_id = $2 LIMIT 1',
+          [empId, req.user?.employee_id ?? -1]);
+        if (!mgr.rows.length) return res.status(own.status).json(own.body);
+      }
+    }
+    const m = parseInt(req.query.month) || new Date().getMonth() + 1;
+    const y = parseInt(req.query.year) || new Date().getFullYear();
+    const days = new Date(Date.UTC(y, m, 0)).getUTCDate();
+    const out = [];
+    for (let d = 1; d <= days; d++) {
+      const date = `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+      const { shift, source } = await resolveEmployeeShift(empId, date);
+      out.push({
+        date, source,
+        shift: shift ? { id: shift.id, name: shift.name, start_time: String(shift.start_time || '').slice(0, 5), end_time: String(shift.end_time || '').slice(0, 5), is_night_shift: !!shift.is_night_shift } : null,
+      });
+    }
+    res.json({ employee_id: Number(empId), month: m, year: y, days: out });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// List — employee: own; manager: own + direct reports; HR/admin: all.
 router.get('/shift-change-requests', async (req, res) => {
   try {
     const companyId = scopeCompanyId(req);
     const { employee_id, status } = req.query;
     let q = `
-      SELECT r.*,
+      SELECT r.*, r.request_date::text AS request_date,
              COALESCE(e.name, CONCAT(e.first_name,' ',e.last_name)) AS employee_name,
-             e.department, e.designation,
+             e.department, e.designation, e.office_id AS emp_code,
              cs.name AS current_shift_name,
-             rs.name AS requested_shift_name
+             rs.name AS requested_shift_name,
+             rs.start_time::text AS requested_start, rs.end_time::text AS requested_end,
+             (SELECT COALESCE(ee.name, u.name, u.email) FROM users u LEFT JOIN employees ee ON ee.id = u.employee_id
+               WHERE u.id = r.reviewed_by) AS reviewed_by_name
         FROM shift_change_requests r
         JOIN employees e ON e.id = r.employee_id
         LEFT JOIN hr_shifts cs ON cs.id = r.current_shift_id
@@ -4843,9 +3953,17 @@ router.get('/shift-change-requests', async (req, res) => {
     `;
     const params = [companyId];
     let n = 2;
+    if (!isAttendanceAdmin(req)) {
+      const me = req.user?.employee_id ?? null;
+      if (me == null) return res.status(403).json({ error: 'Forbidden', code: 'EMPLOYEE_LINK_REQUIRED' });
+      q += hasRole(req, 'manager', 'department_head')
+        ? ` AND (r.employee_id = $${n} OR e.reporting_manager_id = $${n})`
+        : ` AND r.employee_id = $${n}`;
+      params.push(me); n++;
+    }
     if (employee_id) { q += ` AND r.employee_id = $${n++}`; params.push(employee_id); }
     if (status)      { q += ` AND r.status = $${n++}`;      params.push(status); }
-    q += ` ORDER BY r.created_at DESC LIMIT 100`;
+    q += ` ORDER BY r.created_at DESC LIMIT 200`;
     const result = await pool.query(q, params);
     res.json(result.rows);
   } catch (err) {
@@ -4855,63 +3973,112 @@ router.get('/shift-change-requests', async (req, res) => {
 
 router.post('/shift-change-requests', async (req, res) => {
   try {
-    const { employee_id, request_date, current_shift_id, requested_shift_id, reason } = req.body;
-    if (!employee_id || !request_date || !requested_shift_id)
-      return res.status(400).json({ error: 'employee_id, request_date, requested_shift_id required' });
+    const { employee_id, request_date, requested_shift_id, reason } = req.body;
+    const changeType = req.body.change_type === 'permanent' ? 'permanent' : 'day';
+    if (!employee_id || !YMD.test(String(request_date || '')) || !requested_shift_id) {
+      return res.status(400).json({ error: 'employee_id, request_date (YYYY-MM-DD) and requested_shift_id are required' });
+    }
+    const own = assertSelfOrPrivileged(req, employee_id);
+    if (own) return res.status(own.status).json(own.body);
+    if (!String(reason || '').trim()) return res.status(400).json({ error: 'Give a reason for the shift change' });
     const companyId = scopeCompanyId(req);
+    const { rows: [sh] } = await pool.query(
+      `SELECT id FROM hr_shifts WHERE id = $1 AND deleted_at IS NULL AND ($2::int IS NULL OR company_id = $2 OR company_id IS NULL)`,
+      [requested_shift_id, companyId]);
+    if (!sh) return res.status(400).json({ error: 'That shift does not exist' });
+    const { shift: current } = await resolveEmployeeShift(employee_id, request_date);
+    if (current && String(current.id) === String(requested_shift_id)) {
+      return res.status(400).json({ error: 'You are already on that shift for this date' });
+    }
+    const { rows: dup } = await pool.query(
+      `SELECT 1 FROM shift_change_requests WHERE employee_id = $1 AND request_date = $2 AND status = 'pending' LIMIT 1`,
+      [employee_id, request_date]);
+    if (dup.length) return res.status(409).json({ error: 'duplicate_request', message: `A shift change for ${request_date} is already waiting for approval.` });
+
     const result = await pool.query(`
       INSERT INTO shift_change_requests
-        (company_id, employee_id, request_date, current_shift_id, requested_shift_id, reason)
-      VALUES ($1,$2,$3,$4,$5,$6)
+        (company_id, employee_id, request_date, current_shift_id, requested_shift_id, reason, change_type, status)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,'pending')
       RETURNING *
-    `, [companyId, employee_id, request_date, current_shift_id || null, requested_shift_id, reason || null]);
+    `, [companyId, employee_id, request_date, current?.id || null, requested_shift_id, String(reason).trim(), changeType]);
+    await writeAuditLog({
+      companyId, employeeId: employee_id, action: 'shift_change_requested',
+      afterData: result.rows[0], performedBy: req.user?.userId, req,
+    });
     res.status(201).json(result.rows[0]);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
+async function loadShiftRequestForDecision(req, res) {
+  const reviewerId = req.user?.userId;   // never from the body
+  if (!reviewerId) { res.status(401).json({ error: 'Authentication required' }); return null; }
+  const before = (await pool.query(`SELECT * FROM shift_change_requests WHERE id=$1`, [req.params.id])).rows[0];
+  const scope = scopeCompanyId(req);
+  if (!before || (scope != null && before.company_id != null && String(before.company_id) !== String(scope))) {
+    res.status(404).json({ error: 'Request not found' }); return null;
+  }
+  if (before.status !== 'pending') { res.status(409).json({ error: `Request is already ${before.status}` }); return null; }
+  if (req.user?.employee_id != null && String(req.user.employee_id) === String(before.employee_id)
+      && !hasRole(req, 'admin', 'super_admin')) {
+    res.status(403).json({ error: 'You cannot decide your own shift change' }); return null;
+  }
+  const decide = await assertCanDecideFor(pool, req, before.employee_id, before.company_id, 'shift');
+  if (decide) { res.status(decide.status).json(decide.body); return null; }
+  return { before, reviewerId };
+}
+
 router.put('/shift-change-requests/:id/approve', requireAttendanceApprover, async (req, res) => {
   try {
-    const { remarks } = req.body;
-    // reviewed_by was previously accepted from the request body as a fallback,
-    // letting a caller attribute the decision to someone else. The token is the
-    // only acceptable source of the reviewer's identity.
-    const reviewerId = req.user?.userId;
-    if (!reviewerId) return res.status(401).json({ error: 'Authentication required' });
-
-    // Fetch → authorize → update. This route previously updated FIRST and never
-    // checked who was asking, so any approver-role user could approve any
-    // employee's shift change (and re-decide an already-decided one).
-    const before = (await pool.query(
-      `SELECT * FROM shift_change_requests WHERE id=$1`, [req.params.id])).rows[0];
-    if (!before) return res.status(404).json({ error: 'Request not found' });
-    if (before.status !== 'pending')
-      return res.status(409).json({ error: `Request is already ${before.status}` });
-
-    const decide = await assertCanDecideFor(pool, req, before.employee_id, before.company_id, 'shift');
-    if (decide) return res.status(decide.status).json(decide.body);
-
-    const result = await pool.query(`
-      UPDATE shift_change_requests
-         SET status='approved', reviewed_by=$2, review_remarks=$3, reviewed_at=NOW(), updated_at=NOW()
-       WHERE id=$1 AND status='pending' RETURNING *
-    `, [req.params.id, reviewerId, remarks || null]);
-    if (!result.rows[0]) return res.status(409).json({ error: 'Request was already decided' });
-
-    // Apply: update the employee's active shift assignment to the requested shift
-    const r = result.rows[0];
-    await pool.query(`
-      UPDATE hr_shift_assignments SET is_active=FALSE, updated_at=NOW()
-       WHERE employee_id=$1 AND is_active=TRUE
-    `, [r.employee_id]).catch(() => {});
-    await pool.query(`
-      INSERT INTO hr_shift_assignments (employee_id, shift_id, effective_from, is_active)
-      VALUES ($1,$2,$3,TRUE)
-      ON CONFLICT (employee_id, shift_id, effective_from) DO UPDATE SET is_active=TRUE
-    `, [r.employee_id, r.requested_shift_id, r.request_date]).catch(() => {});
-
-    res.json(result.rows[0]);
+    const ctx = await loadShiftRequestForDecision(req, res);
+    if (!ctx) return;
+    const { before, reviewerId } = ctx;
+    const client = await pool.connect();
+    let row;
+    try {
+      await client.query('BEGIN');
+      const result = await client.query(`
+        UPDATE shift_change_requests
+           SET status='approved', reviewed_by=$2, review_remarks=$3, reviewed_at=NOW(), updated_at=NOW()
+         WHERE id=$1 AND status='pending' RETURNING *
+      `, [req.params.id, reviewerId, req.body?.remarks || null]);
+      row = result.rows[0];
+      if (!row) { await client.query('ROLLBACK'); return res.status(409).json({ error: 'Request was already decided' }); }
+      if (row.change_type === 'permanent') {
+        // From request_date on: end the current assignment, start the new one.
+        await client.query(`UPDATE hr_shift_assignments SET is_active=FALSE, updated_at=NOW() WHERE employee_id=$1 AND is_active=TRUE`, [row.employee_id]);
+        await client.query(`
+          INSERT INTO hr_shift_assignments (employee_id, shift_id, effective_from, is_active, created_by, company_id, note)
+          VALUES ($1,$2,$3,TRUE,$4,$5,$6)
+          ON CONFLICT (employee_id, shift_id, effective_from) DO UPDATE SET is_active=TRUE, updated_at=NOW()
+        `, [row.employee_id, row.requested_shift_id, row.request_date, reviewerId, row.company_id, `Shift change request #${row.id}`]);
+      } else {
+        // One day only: a date override for request_date.
+        await client.query(`UPDATE hr_shift_date_overrides SET is_active=FALSE WHERE employee_id=$1 AND override_date=$2 AND is_active=TRUE`,
+          [row.employee_id, row.request_date]);
+        await client.query(`
+          INSERT INTO hr_shift_date_overrides (employee_id, shift_id, override_date, reason, is_active, company_id, created_by)
+          VALUES ($1,$2,$3,$4,TRUE,$5,$6)
+        `, [row.employee_id, row.requested_shift_id, row.request_date, `Shift change request #${row.id}: ${row.reason || ''}`.slice(0, 500), row.company_id, reviewerId]);
+      }
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw e;
+    } finally {
+      client.release();
+    }
+    await notifyEmployee(row.employee_id, {
+      title: 'Shift Change Approved',
+      message: `Your shift change for ${String(row.request_date).slice(0, 10)}${row.change_type === 'permanent' ? ' onwards' : ''} was approved.`,
+      refId: row.id,
+    });
+    await writeAuditLog({
+      companyId: row.company_id, employeeId: row.employee_id, action: 'shift_change_approved',
+      beforeData: before, afterData: row, performedBy: reviewerId, reason: req.body?.remarks, req,
+    });
+    res.json(row);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -4919,25 +4086,26 @@ router.put('/shift-change-requests/:id/approve', requireAttendanceApprover, asyn
 
 router.put('/shift-change-requests/:id/reject', requireAttendanceApprover, captureBefore('shift_change_requests'), async (req, res) => {
   try {
-    const { remarks } = req.body;
-    const reviewerId = req.user?.userId;   // never from the body — see approve route
-    if (!reviewerId) return res.status(401).json({ error: 'Authentication required' });
-
-    const before = (await pool.query(
-      `SELECT * FROM shift_change_requests WHERE id=$1`, [req.params.id])).rows[0];
-    if (!before) return res.status(404).json({ error: 'Request not found' });
-    if (before.status !== 'pending')
-      return res.status(409).json({ error: `Request is already ${before.status}` });
-
-    const decide = await assertCanDecideFor(pool, req, before.employee_id, before.company_id, 'shift');
-    if (decide) return res.status(decide.status).json(decide.body);
-
+    const ctx = await loadShiftRequestForDecision(req, res);
+    if (!ctx) return;
+    const { before, reviewerId } = ctx;
+    const remarks = String(req.body?.remarks || '').trim();
+    if (!remarks) return res.status(400).json({ error: 'Give a reason for rejecting' });
     const result = await pool.query(`
       UPDATE shift_change_requests
          SET status='rejected', reviewed_by=$2, review_remarks=$3, reviewed_at=NOW(), updated_at=NOW()
        WHERE id=$1 AND status='pending' RETURNING *
-    `, [req.params.id, reviewerId, remarks || null]);
+    `, [req.params.id, reviewerId, remarks]);
     if (!result.rows[0]) return res.status(409).json({ error: 'Request was already decided' });
+    await notifyEmployee(before.employee_id, {
+      title: 'Shift Change Rejected',
+      message: `Your shift change for ${String(before.request_date).slice(0, 10)} was rejected: ${remarks}`,
+      refId: before.id,
+    });
+    await writeAuditLog({
+      companyId: before.company_id, employeeId: before.employee_id, action: 'shift_change_rejected',
+      beforeData: before, afterData: result.rows[0], performedBy: reviewerId, reason: remarks, req,
+    });
     res.json(result.rows[0]);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -5002,54 +4170,6 @@ router.get('/geo-violations', async (req, res) => {
   }
 });
 
-// GET /attendance/early-exits — early exit report
-router.get('/early-exits', async (req, res) => {
-  try {
-    const companyId = scopeCompanyId(req);
-    const { from_date, to_date, department, month, year } = req.query;
-    let startDate, endDate;
-    if (month && year) {
-      const m = parseInt(month), y = parseInt(year);
-      const pad2 = n => String(n).padStart(2,'0');
-      startDate = `${y}-${pad2(m)}-01`;
-      endDate   = `${y}-${pad2(m)}-${new Date(y,m,0).getDate()}`;
-    } else {
-      startDate = from_date || new Date(Date.now() - 30*86400000).toISOString().split('T')[0];
-      endDate   = to_date   || new Date().toISOString().split('T')[0];
-    }
-    let q = `
-      SELECT ar.employee_id,
-             COALESCE(e.name, CONCAT(e.first_name,' ',e.last_name)) AS employee_name,
-             e.department, e.designation,
-             ar.attendance_date, ar.check_out_time, ar.early_leave_minutes,
-             COALESCE(s.name,'Unknown') AS shift_name, s.end_time AS scheduled_end
-        FROM attendance_records ar
-        JOIN employees e ON e.id = ar.employee_id
-        LEFT JOIN LATERAL (
-          SELECT sa.shift_id FROM hr_shift_assignments sa
-           WHERE sa.employee_id = ar.employee_id AND sa.is_active = TRUE
-           ORDER BY sa.effective_from DESC LIMIT 1
-        ) latest_sa ON TRUE
-        LEFT JOIN hr_shifts s ON s.id = latest_sa.shift_id
-       WHERE ar.early_leave_minutes > 0
-         AND ar.attendance_date BETWEEN $1 AND $2
-         AND ar.deleted_at IS NULL
-         AND ($3::integer IS NULL OR e.company_id = $3)
-    `;
-    const params = [startDate, endDate, companyId];
-    if (department) { q += ` AND e.department = $4`; params.push(department); }
-    q += ` ORDER BY ar.attendance_date DESC, ar.early_leave_minutes DESC LIMIT 500`;
-    const result = await pool.query(q, params).catch(() => ({ rows: [] }));
-    res.json({
-      from_date: startDate, to_date: endDate,
-      records: result.rows,
-      total: result.rows.length,
-      total_early_minutes: result.rows.reduce((a,r) => a + (parseInt(r.early_leave_minutes)||0), 0),
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CONTRACT LABOUR ATTENDANCE (separate from regular attendance)

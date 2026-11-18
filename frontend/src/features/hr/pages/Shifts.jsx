@@ -383,7 +383,7 @@ export default function Shifts({ setPage: _setPage }) {
           </select>
           <input type="date" value={assignForm.effective_from} onChange={e => setAssignForm(f => ({ ...f, effective_from: e.target.value }))} style={{ padding: 8, borderRadius: 8, border: '1px solid #d1d5db' }} />
           <input value={assignForm.note} onChange={e => setAssignForm(f => ({ ...f, note: e.target.value }))} placeholder="Reason/note" style={{ padding: 8, borderRadius: 8, border: '1px solid #d1d5db' }} />
-          <button onClick={handleAssignEmployee} style={{ border: 'none', borderRadius: 8, background: '#0f766e', color: '#fff', fontWeight: 600 }}>Assign Override</button>
+          <button onClick={handleAssignEmployee} style={{ border: 'none', borderRadius: 8, background: 'var(--color-primary, #6B3FDB)', color: '#fff', fontWeight: 600 }}>Assign Override</button>
         </div>
         {assignments.length > 0 && (
           <div style={{ marginTop: 12, borderTop: '1px solid #f1f5f9', paddingTop: 10 }}>

@@ -27,7 +27,7 @@ const STEPS = [
 
 const NEXT_STEPS = [
   { icon: Users2,     label: 'Import Employee Data',         desc: 'Bulk-import your workforce from a spreadsheet.',                 page: 'EmployeesData'      },
-  { icon: BarChart2,  label: 'Set Up Attendance Devices',    desc: 'Configure biometric or mobile attendance tracking.',            page: 'AttendanceSettings' },
+  { icon: BarChart2,  label: 'Set Up Attendance Devices',    desc: 'Configure biometric or mobile attendance tracking.',            page: 'PunchImport' },
   { icon: Workflow,   label: 'Configure Approval Workflows', desc: 'Set up multi-level approval chains for leaves and expenses.',   page: 'WorkflowBuilder'    },
   { icon: CreditCard, label: 'Run First Payroll',            desc: 'Process and disburse salary for your first pay cycle.',         page: 'Payroll'            },
 ];

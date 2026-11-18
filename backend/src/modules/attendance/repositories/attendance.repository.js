@@ -1,4 +1,28 @@
 import pool from '../../shared/db.js';
+import { getWeekendDays, dayIsWeekend } from '../../../shared/weekend.js';
+
+// The employee's own punctuality for the month (§278, owner 2026-11-18: an
+// employee should see how many days they came on time, used the grace time,
+// came late, and when they came). 'present' with late minutes = inside grace.
+function punctuality(rows) {
+  const worked = rows.filter(r => ['present', 'late', 'half_day'].includes(r.status) && r.check_in_time);
+  const mins = (t) => { const [h, m] = String(t).split(':').map(Number); return h * 60 + m; };
+  const onTime = worked.filter(r => r.status !== 'late' && !(r.late_minutes > 0)).length;
+  const inGrace = worked.filter(r => r.status !== 'late' && r.late_minutes > 0).length;
+  const lateRows = worked.filter(r => r.status === 'late');
+  const avgIn = worked.length ? Math.round(worked.reduce((t, r) => t + mins(r.check_in_time), 0) / worked.length) : null;
+  const hrs = rows.filter(r => Number(r.total_hours) > 0);
+  return {
+    on_time: onTime,
+    within_grace: inGrace,
+    late_minutes_total: lateRows.reduce((t, r) => t + (r.late_minutes || 0), 0),
+    grace_minutes_used: worked.filter(r => r.status !== 'late').reduce((t, r) => t + (r.late_minutes || 0), 0),
+    early_exits: rows.filter(r => r.early_leave_minutes > 0).length,
+    half_days: rows.filter(r => r.status === 'half_day').length,
+    avg_check_in: avgIn == null ? null : `${String(Math.floor(avgIn / 60)).padStart(2, '0')}:${String(avgIn % 60).padStart(2, '0')}`,
+    avg_hours: hrs.length ? Number((hrs.reduce((t, r) => t + Number(r.total_hours), 0) / hrs.length).toFixed(1)) : null,
+  };
+}
 
 const attendanceRepository = {
   async markAttendance(data) {
@@ -183,10 +207,19 @@ const attendanceRepository = {
       const result = await pool.query(`
         SELECT ${cols}
           FROM employees e
-          JOIN org_relationships org ON e.id = org.employee_id
           LEFT JOIN attendance_records ar
             ON e.id = ar.employee_id AND ar.attendance_date = $2 AND ar.deleted_at IS NULL
-         WHERE org.manager_id = $1
+         WHERE e.id <> $1::int
+           AND (
+             -- direct reports
+             EXISTS (SELECT 1 FROM org_relationships org WHERE org.employee_id = e.id AND org.manager_id = $1)
+             OR e.reporting_manager_id = $1
+             -- everyone in a department this person heads (§278: the page is
+             -- the department head's view of their department)
+             OR EXISTS (SELECT 1 FROM department_heads dh JOIN master_departments md ON md.id = dh.department_id
+                         WHERE dh.head_employee_id = $1 AND dh.ended_at IS NULL
+                           AND LOWER(TRIM(md.name)) = LOWER(TRIM(e.department)))
+           )
            AND e.deleted_at IS NULL
            AND LOWER(e.status) IN ('active', 'probation', 'notice')
            ${scopeClause}
@@ -335,7 +368,9 @@ const attendanceRepository = {
         check_out_time,
         total_hours,
         late_minutes,
-        work_mode
+        early_leave_minutes,
+        work_mode,
+        source
       FROM attendance_records
       WHERE employee_id = $1
         AND attendance_date BETWEEN $2 AND $3
@@ -356,12 +391,23 @@ const attendanceRepository = {
     const leave    = rows.filter(r => ['on_leave', 'leave'].includes(r.status)).length;
     const holidays = rows.filter(r => r.status === 'holiday').length;
 
+    // Attendance % = days attended / working days SO FAR (§278). It divided
+    // by every Mon–Fri of the whole month — future days included — and left
+    // late days out, so a perfect month to date read 62%. The work week is the
+    // company's (shared/weekend.js) and declared holidays are not working days.
+    const weekend = await getWeekendDays(companyId);
+    const now0 = new Date();
+    const isCurrent = now0.getFullYear() === year && now0.getMonth() + 1 === month;
+    const upTo = isCurrent ? now0.getDate() : lastDay;
+    const holidayDays = new Set(rows.filter(r => r.status === 'holiday').map(r => toYMD(r.date)));
     let workingDays = 0;
-    for (let d = 1; d <= lastDay; d++) {
-      const dow = new Date(year, month - 1, d).getDay();
-      if (dow !== 0 && dow !== 6) workingDays++;
+    for (let d = 1; d <= upTo; d++) {
+      const key = `${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+      if (!dayIsWeekend(key, weekend) && !holidayDays.has(key)) workingDays++;
     }
-    const percentage = workingDays > 0 ? Math.round((present / workingDays) * 100) : 0;
+    const halfDays = rows.filter(r => r.status === 'half_day').length;
+    const attended = present + late + halfDays * 0.5;
+    const percentage = workingDays > 0 ? Math.min(100, Math.round((attended / workingDays) * 100)) : 0;
 
     const now = new Date();
     const todayStr = now.toISOString().slice(0, 10);
@@ -397,9 +443,11 @@ const attendanceRepository = {
         check_out:   r.check_out_time ? String(r.check_out_time).slice(0, 5) : null,
         hours_worked: r.total_hours   ? Number(r.total_hours).toFixed(1)      : null,
         late_minutes: r.late_minutes  || 0,
+        early_leave_minutes: r.early_leave_minutes || 0,
         work_mode:   r.work_mode      || null,
+        source:      r.source         || null,
       })),
-      summary:  { present, absent, late, leave, holidays, percentage },
+      summary:  { present, absent, late, leave, holidays, percentage, ...punctuality(rows) },
       last7Days,
     };
   },

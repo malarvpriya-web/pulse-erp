@@ -4,6 +4,7 @@ import {
   ChevronDown, Star, Award, BarChart3,
 } from 'lucide-react';
 import api from '@/services/api/client';
+import { TrendLine, YearCompare } from '../components/AttendanceTrendCharts';
 import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const P    = '#6B3FDB';
@@ -136,7 +137,7 @@ function PredictiveInsight({ data }) {
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function AttendanceAnalytics() {
-  const [tab, setTab]                     = useState('heatmap');
+  const [tab, setTab]                     = useState('absenteeism');
   const [month, setMonth]                 = useState(new Date().getMonth() + 1);
   const [year, setYear]                   = useState(new Date().getFullYear());
   const [dept, setDept]                   = useState('');
@@ -146,6 +147,10 @@ export default function AttendanceAnalytics() {
   // Per-tab data
   const [heatmapData, setHeatmapData]     = useState(null);
   const [absenteeism, setAbsenteeism]     = useState([]);
+  // §278: trend period — last 12 / 24 months, this year, last year — and a
+  // this-year-vs-last-year comparison (owner: "1 year graph, 2 year graph").
+  const [trendPeriod, setTrendPeriod]     = useState('12m');
+  const [yoy, setYoy]                     = useState({ cur: [], prev: [] });
   const [topAbsentees, setTopAbsentees]   = useState([]);
   const [perfectAtt, setPerfectAtt]       = useState([]);
   const [deptBreakdown, setDeptBreakdown] = useState([]);
@@ -186,16 +191,23 @@ export default function AttendanceAnalytics() {
         if (isMounted.current) setHeatmapData(r.data);
 
       } else if (tab === 'absenteeism') {
-        const [abRes, topRes, perfRes] = await Promise.allSettled([
-          api.get('/attendance/analytics/absenteeism'),
+        const dq = dept ? `&department=${encodeURIComponent(dept)}` : '';
+        const [abRes, topRes, perfRes, curRes, prevRes] = await Promise.allSettled([
+          api.get(`/attendance/analytics/absenteeism?period=${trendPeriod}${dq}`),
           api.get(`/attendance/analytics/top-absentees${params}`),
           api.get(`/attendance/analytics/perfect-attendance${params}`),
+          api.get(`/attendance/analytics/absenteeism?period=this_year${dq}`),
+          api.get(`/attendance/analytics/absenteeism?period=last_year${dq}`),
         ]);
         if (!isMounted.current) return;
         if (abRes.status   === 'fulfilled') setAbsenteeism(abRes.value.data   || []);
         else setErrors(prev => ({ ...prev, absenteeism: abRes.reason?.response?.data?.error || abRes.reason?.message }));
         if (topRes.status  === 'fulfilled') setTopAbsentees(topRes.value.data  || []);
         if (perfRes.status === 'fulfilled') setPerfectAtt(perfRes.value.data   || []);
+        setYoy({
+          cur:  curRes.status  === 'fulfilled' ? (curRes.value.data  || []) : [],
+          prev: prevRes.status === 'fulfilled' ? (prevRes.value.data || []) : [],
+        });
 
       } else if (tab === 'department') {
         const r = await api.get(`/attendance/analytics/department-absenteeism${params}`);
@@ -219,7 +231,7 @@ export default function AttendanceAnalytics() {
     } finally {
       if (isMounted.current) setLoading(false);
     }
-  }, [tab, month, year, dept]);
+  }, [tab, month, year, dept, trendPeriod]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -239,7 +251,7 @@ export default function AttendanceAnalytics() {
       );
     } else if (tab === 'absenteeism' && absenteeism.length) {
       exportCSV(
-        `absenteeism-12m.csv`,
+        `attendance-trend-${trendPeriod}.csv`,
         ['Month', 'Year', 'Total Records', 'Absent', 'Present', 'Late', 'Unique Employees', 'Absenteeism%'],
         absenteeism.map(r => [MONTH_NAMES[parseInt(r.month) - 1], r.year, r.total_records, r.absent_count, r.present_count, r.late_count, r.unique_employees, parseFloat(r.absenteeism_rate || 0).toFixed(1)])
       );
@@ -280,7 +292,7 @@ export default function AttendanceAnalytics() {
 
   const tabs = [
     { id: 'heatmap',     label: 'Attendance Heatmap' },
-    { id: 'absenteeism', label: 'Absenteeism Trends' },
+    { id: 'absenteeism', label: 'Trends (1–2 years)' },
     { id: 'department',  label: 'Dept. Breakdown' },
     { id: 'overtime',    label: 'Overtime Summary' },
     { id: 'shift',       label: 'Shift Efficiency' },
@@ -502,13 +514,28 @@ export default function AttendanceAnalytics() {
               ? <ErrorState message={errors.absenteeism} onRetry={load} />
               : (
                 <div>
+                  {/* Period + charts (§278) */}
+                  <div style={{ ...CARD, marginBottom: 20 }}>
+                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 14 }} role="group" aria-label="Trend period">
+                      {[['12m', 'Last 12 months'], ['24m', 'Last 2 years'], ['this_year', `This year (${new Date().getFullYear()})`], ['last_year', `Last year (${new Date().getFullYear() - 1})`]].map(([k, l]) => (
+                        <button key={k} type="button" aria-pressed={trendPeriod === k} onClick={() => setTrendPeriod(k)}
+                          style={{ padding: '6px 12px', borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                            border: `1px solid ${trendPeriod === k ? P : '#e5e7eb'}`, background: trendPeriod === k ? P : '#fff', color: trendPeriod === k ? '#fff' : '#374151' }}>{l}</button>
+                      ))}
+                    </div>
+                    <TrendLine rows={absenteeism} title="Attendance % by month" />
+                  </div>
+                  <div style={{ ...CARD, marginBottom: 20 }}>
+                    <YearCompare current={yoy.cur} previous={yoy.prev} year={new Date().getFullYear()} />
+                  </div>
+
                   {/* Row 1: Trend bars + stats sidebar */}
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 280px', gap: 20, marginBottom: 20 }}>
                     <div style={CARD}>
                       <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 2 }}>
                         <div style={{ fontWeight: 600, color: '#111827' }}>Monthly Absenteeism Rate</div>
                         <span style={{ fontSize: 11, color: '#9ca3af', background: '#f9fafb', padding: '2px 8px', borderRadius: 99 }}>
-                          Rolling 12 months · not filtered by selected month
+                          {{ '12m': 'Last 12 months', '24m': 'Last 2 years', this_year: 'This year', last_year: 'Last year' }[trendPeriod]} · not filtered by selected month
                         </span>
                       </div>
                       <div style={{ fontSize: 13, color: '#6b7280', marginBottom: 18 }}>
@@ -517,10 +544,10 @@ export default function AttendanceAnalytics() {
 
                       {absenteeism.length === 0 ? (
                         <div style={{ textAlign: 'center', color: '#9ca3af', padding: 40 }}>
-                          No attendance records found in the past 12 months
+                          No attendance records found in this period
                         </div>
                       ) : (
-                        absenteeism.slice(0, 12).map((r, i) => (
+                        absenteeism.map((r, i) => (
                           <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: '1px solid #f9fafb' }}>
                             <div style={{ width: 62, fontSize: 12, color: '#6b7280', flexShrink: 0 }}>
                               {MONTH_NAMES[parseInt(r.month) - 1]} {r.year}
@@ -549,7 +576,7 @@ export default function AttendanceAnalytics() {
 
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
                       <div style={CARD}>
-                        <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 8 }}>12-Month Sparkline</div>
+                        <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 8 }}>Trend</div>
                         <Sparkline data={absValues} color="#ef4444" />
                         <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 6 }}>Absenteeism %</div>
                       </div>

@@ -1,5 +1,5 @@
 import { lazy } from 'react';
-import { CalendarCheck as IcCalendarCheck, ClipboardCheck as IcClipboardCheck, Clock as IcClock, UserCog as IcUserCog } from 'lucide-react';
+import { ArrowRightLeft as IcSwap, CalendarCheck as IcCalendarCheck, ClipboardCheck as IcClipboardCheck, Clock as IcClock, UserCog as IcUserCog } from 'lucide-react';
 import { TabHub } from '@/components/pulse-ui';
 
 /**
@@ -13,11 +13,13 @@ import { TabHub } from '@/components/pulse-ui';
  */
 const RegularizationApprovals = lazy(() => import('./RegularizationApprovals'));
 const OvertimeApprovals = lazy(() => import('./OvertimeApprovals'));
+const ShiftChangeApprovals = lazy(() => import('./ShiftChangeApprovals'));
 const ApprovalDelegation = lazy(() => import('./ApprovalDelegation'));
 
 export const TABS = [
   { id: 'regularization', label: 'Regularization', icon: IcCalendarCheck, page: 'RegularizationApprovals', Component: RegularizationApprovals },
   { id: 'overtime', label: 'Overtime', icon: IcClock, page: 'OvertimeApprovals', Component: OvertimeApprovals },
+  { id: 'shift', label: 'Shift Change', icon: IcSwap, page: 'ShiftChangeApprovals', Component: ShiftChangeApprovals },
   { id: 'delegation', label: 'Delegation', icon: IcUserCog, page: 'ApprovalDelegation', Component: ApprovalDelegation },
 ];
 
@@ -27,7 +29,7 @@ export default function AttendanceApprovals({ setPage }) {
       icon={IcClipboardCheck}
       eyebrow="Attendance"
       title="Attendance Approvals"
-      subtitle="Regularization and overtime queues, and approver delegation"
+      subtitle="Regularization, overtime and shift-change requests, and approver delegation"
       tabs={TABS}
       setPage={setPage}
     />

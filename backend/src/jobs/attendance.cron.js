@@ -7,6 +7,7 @@
 import cron from 'node-cron';
 import pool from '../modules/shared/db.js';
 import { getFullDayHours } from '../shared/attendanceRules.js';
+import { getWeekendDays, dayIsWeekend } from '../shared/weekend.js';
 import notificationsRepository from '../modules/notifications/repositories/notifications.repository.js';
 
 // ── Helper: write to attendance_audit_logs ──────────────────────────────────
@@ -22,31 +23,34 @@ async function auditLog(companyId, employeeId, action, data) {
 
 // ── Auto-absent: mark all employees without a record for today as absent ────
 async function runAutoAbsent() {
-  const today = new Date().toISOString().split('T')[0];
-  const dowName = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'][new Date().getDay()];
+  // The business-day date (the process clock is pinned to APP_TIMEZONE), not
+  // the UTC date — they differ between 00:00 and 05:30 IST.
+  const today = new Date().toLocaleDateString('en-CA');
   console.log(`[attendance.cron] Auto-absent run for ${today}`);
   try {
-    // Get all companies
-    const companies = await pool.query(
-      `SELECT DISTINCT company_id FROM attendance_general_settings WHERE company_id IS NOT NULL`
-    ).catch(() => ({ rows: [] }));
-    // Also process company_id=NULL (global)
-    const companyIds = [null, ...companies.rows.map(r => r.company_id)];
+    // Every company that has current employees. This used to walk the
+    // settings rows and read working days with `company_id = $1`, which never
+    // matched the global row — so every company got a hardcoded Mon–Fri. The
+    // work week now comes from shared/weekend.js like everywhere else (§278).
+    const companies = await pool.query(`
+      SELECT DISTINCT company_id FROM employees
+       WHERE company_id IS NOT NULL AND deleted_at IS NULL AND LOWER(status) IN ('active','probation')
+    `).catch(() => ({ rows: [] }));
 
-    for (const companyId of companyIds) {
-      // Get settings for this company
-      const settingsRow = await pool.query(
-        `SELECT working_days FROM attendance_general_settings WHERE company_id=$1 LIMIT 1`,
-        [companyId]
-      ).catch(() => ({ rows: [] }));
-      const settings = settingsRow.rows[0];
-      let workingDays = ['monday','tuesday','wednesday','thursday','friday'];
-      if (settings?.working_days) {
-        try { workingDays = typeof settings.working_days === 'string' ? JSON.parse(settings.working_days) : settings.working_days; } catch {}
-      }
+    for (const { company_id: companyId } of companies.rows) {
+      // Skip if today is a weekly off for this company
+      if (dayIsWeekend(today, await getWeekendDays(companyId))) continue;
 
-      // Skip if today is not a working day
-      if (!workingDays.includes(dowName)) continue;
+      // Office staff punch on the machine (§278). Until the company has a
+      // machine with an address, nobody CAN punch, so "no record" is not an
+      // absence — marking it would put false LOP into payroll every night.
+      // (This job never marked anyone before §278: its leave check named
+      // leave_applications.from_date/to_date, which do not exist, and the
+      // error was swallowed.)
+      const { rows: machines } = await pool.query(
+        `SELECT 1 FROM biometric_devices WHERE company_id = $1 AND NULLIF(TRIM(ip_address), '') IS NOT NULL LIMIT 1`,
+        [companyId]).catch(() => ({ rows: [] }));
+      if (!machines.length) continue;
 
       // Skip if today is a holiday
       const holidayCheck = await pool.query(
@@ -55,7 +59,7 @@ async function runAutoAbsent() {
       ).catch(() => ({ rows: [] }));
       if (holidayCheck.rows.length > 0) continue;
 
-      const cidClause = companyId != null ? `AND e.company_id = ${parseInt(companyId)}` : '';
+      const cidClause = `AND e.company_id = ${parseInt(companyId)}`;
 
       // Find active employees who have no attendance record today
       const { rows: unmarked } = await pool.query(`
@@ -71,7 +75,7 @@ async function runAutoAbsent() {
            AND NOT EXISTS (
              SELECT 1 FROM leave_applications la
               WHERE la.employee_id = e.id AND la.status = 'approved'
-                AND $1::date BETWEEN la.from_date AND la.to_date
+                AND $1::date BETWEEN la.start_date AND la.end_date
            )
       `, [today]).catch(() => ({ rows: [] }));
 
@@ -160,10 +164,12 @@ cron.schedule('0 9 1 * *', async () => {
     prevMonth.setDate(0);
     const monthLabel = prevMonth.toLocaleString('en-US', { month: 'long', year: 'numeric' });
     // Notify HR users to freeze attendance
+    // Roles are many-to-many (user_roles); users.role is only the primary one.
     const { rows: hrUsers } = await pool.query(`
-      SELECT id FROM users
-       WHERE LOWER(COALESCE(role,'')) IN ('hr','hr_admin','hr_manager','admin')
-         AND is_active = TRUE
+      SELECT DISTINCT u.id FROM users u
+        JOIN user_roles ur ON ur.user_id = u.id
+        JOIN roles r ON r.id = ur.role_id
+       WHERE LOWER(r.code) IN ('hr','hr_manager','admin') AND u.is_active = TRUE
     `).catch(() => ({ rows: [] }));
     for (const u of hrUsers) {
       await notificationsRepository.create({

@@ -122,10 +122,9 @@ export const EMPLOYEE_SELF_SERVICE_PAGES = new Set([
   // Trip expense register, self-service alongside ExpenseClaims.
   'TravelExpenses',
   // Attendance — My Attendance only (2026-11-11, owner's instruction).
-  //   QRAttendance: a second punch method beside My Attendance's own punch;
-  //     only seed QR codes exist. ShiftCalendar: no real shifts are set up
-  //     (hr_shift_assignments holds SEED/QA rows only). Re-add either if the
-  //     company starts using QR punch points or rotating shifts.
+  //   QR Attendance was removed altogether on 2026-11-18 (§278). ShiftCalendar:
+  //   no real shifts were set up then; re-add it if the company starts rotating
+  //   shifts.
   'AttendanceDashboard',
   // Leaves — LeaveCalendar removed: GET /leaves/calendar returns the whole
   //   company's leave (names + leave types), not the caller's. LeaveEncashment
@@ -169,7 +168,7 @@ export const FINANCE_SELF_SERVICE_PAGES = new Set([
   'MyLeaves', 'ApplyLeave', 'LeaveCalendar', 'HolidayCalendar', 'CompOff',
   // Attendance ('Live Workforce'/'Team Attendance'/'Shift Calendar'/
   // 'Regularization'/'Overtime'/etc. intentionally excluded)
-  'AttendanceDashboard', 'QRAttendance',
+  'AttendanceDashboard',
   // Timesheets ('All Timesheets'/'Approvals'/'Utilization Report'/
   // 'Weekly Report'/'Settings' intentionally excluded)
   'MyTimesheet', 'MyAnalytics',

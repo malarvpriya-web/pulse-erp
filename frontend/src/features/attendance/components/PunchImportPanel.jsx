@@ -27,7 +27,7 @@ function deviceState(d) {
 
 const EMPTY_FILTERS = () => ({ from: localDay(), to: localDay(), q: '', department: '', device_id: '', punch_type: '', employee_id: '' });
 
-export default function PunchImportPanel({ dashStats, employees, flash, onDataChanged, canImport }) {
+export default function PunchImportPanel({ dashStats, employees, flash, onDataChanged, canImport, showDevices = true }) {
   const [devices, setDevices] = useState([]);
   const [syncing, setSyncing] = useState({});
   const [syncResult, setSyncResult] = useState({});
@@ -149,11 +149,12 @@ export default function PunchImportPanel({ dashStats, employees, flash, onDataCh
     <div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 20, alignItems: 'flex-start' }}>
         <div style={{ flex: '1 1 480px', minWidth: 0 }}>
+          {showDevices && (<>
           <h4 style={{ color: '#4c1d95', margin: '0 0 14px' }}>Registered Biometric Devices</h4>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 24 }}>
             {devices.length === 0 && (
               <div style={{ padding: 14, color: '#6b7280', fontSize: 13, background: '#faf8ff', borderRadius: 10 }}>
-                No devices are registered. Add one under Attendance → Settings → Devices.
+                No punch machines yet. Add one on Attendance → Punch Machines.
               </div>
             )}
             {devices.map((d) => {
@@ -192,6 +193,8 @@ export default function PunchImportPanel({ dashStats, employees, flash, onDataCh
               );
             })}
           </div>
+
+          </>)}
 
           {canImport && (
             <>

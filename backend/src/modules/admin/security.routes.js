@@ -307,12 +307,10 @@ router.get('/gdpr/export/:userId', async (req, res) => {
     // but still holds pre-2026-03-30 rows about them, so BOTH are exported.
     pool.query(`SELECT * FROM leave_applications WHERE employee_id=$1 AND deleted_at IS NULL`,[uid]).then(({rows})=>{ export_data.leave_applications=rows; }).catch(()=>{ export_data.leave_applications=[]; }),
     pool.query(`SELECT * FROM leave_requests WHERE employee_id=$1`,[uid]).then(({rows})=>{ export_data.leave_requests=rows; }).catch(()=>{ export_data.leave_requests=[]; }),
-    // Same reasoning as the leave tables above: `attendance` is frozen (no
-    // writers, newest row 2026-03-29) but still holds this person's history, and
-    // `attendance_records` is the live table. A subject-access export must return
-    // both or it under-reports what is held about them.
+    // `attendance_records` is the only attendance table: the old frozen
+    // `attendance` table was dropped in §278 (its rows are in
+    // _backups/attendance_2026-11-18/attendance.json).
     pool.query(`SELECT * FROM attendance_records WHERE employee_id=$1 AND deleted_at IS NULL ORDER BY attendance_date DESC LIMIT 365`,[uid]).then(({rows})=>{ export_data.attendance_records=rows; }).catch(()=>{ export_data.attendance_records=[]; }),
-    pool.query(`SELECT * FROM attendance WHERE employee_id=$1 ORDER BY date DESC LIMIT 365`,[uid]).then(({rows})=>{ export_data.attendance=rows; }).catch(()=>{ export_data.attendance=[]; }),
     pool.query(`SELECT * FROM payroll_runs WHERE employee_id=$1`,[uid]).then(({rows})=>{ export_data.payroll=rows; }).catch(()=>{ export_data.payroll=[]; }),
     pool.query(`SELECT * FROM timesheets WHERE employee_id=$1`,[uid]).then(({rows})=>{ export_data.timesheets=rows; }).catch(()=>{ export_data.timesheets=[]; }),
     pool.query(`SELECT * FROM audit_logs WHERE user_id=$1 ORDER BY created_at DESC LIMIT 500`,[uid]).then(({rows})=>{ export_data.audit_logs=rows; }).catch(()=>{ export_data.audit_logs=[]; }),

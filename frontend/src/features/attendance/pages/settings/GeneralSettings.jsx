@@ -1,623 +1,218 @@
-import React, { useState, useEffect} from 'react';
-import {
-  Settings, Clock, MapPin, Camera, Cpu, Shield, GitBranch,
-  IndianRupee, Layers, FileText, ChevronRight, Check, Save,
-  Globe, ToggleLeft, ToggleRight, Users, AlertCircle, RefreshCw,
-} from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+// Attendance → Configuration → Settings (§278, owner 2026-11-18).
+//
+// One page, one save, and every field on it is read by the attendance engine:
+//   work week + hours   → weekend / working-day checks, full day, half day,
+//                         default start/end when an employee has no shift
+//   late arrival        → grace minutes and the in-app clock-in window
+//   overtime / comp off → switches (OFF until the owner configures them) and
+//                         the OT multipliers / caps
+//   regularization      → monthly limit per employee, HR step after manager
+//   auto check-out      → the nightly job
+// Removed (nothing read them): attendance mode, geo / report / work-centre
+// JSON settings, face-recognition settings, the separate Policies tab that
+// repeated grace + OT here, and the approval-matrix editor. Punch-machine sync
+// settings are on Attendance → Punch Machines.
+import { useEffect, useState } from 'react';
+import { Save, RefreshCw, CalendarDays, Clock, Zap, Gift, FileEdit, LogOut } from 'lucide-react';
 import api from '@/services/api/client';
-import { useToast } from '@/context/ToastContext';
+import { useAuth } from '@/context/AuthContext';
+import { PageHero, PageShell } from '@/components/pulse-ui';
 
-const P = '#6B3FDB';
-const CARD = { background: '#fff', borderRadius: 12, border: '1px solid #f0f0f4', padding: 24 };
+const DAYS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+const label = (d) => d.charAt(0).toUpperCase() + d.slice(1, 3);
+const CARD = { background: '#fff', border: '1px solid #ece9f8', borderRadius: 12, padding: 20, marginBottom: 16 };
+const INPUT = { padding: '8px 10px', border: '1px solid #e5e7eb', borderRadius: 8, fontSize: 13, width: 120, boxSizing: 'border-box' };
+const errText = (e) => e?.response?.data?.message || e?.response?.data?.error || 'Could not save settings';
 
-const SECTIONS = [
-  { id: 'general',   label: 'General Settings',     icon: Settings,   color: '#6B3FDB' },
-  { id: 'shift',     label: 'Shift Settings',        icon: Clock,      color: '#0369a1' },
-  { id: 'geo',       label: 'Geo Settings',          icon: MapPin,     color: '#10b981' },
-  { id: 'face',      label: 'Face Attendance',       icon: Camera,     color: '#7c5cf0' },
-  { id: 'device',    label: 'Device Settings',       icon: Cpu,        color: '#ef4444' },
-  { id: 'policy',    label: 'Policy Settings',       icon: Shield,     color: '#8b5cf6' },
-  { id: 'approval',  label: 'Approval Matrix',       icon: GitBranch,  color: '#06b6d4' },
-  { id: 'payroll',   label: 'Payroll Sync Settings', icon: IndianRupee, color: '#7c5cf0' },
-  { id: 'workcentre',label: 'Work Centre Settings',  icon: Layers,     color: '#84cc16' },
-  { id: 'reports',   label: 'Reports & Export',      icon: FileText,   color: '#a78bfa' },
-];
-
-const DAYS = ['monday','tuesday','wednesday','thursday','friday','saturday','sunday'];
-const TIMEZONES = ['Asia/Kolkata','Asia/Dubai','Asia/Singapore','UTC','Europe/London','America/New_York'];
-const ATTENDANCE_MODES = [
-  { value: 'manual',    label: 'Manual',    desc: 'HR manually marks attendance' },
-  { value: 'biometric', label: 'Biometric', desc: 'Fingerprint / face device auto-sync' },
-  { value: 'mobile',    label: 'Mobile App',desc: 'Employee self-service mobile punch' },
-  { value: 'hybrid',    label: 'Hybrid',    desc: 'Mix of manual + biometric' },
-];
-
-const WORKFLOW_TYPES = [
-  { id: 'regularization',  label: 'Regularization Approval',   desc: 'Attendance correction requests' },
-  { id: 'overtime',        label: 'Overtime Approval',         desc: 'OT record approvals' },
-  { id: 'attendance_lock', label: 'Attendance Lock / Freeze',  desc: 'Month-end payroll freeze' },
-];
-
-function Toggle({ checked, onChange }) {
-  return (
-    <button onClick={() => onChange(!checked)}
-      style={{ border: 'none', background: 'none', cursor: 'pointer', padding: 0, display: 'flex', alignItems: 'center' }}>
-      {checked
-        ? <ToggleRight size={28} color={P} />
-        : <ToggleLeft  size={28} color="#d1d5db" />}
-    </button>
-  );
-}
-
-function SectionCard({ icon: Icon, color, label, children }) {
+function Section({ icon: Icon, title, hint, children }) {
   return (
     <div style={CARD}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 20, paddingBottom: 14, borderBottom: '1px solid #f0f0f4' }}>
-        <div style={{ width: 36, height: 36, borderRadius: 8, background: `${color}15`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <Icon size={18} color={color} />
-        </div>
-        <h2 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: '#1f2937' }}>{label}</h2>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: hint ? 4 : 14 }}>
+        <Icon size={16} color="#6B3FDB" />
+        <h3 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: '#1f2937' }}>{title}</h3>
       </div>
+      {hint && <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 14 }}>{hint}</div>}
       {children}
     </div>
   );
 }
 
-function Row({ label, desc, children }) {
+function Row({ label: l, desc, children }) {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 0', borderBottom: '1px solid #f9f9f9' }}>
-      <div>
-        <div style={{ fontSize: 14, fontWeight: 500, color: '#1f2937' }}>{label}</div>
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, padding: '10px 0', borderTop: '1px solid #f5f3ff', flexWrap: 'wrap' }}>
+      <div style={{ minWidth: 220, flex: 1 }}>
+        <div style={{ fontSize: 13, fontWeight: 600, color: '#374151' }}>{l}</div>
         {desc && <div style={{ fontSize: 12, color: '#9ca3af', marginTop: 2 }}>{desc}</div>}
       </div>
-      <div style={{ flexShrink: 0, marginLeft: 16 }}>{children}</div>
+      <div>{children}</div>
     </div>
   );
 }
 
-export default function GeneralSettings() {
-  const navigate = useNavigate();
-  const toast = useToast();
-  const [activeSection, setActiveSection] = useState('general');
-  const [general, setGeneral] = useState(null);
-  const [workflows, setWorkflows] = useState([]);
-  const [settingsLoading, setSettingsLoading] = useState(true);
-  const [geoSettings, setGeoSettings] = useState({ geo_mandatory: false, default_radius: 200, block_outside: true });
-  const [deviceSettings, setDeviceSettings] = useState({ auto_sync: true, sync_interval_minutes: 15, duplicate_window_minutes: 5, offline_sync: true });
-  const [reportSettings, setReportSettings] = useState({ auto_monthly_report: true, report_email: '', export_format: 'xlsx', include_photos: false });
-  const [wc, setWc] = useState({ track_work_centres: false, require_wc_for_factory: true, units_produced_tracking: false, include_in_reports: true });
-  // These three were rendered from hardcoded `checked` literals with no-op
-  // onChange handlers, so the section reported a fixed configuration and
-  // discarded every edit. "Enable Face Attendance" was pinned to false while the
-  // stored value was true, i.e. it misreported the live setting.
-  const [faceSettings, setFaceSettings] = useState({ enabled: false, selfie_required: false, anti_spoof: true });
-  const [editingWorkflow, setEditingWorkflow] = useState(null);
-  const [levelDraft, setLevelDraft] = useState('');
-  const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState('');
-
-  useEffect(() => {
-    Promise.allSettled([
-      api.get('/attendance/general-settings'),
-      api.get('/attendance/workflow-config'),
-      api.get('/attendance/geo-settings'),
-      api.get('/attendance/device-settings'),
-      api.get('/attendance/report-settings'),
-      api.get('/attendance/workcentre-settings'),
-      api.get('/attendance/face-settings'),
-    ]).then(([gRes, wRes, geoRes, devRes, repRes, wcRes, faceRes]) => {
-      if (gRes.status === 'fulfilled' && gRes.value.data) setGeneral(gRes.value.data);
-      if (wRes.status === 'fulfilled' && Array.isArray(wRes.value.data)) setWorkflows(wRes.value.data);
-      if (geoRes.status === 'fulfilled' && geoRes.value.data) setGeoSettings(g => ({ ...g, ...geoRes.value.data }));
-      if (devRes.status === 'fulfilled' && devRes.value.data) setDeviceSettings(d => ({ ...d, ...devRes.value.data }));
-      if (repRes.status === 'fulfilled' && repRes.value.data) setReportSettings(r => ({ ...r, ...repRes.value.data }));
-      if (wcRes.status === 'fulfilled' && wcRes.value.data) setWc(w => ({ ...w, ...wcRes.value.data }));
-      if (faceRes.status === 'fulfilled' && faceRes.value.data) setFaceSettings(f => ({ ...f, ...faceRes.value.data }));
-    }).finally(() => setSettingsLoading(false));
-  }, []);
-
-  const saveGeneral = async () => {
-    setSaving(true);
-    try {
-      await api.put('/attendance/general-settings', general);
-      setSaved('general');
-      toast.success('General settings saved');
-      setTimeout(() => setSaved(''), 3000);
-    } catch (e) { toast.error(e?.response?.data?.error || 'Failed to save general settings'); } finally { setSaving(false); }
-  };
-
-  const saveGeo = async () => {
-    setSaving(true);
-    try {
-      await api.put('/attendance/geo-settings', geoSettings);
-      setSaved('geo');
-      toast.success('Geo settings saved');
-      setTimeout(() => setSaved(''), 3000);
-    } catch (e) { toast.error(e?.response?.data?.error || 'Failed to save geo settings'); } finally { setSaving(false); }
-  };
-
-  const saveDevice = async () => {
-    setSaving(true);
-    try {
-      await api.put('/attendance/device-settings', deviceSettings);
-      setSaved('device');
-      toast.success('Device settings saved');
-      setTimeout(() => setSaved(''), 3000);
-    } catch (e) { toast.error(e?.response?.data?.error || 'Failed to save device settings'); } finally { setSaving(false); }
-  };
-
-  const saveReport = async () => {
-    setSaving(true);
-    try {
-      await api.put('/attendance/report-settings', reportSettings);
-      setSaved('report');
-      toast.success('Report settings saved');
-      setTimeout(() => setSaved(''), 3000);
-    } catch (e) { toast.error(e?.response?.data?.error || 'Failed to save report settings'); } finally { setSaving(false); }
-  };
-
-  const saveWc = async () => {
-    setSaving(true);
-    try {
-      await api.put('/attendance/workcentre-settings', wc);
-      setSaved('workcentre');
-      toast.success('Work centre settings saved');
-      setTimeout(() => setSaved(''), 3000);
-    } catch (e) { toast.error(e?.response?.data?.error || 'Failed to save work centre settings'); } finally { setSaving(false); }
-  };
-
-  const saveFace = async () => {
-    setSaving(true);
-    try {
-      // PUT replaces the whole settings blob, so send back everything that was
-      // loaded and not just the three flags this screen exposes -- otherwise
-      // saving here would wipe the thresholds the Face Attendance module owns.
-      await api.put('/attendance/face-settings', faceSettings);
-      setSaved('face');
-      toast.success('Face attendance settings saved');
-      setTimeout(() => setSaved(''), 3000);
-    } catch (e) { toast.error(e?.response?.data?.error || 'Failed to save face attendance settings'); } finally { setSaving(false); }
-  };
-
-  const toggleWorkingDay = (day) => {
-    setGeneral(g => ({
-      ...g,
-      working_days: g.working_days.includes(day)
-        ? g.working_days.filter(d => d !== day)
-        : [...g.working_days, day],
-    }));
-  };
-
-  const saveWorkflow = async (type, levels) => {
-    try {
-      await api.put(`/attendance/workflow-config/${type}`, { levels });
-      setWorkflows(prev => prev.map(w => w.workflow_type === type ? { ...w, levels } : w));
-      toast.success('Workflow config saved');
-      setSaved(type); setTimeout(() => setSaved(''), 3000);
-    } catch (e) { toast.error(e?.response?.data?.error || 'Failed to save workflow config'); }
-  };
-
-  const inp = { border: '1px solid #e9e4ff', borderRadius: 8, padding: '7px 10px', fontSize: 13, outline: 'none' };
-
-  const renderSection = () => {
-    switch (activeSection) {
-      case 'general': return (
-        <SectionCard icon={Settings} color="#6B3FDB" label="General Settings">
-          {settingsLoading ? (
-            <div style={{ textAlign: 'center', padding: 40, color: '#9ca3af' }}>
-              <RefreshCw size={20} style={{ marginBottom: 8 }} />
-              <p style={{ margin: 0, fontSize: 13 }}>Loading settings…</p>
-            </div>
-          ) : !general ? (
-            <div style={{ textAlign: 'center', padding: 40, color: '#9ca3af' }}>
-              <AlertCircle size={20} color="#d1d5db" style={{ marginBottom: 8 }} />
-              <p style={{ margin: 0, fontSize: 13 }}>Could not load settings. Refresh the page.</p>
-            </div>
-          ) : (<>
-          <Row label="Working Days" desc="Days considered as working days for attendance">
-            <div style={{ display: 'flex', gap: 5 }}>
-              {DAYS.map(d => (
-                <button key={d} onClick={() => toggleWorkingDay(d)}
-                  style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid', fontSize: 11, fontWeight: 500, cursor: 'pointer',
-                    background: (general.working_days || []).includes(d) ? P : '#f5f3ff',
-                    borderColor: (general.working_days || []).includes(d) ? P : '#e9e4ff',
-                    color: (general.working_days || []).includes(d) ? '#fff' : '#4b5563' }}>
-                  {d.slice(0,3).toUpperCase()}
-                </button>
-              ))}
-            </div>
-          </Row>
-          <Row label="Timezone" desc="Default timezone for attendance calculations">
-            <select value={general.timezone || 'Asia/Kolkata'} onChange={e => setGeneral(g => ({ ...g, timezone: e.target.value }))}
-              style={{ ...inp, minWidth: 180 }}>
-              {TIMEZONES.map(t => <option key={t} value={t}>{t}</option>)}
-            </select>
-          </Row>
-          <Row label="Attendance Mode" desc="How attendance is recorded">
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {ATTENDANCE_MODES.map(m => (
-                <label key={m.value} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
-                  <input type="radio" name="att_mode" value={m.value}
-                    checked={general.attendance_mode === m.value}
-                    onChange={() => setGeneral(g => ({ ...g, attendance_mode: m.value }))}
-                    style={{ accentColor: P }} />
-                  <span style={{ fontSize: 13, fontWeight: 500 }}>{m.label}</span>
-                  <span style={{ fontSize: 11, color: '#9ca3af' }}>{m.desc}</span>
-                </label>
-              ))}
-            </div>
-          </Row>
-          <Row label="Auto Check-Out" desc="Automatically check out employees at end of day">
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <Toggle checked={!!general.auto_checkout} onChange={v => setGeneral(g => ({ ...g, auto_checkout: v }))} />
-              {general.auto_checkout && (
-                <input type="time" value={general.auto_checkout_time || '21:00'}
-                  onChange={e => setGeneral(g => ({ ...g, auto_checkout_time: e.target.value }))}
-                  style={inp} />
-              )}
-            </div>
-          </Row>
-          <Row label="Half Day Hours" desc="Minimum hours for a half-day record">
-            <input type="number" step="0.5" min="1" max="9" value={general.half_day_hours || 4.5}
-              onChange={e => setGeneral(g => ({ ...g, half_day_hours: parseFloat(e.target.value) }))}
-              style={{ ...inp, width: 80 }} />
-          </Row>
-          <Row label="Full Day Hours" desc="Minimum hours for a full-day record">
-            <input type="number" step="0.5" min="4" max="12" value={general.full_day_hours || 9}
-              onChange={e => setGeneral(g => ({ ...g, full_day_hours: parseFloat(e.target.value) }))}
-              style={{ ...inp, width: 80 }} />
-          </Row>
-          <div style={{ marginTop: 16, display: 'flex', justifyContent: 'flex-end' }}>
-            <button onClick={saveGeneral} disabled={saving}
-              style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 20px', borderRadius: 8, border: 'none', background: P, color: '#fff', fontWeight: 600, fontSize: 14, cursor: 'pointer' }}>
-              {saved === 'general' ? <><Check size={14} /> Saved</> : <><Save size={14} /> Save Changes</>}
-            </button>
-          </div>
-          </>)}
-        </SectionCard>
-      );
-
-      case 'shift': return (
-        <SectionCard icon={Clock} color="#0369a1" label="Shift Settings">
-          <div style={{ background: '#f0f9ff', border: '1px solid #bae6fd', borderRadius: 8, padding: 14, marginBottom: 16, fontSize: 13, color: '#0369a1' }}>
-            Shift configuration is managed in the <strong>Shift Management</strong> module. Only the two
-            global defaults below are set here — overlap prevention, night-shift allowance and rotation
-            are owned by that module and by the OT policy.
-          </div>
-          <Row label="Grace Period (default, minutes)" desc="Minutes late before marking Late (used when shift has no override)">
-            <input type="number" min="0" max="60"
-              value={general?.default_grace_minutes ?? 10}
-              onChange={e => setGeneral(g => ({ ...g, default_grace_minutes: parseInt(e.target.value) }))}
-              style={{ ...inp, width: 80 }} />
-          </Row>
-          <Row label="OT Multiplier" desc="Default overtime pay multiplier (e.g. 1.5 = time-and-a-half)">
-            <input type="number" min="1" max="3" step="0.25"
-              value={general?.ot_multiplier ?? 1.5}
-              onChange={e => setGeneral(g => ({ ...g, ot_multiplier: parseFloat(e.target.value) }))}
-              style={{ ...inp, width: 80 }} />
-          </Row>
-          <div style={{ marginTop: 16, display: 'flex', justifyContent: 'flex-end' }}>
-            <button onClick={saveGeneral} disabled={saving}
-              style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 20px', borderRadius: 8, border: 'none', background: '#0369a1', color: '#fff', fontWeight: 600, fontSize: 14, cursor: 'pointer' }}>
-              {saved === 'general' ? <><Check size={14} /> Saved</> : <><Save size={14} /> Save Shift Settings</>}
-            </button>
-          </div>
-          <div style={{ marginTop: 16 }}>
-            <div style={{ fontSize: 13, fontWeight: 600, color: '#374151', marginBottom: 10 }}>Quick Actions</div>
-            {[
-              { label: 'Manage Shifts', desc: 'Create, edit, delete, assign shifts' },
-              { label: 'View Shift Calendar', desc: 'Monthly shift calendar for employees' },
-              { label: 'Shift Efficiency Report', desc: 'Shift fill rate and hours analytics' },
-            ].map(l => (
-              <div key={l.label} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px', borderRadius: 8, border: '1px solid #f0f0f4', marginBottom: 8, background: '#f9fafb' }}>
-                <div>
-                  <div style={{ fontSize: 13, fontWeight: 600 }}>{l.label}</div>
-                  <div style={{ fontSize: 11, color: '#9ca3af' }}>{l.desc}</div>
-                </div>
-                <ChevronRight size={14} color="#9ca3af" />
-              </div>
-            ))}
-          </div>
-        </SectionCard>
-      );
-
-      case 'geo': return (
-        <SectionCard icon={MapPin} color="#10b981" label="Geo Settings">
-          <Row label="Geo-Attendance Mandatory" desc="Require GPS validation for all clock-ins">
-            <Toggle checked={geoSettings.geo_mandatory} onChange={v => setGeoSettings(g => ({ ...g, geo_mandatory: v }))} />
-          </Row>
-          <Row label="Block Outside Radius" desc="Reject clock-in attempts outside defined zones">
-            <Toggle checked={geoSettings.block_outside} onChange={v => setGeoSettings(g => ({ ...g, block_outside: v }))} />
-          </Row>
-          <Row label="Default Radius (meters)" desc="Default geofence radius when creating new zones">
-            <input type="number" min="50" max="10000" step="50" value={geoSettings.default_radius}
-              onChange={e => setGeoSettings(g => ({ ...g, default_radius: parseInt(e.target.value) }))}
-              style={{ ...inp, width: 100 }} />
-          </Row>
-          <div style={{ background: '#f0fdf4', border: '1px solid #86efac', borderRadius: 8, padding: 14, marginTop: 12, fontSize: 13, color: '#15803d' }}>
-            <strong>Field Engineers</strong> with geo-exception enabled can punch from any location.
-            Their GPS coordinates are logged for audit purposes.
-          </div>
-          <div style={{ marginTop: 16, textAlign: 'right' }}>
-            <button onClick={saveGeo} disabled={saving}
-              style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 20px', borderRadius: 8, border: 'none', background: '#10b981', color: '#fff', fontWeight: 600, fontSize: 14, cursor: 'pointer', marginLeft: 'auto' }}>
-              {saved === 'geo' ? <><Check size={14} /> Saved</> : <><Save size={14} /> Save Geo Settings</>}
-            </button>
-          </div>
-        </SectionCard>
-      );
-
-      case 'face': return (
-        <SectionCard icon={Camera} color="#7c5cf0" label="Face Attendance Settings">
-          <div style={{ background: '#f5f3ff', border: '1px solid #ddd6fe', borderRadius: 8, padding: 14, marginBottom: 16, fontSize: 13, color: '#6d28d9' }}>
-            Full face attendance configuration is in the <strong>Face Attendance</strong> module. Configure thresholds, anti-spoof settings, and view suspicious attempt logs there.
-          </div>
-          <Row label="Enable Face Attendance" desc="Allow face recognition as an attendance method">
-            <Toggle checked={!!faceSettings.enabled}
-              onChange={v => setFaceSettings(f => ({ ...f, enabled: v }))} />
-          </Row>
-          <Row label="Selfie Validation" desc="Require a selfie photo for mobile attendance">
-            <Toggle checked={!!faceSettings.selfie_required}
-              onChange={v => setFaceSettings(f => ({ ...f, selfie_required: v }))} />
-          </Row>
-          <Row label="Anti-Spoof Detection" desc="Block photo/screen-based spoof attempts">
-            <Toggle checked={!!faceSettings.anti_spoof}
-              onChange={v => setFaceSettings(f => ({ ...f, anti_spoof: v }))} />
-          </Row>
-          <div style={{ marginTop: 16, display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
-            <button onClick={() => navigate('/FaceAttendance')}
-              style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 20px', borderRadius: 8, border: '1px solid #ddd6fe', background: '#fff', color: '#7c5cf0', fontWeight: 600, fontSize: 14, cursor: 'pointer' }}>
-              Open Face Attendance Module →
-            </button>
-            <button onClick={saveFace} disabled={saving}
-              style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 20px', borderRadius: 8, border: 'none', background: '#7c5cf0', color: '#fff', fontWeight: 600, fontSize: 14, cursor: 'pointer' }}>
-              {saved === 'face' ? <><Check size={14} /> Saved</> : <><Save size={14} /> Save Face Settings</>}
-            </button>
-          </div>
-        </SectionCard>
-      );
-
-      case 'device': return (
-        <SectionCard icon={Cpu} color="#ef4444" label="Device Settings">
-          <Row label="Auto Sync" desc="Automatically sync punch records from biometric devices">
-            <Toggle checked={deviceSettings.auto_sync} onChange={v => setDeviceSettings(d => ({ ...d, auto_sync: v }))} />
-          </Row>
-          <Row label="Sync Interval (minutes)" desc="How often to pull records from devices">
-            <input type="number" min="5" max="60" value={deviceSettings.sync_interval_minutes}
-              onChange={e => setDeviceSettings(d => ({ ...d, sync_interval_minutes: parseInt(e.target.value) }))}
-              style={{ ...inp, width: 80 }} />
-          </Row>
-          <Row label="Duplicate Punch Window (minutes)" desc="Ignore duplicate punches within this window">
-            <input type="number" min="1" max="30" value={deviceSettings.duplicate_window_minutes}
-              onChange={e => setDeviceSettings(d => ({ ...d, duplicate_window_minutes: parseInt(e.target.value) }))}
-              style={{ ...inp, width: 80 }} />
-          </Row>
-          <Row label="Offline Sync" desc="Queue and sync records when device reconnects">
-            <Toggle checked={deviceSettings.offline_sync} onChange={v => setDeviceSettings(d => ({ ...d, offline_sync: v }))} />
-          </Row>
-          <div style={{ background: '#fff7f0', border: '1px solid #ddd6fe', borderRadius: 8, padding: 14, marginTop: 12, fontSize: 13, color: '#5b21b6' }}>
-            Supported devices: <strong>ZKTeco, eSSL, Matrix, Suprema</strong>. Register and manage devices in the <strong>Devices</strong> module.
-          </div>
-          <div style={{ marginTop: 16, textAlign: 'right' }}>
-            <button onClick={saveDevice} disabled={saving}
-              style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 20px', borderRadius: 8, border: 'none', background: '#ef4444', color: '#fff', fontWeight: 600, fontSize: 14, cursor: 'pointer', marginLeft: 'auto' }}>
-              {saved === 'device' ? <><Check size={14} /> Saved</> : <><Save size={14} /> Save Device Settings</>}
-            </button>
-          </div>
-        </SectionCard>
-      );
-
-      case 'policy': return (
-        <SectionCard icon={Shield} color="#8b5cf6" label="Policy Settings">
-          <div style={{ background: '#faf5ff', border: '1px solid #e9d5ff', borderRadius: 8, padding: 14, marginBottom: 16, fontSize: 13, color: '#6B3FDB' }}>
-            Attendance policies (late, OT, break, field, factory) are configured in the <strong>Policies</strong> module with full JSONB rule editors.
-          </div>
-          {[
-            { label: 'Late Arrival Policy', desc: 'Grace period, late mark, auto-deductions' },
-            { label: 'Overtime Policy', desc: 'OT multipliers, max hours, approval requirement' },
-            { label: 'Break Policy', desc: 'Lunch/tea break duration and tracking' },
-            { label: 'Field Engineer Policy', desc: 'Geo-attendance, offline punch, travel allowance' },
-            { label: 'Factory Policy', desc: 'Biometric mandatory, shift lock, gate-pass' },
-          ].map(p => (
-            <div key={p.label} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '11px 0', borderBottom: '1px solid #f9f9f9' }}>
-              <div>
-                <div style={{ fontSize: 14, fontWeight: 500 }}>{p.label}</div>
-                <div style={{ fontSize: 12, color: '#9ca3af' }}>{p.desc}</div>
-              </div>
-              <span style={{ background: '#faf5ff', color: '#6B3FDB', borderRadius: 6, padding: '3px 10px', fontSize: 12, fontWeight: 600 }}>Configure →</span>
-            </div>
-          ))}
-        </SectionCard>
-      );
-
-      case 'approval': return (
-        <SectionCard icon={GitBranch} color="#06b6d4" label="Approval Matrix">
-          <p style={{ margin: '0 0 16px', fontSize: 13, color: '#6b7280' }}>
-            Configure multi-level approval workflows for attendance regularization, overtime, and payroll freeze.
-          </p>
-          {WORKFLOW_TYPES.map(wt => {
-            const existing = workflows.find(w => w.workflow_type === wt.id);
-            const levels = Array.isArray(existing?.levels) ? existing.levels : [];
-            const isEditing = editingWorkflow === wt.id;
-            return (
-              <div key={wt.id} style={{ padding: 16, borderRadius: 10, border: '1px solid #e0f2fe', background: '#f0f9ff', marginBottom: 12 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-                  <div>
-                    <div style={{ fontSize: 14, fontWeight: 600 }}>{wt.label}</div>
-                    <div style={{ fontSize: 12, color: '#9ca3af' }}>{wt.desc}</div>
-                  </div>
-                </div>
-                {/* The chain used to be three hardcoded labels sliced by
-                    `levels.length || 2`, so an unconfigured workflow still drew a
-                    plausible two-step chain and a configured one drew those same
-                    fixed labels rather than its actual levels. */}
-                {isEditing ? (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                    <input
-                      value={levelDraft}
-                      onChange={e => setLevelDraft(e.target.value)}
-                      placeholder="Reporting Manager, HR Admin"
-                      style={{ ...inp, flex: 1, minWidth: 240 }} />
-                    <button
-                      onClick={async () => {
-                        const parsed = levelDraft.split(',').map(x => x.trim()).filter(Boolean);
-                        await saveWorkflow(wt.id, parsed);
-                        setEditingWorkflow(null);
-                      }}
-                      style={{ border: 'none', background: '#06b6d4', color: '#fff', borderRadius: 6, padding: '5px 12px', fontSize: 12, cursor: 'pointer', fontWeight: 600 }}>
-                      Save
-                    </button>
-                    <button onClick={() => setEditingWorkflow(null)}
-                      style={{ border: '1px solid #bae6fd', background: '#fff', color: '#0369a1', borderRadius: 6, padding: '5px 12px', fontSize: 12, cursor: 'pointer' }}>
-                      Cancel
-                    </button>
-                  </div>
-                ) : (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                    <span style={{ fontSize: 12, fontWeight: 600, color: '#374151' }}>Employee →</span>
-                    {levels.length === 0 ? (
-                      <span style={{ fontSize: 12, color: '#9ca3af', fontStyle: 'italic' }}>
-                        No approval levels configured
-                      </span>
-                    ) : levels.map((l, i) => (
-                      <React.Fragment key={i}>
-                        <span style={{ background: '#06b6d415', color: '#0891b2', borderRadius: 12, padding: '3px 10px', fontSize: 12, fontWeight: 500 }}>
-                          {l} (L{i + 1})
-                        </span>
-                        {i < levels.length - 1 && <span style={{ color: '#9ca3af' }}>→</span>}
-                      </React.Fragment>
-                    ))}
-                    <button
-                      onClick={() => { setEditingWorkflow(wt.id); setLevelDraft(levels.join(', ')); }}
-                      style={{ marginLeft: 8, border: 'none', background: '#06b6d4', color: '#fff', borderRadius: 6, padding: '3px 10px', fontSize: 12, cursor: 'pointer' }}>
-                      Edit
-                    </button>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-          <div style={{ background: '#f0f9ff', border: '1px solid #bae6fd', borderRadius: 8, padding: 12, fontSize: 12, color: '#0369a1', marginTop: 8 }}>
-            <AlertCircle size={12} style={{ verticalAlign: 'middle', marginRight: 6 }} />
-            Reporting manager is auto-detected from the <strong>reporting_manager_id</strong> field on each employee record.
-          </div>
-        </SectionCard>
-      );
-
-      case 'payroll': return (
-        <SectionCard icon={IndianRupee} color="#7c5cf0" label="Payroll Sync Settings">
-          {/* This section previously rendered a sync-day input, three toggles and
-              a payroll-system dropdown above a "Save Payroll Settings" button.
-              None of them were bound to state and the button had no handler:
-              there is no payroll-settings store in the schema or the API, so
-              every edit here was discarded silently while looking saved. What IS
-              implemented is the sync action itself (POST /attendance/payroll-sync),
-              so the section now describes the real behaviour instead of offering
-              settings that cannot persist. */}
-          <div style={{ background: '#f0f9ff', border: '1px solid #bae6fd', borderRadius: 8, padding: 14, fontSize: 13, color: '#0369a1', lineHeight: 1.6 }}>
-            <AlertCircle size={13} style={{ verticalAlign: 'middle', marginRight: 6 }} />
-            Payroll sync is run per month from the <strong>Payroll</strong> module, not configured here.
-            Running it freezes that month's attendance records and marks them <strong>immutable</strong>;
-            overtime hours are included in the synced totals.
-          </div>
-          <div style={{ background: '#fff7f0', border: '1px solid #ddd6fe', borderRadius: 8, padding: 14, marginTop: 12, fontSize: 13, color: '#5b21b6', lineHeight: 1.6 }}>
-            Re-syncing a month that is already frozen is rejected unless it is forced,
-            and only an HR Admin or Admin can run either.
-          </div>
-        </SectionCard>
-      );
-
-      case 'workcentre': return (
-        <SectionCard icon={Layers} color="#84cc16" label="Work Centre Settings">
-          <Row label="Track Work Centres" desc="Enable work-centre level attendance for manufacturing">
-            <Toggle checked={wc.track_work_centres} onChange={v => setWc(w => ({ ...w, track_work_centres: v }))} />
-          </Row>
-          <Row label="Require Work Centre for Factory Staff" desc="Factory employees must log to a work centre">
-            <Toggle checked={wc.require_wc_for_factory} onChange={v => setWc(w => ({ ...w, require_wc_for_factory: v }))} />
-          </Row>
-          <Row label="Units Produced Tracking" desc="Track units produced per employee per shift">
-            <Toggle checked={!!wc.units_produced_tracking} onChange={v => setWc(w => ({ ...w, units_produced_tracking: v }))} />
-          </Row>
-          <Row label="Work Centre Reporting" desc="Include work centre data in monthly attendance reports">
-            <Toggle checked={wc.include_in_reports !== false} onChange={v => setWc(w => ({ ...w, include_in_reports: v }))} />
-          </Row>
-          <div style={{ marginTop: 16, textAlign: 'right' }}>
-            <button onClick={saveWc} disabled={saving}
-              style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 20px', borderRadius: 8, border: 'none', background: '#84cc16', color: '#fff', fontWeight: 600, fontSize: 14, cursor: 'pointer', marginLeft: 'auto' }}>
-              {saved === 'workcentre' ? <><Check size={14} /> Saved</> : <><Save size={14} /> Save Work Centre Settings</>}
-            </button>
-          </div>
-        </SectionCard>
-      );
-
-      case 'reports': return (
-        <SectionCard icon={FileText} color="#a78bfa" label="Reports & Export Settings">
-          <Row label="Auto Monthly Report" desc="Automatically generate monthly attendance report on 1st">
-            <Toggle checked={reportSettings.auto_monthly_report} onChange={v => setReportSettings(r => ({ ...r, auto_monthly_report: v }))} />
-          </Row>
-          <Row label="Export Format" desc="Default format for downloaded attendance reports">
-            <select value={reportSettings.export_format} onChange={e => setReportSettings(r => ({ ...r, export_format: e.target.value }))} style={inp}>
-              <option value="xlsx">Excel (.xlsx)</option>
-              <option value="csv">CSV (.csv)</option>
-              <option value="pdf">PDF Report</option>
-            </select>
-          </Row>
-          <Row label="Include Photos in Report" desc="Embed selfie photos in exported reports">
-            <Toggle checked={reportSettings.include_photos} onChange={v => setReportSettings(r => ({ ...r, include_photos: v }))} />
-          </Row>
-          <Row label="Report Recipient Email" desc="Auto-email monthly reports to this address">
-            <input type="email" value={reportSettings.report_email}
-              onChange={e => setReportSettings(r => ({ ...r, report_email: e.target.value }))}
-              style={{ ...inp, minWidth: 220 }} placeholder="hr@company.com" />
-          </Row>
-          <div style={{ marginTop: 16, textAlign: 'right' }}>
-            <button onClick={saveReport} disabled={saving}
-              style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 20px', borderRadius: 8, border: 'none', background: '#a78bfa', color: '#fff', fontWeight: 600, fontSize: 14, cursor: 'pointer', marginLeft: 'auto' }}>
-              {saved === 'report' ? <><Check size={14} /> Saved</> : <><Save size={14} /> Save Report Settings</>}
-            </button>
-          </div>
-        </SectionCard>
-      );
-
-      default: return null;
-    }
-  };
-
+function Toggle({ checked, onChange, disabled, id }) {
   return (
-    <div style={{ padding: 24, fontFamily: 'Inter, sans-serif', margin: '0 auto' }}>
-      <div style={{ marginBottom: 24 }}>
-        <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: '#1f2937' }}>General Settings</h2>
-        <p style={{ margin: '4px 0 0', fontSize: 13, color: '#6b7280' }}>Centralized configuration for all attendance module features</p>
-      </div>
+    <label htmlFor={id} style={{ display: 'inline-flex', alignItems: 'center', gap: 8, cursor: disabled ? 'not-allowed' : 'pointer', fontSize: 13 }}>
+      <input id={id} type="checkbox" checked={!!checked} disabled={disabled} onChange={(e) => onChange(e.target.checked)} style={{ width: 16, height: 16 }} />
+      {checked ? 'On' : 'Off'}
+    </label>
+  );
+}
 
-      <div style={{ display: 'grid', gridTemplateColumns: '240px 1fr', gap: 20, alignItems: 'start' }}>
-        {/* Sidebar nav */}
-        <div style={CARD}>
-          <nav>
-            {SECTIONS.map(s => (
-              <button key={s.id} onClick={() => setActiveSection(s.id)}
-                style={{ display: 'flex', alignItems: 'center', gap: 10, width: '100%', padding: '10px 12px', borderRadius: 8, border: 'none',
-                  background: activeSection === s.id ? `${s.color}12` : 'transparent',
-                  color: activeSection === s.id ? s.color : '#374151',
-                  fontWeight: activeSection === s.id ? 700 : 400, fontSize: 13, cursor: 'pointer', marginBottom: 2, textAlign: 'left' }}>
-                <s.icon size={15} color={activeSection === s.id ? s.color : '#9ca3af'} />
-                {s.label}
-              </button>
-            ))}
-          </nav>
-        </div>
+export default function GeneralSettings({ embedded }) {
+  const { hasPermission } = useAuth();
+  const canEdit = hasPermission('attendance', 'edit');
+  const [s, setS] = useState(null);
+  const [saved, setSaved] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState(null);
 
-        {/* Content area */}
-        <div>
-          {saved && (
-            <div style={{ background: '#f0fdf4', border: '1px solid #86efac', borderRadius: 8, padding: '10px 14px', marginBottom: 14, color: '#15803d', fontSize: 13, display: 'flex', alignItems: 'center', gap: 8 }}>
-              <Check size={14} /> Settings saved successfully
-            </div>
-          )}
-          {renderSection()}
+  const load = async () => {
+    try {
+      const { data } = await api.get('/attendance/general-settings');
+      setS(data); setSaved(data); setMsg(null);
+    } catch (e) { setMsg({ type: 'error', text: errText(e) }); }
+  };
+  useEffect(() => { load(); }, []);
+
+  const set = (k, v) => setS((p) => ({ ...p, [k]: v }));
+  const num = (k) => (e) => set(k, e.target.value === '' ? '' : Number(e.target.value));
+  const dirty = s && saved && JSON.stringify(s) !== JSON.stringify(saved);
+
+  const save = async () => {
+    setBusy(true); setMsg(null);
+    try {
+      const { data } = await api.put('/attendance/general-settings', s);
+      setS(data); setSaved(data);
+      setMsg({ type: 'ok', text: 'Settings saved' });
+    } catch (e) { setMsg({ type: 'error', text: errText(e) }); }
+    finally { setBusy(false); }
+  };
+
+  if (!s) {
+    return <div style={{ padding: 32, color: '#9ca3af' }}>{msg?.text || 'Loading settings…'}</div>;
+  }
+
+  const onSite = Number(s.full_day_hours || 0) + Number(s.break_duration || 0) / 60;
+  const onSiteText = `${Math.floor(onSite)} h ${String(Math.round((onSite % 1) * 60)).padStart(2, '0')} min`;
+  const dis = !canEdit;
+
+  const body = (
+    <div>
+      {msg && (
+        <div role={msg.type === 'error' ? 'alert' : 'status'} style={{ marginBottom: 12, padding: '10px 14px', borderRadius: 8, fontSize: 13, fontWeight: 500,
+          background: msg.type === 'error' ? '#fef2f2' : '#f0fdf4', color: msg.type === 'error' ? '#dc2626' : '#16a34a',
+          border: `1px solid ${msg.type === 'error' ? '#fecaca' : '#bbf7d0'}` }}>{msg.text}</div>
+      )}
+
+      <Section icon={CalendarDays} title="Work week & hours" hint="Office staff punch on the machine; field staff punch from My Attendance.">
+        <Row label="Working days" desc="Days not ticked are weekly offs (no absence is marked on them)">
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            {DAYS.map((d) => {
+              const on = (s.working_days || []).includes(d);
+              return (
+                <button key={d} type="button" disabled={dis} aria-pressed={on}
+                  onClick={() => set('working_days', on ? s.working_days.filter((x) => x !== d) : DAYS.filter((x) => x === d || s.working_days.includes(x)))}
+                  style={{ padding: '6px 10px', borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: dis ? 'not-allowed' : 'pointer',
+                    border: `1px solid ${on ? '#6B3FDB' : '#e5e7eb'}`, background: on ? '#6B3FDB' : '#fff', color: on ? '#fff' : '#6b7280' }}>{label(d)}</button>
+              );
+            })}
+          </div>
+        </Row>
+        <Row label="Work hours in a full day" desc="Hours of work, not counting the break">
+          <input type="number" min="1" max="16" step="0.5" style={INPUT} disabled={dis} value={s.full_day_hours} onChange={num('full_day_hours')} />
+        </Row>
+        <Row label="Lunch / break (minutes)" desc={`Time on site for a full day: ${onSiteText}. Overtime starts after this.`}>
+          <input type="number" min="0" max="240" step="5" style={INPUT} disabled={dis} value={s.break_duration} onChange={num('break_duration')} />
+        </Row>
+        <Row label="Half day below (hours)" desc="Fewer hours than this on a day count as a half day">
+          <input type="number" min="1" max="12" step="0.5" style={INPUT} disabled={dis} value={s.half_day_hours} onChange={num('half_day_hours')} />
+        </Row>
+        <Row label="Default start / end" desc="Used for anyone who has no shift assigned">
+          <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+            <input type="time" style={INPUT} disabled={dis} value={s.work_start_time} onChange={(e) => set('work_start_time', e.target.value)} />
+            <span style={{ color: '#9ca3af' }}>–</span>
+            <input type="time" style={INPUT} disabled={dis} value={s.work_end_time} onChange={(e) => set('work_end_time', e.target.value)} />
+          </span>
+        </Row>
+      </Section>
+
+      <Section icon={Clock} title="Late arrival">
+        <Row label="Grace minutes" desc="Arriving later than shift start + this is marked Late">
+          <input type="number" min="0" max="120" style={INPUT} disabled={dis} value={s.grace_minutes} onChange={num('grace_minutes')} />
+        </Row>
+        <Row label="Field staff clock-in window" desc="Field staff are exempt; this applies to in-app punches only (minutes before / after shift start)">
+          <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+            <input type="number" min="0" max="240" style={{ ...INPUT, width: 80 }} disabled={dis} value={s.clock_window_early_minutes} onChange={num('clock_window_early_minutes')} />
+            <span style={{ color: '#9ca3af', fontSize: 12 }}>before</span>
+            <input type="number" min="0" max="240" style={{ ...INPUT, width: 80 }} disabled={dis} value={s.clock_window_late_minutes} onChange={num('clock_window_late_minutes')} />
+            <span style={{ color: '#9ca3af', fontSize: 12 }}>after</span>
+          </span>
+        </Row>
+      </Section>
+
+      <Section icon={Zap} title="Overtime" hint="Keep this off until you use overtime. While off, no overtime request is made and payroll pays no overtime.">
+        <Row label="Track overtime">
+          <Toggle id="ot_enabled" checked={s.ot_enabled} disabled={dis} onChange={(v) => set('ot_enabled', v)} />
+        </Row>
+        {s.ot_enabled && (
+          <>
+            <Row label="Needs approval" desc="Off = overtime is approved automatically">
+              <Toggle id="ot_req" checked={s.ot_requires_approval} disabled={dis} onChange={(v) => set('ot_requires_approval', v)} />
+            </Row>
+            <Row label="Pay rate (× normal hourly)" desc="Weekday · weekly off · holiday">
+              <span style={{ display: 'inline-flex', gap: 6 }}>
+                {['ot_weekday_multiplier', 'ot_weekend_multiplier', 'ot_holiday_multiplier'].map((k) => (
+                  <input key={k} type="number" min="1" max="5" step="0.25" style={{ ...INPUT, width: 80 }} disabled={dis} value={s[k]} onChange={num(k)} aria-label={k} />
+                ))}
+              </span>
+            </Row>
+            <Row label="Caps (hours)" desc="Per day · per month (0 = no cap)">
+              <span style={{ display: 'inline-flex', gap: 6 }}>
+                <input type="number" min="0" step="0.5" style={{ ...INPUT, width: 80 }} disabled={dis} value={s.ot_max_daily_hours} onChange={num('ot_max_daily_hours')} aria-label="Daily cap" />
+                <input type="number" min="0" step="1" style={{ ...INPUT, width: 80 }} disabled={dis} value={s.ot_max_monthly_hours} onChange={num('ot_max_monthly_hours')} aria-label="Monthly cap" />
+              </span>
+            </Row>
+          </>
+        )}
+      </Section>
+
+      <Section icon={Gift} title="Comp off" hint="Keep this off until you use comp off. When on, a full day worked on a holiday earns one comp-off day.">
+        <Row label="Grant comp off for holiday work">
+          <Toggle id="comp_off" checked={s.comp_off_enabled} disabled={dis} onChange={(v) => set('comp_off_enabled', v)} />
+        </Row>
+      </Section>
+
+      <Section icon={FileEdit} title="Regularization (attendance corrections)">
+        <Row label="Requests per employee per month" desc="Pending and approved requests count; a rejected one does not">
+          <input type="number" min="0" max="31" style={INPUT} disabled={dis} value={s.regularization_monthly_limit} onChange={num('regularization_monthly_limit')} />
+        </Row>
+        <Row label="HR approves after the manager" desc="Off = the reporting manager's approval is final">
+          <Toggle id="reg_hr" checked={s.regularization_needs_hr} disabled={dis} onChange={(v) => set('regularization_needs_hr', v)} />
+        </Row>
+      </Section>
+
+      <Section icon={LogOut} title="Auto check-out">
+        <Row label="Check out anyone still inside at" desc="For days when someone forgets to punch out">
+          <span style={{ display: 'inline-flex', gap: 10, alignItems: 'center' }}>
+            <Toggle id="auto_co" checked={s.auto_checkout} disabled={dis} onChange={(v) => set('auto_checkout', v)} />
+            <input type="time" style={INPUT} disabled={dis || !s.auto_checkout} value={s.auto_checkout_time} onChange={(e) => set('auto_checkout_time', e.target.value)} />
+          </span>
+        </Row>
+      </Section>
+
+      {canEdit && (
+        <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', position: 'sticky', bottom: 0, padding: '12px 0', background: 'var(--color-bg-page, #f8f9fc)' }}>
+          <button className="pulse-btn-secondary" onClick={load} disabled={busy}><RefreshCw size={13} /> Discard changes</button>
+          <button className="pulse-btn-primary" onClick={save} disabled={busy || !dirty}><Save size={13} /> {busy ? 'Saving…' : 'Save settings'}</button>
         </div>
-      </div>
+      )}
     </div>
+  );
+
+  if (embedded) return body;
+  return (
+    <PageShell dock={<PageHero icon={CalendarDays} eyebrow="Attendance" title="Attendance Settings" subtitle="Work week, hours, late, overtime, comp off and corrections" />}>
+      {body}
+    </PageShell>
   );
 }

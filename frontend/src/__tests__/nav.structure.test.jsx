@@ -169,7 +169,7 @@ describe('personal pages stay open to every role', () => {
 });
 
 describe('submenu separators', () => {
-  // finance keeps only My Attendance + QR Attendance out of the 14-item
+  // finance keeps only My Attendance (QR Attendance removed, §278) out of the
   // Attendance menu (FINANCE_SELF_SERVICE_PAGES). Separators order the groups
   // in NAV_ITEMS but are never drawn, so the panel holds pages and nothing else.
   it('renders only pages — no group headings — under the finance filter', async () => {
@@ -185,7 +185,7 @@ describe('submenu separators', () => {
     expect(panel).toBeTruthy();
     const items = [...panel.querySelectorAll('.nav-item')].map(b => b.textContent);
 
-    expect(items).toEqual(['My Attendance', 'QR Attendance']);
+    expect(items).toEqual(['My Attendance']);
     // Headings are not rendered at all — the panel is pages only.
     expect(panel.querySelectorAll('.nav-section-label')).toHaveLength(0);
     expect(screen.queryByText('Configuration')).toBeNull();

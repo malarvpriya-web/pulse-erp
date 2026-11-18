@@ -42,9 +42,7 @@ export default function MonthlyAttendanceReport() {
   const [deptOptions, setDeptOptions] = useState([]);
   const [sortBy, setSortBy]         = useState('lop_days');
   const [sortDir, setSortDir]       = useState('desc');
-  const [freezing, setFreezing]     = useState(false);
   const [toast, setToast]           = useState(null);
-  const [pendingPayrollSync, setPendingPayrollSync] = useState(false);
   const isMounted = useRef(true);
 
   useEffect(() => {
@@ -84,36 +82,6 @@ export default function MonthlyAttendanceReport() {
 
   useEffect(() => { load(); }, [load]);
 
-  const showMsg = (msg, type = 'success') => {
-    setToast({ msg, type });
-    setTimeout(() => { if (isMounted.current) setToast(null); }, 4000);
-  };
-
-  const handlePayrollSync = async () => {
-    if (!pendingPayrollSync) return;
-    setPendingPayrollSync(false);
-
-    setFreezing(true);
-    try {
-      const res = await api.post('/attendance/payroll-sync', { month, year });
-      showMsg(
-        `Synced ${res.data.employees_processed} employees · ${res.data.working_days} working days · attendance frozen`
-      );
-      await load();
-    } catch (e) {
-      const status = e.response?.status;
-      if (status === 409) {
-        const d = e.response.data;
-        showMsg(`Already synced: ${d.synced_count} records frozen. Contact Admin to re-sync.`, 'error');
-      } else if (status === 403) {
-        showMsg('Permission denied: Only HR Admin can sync attendance to payroll.', 'error');
-      } else {
-        showMsg(e.response?.data?.error || 'Sync failed', 'error');
-      }
-    } finally {
-      if (isMounted.current) setFreezing(false);
-    }
-  };
 
   const exportToExcel = () => {
     if (!sorted.length) return;
@@ -263,14 +231,12 @@ export default function MonthlyAttendanceReport() {
         eyebrow="Attendance"
         title="Monthly Attendance Report"
         actions={<>
-          <button className="plh-cta plh-cta--ghost"
-            onClick={() => setPendingPayrollSync(true)}
-            disabled={freezing || !data || records.length === 0}
-            
-            title={allSynced ? 'All records already synced' : 'Freeze attendance and compute LOP for payroll'}>
+          {/* One place sends a month to payroll: Attendance → Payroll Sync (§278). */}
+          <a className="plh-cta plh-cta--ghost" href="/PayrollSync"
+            title={allSynced ? 'This month is already synced to payroll' : 'Open Payroll Sync for this month'}>
             {allSynced && <Lock size={13} />}
-            {freezing ? 'Syncing…' : allSynced ? 'Synced' : 'Sync to Payroll'}
-          </button>
+            {allSynced ? 'Synced to payroll' : 'Payroll Sync →'}
+          </a>
           <button className="plh-cta plh-cta--ghost"
             onClick={exportToExcel}
             disabled={!sorted.length}>
@@ -294,15 +260,6 @@ export default function MonthlyAttendanceReport() {
         </>}
       />
     }>
-      <ConfirmDialog
-        open={pendingPayrollSync}
-        title="Sync Attendance to Payroll"
-        message={`Sync ${MONTH_NAMES[month - 1]} ${year} attendance to payroll? This will freeze all attendance records and update pending payslips with LOP days. Employees: ${records?.length || 0}.`}
-        confirmLabel="Sync"
-        variant="warning"
-        onConfirm={handlePayrollSync}
-        onCancel={() => setPendingPayrollSync(false)}
-      />
       {toast && (
         <div style={{
           position: 'fixed', top: 20, right: 20, zIndex: 9999,

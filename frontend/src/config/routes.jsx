@@ -275,14 +275,13 @@ export const ROUTES = {
 
   // ── Attendance ───────────────────────────────────────────────────────────
   // Hub page — merged report submenus
-  AttendanceReportsHub:     { module: 'attendance', component: lazy(() => import('@/features/attendance/pages/AttendanceReportsHub')) },
+  AttendanceReportsHub:     { module: 'attendance', component: lazy(() => import('@/features/attendance/pages/AttendanceReportsHub')), props: ctx => ({ setPage: ctx.setPage }) },
 
   AttendanceDashboard:         { module: 'attendance', component: lazy(() => import('@/features/attendance/pages/AttendanceDashboard')) },
   TeamAttendance:              { module: 'attendance', component: lazy(() => import('@/features/attendance/pages/TeamAttendance')) },
   LateArrivals:                { module: 'attendance', component: lazy(() => import('@/features/attendance/pages/LateArrivals')) },
   // Phase 32 — Enterprise Attendance Platform
   LiveWorkforceDashboard:      { module: 'attendance', component: lazy(() => import('@/features/attendance/pages/LiveWorkforceDashboard')) },
-  AttendancePolicies:          { module: 'attendance', component: lazy(() => import('@/features/attendance/pages/AttendancePolicies')) },
   RegularizationApprovals:     { module: 'attendance', component: lazy(() => import('@/features/attendance/pages/RegularizationApprovals')) },
   OvertimeApprovals:           { module: 'attendance', component: lazy(() => import('@/features/attendance/pages/OvertimeApprovals')) },
   AttendanceAnalytics:         { module: 'attendance', component: lazy(() => import('@/features/attendance/pages/AttendanceAnalytics')) },
@@ -290,19 +289,15 @@ export const ROUTES = {
   ShiftCalendar:               { module: 'attendance', component: lazy(() => import('@/features/attendance/pages/ShiftCalendar')) },
   MonthlyAttendanceReport:     { module: 'attendance', component: lazy(() => import('@/features/attendance/pages/MonthlyAttendanceReport')) },
   // Phase 33 — Enterprise Attendance Configuration + Control Center
-  ShiftManagement:             { module: 'attendance', component: lazy(() => import('@/features/attendance/pages/ShiftManagement')) },
   GeoFencing:                  { module: 'attendance', component: lazy(() => import('@/features/attendance/pages/GeoFencing')) },
-  AttendanceSettings:          { module: 'attendance', component: lazy(() => import('@/features/attendance/pages/AttendanceSettings')) },
-  DeviceManagement:            { module: 'attendance', component: lazy(() => import('@/features/attendance/pages/DeviceManagement')) },
-  FaceAttendance:              { module: 'attendance', component: lazy(() => import('@/features/attendance/pages/FaceAttendance')) },
   WorkCentres:                 { module: 'attendance', component: lazy(() => import('@/features/attendance/pages/WorkCentres')) },
   ContractLabour:              { module: 'attendance', component: lazy(() => import('@/features/attendance/pages/ContractLabour')) },
   PayrollSync:                 { module: 'attendance', component: lazy(() => import('@/features/attendance/pages/PayrollSync')), props: ctx => ({ setPage: ctx.setPage }) },
   AttendanceReports:           { module: 'attendance', component: lazy(() => import('@/features/attendance/pages/AttendanceReports')) },
-  QRAttendance:                { module: 'attendance', component: lazy(() => import('@/features/attendance/pages/QRAttendance')) },
   GeoViolationsReport:         { module: 'attendance', component: lazy(() => import('@/features/attendance/pages/GeoViolationsReport')) },
   GeneralSettings:             { module: 'attendance', component: lazy(() => import('@/features/attendance/pages/settings/GeneralSettings')) },
   ApprovalDelegation:          { module: 'attendance', component: lazy(() => import('@/features/attendance/pages/ApprovalDelegation')) },
+  ShiftChangeApprovals:        { module: 'attendance', component: lazy(() => import('@/features/attendance/pages/ShiftChangeApprovals')) },
 
   // ── Leaves ───────────────────────────────────────────────────────────────
   ApplyLeave:            { module: 'leaves', component: lazy(() => import('@/features/leaves/pages/ApplyLeave')), props: ctx => ({ setPage: ctx.setPage }) },
@@ -1394,22 +1389,26 @@ export const NAV_ITEMS = [
   ]},
 
   { name: 'Attendance', icon: <FaCalendarCheck />, module: 'attendance', submenu: [
+    // §278 (owner, 2026-11-18): QR Attendance removed; office staff punch on
+    // the machine, field staff in My Attendance (camera + GPS).
     { name: 'My Attendance',             page: 'AttendanceDashboard' },
-    { name: 'QR Attendance',             page: 'QRAttendance' },
     { name: 'Team & Monitoring',         separator: true },
     { name: 'Live Workforce',            page: 'LiveWorkforceDashboard' },
     { name: 'Team Attendance',           page: 'TeamAttendance' },
     { name: 'Shift Calendar',            page: 'ShiftCalendar' },
-    // Device sync, CSV import and the punch log (§272; was a tab of HR → Gate
-    // Pass & Visitors). moduleActions: only attendance:edit holders see the row.
-    { name: 'Punch Import',              page: 'PunchImport', module: 'attendance', moduleActions: ['edit'] },
+    // Punch machines: add/configure devices, sync now / automatic sync, CSV
+    // import and the punch log. moduleActions: only attendance:edit holders.
+    { name: 'Punch Machines',            page: 'PunchImport', module: 'attendance', moduleActions: ['edit'] },
     { name: 'Approvals',                 separator: true },
-    { name: 'Approvals',                 page: 'AttendanceApprovals' },   // Regularization·Overtime·Delegation
+    { name: 'Approvals',                 page: 'AttendanceApprovals' },   // Regularization·Overtime·Shift change·Delegation
     { name: 'Reporting',                 separator: true },
     { name: 'Reports',                   page: 'AttendanceReportsHub' },
     { name: 'Audit Logs',                page: 'AttendanceAuditLogs' },
+    // Month close: totals each employee's month (present, LOP, OT), locks it
+    // and hands it to Payroll Center. It was hidden inside Configuration.
+    { name: 'Payroll Sync',              page: 'PayrollSync', module: 'attendance', moduleActions: ['edit'] },
     { name: 'Configuration',             separator: true },
-    { name: 'Configuration',             page: 'AttendanceConfig' },   // Rotations·Work Centres·Contract Labour·Payroll Sync·Settings
+    { name: 'Configuration',             page: 'AttendanceConfig' },   // Shifts·Work Centres·Contract Labour·Geo Fencing·Settings
 
     // ── Consolidated into the hubs above (2026-09-16 IA pass) ──────────
     // These rows are NOT drawn in the sidebar — Sidebar.jsx skips any entry
@@ -1420,12 +1419,18 @@ export const NAV_ITEMS = [
     // re-checks each tab with canRoleOpenPage() before drawing it.
     { name: 'RegularizationApprovals',   page: 'RegularizationApprovals', inHub: 'AttendanceApprovals' },
     { name: 'OvertimeApprovals',         page: 'OvertimeApprovals', inHub: 'AttendanceApprovals' },
+    { name: 'ShiftChangeApprovals',      page: 'ShiftChangeApprovals', inHub: 'AttendanceApprovals' },
     { name: 'ApprovalDelegation',        page: 'ApprovalDelegation', inHub: 'AttendanceApprovals' },
     { name: 'Shifts',                    page: 'Shifts', inHub: 'AttendanceConfig' },
     { name: 'WorkCentres',               page: 'WorkCentres', inHub: 'AttendanceConfig' },
     { name: 'ContractLabour',            page: 'ContractLabour', inHub: 'AttendanceConfig' },
-    { name: 'PayrollSync',               page: 'PayrollSync', inHub: 'AttendanceConfig' },
-    { name: 'AttendanceSettings',        page: 'AttendanceSettings', inHub: 'AttendanceConfig' },
+    { name: 'GeoFencing',                page: 'GeoFencing', inHub: 'AttendanceConfig' },
+    { name: 'GeneralSettings',           page: 'GeneralSettings', inHub: 'AttendanceConfig' },
+    { name: 'AttendanceAnalytics',       page: 'AttendanceAnalytics', inHub: 'AttendanceReportsHub' },
+    { name: 'MonthlyAttendanceReport',   page: 'MonthlyAttendanceReport', inHub: 'AttendanceReportsHub' },
+    { name: 'LateArrivals',              page: 'LateArrivals', inHub: 'AttendanceReportsHub' },
+    { name: 'GeoViolationsReport',       page: 'GeoViolationsReport', inHub: 'AttendanceReportsHub' },
+    { name: 'AttendanceReports',         page: 'AttendanceReports', inHub: 'AttendanceReportsHub' },
   ]},
 
   { name: 'Leaves', icon: <FaUmbrellaBeach />, module: 'leaves', submenu: [

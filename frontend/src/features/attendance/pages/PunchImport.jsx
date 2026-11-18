@@ -1,18 +1,65 @@
-// Attendance → Punch Import. MODULE_FEATURE_CONNECTION_MANUAL.md §272.
+// Attendance → Punch Machines (§272, §278).
 //
-// Device sync, manual CSV import and the Recent Punch Log over
-// hr/biometric.routes.js (/biometric/devices, /devices/:id/sync, /logs,
-// /logs/import), with today's attendance cards from /biometric/dashboard.
-// It was the first tab of HR → Gate Pass & Visitors (BiometricAccess); the owner
-// moved it here on 2026-11-12 so that page is about the gate only.
-// Device setup itself is Attendance → Configuration → Settings → Devices.
+// Everyone except field staff punches on a machine (owner, 2026-11-18). This
+// is the ONE place machines are handled:
+//   · Machines    add / edit / test / Sync now / remove / punch log
+//                 (DeviceManagement, embedded — it used to be a separate
+//                 Settings → Devices tab with a second device list here)
+//   · Automatic sync  on/off and interval; jobs/deviceSync.cron.js syncs every
+//                 machine that has an IP address on that schedule
+//   · CSV import and the Recent Punch Log (PunchImportPanel)
+// Today's cards come from /biometric/dashboard.
 import { useState, useEffect, useCallback } from 'react';
-import { Fingerprint } from 'lucide-react';
+import { Fingerprint, RefreshCw } from 'lucide-react';
 import api from '@/services/api/client';
 import { useAuth } from '@/context/AuthContext';
 import { PageHero, PageShell } from '@/components/pulse-ui';
 import PunchImportPanel from '../components/PunchImportPanel';
+import DeviceManagement from '../components/DeviceManagement';
 import { errText, fmtDay } from '@/features/hr/components/biometric/biometricShared';
+
+const BOX = { background: '#fff', border: '1px solid #e9e4ff', borderRadius: 8, padding: 20, minWidth: 0, marginBottom: 16 };
+
+function AutoSyncCard({ canEdit, flash }) {
+  const [cfg, setCfg] = useState(null);
+  const [saving, setSaving] = useState(false);
+  useEffect(() => {
+    api.get('/attendance/device-settings').then((r) => setCfg(r.data)).catch(() => setCfg({ auto_sync: true, sync_interval_minutes: 15 }));
+  }, []);
+  if (!cfg) return null;
+  const save = async (next) => {
+    setSaving(true);
+    try {
+      const { data } = await api.put('/attendance/device-settings', next);
+      setCfg(data);
+      flash(data.auto_sync ? `Automatic sync on — every ${data.sync_interval_minutes} minutes` : 'Automatic sync off — use Sync now on each machine');
+    } catch (e) { flash(errText(e, 'Could not save'), 'error'); }
+    finally { setSaving(false); }
+  };
+  return (
+    <div style={{ ...BOX, display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap' }} data-testid="auto-sync">
+      <RefreshCw size={18} color="#6B3FDB" />
+      <div style={{ flex: 1, minWidth: 220 }}>
+        <div style={{ fontWeight: 700, fontSize: 14, color: '#1f2937' }}>Automatic sync</div>
+        <div style={{ fontSize: 12, color: '#6b7280' }}>
+          Pulls punches from every machine that has an IP address. A machine without an address is skipped until you enter it.
+        </div>
+      </div>
+      <label style={{ display: 'inline-flex', gap: 8, alignItems: 'center', fontSize: 13 }}>
+        <input type="checkbox" checked={!!cfg.auto_sync} disabled={!canEdit || saving}
+          onChange={(e) => save({ ...cfg, auto_sync: e.target.checked })} /> {cfg.auto_sync ? 'On' : 'Off'}
+      </label>
+      <label style={{ display: 'inline-flex', gap: 6, alignItems: 'center', fontSize: 13, color: '#374151' }}>
+        every
+        <select value={cfg.sync_interval_minutes} disabled={!canEdit || saving || !cfg.auto_sync}
+          onChange={(e) => save({ ...cfg, sync_interval_minutes: Number(e.target.value) })}
+          style={{ padding: '6px 8px', borderRadius: 8, border: '1px solid #e5e7eb', fontSize: 13 }}>
+          {[5, 10, 15, 30, 60, 120].map((m) => <option key={m} value={m}>{m} min</option>)}
+        </select>
+      </label>
+    </div>
+  );
+}
 
 export default function PunchImport() {
   const { hasPermission } = useAuth();
@@ -20,6 +67,7 @@ export default function PunchImport() {
   const [dashError, setDashError] = useState('');
   const [employees, setEmployees] = useState([]);
   const [msg, setMsg] = useState({ text: '', type: '' });
+  const [panelKey, setPanelKey] = useState(0);
 
   const flash = useCallback((text, type = 'success') => {
     setMsg({ text, type });
@@ -52,8 +100,8 @@ export default function PunchImport() {
 
   return (
     <PageShell dock={
-      <PageHero icon={Fingerprint} eyebrow="Attendance" title="Punch Import"
-        subtitle="Sync biometric devices, import punches from CSV, and review the punch log" />
+      <PageHero icon={Fingerprint} eyebrow="Attendance" title="Punch Machines"
+        subtitle="Office staff punch on the machine — add machines, sync them (automatically or now), import a CSV, see every punch" />
     }>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(140px,1fr))', gap: 10, marginBottom: 8 }} data-testid="bio-cards">
         {cards.map((s) => (
@@ -65,13 +113,22 @@ export default function PunchImport() {
         ))}
       </div>
       <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 16 }}>
-        {d ? `Today, ${fmtDay(d.date)} · device and CSV punches · current employees only` : dashError}
+        {d ? `Today, ${fmtDay(d.date)} · machine and CSV punches · current employees only` : dashError}
       </div>
       {msg.text && (
         <div role={msg.type === 'error' ? 'alert' : 'status'} style={{ marginBottom: 12, padding: '10px 16px', borderRadius: 8, fontWeight: 500, fontSize: 14, background: msg.type === 'error' ? '#fef2f2' : '#f0fdf4', color: msg.type === 'error' ? '#dc2626' : '#16a34a', border: `1px solid ${msg.type === 'error' ? '#fecaca' : '#bbf7d0'}` }}>{msg.text}</div>
       )}
-      <div style={{ background: '#fff', border: '1px solid #e9e4ff', borderRadius: 8, padding: 20, minWidth: 0 }}>
-        <PunchImportPanel dashStats={d} employees={employees} flash={flash} onDataChanged={loadDashboard} canImport={canImport} />
+
+      <h3 style={{ fontSize: 15, color: '#4c1d95', margin: '8px 0 10px' }}>Machines</h3>
+      <div style={BOX}>
+        <DeviceManagement embedded onChanged={() => { loadDashboard(); setPanelKey((k) => k + 1); }} />
+      </div>
+      <AutoSyncCard canEdit={canImport} flash={flash} />
+
+      <h3 style={{ fontSize: 15, color: '#4c1d95', margin: '8px 0 10px' }}>CSV import & punch log</h3>
+      <div style={BOX}>
+        <PunchImportPanel key={panelKey} dashStats={d} employees={employees} flash={flash}
+          onDataChanged={loadDashboard} canImport={canImport} showDevices={false} />
       </div>
     </PageShell>
   );
