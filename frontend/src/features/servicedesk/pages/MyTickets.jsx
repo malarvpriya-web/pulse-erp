@@ -108,9 +108,9 @@ export default function MyTickets() {
       )}
 
       {drawer && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.35)', zIndex: 1000, display: 'flex', justifyContent: 'flex-end' }}
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.35)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}
           onClick={() => setDrawer(false)}>
-          <div style={{ background: '#fff', width: 420, height: '100vh', display: 'flex', flexDirection: 'column', boxShadow: '-8px 0 32px rgba(0,0,0,.12)' }}
+          <div style={{ background: '#fff', width: 420, maxWidth: '100%', maxHeight: 'calc(100vh - 48px)', borderRadius: 12, overflowY: 'auto', display: 'flex', flexDirection: 'column', boxShadow: '0 20px 60px rgba(0,0,0,.18)' }}
             onClick={e => e.stopPropagation()}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 20, borderBottom: '1px solid #f0f0f4' }}>
               <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700 }}>Raise a Support Ticket</h3>

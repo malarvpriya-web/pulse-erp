@@ -75,7 +75,9 @@ function calcBreakdown(start, end, holidays = []) {
 
 const today = () => new Date().toISOString().slice(0, 10);
 
-const ADVANCE_NOTICE_EXEMPT = new Set(['sick leave', 'medical leave', 'emergency leave', 'bereavement leave']);
+// Leave codes left out of this page's type list and balance cards.
+const APPLY_HIDDEN_LEAVE_CODES = new Set(['MRG', 'PATERNITY', 'COMPENSATO', 'WFH']);
+const ADVANCE_NOTICE_EXEMPT =new Set(['sick leave', 'medical leave', 'emergency leave', 'bereavement leave']);
 
 export default function ApplyLeave({ setPage }) {
   // hasAnyRole, not user.role: `role` is only the PRIMARY role of a many-to-many
@@ -172,7 +174,13 @@ export default function ApplyLeave({ setPage }) {
     setLeaveTypesLoading(true);
     api.get('/leaves/types', { params: { applicable: 1 } })
       .then(res => {
-        const raw = Array.isArray(res.data) ? res.data : [];
+        // Types nobody applies for here (owner, 2026-11-11): Marriage and
+        // Paternity are not offered; Compensatory Off and Work From Home hold
+        // 0 days for every employee, so the server refused each attempt with
+        // "Insufficient leave balance" — the form offered a request that could
+        // never be submitted.
+        const raw = (Array.isArray(res.data) ? res.data : [])
+          .filter(t => !APPLY_HIDDEN_LEAVE_CODES.has(String(t.leave_code || '').toUpperCase()));
         setLeaveTypes(raw.map(t => ({
           id:           t.id,
           key:          t.leave_name,
@@ -454,7 +462,11 @@ export default function ApplyLeave({ setPage }) {
                     : leaveTypes.length === 0
                       ? <option value="">No leave types available</option>
                       : leaveTypes.map(t => <option key={t.key} value={t.key}>{t.key}</option>)}
-                  <option value="Loss of Pay">Loss of Pay (Unpaid)</option>
+                  {/* Only when the company has no Loss of Pay type of its own —
+                      otherwise this listed Loss of Pay twice. */}
+                  {!leaveTypes.some(t => /loss.of.pay/i.test(t.key)) && (
+                    <option value="Loss of Pay">Loss of Pay (Unpaid)</option>
+                  )}
                 </select>
               </div>
 

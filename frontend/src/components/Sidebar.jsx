@@ -2,8 +2,16 @@ import { useReducer, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import { Zap, FolderOpen } from 'lucide-react';
+import { FaTachometerAlt, FaIdCard } from 'react-icons/fa';
+
+// Icons for the HR rows an employee-only login sees as top-level rows.
+const EMPLOYEE_HR_ROW_ICONS = {
+  EmployeeDashboard: <FaTachometerAlt />,
+  MyEmployeeRecord:  <FaIdCard />,
+  MyGatePasses:      <FaDoorOpen />,
+};
 import {
-  FaTags, FaBalanceScale, FaBroadcastTower, FaFlask, FaGavel,
+  FaTags, FaBalanceScale, FaBroadcastTower, FaFlask, FaGavel, FaDoorOpen,
 } from 'react-icons/fa';
 import './Sidebar.css';
 import { useAuth } from '@/context/AuthContext';
@@ -11,12 +19,14 @@ import { NAV_ITEMS } from '@/config/routes';
 import { ORPHAN_NAV_ITEMS, MERGED_ROUTES } from '@/config/autoRouter';
 import { useMentorStatus } from '@/features/internships/mentorStatus';
 import { useProbationReviewerStatus } from '@/features/hr/probationReviewerStatus';
+import { useApproverStatus } from '@/features/approvals/approverStatus';
+import { useTimesheetEligibility } from '@/features/timesheets/timesheetEligibility';
 import {
   EMPLOYEE_SELF_SERVICE_PAGES, ADMIN_ONLY_PAGES, SUPER_ADMIN_ONLY_PAGES,
   ROLE_SECTION_ALLOWLIST, roleHasSectionAllowlist, HR_SCOPED_PAGES,
   FINANCE_RESTRICTED_SECTIONS, FINANCE_SELF_SERVICE_PAGES,
   FINANCE_ANALYTICS_SCOPED_PAGES, MANAGER_ANALYTICS_SCOPED_PAGES,
-  HR_EXEC_EXCLUDED_PAGES, MANAGER_HR_SCOPED_PAGES, ALWAYS_VISIBLE,
+  HR_EXEC_EXCLUDED_PAGES, MANAGER_HR_SCOPED_PAGES, SECURITY_HR_SCOPED_PAGES, ALWAYS_VISIBLE,
   canOpenEmployeeMaster, EMPLOYEE_DIRECTORY_PAGE, EMPLOYEE_MASTER_PAGE, holdsModuleGrant,
 } from '@/config/menuCatalog';
 
@@ -183,6 +193,11 @@ export default function Sidebar() {
   // Whether this login CURRENTLY heads a department — drives the
   // `probationReviewerOnly` entry (My Probation Reviews). From the server.
   const reviewer = useProbationReviewerStatus();
+  // Employee-only logins see Approvals only when they approve something (a team
+  // lead with reports). Asked of the server; other roles make no request.
+  const approver = useApproverStatus(isEmployeeOnly);
+  // Employee-only logins see My Timesheet only while they are on a project.
+  const timesheet = useTimesheetEligibility(isEmployeeOnly);
 
   const isMenuVisible = (item) => {
     // Mentor-only entries follow the ASSIGNMENT, not the role allowlists: shown
@@ -191,6 +206,9 @@ export default function Sidebar() {
     if (item.mentorOnly) return mentor.is_mentor === true || hasAnyRole('super_admin', 'admin');
     if (item.probationReviewerOnly) return reviewer.is_head === true || hasAnyRole('super_admin', 'admin');
     if (hasAnyRole('super_admin')) return true;
+    // An employee who approves nothing has no use for Approvals (2026-11-11):
+    // their own requests are tracked on My Leaves / My Travel / My Tickets.
+    if (item.name === 'Approvals' && isEmployeeOnly) return approver.is_approver === true;
     // Home and Approvals (everyone's My Requests) — see ALWAYS_VISIBLE.
     if (ALWAYS_VISIBLE.has(item.name)) return true;
 
@@ -329,6 +347,22 @@ export default function Sidebar() {
       if (submenu.length !== item.submenu.length) item = { ...item, submenu };
     }
 
+    // Security / Gate Desk holds 'HR' only for the gate register and its own
+    // rows (SECURITY_HR_SCOPED_PAGES / canSecurityAccessPage, §273). Applies
+    // when every role held is security or employee — a guard who is also HR
+    // keeps the full menu.
+    if (
+      item.name === 'HR' && hasAnyRole('security') && !isAdminRole &&
+      (roles || []).every(r => ['security', 'employee'].includes(String(r).toLowerCase())) &&
+      menuAccess(item.name) !== 'view' && menuAccess(item.name) !== 'edit' &&
+      Array.isArray(item.submenu)
+    ) {
+      const submenu = item.submenu.filter(
+        sub => sub.separator || SECURITY_HR_SCOPED_PAGES.has(sub.page)
+      );
+      if (submenu.length !== item.submenu.length) item = { ...item, submenu };
+    }
+
     // hr_exec sees the full 'HR' menu except Payroll Center — role_permissions
     // grants it no payroll access (unlike hr_manager/payroll_admin, who hold
     // it in full or view-only respectively).
@@ -352,7 +386,9 @@ export default function Sidebar() {
     // on Access Denied at the route. Rows without their own module are untouched.
     if (!isAdminRole && Array.isArray(item.submenu)) {
       const submenu = item.submenu.filter(
-        sub => sub.separator || !sub.module || sub.module === item.module || holdsModuleGrant(hasPermission, sub.module, sub.moduleActions)
+        // A row on its group's own module still filters when it names stricter
+        // moduleActions (Attendance → Punch Import needs attendance:edit, §272).
+        sub => sub.separator || !sub.module || (sub.module === item.module && !sub.moduleActions) || holdsModuleGrant(hasPermission, sub.module, sub.moduleActions)
       );
       if (submenu.length !== item.submenu.length) item = { ...item, submenu };
     }
@@ -363,8 +399,25 @@ export default function Sidebar() {
     if (isEmployeeOnly && Array.isArray(item.submenu)) {
       const submenu = item.submenu.filter(
         sub => !sub.separator && EMPLOYEE_SELF_SERVICE_PAGES.has(sub.page)
+          && (sub.page !== 'MyTimesheet' || timesheet.on_project === true)
       );
       if (submenu.length === 0) return acc; // nothing self-service left → hide menu
+      // HR → its rows (My Dashboard, My Details) become top-level rows of their
+      // own: an employee has no "HR" to browse, only their own record
+      // (owner's instruction, 2026-11-11).
+      if (item.name === 'HR') {
+        for (const sub of submenu) {
+          acc.push({ name: sub.name, icon: EMPLOYEE_HR_ROW_ICONS[sub.page] || item.icon, page: sub.page });
+        }
+        return acc;
+      }
+      // One row left (Service Desk → My Tickets, Attendance → My Attendance,
+      // Timesheets → My Timesheet): a flat, directly-clickable row named for
+      // that page, not a folder that opens to show a single entry.
+      if (submenu.length === 1) {
+        acc.push({ name: submenu[0].name, icon: item.icon, page: submenu[0].page });
+        return acc;
+      }
       acc.push({ ...item, submenu });
       return acc;
     }
@@ -381,6 +434,17 @@ export default function Sidebar() {
   // A band label is only meaningful when a menu follows it — hide the ones
   // whose whole domain is gated away for this role (e.g. 'Supply Chain' for
   // an employee), and any label left at the very bottom of the rail.
+  // Employee-only: My Dashboard and My Details sit directly under Home.
+  if (isEmployeeOnly) {
+    const mine = visibleItems.filter(r => !r.divider && EMPLOYEE_HR_ROW_ICONS[r.page] && !r.submenu);
+    if (mine.length) {
+      const rest = visibleItems.filter(r => !mine.includes(r));
+      const home = rest.findIndex(r => r.page === 'Home');
+      rest.splice(home + 1, 0, ...mine);
+      visibleItems.splice(0, visibleItems.length, ...rest);
+    }
+  }
+
   const navRows = visibleItems.filter((row, i) => {
     if (!row.divider) return true;
     const next = visibleItems[i + 1];

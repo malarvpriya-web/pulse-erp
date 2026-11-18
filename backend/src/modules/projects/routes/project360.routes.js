@@ -379,7 +379,7 @@ router.get('/:id', async (req, res) => {
       pool.query(`SELECT id, title, severity, status, created_at, is_blocker FROM project_issues WHERE project_id=$1 ORDER BY created_at DESC LIMIT 15`, [pid]),
       // project_milestones has no name/completed_at — real are title/completed_date.
       pool.query(`SELECT id, title AS name, due_date, status, amount, billing_milestone, completed_date AS completed_at FROM project_milestones WHERE project_id=$1 ORDER BY due_date ASC`, [pid]),
-      pool.query(`SELECT id, request_number, travel_type, from_date, to_date, budget, status, employee_name, destination FROM travel_requests WHERE project_id=$1${cc} ORDER BY from_date DESC LIMIT 10`, [pid]),
+      pool.query(`SELECT id, COALESCE(request_number, 'TR-' || LPAD(id::text, 3, '0')) AS request_number, travel_type, from_date, to_date, budget, status, employee_name, destination FROM travel_requests WHERE project_id=$1${cc} ORDER BY from_date DESC LIMIT 10`, [pid]),
       // project_tasks was always empty (Gantt's dead-end legacy table, fixed in §95/96
       // to write the same unified `tasks` table Task List/Kanban use) — repointed here
       // so this widget finally shows real data instead of a permanently empty list.

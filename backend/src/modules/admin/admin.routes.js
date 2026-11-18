@@ -31,7 +31,70 @@ function logAudit(req, action, refId, refType, oldData, newData) {
   }).catch(err => console.error('[admin] audit log failed:', err.message));
 }
 
+// ── helper: the employee a login may be linked to ─────────────────────────────
+// users.employee_id is the ONLY way a login finds its employee record
+// (auth.service resolveEmployeeId — the email is deliberately not used), and it
+// is what every self-service page (payslips, leave, attendance, claims) keys on.
+// A login created here without it is powerless on those pages.
+//
+// Rules: the employee must exist, not be deleted, belong to the caller's
+// company, and not already be linked to another ACTIVE login — one person, one
+// login, so the audit trail and the maker≠checker rules name a real person.
+// The employee row is locked FOR UPDATE so two concurrent links to the same
+// person serialize instead of both passing the "not linked yet" check.
+// Returns the employee row, or throws { status, message }.
+async function lockLinkableEmployee(client, employeeId, cid, exceptUserId = null) {
+  const id = parseInt(String(employeeId), 10);
+  if (!Number.isInteger(id) || id <= 0) throw { status: 400, message: 'employee_id must be a positive integer' };
+  const { rows: [emp] } = await client.query(
+    `SELECT id, office_id, first_name, last_name, company_id
+       FROM employees
+      WHERE id = $1 AND deleted_at IS NULL
+      FOR UPDATE`,
+    [id]
+  );
+  // Same 404 for "another tenant's employee" and "no such employee" — the
+  // caller must not learn that an id exists elsewhere.
+  if (!emp || (cid != null && emp.company_id !== cid))
+    throw { status: 404, message: 'Employee not found' };
+  const { rows: [other] } = await client.query(
+    `SELECT id, email FROM users
+      WHERE employee_id = $1 AND is_active AND ($2::int IS NULL OR id <> $2)
+      LIMIT 1`,
+    [id, exceptUserId]
+  );
+  if (other)
+    throw { status: 409, message: `${emp.office_id || 'This employee'} already has a login (${other.email}). Change that login's role instead of creating a second one.` };
+  return emp;
+}
+
 // ── READ endpoints — accessible to admin, hr, manager ────────────────────────
+
+// Employees a login can be linked to, for the User Management picker. Lists
+// every current employee of the caller's company with the login already linked
+// to them (if any), so the picker can show "already has a login" instead of
+// letting the admin find out from a 409.
+router.get('/users/employee-options', allowRoles('admin', 'super_admin'), async (req, res) => {
+  const cid = companyOf(req);
+  if (cid == null) return res.json([]);
+  try {
+    const { rows } = await pool.query(
+      `SELECT e.id, e.office_id, TRIM(CONCAT(e.first_name,' ',e.last_name)) AS name,
+              e.department, e.status, e.company_email,
+              u.id AS linked_user_id, u.email AS linked_user_email
+         FROM employees e
+         LEFT JOIN LATERAL (
+           SELECT id, email FROM users
+            WHERE employee_id = e.id AND is_active
+            ORDER BY id LIMIT 1
+         ) u ON true
+        WHERE e.company_id = $1 AND e.deleted_at IS NULL
+        ORDER BY e.first_name, e.last_name`,
+      [cid]
+    );
+    res.json(rows);
+  } catch (e) { respondError(res, e); }
+});
 
 // Users setup (employee-facing list — readable by hr/manager)
 router.get('/users-setup', allowRoles('admin', 'super_admin', 'hr', 'manager'), async (req, res) => {
@@ -60,12 +123,16 @@ router.get('/users', allowRoles('admin', 'super_admin'), async (req, res) => {
   try {
     const cid = req.scope?.company_id;
     const { rows } = await pool.query(`
-      SELECT id, name, email, role, department,
-             CASE WHEN is_active THEN 'active' ELSE 'inactive' END AS status,
-             last_login,
-             COALESCE(two_fa_enabled, false) AS two_factor_enabled,
-             created_at
-      FROM users WHERE company_id=$1 ORDER BY created_at DESC`, [cid]);
+      SELECT u.id, u.name, u.email, u.role, u.department,
+             CASE WHEN u.is_active THEN 'active' ELSE 'inactive' END AS status,
+             u.last_login,
+             COALESCE(u.two_fa_enabled, false) AS two_factor_enabled,
+             u.created_at,
+             u.employee_id, e.office_id AS employee_office_id,
+             TRIM(CONCAT(e.first_name,' ',e.last_name)) AS employee_name
+      FROM users u
+      LEFT JOIN employees e ON e.id = u.employee_id
+      WHERE u.company_id=$1 ORDER BY u.created_at DESC`, [cid]);
     res.json(rows);
   } catch(e) {
     console.error('[admin] GET /users failed:', e.message);
@@ -76,6 +143,9 @@ router.get('/users', allowRoles('admin', 'super_admin'), async (req, res) => {
 // Create user — admin only
 router.post('/users', allowRoles('admin', 'super_admin'), async (req, res) => {
   const { name, email, password, role = 'employee', department = null } = req.body;
+  // Optional: the employee this login belongs to. Blank = a non-employee login
+  // (e.g. the admin trio), which has no self-service pages.
+  const employeeId = req.body.employee_id === '' || req.body.employee_id == null ? null : req.body.employee_id;
   if (!name || !email || !password)
     return res.status(400).json({ error: 'name, email and password are required' });
   if (password.length < 8)
@@ -83,28 +153,36 @@ router.post('/users', allowRoles('admin', 'super_admin'), async (req, res) => {
   // Only super_admin may create another super_admin
   if (role === 'super_admin' && !hasRole(req, 'super_admin'))
     return res.status(403).json({ error: 'Only a super_admin can assign the super_admin role' });
+  const cid  = companyOf(req);
+  const client = await pool.connect();
   try {
-    const cid  = req.scope?.company_id;
+    await client.query('BEGIN');
+    const emp = employeeId != null ? await lockLinkableEmployee(client, employeeId, cid) : null;
     const hash = await bcrypt.hash(password, 10);
     // Normalised; a case variant of an existing login is a 409 from the
     // LOWER(BTRIM(email)) unique index below.
-    const { rows } = await pool.query(
-      `INSERT INTO users (name, email, password_hash, role, department, is_active, company_id)
-       VALUES ($1,$2,$3,$4,$5,true,$6) RETURNING id,name,email,role,department`,
-      [name, normalizeLoginEmail(email), hash, role, department, cid]
+    const { rows } = await client.query(
+      `INSERT INTO users (name, email, password_hash, role, department, is_active, company_id, employee_id)
+       VALUES ($1,$2,$3,$4,$5,true,$6,$7) RETURNING id,name,email,role,department,employee_id`,
+      [name, normalizeLoginEmail(email), hash, role, department, cid ?? emp?.company_id ?? null, emp?.id ?? null]
     );
     const created = rows[0];
     // users.role is only the primary-role mirror — the junction is what grants
     // permissions, so it has to be written too or the account is powerless.
-    await syncPrimaryRole(created.id, role, cid, req.user?.userId ?? null);
+    await syncPrimaryRole(created.id, role, cid, req.user?.userId ?? null, client);
+    await client.query('COMMIT');
     logAudit(req, 'create', created.id, 'user',
       null,
-      { id: created.id, name: created.name, email: created.email, role: created.role }
+      { id: created.id, name: created.name, email: created.email, role: created.role, employee_id: created.employee_id }
     );
     res.status(201).json({ user: created });
   } catch(e) {
+    await client.query('ROLLBACK').catch(() => {});
+    if (e.status) return res.status(e.status).json({ error: e.message });
     if (e.code === '23505') return res.status(409).json({ error: 'Email already exists' });
     res.status(500).json({ error: e.message });
+  } finally {
+    client.release();
   }
 });
 
@@ -235,36 +313,63 @@ router.post('/users/bulk-deactivate', allowRoles('admin', 'super_admin'), async 
 
 // Update user (status, role, department) — admin only
 router.put('/users/:id', allowRoles('admin', 'super_admin'), captureBefore('users'), async (req, res) => {
-  const cid = req.scope?.company_id;
+  const cid = companyOf(req);
   const { status, role, department } = req.body;
+  // employee_id: absent = leave the link alone; '' or null = unlink; id = link.
+  const linkGiven  = Object.prototype.hasOwnProperty.call(req.body, 'employee_id');
+  const employeeId = req.body.employee_id === '' || req.body.employee_id == null ? null : req.body.employee_id;
   // Only super_admin may promote someone to super_admin
   if (role === 'super_admin' && !hasRole(req, 'super_admin'))
     return res.status(403).json({ error: 'Only a super_admin can assign the super_admin role' });
+  // name: the display name shown in the top bar, approvals and the audit
+  // trail. Absent = unchanged; present must be non-blank.
+  const name = req.body.name === undefined ? undefined : String(req.body.name ?? '').trim();
+  if (name !== undefined && !name) return res.status(400).json({ error: 'Name cannot be blank' });
+  if (name !== undefined && name.length > 255) return res.status(400).json({ error: 'Name must be 255 characters or fewer' });
   const updates = [], vals = [];
+  if (name !== undefined) { vals.push(name); updates.push(`name=$${vals.length}`); }
   if (status !== undefined) { vals.push(status === 'active'); updates.push(`is_active=$${vals.length}`); }
   if (role)       { vals.push(role);       updates.push(`role=$${vals.length}`); }
   if (department !== undefined) { vals.push(department); updates.push(`department=$${vals.length}`); }
-  if (!updates.length) return res.status(400).json({ error: 'Nothing to update' });
-  vals.push(req.params.id);
-  const idParam  = vals.length;
-  vals.push(cid);
-  const cidParam = vals.length;
+  if (!updates.length && !linkGiven) return res.status(400).json({ error: 'Nothing to update' });
+  const client = await pool.connect();
   try {
-    const { rows: before } = await pool.query(
-      `SELECT id, name, email, role, department, is_active FROM users WHERE id=$1 AND company_id=$2`,
+    await client.query('BEGIN');
+    const { rows: before } = await client.query(
+      `SELECT id, name, email, role, department, is_active, employee_id FROM users WHERE id=$1 AND company_id=$2 FOR UPDATE`,
       [req.params.id, cid]
     );
-    if (!before.length) return res.status(404).json({ error: 'User not found' });
-    await pool.query(
+    if (!before.length) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'User not found' }); }
+    if (linkGiven) {
+      const emp = employeeId != null ? await lockLinkableEmployee(client, employeeId, cid, before[0].id) : null;
+      vals.push(emp?.id ?? null); updates.push(`employee_id=$${vals.length}`);
+    } else if (status === 'active' && !before[0].is_active && before[0].employee_id != null) {
+      // Reactivating an old login that is still linked: refuse if that person
+      // has since been given another active login.
+      await lockLinkableEmployee(client, before[0].employee_id, cid, before[0].id);
+    }
+    vals.push(req.params.id);
+    const idParam  = vals.length;
+    vals.push(cid);
+    const cidParam = vals.length;
+    await client.query(
       `UPDATE users SET ${updates.join(',')} WHERE id=$${idParam} AND company_id=$${cidParam}`,
       vals
     );
     // Changing the primary role here must promote the matching junction row,
     // or users.role and user_roles disagree and the grid shows a stale primary.
-    if (role) await syncPrimaryRole(req.params.id, role, cid, req.user?.userId ?? null);
-    logAudit(req, 'update', req.params.id, 'user', before[0], { status, role, department });
+    if (role) await syncPrimaryRole(req.params.id, role, cid, req.user?.userId ?? null, client);
+    await client.query('COMMIT');
+    logAudit(req, 'update', req.params.id, 'user', before[0],
+      { name, status, role, department, ...(linkGiven ? { employee_id: employeeId == null ? null : Number(employeeId) } : {}) });
     res.json({ success: true });
-  } catch(e) { res.status(500).json({ error: e.message }); }
+  } catch(e) {
+    await client.query('ROLLBACK').catch(() => {});
+    if (e.status) return res.status(e.status).json({ error: e.message });
+    res.status(500).json({ error: e.message });
+  } finally {
+    client.release();
+  }
 });
 
 // Deactivate (soft-delete) user — admin only

@@ -1059,14 +1059,6 @@ router.get('/dashboard/charts', requirePermission('finance', 'view'), async (req
 });
 
 // ── Document-number sequences ─────────────────────────────────────────────────
-// Create seq_jv once (Journal Vouchers — distinct from accounting JE counter)
-(async () => {
-  try {
-    await pool.query(`CREATE SEQUENCE IF NOT EXISTS seq_jv START 1 INCREMENT BY 1 NO CYCLE`);
-  } catch (e) {
-    console.error('[finance] seq_jv init failed:', e.message);
-  }
-})();
 
 router.get('/next-journal-voucher', requirePermission('finance', 'view'), async (req, res) => {
   try {

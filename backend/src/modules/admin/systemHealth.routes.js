@@ -45,7 +45,7 @@ const GROUP_RULES = [
   // Ahead of the Attendance rule on purpose: /^device/ there means a biometric
   // punch device, and would otherwise swallow the IoT telemetry tables.
   [/^(iot_|telemetry|device_telemetry|sensor|equipment_telemetry|fleet_)/, 'IoT'],
-  [/^(attendance|shift|geo|biometric|gate_pass|visitor|face_|device)/,   'Attendance'],
+  [/^(attendance|shift|geo|biometric|gate_pass|visitor|access_event|face_|device)/, 'Attendance'],
   [/^(payroll|salary|payslip|pf_|esi_|pt_|form16|form24)/,               'Payroll'],
   [/^(performance|goal|kra|okr|review|appraisal|feedback|calibration|increment|promotion)/, 'Performance'],
   [/^(recruit|candidate|job_|requisition|interview|offer|onboard|talent|resume)/, 'Recruitment'],

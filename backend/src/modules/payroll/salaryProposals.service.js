@@ -32,6 +32,12 @@ async function settingsOf(client, companyId) {
   return normalizePayrollSettings(rows[0]?.settings || {}).settings;
 }
 
+/** Whether CTC-driven salary entry is on (for screens that offer a proposal button). */
+export async function isCtcModeOn(companyId, client = pool) {
+  if (companyId == null) return false;
+  return !!(await settingsOf(client, companyId)).ctc_mode;
+}
+
 async function requireCtcMode(client, companyId) {
   const s = await settingsOf(client, companyId);
   if (!s.ctc_mode) throw new ProposalError(409, 'CTC-driven salary entry is switched off for this company (Payroll Settings → CTC-driven salary entry)');

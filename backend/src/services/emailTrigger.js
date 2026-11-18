@@ -15,7 +15,8 @@ function warnOnce(key, payload) {
 
 // Looks up an email template by trigger event, substitutes variables, and sends.
 // Fails silently — never throws — so callers can fire-and-forget.
-export async function triggerEmail(triggerEvent, recipientData, companyId) {
+// options.attachments: nodemailer attachments, e.g. [{ filename, content: Buffer }].
+export async function triggerEmail(triggerEvent, recipientData, companyId, options = {}) {
   try {
     // Support both column name variants across migrations. `companyId` was
     // accepted here but never actually used in the query — with
@@ -28,8 +29,9 @@ export async function triggerEmail(triggerEvent, recipientData, companyId) {
       `SELECT * FROM email_templates
        WHERE (stage_trigger = $1 OR category = $1)
          AND is_active = true
+         AND deleted_at IS NULL
          AND ($2::int IS NULL OR company_id = $2 OR company_id IS NULL)
-       ORDER BY company_id NULLS LAST
+       ORDER BY company_id NULLS LAST, updated_at DESC NULLS LAST, id DESC
        LIMIT 1`,
       [triggerEvent, companyId ?? null]
     );
@@ -94,6 +96,7 @@ export async function triggerEmail(triggerEvent, recipientData, companyId) {
       to,
       subject,
       html: body,
+      ...(Array.isArray(options.attachments) && options.attachments.length ? { attachments: options.attachments } : {}),
     });
   } catch (err) {
     // Still non-fatal — an email failure must never break the main request —

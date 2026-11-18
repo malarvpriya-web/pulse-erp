@@ -110,8 +110,8 @@ function IssuePartDialog({ equipmentId, tickets, onClose, onDone }) {
     <>
       <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(17,24,39,.35)', zIndex: 1199 }} />
       <div style={{
-        position: 'fixed', top: 0, right: 0, bottom: 0, width: 'min(520px, 100vw)', background: '#fff',
-        borderLeft: '1px solid #e5e7eb', boxShadow: '-8px 0 30px rgba(0,0,0,.12)', zIndex: 1200,
+        position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', maxHeight: 'calc(100vh - 48px)', borderRadius: 12, maxWidth: 'calc(100vw - 32px)', width: 520, background: '#fff',
+        boxShadow: '0 20px 60px rgba(0,0,0,.18)', zIndex: 1200,
         overflowY: 'auto', padding: 18,
       }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>

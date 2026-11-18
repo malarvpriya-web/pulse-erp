@@ -3,6 +3,7 @@ import path          from 'path';
 import crypto        from 'crypto';
 import { fileURLToPath } from 'url';
 import pool          from './db.js';
+import { baselineManifestNames } from './baselineManifest.js';
 
 const __dirname      = path.dirname(fileURLToPath(import.meta.url));
 const MIGRATIONS_DIR = path.join(__dirname, '../database/migrations');
@@ -82,27 +83,6 @@ function appliedBy() {
  * that the DDL ran — dropping them would let a restored copy of the file
  * re-run it.
  */
-/**
- * The migrations the committed baseline snapshot claims to embody.
- *
- * Read lazily and cached: this runs inside the warning path on every migrate
- * and every /api/health call, and the file does not change while the process
- * lives. A missing or malformed manifest yields an empty set — the caller then
- * falls through to the name-based rules, which is the pre-existing behaviour,
- * so a broken manifest degrades the explanation rather than the run.
- */
-let baselineNamesCache = null;
-function baselineManifestNames() {
-  if (baselineNamesCache) return baselineNamesCache;
-  try {
-    const raw = JSON.parse(fs.readFileSync(BASELINE_MANIFEST_PATH, 'utf8'));
-    baselineNamesCache = new Set(Array.isArray(raw?.migrations) ? raw.migrations : []);
-  } catch {
-    baselineNamesCache = new Set();
-  }
-  return baselineNamesCache;
-}
-
 function classifyMissingFile(name, appliedNames) {
   const split = (n) => {
     const i = String(n).indexOf('_');
@@ -332,6 +312,9 @@ async function isFreshDatabase(client) {
   const { rows: [{ n: ledgerRows }] } = await client.query(
     'SELECT COUNT(*)::int AS n FROM schema_migrations'
   );
+  // Route files no longer run DDL (DB-01C3, §248). This check is still the right
+  // one, and the history below is why it exists.
+  //
   // NOT "zero tables of any kind" — 18 route modules across this codebase
   // run their own top-level `(async () => { CREATE TABLE IF NOT EXISTS ... })()`
   // at import time, independent of this migration system and racing ahead of
@@ -580,6 +563,35 @@ export async function runMigrations() {
 // Use after a backward-compatible edit to a migration file (e.g. adding
 // IF NOT EXISTS, fixing a column type that was already safe). Do NOT use to
 // silence warnings about destructive schema changes — investigate those first.
+
+/**
+ * Stamp rows applied before checksums existed, from the file on disk (§252). Unlike
+ * repairChecksums, it never touches a stored value, because that would hide tampering.
+ * It records the file as it is now, so compare the schema with a fresh build first.
+ */
+export async function backfillMissingChecksums(client) {
+  const { rows } = await client.query('SELECT name FROM schema_migrations WHERE checksum IS NULL ORDER BY name');
+  const stamped = [], noFile = [];
+  for (const { name } of rows) {
+    const filePath = path.join(MIGRATIONS_DIR, name);
+    if (!fs.existsSync(filePath)) { noFile.push(name); continue; }
+    await client.query('UPDATE schema_migrations SET checksum = $1 WHERE name = $2 AND checksum IS NULL', [fileChecksum(filePath), name]);
+    stamped.push(name);
+  }
+  return { stamped, noFile };
+}
+
+export async function backfillChecksums() {
+  const client = await pool.connect();
+  try {
+    const { stamped, noFile } = await backfillMissingChecksums(client);
+    stamped.forEach((n) => console.log(`  🔧 Stamped ${n}`));
+    console.log(`✅ Stamped ${stamped.length}. Left alone, no file on disk: ${noFile.length}.`);
+  } finally {
+    client.release();
+    await pool.end();
+  }
+}
 
 export async function repairChecksums() {
   const client = await pool.connect();

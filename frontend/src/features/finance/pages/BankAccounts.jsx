@@ -4,9 +4,10 @@ import {
   RefreshCw, Building2, CreditCard, ArrowUpRight, ArrowDownRight,
   TrendingUp, TrendingDown, Clock, Filter, ChevronRight, ChevronDown,
   Banknote, RotateCcw, Check, AlertCircle, FileText, Edit2, Link,
-  Unlink, Upload, Landmark,
+  Unlink, Upload, Landmark, Link2,
 } from 'lucide-react';
 import './BankAccounts.css';
+import BankLedgerLinks from '../components/BankLedgerLinks';
 import api from '@/services/api/client';
 import { fmt, fmtFull, today } from '../financeUtils';
 import { PageHero, PageShell } from '@/components/pulse-ui';
@@ -349,7 +350,14 @@ export default function BankAccounts({ embedded = false }) {
           <RotateCcw size={14} /> Reconciliation
           {totalUnrecon > 0 && <span className="ba-tab-badge">{totalUnrecon}</span>}
         </button>
+        <button className={`ba-tab${activeTab === 'ledger' ? ' active' : ''}`}
+          onClick={() => setActiveTab('ledger')}>
+          <Link2 size={14} /> Ledger links
+        </button>
       </div>
+
+      {/* ── LEDGER LINKS TAB (§275) ───────────────────────── */}
+      {activeTab === 'ledger' && <BankLedgerLinks onChanged={loadAccounts} />}
 
       {/* ── ACCOUNTS TAB ──────────────────────────────────── */}
       {activeTab === 'accounts' && (
@@ -366,7 +374,7 @@ export default function BankAccounts({ embedded = false }) {
               </button>
               <ul className="ba-empty-tips">
                 <li>Add your primary operating account first</li>
-                <li>Link each account to a Chart of Accounts entry (1002 Bank Accounts)</li>
+                <li>Then link it to its ledger account on the Ledger links tab</li>
                 <li>Opening balance = current bank balance as of today</li>
               </ul>
             </div>

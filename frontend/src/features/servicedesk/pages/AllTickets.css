@@ -41,8 +41,8 @@
 .at-empty   { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 200px; gap: 12px; color: #9ca3af; background: #fff; border-radius: 12px; border: 1px solid #f0f0f4; }
 
 /* drawer */
-.at-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 1000; display: flex; justify-content: flex-end; }
-.at-drawer  { background: #fff; width: 440px; height: 100vh; display: flex; flex-direction: column; box-shadow: -8px 0 32px rgba(0,0,0,.12); overflow: hidden; }
+.at-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 1000; display: flex; align-items: center; justify-content: center; padding: 24px; }
+.at-drawer  { background: #fff; width: 440px; max-width: 100%; max-height: calc(100vh - 48px); border-radius: 12px; display: flex; flex-direction: column; box-shadow: 0 20px 60px rgba(0,0,0,.18); overflow: hidden; }
 .at-drawer-wide { width: 560px; }
 .at-drawer-hd   { display: flex; align-items: flex-start; justify-content: space-between; padding: 20px; border-bottom: 1px solid #f0f0f4; }
 .at-drawer-hd h3{ margin: 0; font-size: 16px; font-weight: 700; color: #111827; }

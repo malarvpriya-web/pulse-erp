@@ -6,6 +6,7 @@ import { captureBefore } from '../../middlewares/captureBefore.js';
 import { toCsvObjects } from '../../shared/csv.js';
 import { requirePermission } from '../../middlewares/auth.middleware.js';
 import { ratingProblem } from '../../shared/ratings.js';
+import { vocabularyValues } from '../../shared/masterVocabulary.js';
 
 // performance_score is numeric(3,2) (§209): two decimals are kept, a third
 // would be rounded by PostgreSQL, so it is refused.
@@ -116,6 +117,73 @@ async function anyTestEmployee(db, ids) {
 const notInCompany = (res, what = 'employee') =>
   res.status(400).json({ message: `Every ${what} must belong to your company` });
 
+/* ─── Employees who have left (2026-11-12) ───────────────────────────────────
+   succession_employment_phase() (migration 20261112000001) reads an employee's
+   status and deleted_at as 'employed', 'notice' or 'left', with the spellings
+   of employeeStatus.js. One rule everywhere in Succession:
+     - someone who has LEFT is never COUNTED (bench strength, candidate counts,
+       pipeline headcount, pool sizes, the 9-box, HiPo, reports);
+     - lists that hold work to clean up (role holder, candidates, pipeline,
+       plans, mentoring, pools) still SHOW them, with employment_phase, so HR
+       can see and replace them;
+     - nobody who has left can be ADDED anywhere.
+   Someone serving notice still counts and is shown with a notice badge.
+   The employees trigger raises the alert and the notifications when it happens. */
+const phaseOf = (alias) => `succession_employment_phase(${alias}.status, ${alias}.deleted_at)`;
+const counted = (col) =>
+  `EXISTS (SELECT 1 FROM employees cx WHERE cx.id = ${col} AND NOT cx.is_test AND ${phaseOf('cx')} <> 'left')`;
+/** Ids among `ids` whose employee has left. */
+async function leftEmployees(db, ids) {
+  const list = [...new Set(ids.filter(v => v != null && v !== '').map(Number))].filter(Number.isInteger);
+  if (!list.length) return [];
+  const { rows } = await db.query(
+    `SELECT id FROM employees e WHERE id = ANY($1::int[]) AND ${phaseOf('e')} = 'left'`, [list]);
+  return rows.map(r => r.id);
+}
+const leftEmployee = (res) =>
+  res.status(400).json({ message: 'This employee has left the company and cannot be added to succession', code: 'EMPLOYEE_LEFT' });
+
+/* Readiness has ONE source: the employee's 9-box rating (talent_assessments
+   .readiness). The candidate and pipeline readiness columns are no longer read
+   or written (migration 20261112000001). A successor with no rating, or a
+   rating outside the vocabulary, is 'unclassified' ("Not rated"). */
+const readinessOf = (empCol, cidCol) =>
+  `(SELECT ${readinessClass('rx.readiness')} FROM talent_assessments rx WHERE rx.employee_id = ${empCol} AND rx.company_id = ${cidCol})`;
+const readyCol = (empCol, cidCol) => `COALESCE(${readinessOf(empCol, cidCol)}, '${UNCLASSIFIED}')`;
+
+/* ─── Partial updates ────────────────────────────────────────────────────────
+   The PATCH routes used COALESCE($n, col), so a field could never be cleared
+   (a target level, a due date, notes), and the critical-role PATCH cleared the
+   holder whenever the body left it out. A column is now changed only when its
+   key is present in the body; '' and null clear it; `required` columns ignore
+   a clear. Returns the SET fragments; values are pushed onto `params`. */
+function patchSet(body, cols, params) {
+  const sets = [];
+  for (const [col, opt = {}] of Object.entries(cols)) {
+    if (!Object.prototype.hasOwnProperty.call(body, col)) continue;
+    let v = body[col];
+    if (v === '' || v === undefined) v = null;
+    if (v == null && opt.required) continue;
+    if (opt.json && v != null) v = JSON.stringify(v);
+    params.push(v);
+    sets.push(`${col} = $${params.length}${opt.cast ? `::${opt.cast}` : ''}`);
+  }
+  return sets;
+}
+const isDate = (v) => v == null || v === '' || (/^\d{4}-\d{2}-\d{2}$/.test(String(v)) && !Number.isNaN(Date.parse(v)));
+function dateProblem(fields) {
+  for (const [name, v] of Object.entries(fields)) {
+    if (!isDate(v)) return { message: `${name} must be a date (YYYY-MM-DD)`, field: name, code: 'INVALID_DATE' };
+  }
+  return null;
+}
+function textProblem(fields, max = 200) {
+  for (const [name, v] of Object.entries(fields)) {
+    if (v != null && (typeof v !== 'string' || v.length > max)) return { message: `${name} must be text of at most ${max} characters`, field: name };
+  }
+  return null;
+}
+
 /* ─── Vocabularies (§210) ────────────────────────────────────────────────────
    No column below has a CHECK, so any string was stored as-is. Every
    succession_plans row in Manifest carries 'SEED readiness level', which no
@@ -128,7 +196,22 @@ const RISK        = ['low', 'medium', 'high'];
 const FREQUENCIES = ['monthly', 'quarterly', 'half-yearly', 'annually'];
 const PLAN_STATUS   = ['active', 'paused', 'completed', 'cancelled'];        // DevelopmentPlans STATUS_COLORS
 const ACTION_STATUS = ['pending', 'in_progress', 'completed', 'cancelled'];  // DevelopmentPlans ACTION_STATUS
-const MENTOR_STATUS = ['active', 'completed'];
+const MENTOR_STATUS = ['active', 'completed', 'cancelled'];
+const ACTION_TYPES  = ['task', 'training', 'stretch_assignment', 'mentoring', 'project', 'certification', 'secondment'];
+// Pool types are the SUCCESSION_POOL_TYPE master (Settings → Master Data),
+// not a constant (HR audit 2026-11-16, migration 20261116000008). The fallback
+// is the seed, used only if the master cannot be read.
+const POOL_TYPE_SEED = ['Leadership', 'Technical', 'High Potential', 'Project Leaders', 'Graduate', 'General'];
+async function poolTypeProblem(req, value) {
+  if (value == null || value === '') return null;
+  const allowed = await vocabularyValues('SUCCESSION_POOL_TYPE', companyOf(req), POOL_TYPE_SEED);
+  const hit = allowed.some(v => v.toLowerCase() === String(value).trim().toLowerCase());
+  return hit ? null : { message: `pool_type must be one of: ${allowed.join(', ')}`, field: 'pool_type', code: 'INVALID_VALUE' };
+}
+const MOBILITY      = ['flexible', 'local_only', 'regional', 'international', 'remote_only'];
+const SUCCESSOR_TYPES = ['primary', 'secondary', 'tertiary', 'emergency'];
+const ENTRY_STATUS  = ['active', 'inactive', 'promoted', 'exited'];
+// The CHECK constraints of migration 20261112000001 hold the same lists.
 /* Unclassified readiness (§211): a stored readiness that is NULL or outside
    READINESS — in Manifest, the seeder's 'SEED readiness level'. It counts as a
    successor but in none of the readiness categories. Stored values are kept;
@@ -219,7 +302,7 @@ router.get('/assessments', requireHRRead, async (req, res) => {
        FROM talent_assessments ta
        JOIN  employees e ON e.id = ta.employee_id
        LEFT JOIN employees a ON a.id = ta.assessed_by
-       WHERE NOT e.is_test${cidClause(cid, params, 'ta')}
+       WHERE NOT e.is_test AND ${phaseOf('e')} <> 'left'${cidClause(cid, params, 'ta')}
        ORDER BY ta.potential_score DESC, ta.performance_score DESC`,
       params
     );
@@ -238,7 +321,9 @@ router.post('/assessments', requireHRWrite, async (req, res) => {
   const badScore = scoreProblem(performance_score);
   if (badScore) return res.status(400).json({ message: badScore });
   const bad = intScoreProblem({ potential_score, leadership_score })
-    || vocabProblem({ flight_risk: [flight_risk, RISK], readiness: [readiness, READINESS] });
+    || vocabProblem({ flight_risk: [flight_risk, RISK], readiness: [readiness, READINESS], mobility: [mobility, MOBILITY] })
+    || textProblem({ assessment_period, talent_classification }, 100)
+    || textProblem({ notes }, 2000);
   if (bad) return res.status(400).json(bad);
 
   const cid        = getCid(req);
@@ -248,6 +333,7 @@ router.post('/assessments', requireHRWrite, async (req, res) => {
   // employee id posted from here.
   if (!(await employeesInCompany(pool, [employee_id], cid))) return notInCompany(res);
   if (await anyTestEmployee(pool, [employee_id])) return testEmployee(res);
+  if ((await leftEmployees(pool, [employee_id])).length) return leftEmployee(res);
   const client     = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -307,12 +393,19 @@ router.patch('/assessments/:id', requireHRWrite, captureBefore('talent_assessmen
   const badScore = performance_score == null ? null : scoreProblem(performance_score);
   if (badScore) return res.status(400).json({ message: badScore });
   const bad = intScoreProblem({ potential_score, leadership_score })
-    || vocabProblem({ flight_risk: [flight_risk, RISK], readiness: [readiness, READINESS] });
+    || vocabProblem({ flight_risk: [flight_risk, RISK], readiness: [readiness, READINESS], mobility: [mobility, MOBILITY] })
+    || textProblem({ assessment_period, talent_classification }, 100)
+    || textProblem({ notes }, 2000);
   if (bad) return res.status(400).json(bad);
   const cid    = getCid(req);
-  const params = [req.params.id, performance_score, potential_score, flight_risk,
-                  readiness, notes, leadership_score ?? null, mobility ?? null,
-                  talent_classification ?? null, assessment_period ?? null];
+  // Scores, risk and readiness cannot be cleared; notes, classification,
+  // period, leadership and mobility can (they used to stick once set).
+  const params = [req.params.id];
+  const sets = patchSet(req.body, {
+    performance_score: { required: true }, potential_score: { required: true },
+    flight_risk: { required: true }, readiness: { required: true },
+    notes: {}, leadership_score: {}, mobility: {}, talent_classification: {}, assessment_period: {},
+  }, params);
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -328,17 +421,7 @@ router.patch('/assessments/:id', requireHRWrite, captureBefore('talent_assessmen
       where: 'id = $1 AND company_id = $2', params: [req.params.id, cid], action: 'edited', req,
     });
     const { rows } = await client.query(
-      `UPDATE talent_assessments SET
-         performance_score    = COALESCE($2, performance_score),
-         potential_score      = COALESCE($3, potential_score),
-         flight_risk          = COALESCE($4, flight_risk),
-         readiness            = COALESCE($5, readiness),
-         notes                = COALESCE($6, notes),
-         leadership_score     = COALESCE($7, leadership_score),
-         mobility             = COALESCE($8, mobility),
-         talent_classification= COALESCE($9, talent_classification),
-         assessment_period    = COALESCE($10, assessment_period),
-         assessment_date      = CURRENT_DATE
+      `UPDATE talent_assessments SET ${[...sets, 'assessment_date = CURRENT_DATE'].join(', ')}
        WHERE id = $1${cidClause(cid, params)} RETURNING *`,
       params
     );
@@ -392,7 +475,62 @@ router.get('/assessments/:employeeId/history', requireHRRead, async (req, res) =
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
-// Sync from performance review
+/* Catch-up sync from completed performance reviews (2026-11-12). A review
+   already writes its rating here when it is finalised (performance.routes.js
+   syncReviewToAssessment). This button covers reviews finished before that
+   existed, or a rating changed by hand since. For each current employee of the
+   company, the latest COMPLETED review (calibrated rating, else final rating)
+   replaces the 9-box performance score when it differs. The replaced version
+   goes to history first. `dry_run: true` only lists what would change. */
+router.post('/assessments/sync-from-reviews', requireHRWrite, async (req, res) => {
+  const cid = getCid(req);
+  const dryRun = req.body?.dry_run === true;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows: candidates } = await client.query(
+      `SELECT DISTINCT ON (pr.employee_id)
+              pr.employee_id, e.name, COALESCE(pr.calibrated_rating, pr.final_rating) AS score,
+              ta.id AS assessment_id, ta.performance_score AS current_score
+         FROM performance_reviews pr
+         JOIN employees e ON e.id = pr.employee_id AND e.company_id = $1
+         LEFT JOIN talent_assessments ta ON ta.employee_id = pr.employee_id
+        WHERE pr.company_id = $1 AND pr.deleted_at IS NULL AND pr.status = 'completed'
+          AND COALESCE(pr.calibrated_rating, pr.final_rating) BETWEEN 1 AND 5
+          AND NOT e.is_test AND ${phaseOf('e')} <> 'left'
+          AND (ta.id IS NULL OR ta.company_id = $1)
+        ORDER BY pr.employee_id, COALESCE(pr.hr_submitted_at, pr.updated_at) DESC NULLS LAST, pr.id DESC`,
+      [cid]);
+    const changes = candidates.filter(c => c.current_score == null || Number(c.current_score) !== Number(c.score));
+    if (dryRun) {
+      await client.query('ROLLBACK');
+      return res.json({ dry_run: true, would_update: changes.length, changes });
+    }
+    const assessedBy = await employeeOf(req, pool);
+    for (const c of changes) {
+      await snapshotAssessment(client, {
+        where: 'employee_id = $1 AND company_id = $2', params: [c.employee_id, cid], action: 'performance_sync', req });
+      await client.query(
+        `INSERT INTO talent_assessments (employee_id, assessed_by, performance_score, assessment_date, company_id)
+         VALUES ($1, $2, $3, CURRENT_DATE, $4)
+         ON CONFLICT (employee_id) DO UPDATE SET performance_score = $3, assessed_by = $2, assessment_date = CURRENT_DATE
+         WHERE talent_assessments.company_id = $4`,
+        [c.employee_id, assessedBy, c.score, cid]);
+      await client.query(
+        `INSERT INTO succession_perf_sync_log (employee_id, source, performance_score, potential_score, synced_by, company_id)
+         SELECT $1, 'performance_review', $2, potential_score, $3, $4 FROM talent_assessments WHERE employee_id = $1`,
+        [c.employee_id, c.score, req.user?.userId ?? null, cid]);
+    }
+    await client.query('COMMIT');
+    res.json({ updated: changes.length, checked: candidates.length, changes });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    res.status(500).json({ message: err.message });
+  } finally { client.release(); }
+});
+
+// Sync one employee from a performance review (API; the screen uses the
+// catch-up sync above).
 router.post('/assessments/sync-from-performance', requireHRWrite, async (req, res) => {
   const { employee_id, performance_score, potential_score } = req.body;
   if (!employee_id || !performance_score)
@@ -406,6 +544,7 @@ router.post('/assessments/sync-from-performance', requireHRWrite, async (req, re
   const assessedBy = await employeeOf(req, pool);
   if (!(await employeesInCompany(pool, [employee_id], cid))) return notInCompany(res);
   if (await anyTestEmployee(pool, [employee_id])) return testEmployee(res);
+  if ((await leftEmployees(pool, [employee_id])).length) return leftEmployee(res);
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -457,10 +596,10 @@ router.get('/nine-box', requireHRRead, async (req, res) => {
       `SELECT ta.id, ta.employee_id, ta.performance_score, ta.potential_score,
               ta.flight_risk, ta.readiness, ta.notes, ta.leadership_score, ta.mobility,
               ta.talent_classification, ta.assessment_period,
-              e.name AS employee_name, e.department, e.designation
+              e.name AS employee_name, e.department, e.designation, ${phaseOf('e')} AS employment_phase
        FROM talent_assessments ta
        JOIN employees e ON e.id = ta.employee_id
-       WHERE NOT e.is_test${cidClause(cid, params, 'ta')}`,
+       WHERE NOT e.is_test AND ${phaseOf('e')} <> 'left'${cidClause(cid, params, 'ta')}`,
       params
     );
 
@@ -480,6 +619,7 @@ router.get('/nine-box', requireHRRead, async (req, res) => {
         flight_risk: r.flight_risk, readiness: r.readiness, notes: r.notes,
         leadership_score: r.leadership_score, mobility: r.mobility,
         talent_classification: r.talent_classification,
+        assessment_period: r.assessment_period, employment_phase: r.employment_phase,
       });
     }
     res.json(Object.values(boxes));
@@ -497,11 +637,16 @@ router.get('/critical-roles', requireHRRead, async (req, res) => {
     const { rows } = await pool.query(
       `SELECT cr.*,
               e.name AS current_holder_name,
-              (SELECT COUNT(*) FROM succession_plans sp WHERE sp.critical_role_id=cr.id AND ${notTest('sp.candidate_employee_id')})::int AS candidate_count,
+              CASE WHEN e.id IS NULL THEN NULL ELSE ${phaseOf('e')} END AS holder_phase,
+              (SELECT COUNT(*) FROM succession_plans sp WHERE sp.critical_role_id=cr.id AND ${counted('sp.candidate_employee_id')})::int AS candidate_count,
+              (SELECT COUNT(*) FROM succession_plans sp WHERE sp.critical_role_id=cr.id
+                  AND NOT ${counted('sp.candidate_employee_id')}
+                  AND NOT EXISTS (SELECT 1 FROM employees tx WHERE tx.id = sp.candidate_employee_id AND tx.is_test))::int AS left_candidate_count,
               EXISTS(SELECT 1 FROM succession_plans sp
-                     WHERE sp.critical_role_id=cr.id AND sp.readiness_level='ready-now' AND ${notTest('sp.candidate_employee_id')}) AS has_ready_now,
+                     WHERE sp.critical_role_id=cr.id AND ${counted('sp.candidate_employee_id')}
+                       AND ${readyCol('sp.candidate_employee_id', 'cr.company_id')} = 'ready-now') AS has_ready_now,
               EXISTS(SELECT 1 FROM succession_plans sp
-                     WHERE sp.critical_role_id=cr.id AND ${notTest('sp.candidate_employee_id')}) AS has_any_successor
+                     WHERE sp.critical_role_id=cr.id AND ${counted('sp.candidate_employee_id')}) AS has_any_successor
        FROM critical_roles cr
        LEFT JOIN employees e ON e.id = cr.current_holder_id AND NOT e.is_test
        WHERE 1=1${cidClause(cid, params, 'cr')}
@@ -520,13 +665,17 @@ router.post('/critical-roles', requireHRWrite, async (req, res) => {
     reason, knowledge_domain, vacancy_impact, expected_vacancy_date,
     min_experience_years = 0, required_certifications = [],
   } = req.body;
-  if (!role_title) return res.status(400).json({ message: 'role_title required' });
-  const badRisk = vocabProblem({ risk_level: [risk_level, RISK] });
+  if (!role_title || !String(role_title).trim()) return res.status(400).json({ message: 'role_title required', field: 'role_title' });
+  const badRisk = vocabProblem({ risk_level: [risk_level, RISK] })
+    || textProblem({ role_title, department, knowledge_domain }, 200)
+    || textProblem({ reason, vacancy_impact }, 2000)
+    || dateProblem({ expected_vacancy_date });
   if (badRisk) return res.status(400).json(badRisk);
   const cid = getCid(req);
   try {
     if (!(await employeesInCompany(pool, [current_holder_id], cid))) return notInCompany(res);
     if (await anyTestEmployee(pool, [current_holder_id])) return testEmployee(res);
+    if ((await leftEmployees(pool, [current_holder_id])).length) return leftEmployee(res);
     const { rows } = await pool.query(
       `INSERT INTO critical_roles
          (role_title, department, current_holder_id, risk_level, reason,
@@ -538,7 +687,7 @@ router.post('/critical-roles', requireHRWrite, async (req, res) => {
        min_experience_years, JSON.stringify(required_certifications), cid]
     );
     // Check zero-successor alert on creation
-    await _checkAndCreateAlert(rows[0].id, cid, 0);
+    await _checkAndCreateAlert(rows[0].id, cid);
     res.status(201).json(rows[0]);
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
@@ -547,31 +696,31 @@ router.patch('/critical-roles/:id', requireHRWrite, captureBefore('critical_role
   const {
     role_title, department, current_holder_id, risk_level, reason,
     knowledge_domain, vacancy_impact, expected_vacancy_date,
-    min_experience_years, required_certifications,
   } = req.body;
   const cid    = getCid(req);
-  const params = [req.params.id, role_title, department, current_holder_id || null,
-                  risk_level, reason, knowledge_domain ?? null, vacancy_impact ?? null,
-                  expected_vacancy_date ?? null, min_experience_years ?? null,
-                  required_certifications ? JSON.stringify(required_certifications) : null];
-  const badRisk = vocabProblem({ risk_level: [risk_level, RISK] });
+  const badRisk = vocabProblem({ risk_level: [risk_level, RISK] })
+    || textProblem({ role_title, department, knowledge_domain }, 200)
+    || textProblem({ reason, vacancy_impact }, 2000)
+    || dateProblem({ expected_vacancy_date });
   if (badRisk) return res.status(400).json(badRisk);
   try {
     if (!(await employeesInCompany(pool, [current_holder_id], cid))) return notInCompany(res);
     if (await anyTestEmployee(pool, [current_holder_id])) return testEmployee(res);
+    // A holder who has left may stay as the stored holder (shown "left"),
+    // but nobody who has left can be newly made the holder.
+    if (current_holder_id) {
+      const { rows: [cur] } = await pool.query(`SELECT current_holder_id FROM critical_roles WHERE id = $1 AND company_id = $2`, [req.params.id, cid]);
+      if (Number(cur?.current_holder_id) !== Number(current_holder_id) && (await leftEmployees(pool, [current_holder_id])).length)
+        return leftEmployee(res);
+    }
+    const params = [req.params.id];
+    const sets = patchSet(req.body, {
+      role_title: { required: true }, department: {}, current_holder_id: {}, risk_level: { required: true },
+      reason: {}, knowledge_domain: {}, vacancy_impact: {}, expected_vacancy_date: { cast: 'date' },
+      min_experience_years: { required: true }, required_certifications: { json: true, cast: 'jsonb', required: true },
+    }, params);
     const { rows } = await pool.query(
-      `UPDATE critical_roles SET
-         role_title             = COALESCE($2, role_title),
-         department             = COALESCE($3, department),
-         current_holder_id      = $4,
-         risk_level             = COALESCE($5, risk_level),
-         reason                 = COALESCE($6, reason),
-         knowledge_domain       = COALESCE($7, knowledge_domain),
-         vacancy_impact         = COALESCE($8, vacancy_impact),
-         expected_vacancy_date  = COALESCE($9, expected_vacancy_date),
-         min_experience_years   = COALESCE($10, min_experience_years),
-         required_certifications= COALESCE($11::jsonb, required_certifications),
-         updated_at             = NOW()
+      `UPDATE critical_roles SET ${[...sets, 'updated_at = NOW()'].join(', ')}
        WHERE id = $1${cidClause(cid, params)} RETURNING *`,
       params
     );
@@ -604,10 +753,13 @@ router.get('/critical-roles/:id/candidates', requireHRRead, async (req, res) => 
     if (!(await ownsRow(pool, 'critical_roles', req.params.id, cid)))
       return res.status(404).json({ message: 'Critical role not found' });
     const { rows } = await pool.query(
-      `SELECT sp.*, e.name AS candidate_name, e.department, e.designation,
+      `SELECT sp.id, sp.critical_role_id, sp.candidate_employee_id, sp.rank, sp.development_actions,
+              sp.last_reviewed, sp.is_emergency_successor, sp.successor_type,
+              e.name AS candidate_name, e.department, e.designation, ${phaseOf('e')} AS employment_phase,
               ta.performance_score, ta.potential_score, ta.flight_risk,
               ta.leadership_score, ta.mobility, ta.talent_classification,
-              sp.is_emergency_successor, sp.successor_type
+              -- one source: the 9-box rating (§ readiness, 2026-11-12)
+              ${readinessClass('ta.readiness')} AS readiness, ta.readiness IS NOT NULL AS is_rated
        FROM succession_plans sp
        JOIN  employees e ON e.id = sp.candidate_employee_id
        LEFT JOIN talent_assessments ta ON ta.employee_id = sp.candidate_employee_id AND ta.company_id = $2
@@ -631,22 +783,25 @@ router.put('/critical-roles/:id/candidates', requireHRWrite, async (req, res) =>
       return notInCompany(res, 'candidate');
     if (await anyTestEmployee(pool, candidates.map(c => c?.candidate_employee_id)))
       return res.status(400).json({ message: 'A test employee cannot be added as a candidate', code: 'TEST_EMPLOYEE' });
-    // The screen re-sends every candidate on each save, so a stored value
-    // outside the vocabulary (the seeded 'SEED readiness level') may come back
-    // UNCHANGED for the same person; anything else must be a real level.
-    const { rows: stored } = await pool.query(
-      `SELECT candidate_employee_id, readiness_level FROM succession_plans WHERE critical_role_id = $1 AND company_id = $2`,
-      [req.params.id, cid]);
-    const storedLevel = new Map(stored.map(r => [Number(r.candidate_employee_id), r.readiness_level]));
+    // Readiness is no longer part of a candidacy: it is the 9-box rating. A
+    // readiness_level in the body is ignored.
     for (const c of candidates) {
-      const level = c.readiness_level;
-      if (level == null || READINESS.includes(level)) continue;
-      if (storedLevel.get(Number(c.candidate_employee_id)) === level) continue;
-      return res.status(400).json({ message: `readiness_level must be one of: ${READINESS.join(', ')}`, field: 'readiness_level', code: 'INVALID_VALUE' });
+      const bad = vocabProblem({ successor_type: [c.successor_type, SUCCESSOR_TYPES] });
+      if (bad) return res.status(400).json(bad);
+      if (c.rank != null && !(Number.isInteger(Number(c.rank)) && Number(c.rank) >= 1 && Number(c.rank) <= 99))
+        return res.status(400).json({ message: 'rank must be a whole number from 1 to 99', field: 'rank' });
+      if (c.development_actions != null && !(Array.isArray(c.development_actions) && c.development_actions.every(a => typeof a === 'string' && a.length <= 500)))
+        return res.status(400).json({ message: 'development_actions must be a list of short texts', field: 'development_actions' });
     }
     const ids = candidates.map(c => Number(c.candidate_employee_id));
     if (new Set(ids).size !== ids.length)
       return res.status(400).json({ message: 'Each candidate can appear only once', code: 'DUPLICATE_CANDIDATE' });
+    // Someone who has left may stay on the slate (they are shown, not counted,
+    // until HR removes them), but cannot be added.
+    const { rows: stored } = await pool.query(
+      `SELECT candidate_employee_id FROM succession_plans WHERE critical_role_id = $1 AND company_id = $2`, [req.params.id, cid]);
+    const already = new Set(stored.map(r => Number(r.candidate_employee_id)));
+    if ((await leftEmployees(pool, ids.filter(id => !already.has(id)))).length) return leftEmployee(res);
   } catch (err) { return res.status(500).json({ message: err.message }); }
   const client = await pool.connect();
   try {
@@ -658,6 +813,9 @@ router.put('/critical-roles/:id/candidates', requireHRWrite, async (req, res) =>
       `SELECT * FROM succession_plans WHERE critical_role_id = $1 AND company_id = $2 ORDER BY rank, id`,
       [req.params.id, cid]);
     req._auditBefore = { critical_role_id: Number(req.params.id), candidates: before };
+    const { rows: [{ n: prevCount }] } = await client.query(
+      `SELECT COUNT(*)::int AS n FROM succession_plans sp
+        WHERE sp.critical_role_id = $1 AND sp.company_id = $2 AND ${counted('sp.candidate_employee_id')}`, [req.params.id, cid]);
     // The slate the screen sends no longer shows test employees, so their
     // stored candidacies are kept rather than replaced.
     await client.query(
@@ -668,17 +826,17 @@ router.put('/critical-roles/:id/candidates', requireHRWrite, async (req, res) =>
         `INSERT INTO succession_plans
            (critical_role_id, candidate_employee_id, rank, readiness_level,
             development_actions, is_emergency_successor, successor_type, company_id)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+         VALUES ($1,$2,$3,NULL,$4,$5,$6,$7)`,
         [req.params.id, c.candidate_employee_id, c.rank ?? 1,
-         c.readiness_level ?? '1-2-years', JSON.stringify(c.development_actions || []),
-         c.is_emergency_successor ?? false,
-         c.successor_type ?? (c.rank === 1 ? 'primary' : 'secondary'),
+         JSON.stringify(c.development_actions || []),
+         c.successor_type === 'emergency' || c.is_emergency_successor === true,
+         c.successor_type ?? (c.is_emergency_successor ? 'emergency' : Number(c.rank) === 1 ? 'primary' : 'secondary'),
          cid]
       );
     }
     await client.query('COMMIT');
     // Check alerts
-    await _checkAndCreateAlert(parseInt(req.params.id), cid, candidates.length);
+    await _checkAndCreateAlert(parseInt(req.params.id), cid, prevCount);
     res.json({ message: 'Candidates updated', count: candidates.length });
   } catch (err) {
     await client.query('ROLLBACK');
@@ -687,36 +845,43 @@ router.put('/critical-roles/:id/candidates', requireHRWrite, async (req, res) =>
 });
 
 /* ─── Internal helper: create succession alerts ──────────────────────────── */
-async function _checkAndCreateAlert(roleId, cid, candidateCount) {
+/* The count is the COUNTED successors (not test, not left). One unread alert
+   per role and kind: saving the same slate again used to add another
+   "only ONE successor" alert every time. An unread zero/single alert that no
+   longer describes the role is closed (marked read) when the slate changes. */
+async function _checkAndCreateAlert(roleId, cid, prevCount = null) {
   try {
     const settingsRes = await pool.query(
       `SELECT zero_successor_alert, single_successor_alert FROM succession_settings
        WHERE company_id = $1`, [cid]
     );
     const settings = settingsRes.rows[0] || { zero_successor_alert: true, single_successor_alert: true };
-
-    if (candidateCount === 0 && settings.zero_successor_alert) {
-      await pool.query(
-        `INSERT INTO succession_alerts (alert_type, role_id, message, severity, company_id)
-         SELECT 'zero_successor',
-                $1,
-                'Critical role "' || role_title || '" has NO successors defined.',
-                'critical', $2
-         FROM critical_roles WHERE id = $1 AND company_id = $2`,
-        [roleId, cid]
-      );
-    } else if (candidateCount === 1 && settings.single_successor_alert) {
-      await pool.query(
-        `INSERT INTO succession_alerts (alert_type, role_id, message, severity, company_id)
-         SELECT 'single_successor',
-                $1,
-                'Critical role "' || role_title || '" has only ONE successor — single point of failure.',
-                'warning', $2
-         FROM critical_roles WHERE id = $1 AND company_id = $2`,
-        [roleId, cid]
-      );
-    }
-  } catch { /* non-fatal */ }
+    const { rows: [{ n }] } = await pool.query(
+      `SELECT COUNT(*)::int AS n FROM succession_plans sp
+        WHERE sp.critical_role_id = $1 AND sp.company_id = $2 AND ${counted('sp.candidate_employee_id')}`, [roleId, cid]);
+    const want = n === 0 && settings.zero_successor_alert ? 'zero_successor'
+               : n === 1 && settings.single_successor_alert ? 'single_successor' : null;
+    await pool.query(
+      `UPDATE succession_alerts SET is_read = TRUE
+        WHERE role_id = $1 AND company_id = $2 AND NOT is_read
+          AND alert_type IN ('zero_successor','single_successor') AND alert_type IS DISTINCT FROM $3::varchar`,
+      [roleId, cid, want]);
+    // Raised when the role ENTERS the state. Re-saving an unchanged slate used
+    // to raise it again, including right after someone had marked it read.
+    if (!want || (prevCount !== null && prevCount === n)) return;
+    const message = want === 'zero_successor'
+      ? `'Critical role "' || role_title || '" has NO successors defined.'`
+      : `'Critical role "' || role_title || '" has only ONE successor — single point of failure.'`;
+    await pool.query(
+      `INSERT INTO succession_alerts (alert_type, role_id, message, severity, company_id)
+       SELECT $3::varchar, $1, ${message}, $4::varchar, $2
+         FROM critical_roles cr WHERE cr.id = $1 AND cr.company_id = $2
+          AND NOT EXISTS (SELECT 1 FROM succession_alerts sa
+                           WHERE sa.role_id = $1 AND sa.company_id = $2 AND sa.alert_type = $3::varchar AND NOT sa.is_read)`,
+      [roleId, cid, want, want === 'zero_successor' ? 'critical' : 'warning']);
+  } catch (err) {
+    console.error('[succession] alert check failed:', err.message);
+  }
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -726,19 +891,37 @@ async function _checkAndCreateAlert(roleId, cid, candidateCount) {
 router.get('/pipeline/levels', requireHRRead, async (req, res) => {
   const cid = getCid(req);
   try {
+    // ?all=1 includes inactive levels (the level manager); the pipeline shows active ones.
+    const all = req.query.all === '1';
     const { rows } = await pool.query(
-      `SELECT * FROM leadership_pipeline_levels
-       WHERE (company_id = $1 OR company_id IS NULL) AND is_active = TRUE
-       ORDER BY level_order`,
+      `SELECT l.*, l.company_id IS NULL AS is_shared,
+              (SELECT COUNT(*) FROM leadership_pipeline_entries lpe
+                WHERE lpe.company_id = $1 AND lpe.status = 'active'
+                  AND (lpe.current_level_id = l.id OR lpe.target_level_id = l.id))::int AS entry_count
+       FROM leadership_pipeline_levels l
+       WHERE (l.company_id = $1 OR l.company_id IS NULL)${all ? '' : ' AND l.is_active = TRUE'}
+       ORDER BY l.level_order, l.id`,
       [cid]
     );
     res.json(rows);
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
+function levelProblem(b, creating) {
+  if (creating && (!b.level_name || !String(b.level_name).trim())) return { message: 'level_name required', field: 'level_name' };
+  return textProblem({ level_name: b.level_name }, 100)
+    || textProblem({ description: b.description }, 1000)
+    || (b.level_order != null && !(Number.isInteger(Number(b.level_order)) && Number(b.level_order) >= 1 && Number(b.level_order) <= 99)
+        ? { message: 'level_order must be a whole number from 1 to 99', field: 'level_order' } : null)
+    || (b.required_experience_yrs != null && b.required_experience_yrs !== '' && !(Number.isInteger(Number(b.required_experience_yrs)) && Number(b.required_experience_yrs) >= 0 && Number(b.required_experience_yrs) <= 60)
+        ? { message: 'required_experience_yrs must be a whole number from 0 to 60', field: 'required_experience_yrs' } : null)
+    || (b.is_active != null && typeof b.is_active !== 'boolean' ? { message: 'is_active must be true or false', field: 'is_active' } : null);
+}
+
 router.post('/pipeline/levels', requireHRWrite, async (req, res) => {
   const { level_name, level_order, description, required_experience_yrs, required_competencies } = req.body;
-  if (!level_name) return res.status(400).json({ message: 'level_name required' });
+  const bad = levelProblem(req.body, true);
+  if (bad) return res.status(400).json(bad);
   const cid = getCid(req);
   try {
     const { rows } = await pool.query(
@@ -754,22 +937,39 @@ router.post('/pipeline/levels', requireHRWrite, async (req, res) => {
 });
 
 router.patch('/pipeline/levels/:id', requireHRWrite, captureBefore('leadership_pipeline_levels'), async (req, res) => {
-  const { level_name, level_order, description, required_experience_yrs, is_active } = req.body;
+  const bad = levelProblem(req.body, false);
+  if (bad) return res.status(400).json(bad);
   const cid = getCid(req);
   try {
+    const params = [req.params.id, cid];
+    const sets = patchSet(req.body, {
+      level_name: { required: true }, level_order: { required: true }, description: {},
+      required_experience_yrs: { required: true }, is_active: { required: true },
+    }, params);
+    if (!sets.length) return res.status(400).json({ message: 'Nothing to change' });
     const { rows } = await pool.query(
-      `UPDATE leadership_pipeline_levels SET
-         level_name             = COALESCE($2, level_name),
-         level_order            = COALESCE($3, level_order),
-         description            = COALESCE($4, description),
-         required_experience_yrs= COALESCE($5, required_experience_yrs),
-         is_active              = COALESCE($6, is_active)
-       WHERE id = $1 AND company_id = $7 RETURNING *`,
-      [req.params.id, level_name || null, level_order ?? null, description ?? null,
-       required_experience_yrs ?? null, is_active ?? null, cid]
+      `UPDATE leadership_pipeline_levels SET ${sets.join(', ')}
+       WHERE id = $1 AND company_id = $2 RETURNING *`,
+      params
     );
-    if (!rows.length) return res.status(404).json({ message: 'Level not found' });
+    if (!rows.length) return res.status(404).json({ message: 'Level not found (shared default levels cannot be edited)' });
     res.json(rows[0]);
+  } catch (err) { res.status(500).json({ message: err.message }); }
+});
+
+// A level that an active pipeline entry still uses cannot be deleted; it can be
+// deactivated (PATCH is_active=false) or the entries moved first.
+router.delete('/pipeline/levels/:id', requireHRWrite, captureBefore('leadership_pipeline_levels'), async (req, res) => {
+  const cid = getCid(req);
+  try {
+    const { rows: [use] } = await pool.query(
+      `SELECT COUNT(*)::int AS n FROM leadership_pipeline_entries
+        WHERE company_id = $2 AND (current_level_id = $1 OR target_level_id = $1)`, [req.params.id, cid]);
+    if (use.n > 0)
+      return res.status(409).json({ message: `${use.n} pipeline entr${use.n === 1 ? 'y uses' : 'ies use'} this level. Move them or deactivate the level instead.`, code: 'LEVEL_IN_USE' });
+    const { rowCount } = await pool.query(`DELETE FROM leadership_pipeline_levels WHERE id = $1 AND company_id = $2`, [req.params.id, cid]);
+    if (!rowCount) return res.status(404).json({ message: 'Level not found (shared default levels cannot be deleted)' });
+    res.json({ message: 'Deleted' });
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
@@ -777,16 +977,18 @@ router.get('/pipeline/entries', requireHRRead, async (req, res) => {
   const cid = getCid(req);
   try {
     const { rows } = await pool.query(
-      `SELECT lpe.*,
-              e.name AS employee_name, e.department, e.designation,
+      `SELECT lpe.id, lpe.employee_id, lpe.current_level_id, lpe.target_level_id, lpe.current_since,
+              lpe.target_date, lpe.status, lpe.notes, lpe.company_id, lpe.created_at, lpe.updated_at,
+              e.name AS employee_name, e.department, e.designation, ${phaseOf('e')} AS employment_phase,
               cl.level_name AS current_level_name, cl.level_order AS current_level_order,
               tl.level_name AS target_level_name,  tl.level_order AS target_level_order,
-              ta.performance_score, ta.potential_score, ta.flight_risk
+              ta.performance_score, ta.potential_score, ta.flight_risk,
+              ${readinessClass('ta.readiness')} AS readiness, ta.readiness IS NOT NULL AS is_rated
        FROM leadership_pipeline_entries lpe
        JOIN employees e ON e.id = lpe.employee_id
        LEFT JOIN leadership_pipeline_levels cl ON cl.id = lpe.current_level_id
        LEFT JOIN leadership_pipeline_levels tl ON tl.id = lpe.target_level_id
-       LEFT JOIN talent_assessments ta ON ta.employee_id = lpe.employee_id
+       LEFT JOIN talent_assessments ta ON ta.employee_id = lpe.employee_id AND ta.company_id = lpe.company_id
        WHERE lpe.company_id = $1 AND lpe.status = 'active' AND NOT e.is_test
        ORDER BY cl.level_order, e.name`,
       [cid]
@@ -798,61 +1000,61 @@ router.get('/pipeline/entries', requireHRRead, async (req, res) => {
 router.post('/pipeline/entries', requireHRWrite, async (req, res) => {
   const {
     employee_id, current_level_id, target_level_id,
-    current_since, target_date, readiness, notes,
+    current_since, target_date, notes,
   } = req.body;
   if (!employee_id || !current_level_id)
     return res.status(400).json({ message: 'employee_id and current_level_id required' });
-  const badReadiness = vocabProblem({ readiness: [readiness, READINESS] });
-  if (badReadiness) return res.status(400).json(badReadiness);
+  // Readiness is the employee's 9-box rating; a `readiness` in the body is ignored.
+  const bad = dateProblem({ current_since, target_date }) || textProblem({ notes }, 2000);
+  if (bad) return res.status(400).json(bad);
   const cid = getCid(req);
   try {
     if (!(await employeesInCompany(pool, [employee_id], cid))) return notInCompany(res);
     if (await anyTestEmployee(pool, [employee_id])) return testEmployee(res);
+    if ((await leftEmployees(pool, [employee_id])).length) return leftEmployee(res);
     if (!(await levelsUsable(pool, [current_level_id, target_level_id], cid))) return notInCompany(res, 'pipeline level');
+    // An employee is in the pipeline once. Adding them again used to overwrite
+    // their entry silently; now it says so and the screen offers Edit.
+    const { rows: [dup] } = await pool.query(
+      `SELECT id, status FROM leadership_pipeline_entries WHERE employee_id = $1 AND company_id = $2`, [employee_id, cid]);
+    if (dup && dup.status === 'active')
+      return res.status(409).json({ message: 'This employee is already in the pipeline. Edit their entry instead.', code: 'ALREADY_IN_PIPELINE', id: dup.id });
     const { rows } = await pool.query(
       `INSERT INTO leadership_pipeline_entries
          (employee_id, current_level_id, target_level_id, current_since,
           target_date, readiness, notes, company_id, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+       VALUES ($1,$2,$3,COALESCE($4::date, CURRENT_DATE),$5,NULL,$6,$7,$8)
        ON CONFLICT (employee_id, company_id) DO UPDATE SET
          current_level_id = $2, target_level_id = $3,
-         current_since = COALESCE($4, leadership_pipeline_entries.current_since),
-         target_date = $5, readiness = $6, notes = $7, updated_at = NOW()
+         current_since = COALESCE($4::date, CURRENT_DATE),
+         target_date = $5, notes = $6, status = 'active', updated_at = NOW()
        RETURNING *`,
       [employee_id, current_level_id, target_level_id || null,
        current_since || null, target_date || null,
-       readiness || '1-2-years', notes || null, cid, req.user?.userId ?? null]
+       notes || null, cid, await employeeOf(req, pool)]
     );
     res.status(201).json(rows[0]);
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
 router.patch('/pipeline/entries/:id', requireHRWrite, captureBefore('leadership_pipeline_entries'), async (req, res) => {
-  const {
-    current_level_id, target_level_id, target_date,
-    readiness, notes, status,
-  } = req.body;
+  const { current_level_id, target_level_id, target_date, current_since, notes, status } = req.body;
+  const bad = vocabProblem({ status: [status, ENTRY_STATUS] })
+    || dateProblem({ current_since, target_date }) || textProblem({ notes }, 2000);
+  if (bad) return res.status(400).json(bad);
   const cid = getCid(req);
   try {
     if (!(await levelsUsable(pool, [current_level_id, target_level_id], cid))) return notInCompany(res, 'pipeline level');
-    // A stored legacy value may be re-sent unchanged by the edit form.
-    if (vocabProblem({ readiness: [readiness, READINESS] })) {
-      const { rows: [cur] } = await pool.query(
-        `SELECT readiness FROM leadership_pipeline_entries WHERE id = $1 AND company_id = $2`, [req.params.id, cid]);
-      if (!cur || cur.readiness !== readiness) return res.status(400).json(vocabProblem({ readiness: [readiness, READINESS] }));
-    }
+    // readiness is not editable here: it is the 9-box rating.
+    const params = [req.params.id, cid];
+    const sets = patchSet(req.body, {
+      current_level_id: { required: true }, target_level_id: {}, target_date: { cast: 'date' },
+      current_since: { cast: 'date', required: true }, notes: {}, status: { required: true },
+    }, params);
     const { rows } = await pool.query(
-      `UPDATE leadership_pipeline_entries SET
-         current_level_id = COALESCE($2, current_level_id),
-         target_level_id  = COALESCE($3, target_level_id),
-         target_date      = COALESCE($4, target_date),
-         readiness        = COALESCE($5, readiness),
-         notes            = COALESCE($6, notes),
-         status           = COALESCE($7, status),
-         updated_at       = NOW()
-       WHERE id = $1 AND company_id = $8 RETURNING *`,
-      [req.params.id, current_level_id || null, target_level_id ?? null,
-       target_date ?? null, readiness || null, notes ?? null, status || null, cid]
+      `UPDATE leadership_pipeline_entries SET ${[...sets, 'updated_at = NOW()'].join(', ')}
+       WHERE id = $1 AND company_id = $2 RETURNING *`,
+      params
     );
     if (!rows.length) return res.status(404).json({ message: 'Entry not found' });
     res.json(rows[0]);
@@ -886,7 +1088,7 @@ router.get('/development-plans', requireHRRead, async (req, res) => {
 
     const { rows } = await pool.query(
       `SELECT dp.*,
-              e.name AS employee_name, e.department, e.designation,
+              e.name AS employee_name, e.department, e.designation, succession_employment_phase(e.status, e.deleted_at) AS employment_phase,
               cr.role_title AS target_role,
               (SELECT COUNT(*) FROM development_actions da WHERE da.plan_id = dp.id)::int AS action_count,
               (SELECT COUNT(*) FROM development_actions da WHERE da.plan_id = dp.id AND da.status='completed')::int AS completed_count,
@@ -908,7 +1110,10 @@ router.get('/development-plans/:id', requireHRRead, async (req, res) => {
     const [planRes, actionsRes, mentorsRes] = await Promise.all([
       pool.query(
         `SELECT dp.*, e.name AS employee_name, e.department, e.designation,
-                cr.role_title AS target_role, c.name AS created_by_name
+                succession_employment_phase(e.status, e.deleted_at) AS employment_phase,
+                cr.role_title AS target_role, c.name AS created_by_name,
+                (SELECT COUNT(*) FROM development_actions da WHERE da.plan_id = dp.id)::int AS action_count,
+                (SELECT COUNT(*) FROM development_actions da WHERE da.plan_id = dp.id AND da.status='completed')::int AS completed_count
          FROM development_plans dp
          JOIN employees e ON e.id = dp.employee_id
          LEFT JOIN critical_roles cr ON cr.id = dp.critical_role_id
@@ -917,7 +1122,8 @@ router.get('/development-plans/:id', requireHRRead, async (req, res) => {
         [req.params.id, cid]
       ),
       pool.query(
-        `SELECT da.*, e.name AS owner_name
+        `SELECT da.*, e.name AS owner_name,
+                CASE WHEN e.id IS NULL THEN NULL ELSE succession_employment_phase(e.status, e.deleted_at) END AS owner_phase
          FROM development_actions da
          LEFT JOIN employees e ON e.id = da.owner_employee_id
          WHERE da.plan_id = $1
@@ -925,7 +1131,8 @@ router.get('/development-plans/:id', requireHRRead, async (req, res) => {
         [req.params.id]
       ),
       pool.query(
-        `SELECT ma.*, e.name AS mentor_name, e.designation AS mentor_designation
+        `SELECT ma.*, e.name AS mentor_name, e.designation AS mentor_designation,
+                succession_employment_phase(e.status, e.deleted_at) AS mentor_phase
          FROM mentoring_assignments ma
          JOIN employees e ON e.id = ma.mentor_employee_id
          WHERE ma.development_plan_id = $1 AND ma.company_id = $2`,
@@ -942,19 +1149,24 @@ router.post('/development-plans', requireHRWrite, async (req, res) => {
     employee_id, critical_role_id, plan_title, plan_type = 'succession',
     start_date, target_date, notes,
   } = req.body;
-  if (!employee_id || !plan_title)
+  if (!employee_id || !plan_title || !String(plan_title).trim())
     return res.status(400).json({ message: 'employee_id and plan_title required' });
+  const bad = textProblem({ plan_title, plan_type }, 200) || textProblem({ notes }, 2000)
+    || dateProblem({ start_date, target_date })
+    || (start_date && target_date && target_date < start_date ? { message: 'target_date cannot be before start_date', field: 'target_date' } : null);
+  if (bad) return res.status(400).json(bad);
   const cid = getCid(req);
   try {
     if (!(await employeesInCompany(pool, [employee_id], cid))) return notInCompany(res);
     if (await anyTestEmployee(pool, [employee_id])) return testEmployee(res);
+    if ((await leftEmployees(pool, [employee_id])).length) return leftEmployee(res);
     if (critical_role_id && !(await ownsRow(pool, 'critical_roles', critical_role_id, cid)))
       return notInCompany(res, 'critical role');
     const { rows } = await pool.query(
       `INSERT INTO development_plans
          (employee_id, critical_role_id, plan_title, plan_type,
           start_date, target_date, notes, company_id, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+       VALUES ($1,$2,$3,$4,COALESCE($5::date, CURRENT_DATE),$6,$7,$8,$9) RETURNING *`,
       [employee_id, critical_role_id || null, plan_title, plan_type,
        start_date || null, target_date || null, notes || null, cid,
        await employeeOf(req, pool)]
@@ -965,32 +1177,52 @@ router.post('/development-plans', requireHRWrite, async (req, res) => {
 
 router.patch('/development-plans/:id', requireHRWrite, captureBefore('development_plans'), async (req, res) => {
   const {
-    plan_title, status, target_date, completion_date,
-    overall_progress, notes,
+    plan_title, status, start_date, target_date, completion_date,
+    overall_progress, notes, critical_role_id,
   } = req.body;
-  const badStatus = vocabProblem({ status: [status, PLAN_STATUS] });
+  const badStatus = vocabProblem({ status: [status, PLAN_STATUS] })
+    || textProblem({ plan_title }, 200) || textProblem({ notes }, 2000)
+    || dateProblem({ start_date, target_date, completion_date });
   if (badStatus) return res.status(400).json(badStatus);
   if (overall_progress != null && !(Number.isInteger(Number(overall_progress)) && overall_progress >= 0 && overall_progress <= 100))
     return res.status(400).json({ message: 'overall_progress must be a whole number from 0 to 100', field: 'overall_progress' });
   const cid = getCid(req);
   try {
+    if (critical_role_id && !(await ownsRow(pool, 'critical_roles', critical_role_id, cid)))
+      return notInCompany(res, 'critical role');
+    // Editing one date alone is checked against the stored other one.
+    if ('start_date' in req.body || 'target_date' in req.body) {
+      const { rows: [cur] } = await pool.query(
+        `SELECT to_char(start_date, 'YYYY-MM-DD') AS s, to_char(target_date, 'YYYY-MM-DD') AS t
+           FROM development_plans WHERE id = $1 AND company_id = $2`, [req.params.id, cid]);
+      if (!cur) return res.status(404).json({ message: 'Plan not found' });
+      const s = 'start_date' in req.body ? (start_date || cur.s) : cur.s;
+      const t = 'target_date' in req.body ? (target_date || null) : cur.t;
+      if (s && t && t < s) return res.status(400).json({ message: 'target_date cannot be before start_date', field: 'target_date' });
+    }
+    const body = { ...req.body };
+    // Completing stamps today unless a date is given; reopening clears it.
+    // (CURRENT_DATE, not the JS date: the session runs in the business time zone.)
+    const stampToday = status === 'completed' && !body.completion_date;
+    if (stampToday) delete body.completion_date;
+    if (status && status !== 'completed') body.completion_date = null;
+    const params = [req.params.id, cid];
+    const sets = patchSet(body, {
+      plan_title: { required: true }, status: { required: true }, start_date: { cast: 'date', required: true },
+      target_date: { cast: 'date' }, completion_date: { cast: 'date' }, overall_progress: { required: true },
+      notes: {}, critical_role_id: {},
+    }, params);
+    if (stampToday) sets.push('completion_date = CURRENT_DATE');
+    // §211: with actions, progress is completed ÷ all actions and is not typed
+    // in. Checked in the same statement, so an action added concurrently
+    // cannot slip past a separate pre-check.
+    const progressGuard = overall_progress != null
+      ? ' AND NOT EXISTS (SELECT 1 FROM development_actions da WHERE da.plan_id = $1)' : '';
     const { rows } = await pool.query(
-      `UPDATE development_plans SET
-         plan_title       = COALESCE($2, plan_title),
-         status           = COALESCE($3, status),
-         target_date      = COALESCE($4, target_date),
-         completion_date  = COALESCE($5, completion_date),
-         overall_progress = COALESCE($6, overall_progress),
-         notes            = COALESCE($7, notes),
-         updated_at       = NOW()
-       WHERE id = $1 AND company_id = $8
-         -- §211: with actions, progress is completed ÷ all actions and is not
-         -- typed in. Checked in the same statement, so an action added
-         -- concurrently cannot slip past a separate pre-check.
-         AND ($6::int IS NULL OR NOT EXISTS (SELECT 1 FROM development_actions da WHERE da.plan_id = $1))
+      `UPDATE development_plans SET ${[...sets, 'updated_at = NOW()'].join(', ')}
+       WHERE id = $1 AND company_id = $2${progressGuard}
        RETURNING *`,
-      [req.params.id, plan_title || null, status || null, target_date ?? null,
-       completion_date ?? null, overall_progress ?? null, notes ?? null, cid]
+      params
     );
     if (!rows.length) {
       if (overall_progress != null && (await ownsRow(pool, 'development_plans', req.params.id, cid))) {
@@ -1052,10 +1284,14 @@ router.post('/development-plans/:id/actions', requireHRWrite, planGate, async (r
     action_type = 'task', title, description, due_date,
     owner_employee_id, linked_skill, action_order,
   } = req.body;
-  if (!title) return res.status(400).json({ message: 'title required' });
+  if (!title || !String(title).trim()) return res.status(400).json({ message: 'title required', field: 'title' });
+  const bad = vocabProblem({ action_type: [action_type, ACTION_TYPES] })
+    || textProblem({ title, linked_skill }, 200) || textProblem({ description }, 2000) || dateProblem({ due_date });
+  if (bad) return res.status(400).json(bad);
   try {
     if (!(await employeesInCompany(pool, [owner_employee_id], getCid(req)))) return notInCompany(res);
     if (await anyTestEmployee(pool, [owner_employee_id])) return testEmployee(res);
+    if ((await leftEmployees(pool, [owner_employee_id])).length) return leftEmployee(res);
     const { rows } = await pool.query(
       `INSERT INTO development_actions
          (plan_id, action_type, title, description, due_date,
@@ -1070,21 +1306,34 @@ router.post('/development-plans/:id/actions', requireHRWrite, planGate, async (r
 });
 
 router.patch('/development-plans/:id/actions/:actionId', requireHRWrite, planGate, captureBefore('development_actions', { param: 'actionId' }), async (req, res) => {
-  const { title, description, due_date, status, completion_date } = req.body;
-  const badStatus = vocabProblem({ status: [status, ACTION_STATUS] });
+  const { title, description, due_date, status, completion_date, action_type, owner_employee_id, linked_skill } = req.body;
+  const badStatus = vocabProblem({ status: [status, ACTION_STATUS], action_type: [action_type, ACTION_TYPES] })
+    || textProblem({ title, linked_skill }, 200) || textProblem({ description }, 2000)
+    || dateProblem({ due_date, completion_date });
   if (badStatus) return res.status(400).json(badStatus);
   try {
+    if (owner_employee_id) {
+      const cid = getCid(req);
+      if (!(await employeesInCompany(pool, [owner_employee_id], cid))) return notInCompany(res);
+      if (await anyTestEmployee(pool, [owner_employee_id])) return testEmployee(res);
+      const { rows: [cur] } = await pool.query(`SELECT owner_employee_id FROM development_actions WHERE id = $1`, [req.params.actionId]);
+      if (Number(cur?.owner_employee_id) !== Number(owner_employee_id) && (await leftEmployees(pool, [owner_employee_id])).length)
+        return leftEmployee(res);
+    }
+    const body = { ...req.body };
+    const stampToday = status === 'completed' && !body.completion_date;
+    if (stampToday) delete body.completion_date;
+    if (status && status !== 'completed') body.completion_date = null;
+    const params = [req.params.actionId, req.params.id];
+    const sets = patchSet(body, {
+      title: { required: true }, description: {}, due_date: { cast: 'date' }, status: { required: true },
+      completion_date: { cast: 'date' }, action_type: { required: true }, owner_employee_id: {}, linked_skill: {},
+    }, params);
+    if (stampToday) sets.push('completion_date = CURRENT_DATE');
     const { rows } = await pool.query(
-      `UPDATE development_actions SET
-         title           = COALESCE($2, title),
-         description     = COALESCE($3, description),
-         due_date        = COALESCE($4, due_date),
-         status          = COALESCE($5, status),
-         completion_date = COALESCE($6, completion_date),
-         updated_at      = NOW()
-       WHERE id = $1 AND plan_id = $7 RETURNING *`,
-      [req.params.actionId, title || null, description ?? null, due_date ?? null,
-       status || null, completion_date ?? null, req.params.id]
+      `UPDATE development_actions SET ${[...sets, 'updated_at = NOW()'].join(', ')}
+       WHERE id = $1 AND plan_id = $2 RETURNING *`,
+      params
     );
     if (!rows.length) return res.status(404).json({ message: 'Action not found' });
 
@@ -1114,19 +1363,29 @@ router.get('/mentoring', requireHRRead, async (req, res) => {
     const { rows } = await pool.query(
       `SELECT ma.*,
               mentee.name AS mentee_name, mentee.department AS mentee_department,
+              ${phaseOf('mentee')} AS mentee_phase,
               mentor.name AS mentor_name, mentor.designation AS mentor_designation,
-              dp.plan_title
+              ${phaseOf('mentor')} AS mentor_phase,
+              dp.plan_title,
+              (SELECT MAX(ms.session_date) FROM mentoring_sessions ms WHERE ms.assignment_id = ma.id) AS last_session_date
        FROM mentoring_assignments ma
        JOIN employees mentee ON mentee.id = ma.mentee_employee_id
        JOIN employees mentor ON mentor.id = ma.mentor_employee_id
        LEFT JOIN development_plans dp ON dp.id = ma.development_plan_id
        WHERE ma.company_id = $1 AND NOT mentee.is_test AND NOT mentor.is_test
-       ORDER BY ma.status, ma.created_at DESC`,
+       ORDER BY CASE ma.status WHEN 'active' THEN 0 ELSE 1 END, ma.created_at DESC`,
       [cid]
     );
     res.json(rows);
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
+
+function mentoringProblem(b) {
+  return vocabProblem({ status: [b.status, MENTOR_STATUS] })
+    || textProblem({ focus_area: b.focus_area }, 200) || textProblem({ notes: b.notes }, 2000)
+    || dateProblem({ start_date: b.start_date, end_date: b.end_date, next_session_date: b.next_session_date })
+    || (b.start_date && b.end_date && b.end_date < b.start_date ? { message: 'end_date cannot be before start_date', field: 'end_date' } : null);
+}
 
 router.post('/mentoring', requireHRWrite, async (req, res) => {
   const {
@@ -1135,17 +1394,28 @@ router.post('/mentoring', requireHRWrite, async (req, res) => {
   } = req.body;
   if (!mentee_employee_id || !mentor_employee_id)
     return res.status(400).json({ message: 'mentee_employee_id and mentor_employee_id required' });
+  if (Number(mentee_employee_id) === Number(mentor_employee_id))
+    return res.status(400).json({ message: 'An employee cannot mentor themselves', code: 'SELF_MENTORING' });
+  const bad = mentoringProblem(req.body);
+  if (bad) return res.status(400).json(bad);
   const cid = getCid(req);
   try {
     if (!(await employeesInCompany(pool, [mentee_employee_id, mentor_employee_id], cid))) return notInCompany(res);
     if (await anyTestEmployee(pool, [mentee_employee_id, mentor_employee_id])) return testEmployee(res);
+    if ((await leftEmployees(pool, [mentee_employee_id, mentor_employee_id])).length) return leftEmployee(res);
     if (development_plan_id && !(await ownsRow(pool, 'development_plans', development_plan_id, cid)))
       return notInCompany(res, 'development plan');
+    const { rows: [dup] } = await pool.query(
+      `SELECT id FROM mentoring_assignments
+        WHERE company_id = $1 AND mentee_employee_id = $2 AND mentor_employee_id = $3 AND status = 'active'
+          AND development_plan_id IS NOT DISTINCT FROM $4::int`,
+      [cid, mentee_employee_id, mentor_employee_id, development_plan_id || null]);
+    if (dup) return res.status(409).json({ message: 'This mentor is already assigned to this mentee', code: 'DUPLICATE_MENTORING', id: dup.id });
     const { rows } = await pool.query(
       `INSERT INTO mentoring_assignments
          (mentee_employee_id, mentor_employee_id, development_plan_id,
           focus_area, start_date, end_date, notes, company_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+       VALUES ($1,$2,$3,$4,COALESCE($5::date, CURRENT_DATE),$6,$7,$8) RETURNING *`,
       [mentee_employee_id, mentor_employee_id, development_plan_id || null,
        focus_area || null, start_date || null, end_date || null, notes || null, cid]
     );
@@ -1153,25 +1423,36 @@ router.post('/mentoring', requireHRWrite, async (req, res) => {
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
+// session_count and next_session_date follow the logged sessions (below);
+// they are not typed in.
 router.patch('/mentoring/:id', requireHRWrite, captureBefore('mentoring_assignments'), async (req, res) => {
-  const { status, session_count, next_session_date, end_date, notes } = req.body;
-  const badStatus = vocabProblem({ status: [status, MENTOR_STATUS] });
-  if (badStatus) return res.status(400).json(badStatus);
-  if (session_count != null && !(Number.isInteger(Number(session_count)) && Number(session_count) >= 0))
-    return res.status(400).json({ message: 'session_count must be a whole number, 0 or more', field: 'session_count' });
+  const bad = mentoringProblem(req.body);
+  if (bad) return res.status(400).json(bad);
   const cid = getCid(req);
   try {
+    if ('start_date' in req.body || 'end_date' in req.body) {
+      const { rows: [cur] } = await pool.query(
+        `SELECT to_char(start_date, 'YYYY-MM-DD') AS s, to_char(end_date, 'YYYY-MM-DD') AS e
+           FROM mentoring_assignments WHERE id = $1 AND company_id = $2`, [req.params.id, cid]);
+      if (!cur) return res.status(404).json({ message: 'Assignment not found' });
+      const s = 'start_date' in req.body ? (req.body.start_date || cur.s) : cur.s;
+      const e = 'end_date' in req.body ? (req.body.end_date || null) : cur.e;
+      if (s && e && e < s) return res.status(400).json({ message: 'end_date cannot be before start_date', field: 'end_date' });
+    }
+    const body = { ...req.body };
+    const params = [req.params.id, cid];
+    const sets = patchSet(body, {
+      status: { required: true }, focus_area: {}, start_date: { cast: 'date', required: true },
+      end_date: { cast: 'date' }, notes: {}, next_session_date: { cast: 'date' },
+    }, params);
+    // Completing or cancelling with no end date stamps today.
+    if (req.body.status && req.body.status !== 'active' && !('end_date' in req.body))
+      sets.push('end_date = COALESCE(end_date, CURRENT_DATE)');
+    if (!sets.length) return res.status(400).json({ message: 'Nothing to change' });
     const { rows } = await pool.query(
-      `UPDATE mentoring_assignments SET
-         status            = COALESCE($2, status),
-         session_count     = COALESCE($3, session_count),
-         next_session_date = COALESCE($4, next_session_date),
-         end_date          = COALESCE($5, end_date),
-         notes             = COALESCE($6, notes),
-         updated_at        = NOW()
-       WHERE id = $1 AND company_id = $7 RETURNING *`,
-      [req.params.id, status || null, session_count ?? null,
-       next_session_date ?? null, end_date ?? null, notes ?? null, cid]
+      `UPDATE mentoring_assignments SET ${[...sets, 'updated_at = NOW()'].join(', ')}
+       WHERE id = $1 AND company_id = $2 RETURNING *`,
+      params
     );
     if (!rows.length) return res.status(404).json({ message: 'Assignment not found' });
     res.json(rows[0]);
@@ -1190,6 +1471,87 @@ router.delete('/mentoring/:id', requireHRWrite, captureBefore('mentoring_assignm
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
+/* ── Mentoring sessions (2026-11-12) ─────────────────────────────────────────
+   The Sessions column always read 0: nothing could record a session. Each
+   session is a row; the assignment's session_count and next_session_date are
+   recalculated from them on every change. */
+const mentoringGate = async (req, res, next) => {
+  try {
+    if (!(await ownsRow(pool, 'mentoring_assignments', req.params.id, getCid(req))))
+      return res.status(404).json({ message: 'Assignment not found' });
+    next();
+  } catch (err) { res.status(500).json({ message: err.message }); }
+};
+async function recalcSessions(db, assignmentId) {
+  await db.query(
+    `UPDATE mentoring_assignments ma SET
+       session_count = (SELECT COUNT(*) FROM mentoring_sessions ms WHERE ms.assignment_id = ma.id),
+       next_session_date = (SELECT ms.next_session_date FROM mentoring_sessions ms
+                             WHERE ms.assignment_id = ma.id ORDER BY ms.session_date DESC, ms.id DESC LIMIT 1),
+       updated_at = NOW()
+     WHERE ma.id = $1`, [assignmentId]);
+}
+
+router.get('/mentoring/:id/sessions', requireHRRead, mentoringGate, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT ms.*, u.name AS created_by_name FROM mentoring_sessions ms
+         LEFT JOIN users u ON u.id = ms.created_by_user_id
+        WHERE ms.assignment_id = $1 ORDER BY ms.session_date DESC, ms.id DESC`, [req.params.id]);
+    res.json(rows);
+  } catch (err) { res.status(500).json({ message: err.message }); }
+});
+
+router.post('/mentoring/:id/sessions', requireHRWrite, mentoringGate, async (req, res) => {
+  const { session_date, duration_minutes, topic, notes, next_session_date } = req.body;
+  if (!session_date) return res.status(400).json({ message: 'session_date required', field: 'session_date' });
+  const bad = dateProblem({ session_date, next_session_date })
+    || textProblem({ topic }, 200) || textProblem({ notes }, 4000)
+    || (duration_minutes != null && duration_minutes !== '' && !(Number.isInteger(Number(duration_minutes)) && Number(duration_minutes) >= 1 && Number(duration_minutes) <= 1440)
+        ? { message: 'duration_minutes must be a whole number from 1 to 1440', field: 'duration_minutes' } : null)
+    || (next_session_date && next_session_date < session_date ? { message: 'next_session_date cannot be before session_date', field: 'next_session_date' } : null);
+  if (bad) return res.status(400).json(bad);
+  const cid = getCid(req);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows: [a] } = await client.query(
+      `SELECT status FROM mentoring_assignments WHERE id = $1 AND company_id = $2 FOR UPDATE`, [req.params.id, cid]);
+    if (a.status !== 'active') {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ message: `This assignment is ${a.status}; sessions can only be logged while it is active`, code: 'ASSIGNMENT_CLOSED' });
+    }
+    const { rows } = await client.query(
+      `INSERT INTO mentoring_sessions (assignment_id, session_date, duration_minutes, topic, notes, next_session_date, company_id, created_by_user_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+      [req.params.id, session_date, duration_minutes || null, topic || null, notes || null,
+       next_session_date || null, cid, req.user?.userId ?? null]);
+    await recalcSessions(client, req.params.id);
+    await client.query('COMMIT');
+    res.status(201).json(rows[0]);
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    res.status(500).json({ message: err.message });
+  } finally { client.release(); }
+});
+
+router.delete('/mentoring/:id/sessions/:sessionId', requireHRWrite, mentoringGate, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query(
+      `DELETE FROM mentoring_sessions WHERE id = $1 AND assignment_id = $2 RETURNING *`, [req.params.sessionId, req.params.id]);
+    if (!rows.length) { await client.query('ROLLBACK'); return res.status(404).json({ message: 'Session not found' }); }
+    req._auditBefore = rows[0];
+    await recalcSessions(client, req.params.id);
+    await client.query('COMMIT');
+    res.json({ message: 'Deleted' });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    res.status(500).json({ message: err.message });
+  } finally { client.release(); }
+});
+
 /* ═══════════════════════════════════════════════════════════════════════════
    EMPLOYEE TALENT POOLS (succession-side, employee-based)
 ═══════════════════════════════════════════════════════════════════════════ */
@@ -1202,7 +1564,7 @@ router.get('/pools', requireHRRead, async (req, res) => {
               COUNT(DISTINCT epm.employee_id)::int AS member_count,
               creator.name AS created_by_name
        FROM employee_talent_pools etp
-       LEFT JOIN employee_pool_members epm ON epm.pool_id = etp.id AND ${notTest('epm.employee_id')}
+       LEFT JOIN employee_pool_members epm ON epm.pool_id = etp.id AND ${counted('epm.employee_id')}
        LEFT JOIN employees creator ON creator.id = etp.created_by
        WHERE etp.company_id = $1
        GROUP BY etp.id, creator.name
@@ -1214,8 +1576,11 @@ router.get('/pools', requireHRRead, async (req, res) => {
 });
 
 router.post('/pools', requireHRWrite, async (req, res) => {
-  const { pool_name, pool_type = 'general', description, department } = req.body;
-  if (!pool_name) return res.status(400).json({ message: 'pool_name required' });
+  const { pool_name, pool_type = 'General', description, department } = req.body;
+  if (!pool_name || !String(pool_name).trim()) return res.status(400).json({ message: 'pool_name required', field: 'pool_name' });
+  const bad = (await poolTypeProblem(req, pool_type))
+    || textProblem({ pool_name, department }, 200) || textProblem({ description }, 2000);
+  if (bad) return res.status(400).json(bad);
   const cid = getCid(req);
   try {
     const { rows } = await pool.query(
@@ -1231,19 +1596,20 @@ router.post('/pools', requireHRWrite, async (req, res) => {
 
 router.patch('/pools/:id', requireHRWrite, captureBefore('employee_talent_pools'), async (req, res) => {
   const { pool_name, pool_type, description, department, is_active } = req.body;
+  const bad = (await poolTypeProblem(req, pool_type))
+    || textProblem({ pool_name, department }, 200) || textProblem({ description }, 2000)
+    || (is_active != null && typeof is_active !== 'boolean' ? { message: 'is_active must be true or false', field: 'is_active' } : null);
+  if (bad) return res.status(400).json(bad);
   const cid = getCid(req);
   try {
+    const params = [req.params.id, cid];
+    const sets = patchSet(req.body, {
+      pool_name: { required: true }, pool_type: { required: true }, description: {}, department: {}, is_active: { required: true },
+    }, params);
     const { rows } = await pool.query(
-      `UPDATE employee_talent_pools SET
-         pool_name   = COALESCE($2, pool_name),
-         pool_type   = COALESCE($3, pool_type),
-         description = COALESCE($4, description),
-         department  = COALESCE($5, department),
-         is_active   = COALESCE($6, is_active),
-         updated_at  = NOW()
-       WHERE id = $1 AND company_id = $7 RETURNING *`,
-      [req.params.id, pool_name || null, pool_type || null, description ?? null,
-       department ?? null, is_active ?? null, cid]
+      `UPDATE employee_talent_pools SET ${[...sets, 'updated_at = NOW()'].join(', ')}
+       WHERE id = $1 AND company_id = $2 RETURNING *`,
+      params
     );
     if (!rows.length) return res.status(404).json({ message: 'Pool not found' });
     res.json(rows[0]);
@@ -1277,10 +1643,7 @@ router.delete('/pools/:id', requireHRWrite, poolGate, async (req, res) => {
       if (poolRow.rows[0]) req._auditBefore = { ...poolRow.rows[0], members: members.rows };
     } catch { /* no before-image is a worse audit entry; a 500 is a worse product */ }
 
-    await pool.query(
-      `DELETE FROM employee_pool_members WHERE pool_id=$1`,
-      [req.params.id]
-    );
+    // Members go with the pool (FK ON DELETE CASCADE), in one statement.
     await pool.query(
       `DELETE FROM employee_talent_pools WHERE id=$1 AND company_id=$2`,
       [req.params.id, cid]
@@ -1292,7 +1655,7 @@ router.delete('/pools/:id', requireHRWrite, poolGate, async (req, res) => {
 router.get('/pools/:id/members', requireHRRead, poolGate, async (req, res) => {
   try {
     const { rows } = await pool.query(
-      `SELECT epm.*, e.name, e.department, e.designation, e.office_id,
+      `SELECT epm.*, e.name, e.department, e.designation, e.office_id, ${phaseOf('e')} AS employment_phase,
               ta.performance_score, ta.potential_score, ta.flight_risk, ta.readiness,
               ta.talent_classification, ta.leadership_score
        FROM employee_pool_members epm
@@ -1312,11 +1675,16 @@ router.post('/pools/:id/members', requireHRWrite, poolGate, async (req, res) => 
   try {
     if (!(await employeesInCompany(pool, [employee_id], getCid(req)))) return notInCompany(res);
     if (await anyTestEmployee(pool, [employee_id])) return testEmployee(res);
-    await pool.query(
+    if ((await leftEmployees(pool, [employee_id])).length) return leftEmployee(res);
+    const badNotes = textProblem({ notes }, 1000);
+    if (badNotes) return res.status(400).json(badNotes);
+    // added_by is read as an employee, like the other "by" columns.
+    const { rowCount } = await pool.query(
       `INSERT INTO employee_pool_members (pool_id, employee_id, notes, added_by)
        VALUES ($1,$2,$3,$4) ON CONFLICT (pool_id, employee_id) DO NOTHING`,
-      [req.params.id, employee_id, notes || null, req.user?.userId ?? null]
+      [req.params.id, employee_id, notes || null, await employeeOf(req, pool)]
     );
+    if (!rowCount) return res.status(409).json({ message: 'This employee is already in the pool', code: 'ALREADY_MEMBER' });
     res.status(201).json({ message: 'Member added' });
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
@@ -1350,7 +1718,7 @@ router.delete('/pools/:id/members/:employeeId', requireHRWrite, poolGate, async 
 const SETTINGS_DEFAULTS = {
   zero_successor_alert: true, single_successor_alert: true,
   flight_risk_threshold: 'high', review_frequency: 'quarterly',
-  notify_roles: ['chro','hr_admin','hr_manager'],
+  notify_roles: [],
   hiPo_threshold_potential: 4, hiPo_threshold_performance: 3,
 };
 
@@ -1377,6 +1745,29 @@ router.get('/settings', requireHRRead, async (req, res) => {
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
+/* Who can be notified: roles that can open Succession, with how many active
+   users of this company hold each. Settings → Notification Recipients offers
+   exactly these. */
+router.get('/settings/recipient-roles', requireHRRead, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `WITH eligible AS (
+         SELECT LOWER(r.code) AS code, MIN(COALESCE(NULLIF(r.label, ''), r.role_name, r.code)) AS label
+           FROM roles r
+          WHERE EXISTS (SELECT 1 FROM role_permissions rp WHERE rp.role_id = r.id AND rp.module = 'succession' AND rp.can_view)
+          GROUP BY LOWER(r.code))
+       SELECT el.code, el.label,
+              (SELECT COUNT(DISTINCT u.id) FROM users u
+                 JOIN user_roles ur ON ur.user_id = u.id
+                 JOIN roles r2 ON r2.id = ur.role_id AND LOWER(r2.code) = el.code
+                WHERE u.is_active
+                  AND (u.company_id = $1 OR EXISTS (SELECT 1 FROM user_scope us WHERE us.user_id = u.id AND us.company_id = $1)))::int AS user_count
+         FROM eligible el
+        ORDER BY 1`, [getCid(req)]);
+    res.json(rows);
+  } catch (err) { res.status(500).json({ message: err.message }); }
+});
+
 router.put('/settings', requireHRWrite, async (req, res) => {
   const {
     zero_successor_alert, single_successor_alert, flight_risk_threshold,
@@ -1391,6 +1782,17 @@ router.put('/settings', requireHRWrite, async (req, res) => {
   if (bad) return res.status(400).json(bad);
   if (notify_roles != null && !(Array.isArray(notify_roles) && notify_roles.every(r => typeof r === 'string' && r.length <= 64)))
     return res.status(400).json({ message: 'notify_roles must be a list of role codes', field: 'notify_roles' });
+  // notify_roles now decides who is notified (employees trigger), so every
+  // code must be a real role that can open Succession.
+  if (Array.isArray(notify_roles) && notify_roles.length) {
+    const { rows } = await pool.query(
+      `SELECT DISTINCT LOWER(r.code) AS code FROM roles r JOIN role_permissions rp ON rp.role_id = r.id
+        WHERE rp.module = 'succession' AND rp.can_view AND LOWER(r.code) = ANY($1::text[])`,
+      [notify_roles.map(r => r.toLowerCase())]);
+    const ok = new Set(rows.map(r => r.code));
+    const badRole = notify_roles.find(r => !ok.has(r.toLowerCase()));
+    if (badRole) return res.status(400).json({ message: `"${badRole}" is not a role that can open Succession`, field: 'notify_roles', code: 'INVALID_VALUE' });
+  }
 
   // A settings singleton has no :id, so captureBefore() has nothing to key on —
   // the company is the key. Settings changes are exactly what an audit trail is
@@ -1420,7 +1822,7 @@ router.put('/settings', requireHRWrite, async (req, res) => {
       [cid,
        zero_successor_alert ?? true, single_successor_alert ?? true,
        flight_risk_threshold || 'high', review_frequency || 'quarterly',
-       JSON.stringify(notify_roles || ['chro','hr_admin','hr_manager']),
+       JSON.stringify((notify_roles ?? (req._auditBefore?.notify_roles || [])).map(r => r.toLowerCase())),
        hiPo_threshold_potential ?? 4, hiPo_threshold_performance ?? 3]
     );
     res.json(settingsOut(rows[0]));
@@ -1433,15 +1835,24 @@ router.get('/alerts', requireHRRead, async (req, res) => {
   const cid = getCid(req);
   try {
     const { rows } = await pool.query(
-      `SELECT sa.*, cr.role_title, cr.department, cr.risk_level
+      `SELECT sa.*, cr.role_title, cr.department, cr.risk_level, e.name AS employee_name
        FROM succession_alerts sa
        LEFT JOIN critical_roles cr ON cr.id = sa.role_id
-       WHERE sa.company_id = $1
-       ORDER BY sa.created_at DESC
-       LIMIT 50`,
+       LEFT JOIN employees e ON e.id = sa.employee_id
+       WHERE sa.company_id = $1${req.query.unread === '1' ? ' AND NOT sa.is_read' : ''}
+       ORDER BY sa.is_read, sa.created_at DESC
+       LIMIT 100`,
       [cid]
     );
     res.json(rows);
+  } catch (err) { res.status(500).json({ message: err.message }); }
+});
+
+router.patch('/alerts/read-all', requireHRRead, async (req, res) => {
+  try {
+    const { rowCount } = await pool.query(
+      `UPDATE succession_alerts SET is_read = TRUE WHERE company_id = $1 AND NOT is_read`, [getCid(req)]);
+    res.json({ message: 'Marked read', count: rowCount });
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
@@ -1482,25 +1893,25 @@ router.get('/dashboard', requireHRRead, async (req, res) => {
           `SELECT
              COUNT(*)::int AS total_critical_roles,
              COUNT(CASE WHEN EXISTS(
-               SELECT 1 FROM succession_plans sp WHERE sp.critical_role_id=cr.id AND sp.readiness_level='ready-now' AND ${notTest('sp.candidate_employee_id')}
+               SELECT 1 FROM succession_plans sp WHERE sp.critical_role_id=cr.id AND ${readyCol('sp.candidate_employee_id', 'sp.company_id')}='ready-now' AND ${counted('sp.candidate_employee_id')}
              ) THEN 1 END)::int AS ready_now_count,
              COUNT(CASE WHEN NOT EXISTS(
-               SELECT 1 FROM succession_plans sp WHERE sp.critical_role_id=cr.id AND ${notTest('sp.candidate_employee_id')}
+               SELECT 1 FROM succession_plans sp WHERE sp.critical_role_id=cr.id AND ${counted('sp.candidate_employee_id')}
              ) THEN 1 END)::int AS zero_successor_count,
              ROUND(100.0 * COUNT(CASE WHEN EXISTS(
-               SELECT 1 FROM succession_plans sp WHERE sp.critical_role_id=cr.id AND sp.readiness_level='ready-now' AND ${notTest('sp.candidate_employee_id')}
+               SELECT 1 FROM succession_plans sp WHERE sp.critical_role_id=cr.id AND ${readyCol('sp.candidate_employee_id', 'sp.company_id')}='ready-now' AND ${counted('sp.candidate_employee_id')}
              ) THEN 1 END) / NULLIF(COUNT(*),0),0) AS bench_strength_pct
            FROM critical_roles cr WHERE 1=1${bench_w}`,
           bench_p
         ),
         pool.query(
           `SELECT flight_risk, COUNT(*)::int AS cnt
-           FROM talent_assessments ta WHERE ${notTest('ta.employee_id')}${flight_w} GROUP BY flight_risk`,
+           FROM talent_assessments ta WHERE ${counted('ta.employee_id')}${flight_w} GROUP BY flight_risk`,
           flight_p
         ),
         pool.query(
-          `SELECT ${readinessClass('readiness_level')} AS readiness, COUNT(*)::int AS cnt
-           FROM succession_plans sp WHERE ${notTest('sp.candidate_employee_id')}${ready_w} GROUP BY 1`,
+          `SELECT ${readyCol('sp.candidate_employee_id', 'sp.company_id')} AS readiness, COUNT(*)::int AS cnt
+           FROM succession_plans sp WHERE ${counted('sp.candidate_employee_id')}${ready_w} GROUP BY 1`,
           ready_p
         ),
         pool.query(
@@ -1509,7 +1920,7 @@ router.get('/dashboard', requireHRRead, async (req, res) => {
                   ta.readiness, ta.talent_classification, ta.leadership_score
            FROM talent_assessments ta
            JOIN employees e ON e.id = ta.employee_id
-           WHERE NOT e.is_test${top_w}${hipo_w}
+           WHERE NOT e.is_test AND ${phaseOf('e')} <> 'left'${top_w}${hipo_w}
            ORDER BY ta.potential_score DESC, ta.performance_score DESC LIMIT 10`,
           top_p
         ),
@@ -1517,7 +1928,7 @@ router.get('/dashboard', requireHRRead, async (req, res) => {
           `SELECT cl.level_name, cl.level_order, COUNT(lpe.id)::int AS headcount
            FROM leadership_pipeline_entries lpe
            JOIN leadership_pipeline_levels cl ON cl.id = lpe.current_level_id
-           WHERE lpe.status='active' AND ${notTest('lpe.employee_id')}${pool_w}
+           WHERE lpe.status='active' AND ${counted('lpe.employee_id')}${pool_w}
            GROUP BY cl.level_name, cl.level_order
            ORDER BY cl.level_order`,
           pool_p
@@ -1530,7 +1941,7 @@ router.get('/dashboard', requireHRRead, async (req, res) => {
         pool.query(
           `SELECT cr.role_title, cr.department, cr.risk_level
            FROM critical_roles cr
-           WHERE NOT EXISTS(SELECT 1 FROM succession_plans sp WHERE sp.critical_role_id=cr.id AND ${notTest('sp.candidate_employee_id')})
+           WHERE NOT EXISTS(SELECT 1 FROM succession_plans sp WHERE sp.critical_role_id=cr.id AND ${counted('sp.candidate_employee_id')})
              ${bench_w.replace('AND cr.company_id', 'AND cr.company_id')}
            ORDER BY CASE cr.risk_level WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END
            LIMIT 10`,
@@ -1539,7 +1950,7 @@ router.get('/dashboard', requireHRRead, async (req, res) => {
         pool.query(
           `SELECT COUNT(*)::int AS active_plans,
                   ROUND(AVG(overall_progress))::int AS avg_progress
-           FROM development_plans WHERE company_id=$1 AND status='active' AND ${notTest('employee_id')}`,
+           FROM development_plans WHERE company_id=$1 AND status='active' AND ${counted('employee_id')}`,
           [cid]
         ),
       ]);
@@ -1582,18 +1993,19 @@ router.get('/reports/bench-strength', requireHRRead, exportGate, async (req, res
       `SELECT cr.role_title, cr.department, cr.risk_level,
               cr.knowledge_domain, cr.expected_vacancy_date,
               e.name AS current_holder,
-              (SELECT COUNT(*) FROM succession_plans sp WHERE sp.critical_role_id=cr.id AND ${notTest('sp.candidate_employee_id')})::int AS successor_count,
-              (SELECT COUNT(*) FROM succession_plans sp WHERE sp.critical_role_id=cr.id AND sp.readiness_level='ready-now' AND ${notTest('sp.candidate_employee_id')})::int AS ready_now,
-              (SELECT COUNT(*) FROM succession_plans sp WHERE sp.critical_role_id=cr.id AND sp.readiness_level='1-2-years' AND ${notTest('sp.candidate_employee_id')})::int AS ready_1_2yr,
-              (SELECT COUNT(*) FROM succession_plans sp WHERE sp.critical_role_id=cr.id AND sp.readiness_level='3-5-years' AND ${notTest('sp.candidate_employee_id')})::int AS ready_3_5yr,
-              (SELECT COUNT(*) FROM succession_plans sp WHERE sp.critical_role_id=cr.id AND sp.readiness_level='not_ready' AND ${notTest('sp.candidate_employee_id')})::int AS not_ready,
-              (SELECT COUNT(*) FROM succession_plans sp WHERE sp.critical_role_id=cr.id AND ${readinessClass('sp.readiness_level')}='${UNCLASSIFIED}' AND ${notTest('sp.candidate_employee_id')})::int AS ready_unclassified,
+              CASE WHEN e.id IS NULL THEN NULL ELSE ${phaseOf('e')} END AS holder_phase,
+              (SELECT COUNT(*) FROM succession_plans sp WHERE sp.critical_role_id=cr.id AND ${counted('sp.candidate_employee_id')})::int AS successor_count,
+              (SELECT COUNT(*) FROM succession_plans sp WHERE sp.critical_role_id=cr.id AND ${readyCol('sp.candidate_employee_id', 'sp.company_id')}='ready-now' AND ${counted('sp.candidate_employee_id')})::int AS ready_now,
+              (SELECT COUNT(*) FROM succession_plans sp WHERE sp.critical_role_id=cr.id AND ${readyCol('sp.candidate_employee_id', 'sp.company_id')}='1-2-years' AND ${counted('sp.candidate_employee_id')})::int AS ready_1_2yr,
+              (SELECT COUNT(*) FROM succession_plans sp WHERE sp.critical_role_id=cr.id AND ${readyCol('sp.candidate_employee_id', 'sp.company_id')}='3-5-years' AND ${counted('sp.candidate_employee_id')})::int AS ready_3_5yr,
+              (SELECT COUNT(*) FROM succession_plans sp WHERE sp.critical_role_id=cr.id AND ${readyCol('sp.candidate_employee_id', 'sp.company_id')}='not_ready' AND ${counted('sp.candidate_employee_id')})::int AS not_ready,
+              (SELECT COUNT(*) FROM succession_plans sp WHERE sp.critical_role_id=cr.id AND ${readyCol('sp.candidate_employee_id', 'sp.company_id')}='${UNCLASSIFIED}' AND ${counted('sp.candidate_employee_id')})::int AS ready_unclassified,
               -- Same three states as the Critical Roles tab (has_ready_now /
               -- has_any_successor). This said 'Covered' for ANY successor, so
               -- roles with no ready-now cover read as covered beside a 0% bench.
-              CASE WHEN EXISTS(SELECT 1 FROM succession_plans sp WHERE sp.critical_role_id=cr.id AND sp.readiness_level='ready-now' AND ${notTest('sp.candidate_employee_id')})
+              CASE WHEN EXISTS(SELECT 1 FROM succession_plans sp WHERE sp.critical_role_id=cr.id AND ${readyCol('sp.candidate_employee_id', 'sp.company_id')}='ready-now' AND ${counted('sp.candidate_employee_id')})
                    THEN 'Ready Now'
-                   WHEN EXISTS(SELECT 1 FROM succession_plans sp WHERE sp.critical_role_id=cr.id AND ${notTest('sp.candidate_employee_id')})
+                   WHEN EXISTS(SELECT 1 FROM succession_plans sp WHERE sp.critical_role_id=cr.id AND ${counted('sp.candidate_employee_id')})
                    THEN 'Developing'
                    ELSE 'No Successor' END AS coverage_status
        FROM critical_roles cr LEFT JOIN employees e ON e.id=cr.current_holder_id AND NOT e.is_test
@@ -1626,7 +2038,7 @@ router.get('/reports/talent-risk', requireHRRead, exportGate, async (req, res) =
               ta.assessment_date
        FROM talent_assessments ta
        JOIN employees e ON e.id=ta.employee_id
-       WHERE ta.company_id=$1 AND NOT e.is_test
+       WHERE ta.company_id=$1 AND NOT e.is_test AND ${phaseOf('e')} <> 'left'
        ORDER BY CASE ta.flight_risk WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
                 ta.potential_score DESC`,
       [cid]
@@ -1650,7 +2062,7 @@ router.get('/reports/nine-box-summary', requireHRRead, exportGate, async (req, r
               ta.flight_risk, ta.readiness, ta.assessment_date
        FROM talent_assessments ta
        JOIN employees e ON e.id=ta.employee_id
-       WHERE ta.company_id=$1 AND NOT e.is_test
+       WHERE ta.company_id=$1 AND NOT e.is_test AND ${phaseOf('e')} <> 'left'
        ORDER BY ta.potential_score DESC, ta.performance_score DESC`,
       [cid]
     );
@@ -1675,6 +2087,7 @@ router.get('/reports/development-progress', requireHRRead, exportGate, async (re
   try {
     const { rows } = await pool.query(
       `SELECT e.name AS employee_name, e.department,
+              ${phaseOf('e')} AS employment_phase,
               dp.plan_title, dp.status, dp.overall_progress,
               dp.start_date, dp.target_date,
               cr.role_title AS target_role,
@@ -1713,7 +2126,7 @@ router.get('/reports/readiness', requireHRRead, exportGate, async (req, res) => 
               (SELECT COUNT(*) FROM development_plans dp WHERE dp.employee_id=ta.employee_id AND dp.company_id=ta.company_id AND dp.status='active')::int AS active_plans
        FROM talent_assessments ta
        JOIN employees e ON e.id=ta.employee_id
-       WHERE ta.company_id=$1 AND NOT e.is_test
+       WHERE ta.company_id=$1 AND NOT e.is_test AND ${phaseOf('e')} <> 'left'
        ORDER BY CASE ta.readiness WHEN 'ready-now' THEN 1 WHEN '1-2-years' THEN 2 WHEN '3-5-years' THEN 3 ELSE 4 END`,
       [cid]
     );
@@ -1734,13 +2147,15 @@ router.get('/reports/pipeline', requireHRRead, exportGate, async (req, res) => {
       `SELECT e.name, e.department, e.designation,
               cl.level_name AS current_level, cl.level_order AS current_order,
               tl.level_name AS target_level,
-              lpe.current_since, lpe.target_date, lpe.readiness, lpe.status,
+              lpe.current_since, lpe.target_date,
+              ${readinessClass('ta.readiness')} AS readiness, lpe.status,
+              ${phaseOf('e')} AS employment_phase,
               ta.performance_score, ta.potential_score
        FROM leadership_pipeline_entries lpe
        JOIN employees e ON e.id=lpe.employee_id
        LEFT JOIN leadership_pipeline_levels cl ON cl.id=lpe.current_level_id
        LEFT JOIN leadership_pipeline_levels tl ON tl.id=lpe.target_level_id
-       LEFT JOIN talent_assessments ta ON ta.employee_id=lpe.employee_id
+       LEFT JOIN talent_assessments ta ON ta.employee_id=lpe.employee_id AND ta.company_id=lpe.company_id
        WHERE lpe.company_id=$1 AND NOT e.is_test
        ORDER BY cl.level_order, e.name`,
       [cid]

@@ -44,7 +44,8 @@ const SUBMIT_IN = [
 const TYPE_TONE = {
   leave: 'indigo', reg: 'amber', ot: 'violet', exp: 'violet', pr: 'pink', ecn: 'sky',
   pay: 'green', travel: 'green', adv: 'green', requisition: 'cyan', offer: 'cyan', appr: 'grey',
-  ieval: 'amber', prob: 'indigo', gate: 'cyan',
+  ieval: 'amber', ivfb: 'amber', prob: 'indigo', probd: 'indigo', gate: 'cyan', itdecl: 'violet', bank: 'amber',
+  fnf: 'green', stip: 'green',
 };
 
 // Review queues (intern evaluation, probation review) are completed on their
@@ -165,7 +166,7 @@ export default function ApprovalCenter({ initialTab } = {}) {
     try {
       await runApprovalAction(action, { comment });
       if (!mounted.current) return;
-      showToast(kind === 'approve' ? 'Approved' : `${action.label || 'Rejected'} — the requester has been notified`);
+      showToast(kind === 'approve' ? (action.label ? `${action.label} — the requester has been notified` : 'Approved') : `${action.label || 'Rejected'} — the requester has been notified`);
       setDetail(null); setModal(null); setText('');
       setSelected((s) => s.filter((id) => id !== row.id));
       refreshAfterDecision();
@@ -377,7 +378,7 @@ export default function ApprovalCenter({ initialTab } = {}) {
                   <button className="ac-btn ac-btn-primary" onClick={() => openForm(r)}>Open</button>
                 ) : (
                   <>
-                    <button className="ac-btn ac-btn-ok" disabled={!!busy} onClick={() => decide(r, 'approve')}>Approve</button>
+                    <button className="ac-btn ac-btn-ok" disabled={!!busy} onClick={() => decide(r, 'approve')}>{r.actions?.approve?.label || 'Approve'}</button>
                     <button className="ac-btn ac-btn-no" disabled={!!busy}
                             onClick={() => { setText(''); setModal({ kind: 'reject', rows: [r], action: r.actions.reject }); }}>
                       {r.actions?.reject?.label || 'Reject'}
@@ -493,7 +494,7 @@ export default function ApprovalCenter({ initialTab } = {}) {
                 )}
                 {detail.kind === 'pending' && !isForm(detail.row) && (
                   <>
-                    <button className="ac-btn ac-btn-ok" disabled={!!busy} onClick={() => decide(detail.row, 'approve')}>Approve</button>
+                    <button className="ac-btn ac-btn-ok" disabled={!!busy} onClick={() => decide(detail.row, 'approve')}>{detail.row.actions?.approve?.label || 'Approve'}</button>
                     <button className="ac-btn ac-btn-no" disabled={!!busy}
                             onClick={() => { setText(''); setModal({ kind: 'reject', rows: [detail.row], action: detail.row.actions.reject }); }}>
                       {detail.row.actions?.reject?.label || 'Reject'}

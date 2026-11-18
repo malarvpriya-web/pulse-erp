@@ -1199,7 +1199,7 @@ router.get('/customer360/:partyId/travel', requirePermission('crm', 'view'), asy
       // travel_requests has budget and estimated_amount; actual_cost never
       // existed. estimated_amount is surfaced under the name the callers below
       // already read, so the cost roll-ups keep working.
-      `SELECT tr.id, tr.request_number, tr.travel_type, tr.from_date, tr.to_date,
+      `SELECT tr.id, COALESCE(tr.request_number, 'TR-' || LPAD(tr.id::text, 3, '0')) AS request_number, tr.travel_type, tr.from_date, tr.to_date,
               tr.purpose, tr.status, tr.budget,
               tr.estimated_amount AS actual_cost, tr.destination,
               p.project_code, p.project_name

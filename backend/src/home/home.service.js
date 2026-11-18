@@ -213,11 +213,24 @@ const POLICY_SOURCE = `COALESCE(NULLIF(BTRIM(file_url), '#'), NULLIF(BTRIM(drive
 // DISTINCT ON every superseded version was listed beside the current one.
 // "Latest" = newest row already in effect; a version whose effective date is
 // still ahead only shows if no earlier version is active.
-export const getPolicyDocuments = async (companyId = null) => {
+// `employeeId` (11 Nov 26): each tile also says whether the policy asks for an
+// acknowledgement and whether THIS employee already gave one, so Home can offer
+// the Acknowledge button — the Policies page is no longer open to employees.
+// `acknowledged` is null for a login with no employee record (nothing to sign).
+export const getPolicyDocuments = async (companyId = null, employeeId = null) => {
   const rows = await strictRows(
-    `SELECT * FROM (
+    `SELECT latest.*,
+            CASE WHEN $2::int IS NULL THEN NULL
+                 -- Of THIS version (HR audit 2026-11-16, B6): a policy edited to a
+                 -- new version in place asks again.
+                 ELSE EXISTS (SELECT 1 FROM hr_policy_acknowledgements a
+                               WHERE a.policy_id = latest.id AND a.employee_id = $2
+                                 AND a.policy_version IS NOT DISTINCT FROM latest.version)
+            END AS acknowledged
+       FROM (
        SELECT DISTINCT ON (LOWER(BTRIM(title)))
               id, title, category, description, version, effective_date, updated_at,
+              COALESCE(requires_acknowledgement, false) AS requires_acknowledgement,
               ${POLICY_SOURCE} AS source_url
          FROM hr_policies
         WHERE ${HOME_POLICY_WHERE}
@@ -225,8 +238,8 @@ export const getPolicyDocuments = async (companyId = null) => {
                  (effective_date IS NOT NULL AND effective_date > CURRENT_DATE),
                  created_at DESC, id DESC
      ) latest
-     ORDER BY LOWER(title)`,
-    [companyId]
+     ORDER BY LOWER(latest.title)`,
+    [companyId, employeeId]
   );
   return rows.map(toHomeDoc);
 };
@@ -477,7 +490,7 @@ export const getHomeSummary = async (user, scope, req) => {
   const SLICES = [
     ['identity',      getUserIdentity(userId),                                  null],
     ['announcements', getActiveAnnouncements({ companyId, userId, employeeId }), []],
-    ['policies',      getPolicyDocuments(companyId),                            []],
+    ['policies',      getPolicyDocuments(companyId, employeeId),                []],
     ['brandAssets',   getBrandAssets(companyId, roles),                         []],
     ['myAttendance',  getMyAttendanceToday(employeeId, companyId),              null],
     ['myTasks',       getMyOpenTasks(employeeId),                               []],

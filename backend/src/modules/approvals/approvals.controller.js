@@ -6,6 +6,8 @@ import { isAttendanceApprover } from "../attendance/attendance.authz.js";
 import { triggerEmail } from "../../services/emailTrigger.js";
 import recruitmentRepository from "../recruitment/repositories/recruitment.repository.js";
 import { getOfferValidityDays } from "../recruitment/offerValidity.js";
+import { canApproveRequisition, canApproveOffer } from "../recruitment/requisitionAccess.js";
+import { buildOfferLetterPdf, letterDate as offerLetterDate, rupees as offerRupees } from "../recruitment/offerLetter.js";
 import {
   SOURCES, SOURCE_BY_TYPE, MODULE_DECIDED_TYPES, central,
   buildContext, loadSlaHours, displayStatus, DEFAULT_SLA_HOURS,
@@ -321,18 +323,18 @@ async function approveSourceItem(prefix, sourceId, req) {
   const companyId = cid(req);
   switch (prefix) {
     case 'requisition': {
-      // Segregation of duties: requisition/offer are deliberately NOT narrowed
-      // in APPROVER_CATEGORY_SCOPE, so the roles that raise a requisition could
-      // otherwise approve their own from the shared pool.
+      // Owner decision 2026-11-17: requisitions are approved by Super Admin only.
+      if (!canApproveRequisition(req)) {
+        throw httpError(403, 'Only Super Admin can approve requisitions.');
+      }
+      // No self-approval block here any more: only Super Admin approves, and a
+      // requisition Super Admin raised has no one above to approve it (owner,
+      // 2026-11-17). HR and department heads, who raise, cannot approve at all.
       const reqRows = await pool.query(
         `SELECT requested_by, company_id FROM job_requisitions WHERE id = $1::integer`, [sourceId]);
       const row = reqRows.rows[0];
       if (!row || (companyId != null && Number(row.company_id) !== Number(companyId))) {
         throw httpError(404, 'Requisition not found');
-      }
-      const actorEmployeeId = await myEmployeeId(req);
-      if (row.requested_by != null && actorEmployeeId != null && String(actorEmployeeId) === String(row.requested_by)) {
-        throw httpError(403, 'You cannot approve a requisition you raised yourself. Ask another approver to review it.');
       }
       // Compare-and-swap on the prior state: two approvers racing the same
       // requisition must not both succeed.
@@ -350,12 +352,10 @@ async function approveSourceItem(prefix, sourceId, req) {
       if (!offerRow || (companyId != null && Number(offerRow.company_id) !== Number(companyId))) {
         throw httpError(404, 'Offer not found');
       }
-      // created_by is NULL on offers drafted before migration 20260813000002 and
-      // on auto-drafted offers: "author unknown, allow", as for requisitions.
-      const actorEmployeeId = await myEmployeeId(req);
-      if (offerRow.created_by != null && actorEmployeeId != null && String(actorEmployeeId) === String(offerRow.created_by)) {
-        throw httpError(403, 'You cannot approve an offer you raised yourself. Ask another approver to review it.');
-      }
+      // Owner decision 2026-11-18: Super Admin only, as for requisitions. With
+      // a single approving role there is no one above to approve an offer Super
+      // Admin drafted, so — again as for requisitions — no self-approval block.
+      if (!canApproveOffer(req)) throw httpError(403, 'Only Super Admin can approve and send offers.');
       // Expiry stamped at send time from the company's validity; COALESCE keeps
       // an expiry a recruiter deliberately set on the draft.
       const validityDays = await getOfferValidityDays(offerRow.company_id ?? null);
@@ -372,13 +372,22 @@ async function approveSourceItem(prefix, sourceId, req) {
       // Candidate-facing "offer sent" email — sending requires approval, so it fires here.
       const offer = await recruitmentRepository.findOfferById(sourceId, null);
       if (offer) {
+        // The template's placeholders are company_name, job_title and
+        // offer_expiry_date; this used to send offer_date/designation/ctc, so the
+        // e-mail went out with blanks and promised a letter that was never
+        // attached (audit 2026-11-17 B9). The PDF is now attached.
+        const letter = await buildOfferLetterPdf(pool, { companyId: offer.company_id, offerId: sourceId, signatoryUserId: req.user?.userId ?? req.user?.id ?? null })
+          .catch((e) => { console.warn('[offer] letter PDF failed:', e.message); return null; });
+        const d = letter?.data || {};
         triggerEmail('offer_sent', {
-          candidate_email: offer.candidate_email || '',
-          candidate_name:  offer.candidate_name  || '',
-          offer_date:      offer.offer_sent_date || '',
-          designation:     offer.job_title        || '',
-          ctc:             offer.offered_salary   || '',
-        }, offer.company_id);
+          candidate_email:   offer.candidate_email || '',
+          candidate_name:    offer.candidate_name  || '',
+          company_name:      d.company_name || '',
+          job_title:         d.designation || d.job_title || offer.job_title || '',
+          offer_expiry_date: offerLetterDate(d.offer_expiry_date),
+          joining_date:      offerLetterDate(d.joining_date),
+          ctc:               d.offered_salary ? offerRupees(d.offered_salary) : '',
+        }, offer.company_id, letter ? { attachments: [{ filename: letter.filename, content: letter.pdf, contentType: 'application/pdf' }] } : {});
       }
       return { requesterEmployeeId: offerRow.created_by, companyId: offerRow.company_id, label: 'Offer Letter' };
     }
@@ -403,6 +412,12 @@ async function rejectSourceItem(prefix, sourceId, req) {
                             AND ($2::int IS NULL OR company_id = $2) RETURNING created_by AS author, company_id`,
                    label: 'Offer Letter' },
   };
+  if (prefix === 'requisition' && !canApproveRequisition(req)) {
+    throw httpError(403, 'Only Super Admin can send back a requisition.');
+  }
+  if (prefix === 'offer' && !canApproveOffer(req)) {
+    throw httpError(403, 'Only Super Admin can send back an offer.');
+  }
   const t = tables[prefix];
   if (!t) {
     if (MODULE_DECIDED_TYPES.has(prefix)) throw moduleEndpointError(prefix);
@@ -449,6 +464,16 @@ async function decide(req, res, action) {
         ? await approveSourceItem(prefix, sourceId, req)
         : await rejectSourceItem(prefix, sourceId, req);
       await recordDecision(prefix, sourceId, Status, userId, comment, result.companyId ?? companyId);
+      // The job's timeline (job_requisition_events, migration 20261117000006).
+      if (prefix === 'requisition') {
+        await pool.query(
+          `INSERT INTO job_requisition_events
+             (company_id, requisition_id, event, from_status, to_status, comment, actor_user_id)
+           VALUES ($1, $2::integer, $3, 'pending_approval', $4, $5, $6)`,
+          [result.companyId ?? companyId, sourceId, action === 'approve' ? 'approved' : 'sent_back',
+           action === 'approve' ? 'approved' : 'draft', comment || null, userId ?? null]
+        ).catch(err => console.warn('[job timeline] decision not recorded:', err.message));
+      }
       logAudit({
         userId, module: 'approvals', recordId: sourceId, recordType: prefix, action,
         oldData: { status: 'Pending' }, newData: { status: Status, comment: comment || null }, req,

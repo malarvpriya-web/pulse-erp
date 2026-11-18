@@ -112,4 +112,24 @@ export function validateStatutoryProfile(emp, slip = {}) {
   return issues;
 }
 
+/**
+ * What the Code on Wages limits or requires of the month's figures.
+ *   s.18(3): total deductions may not exceed half of the wages
+ *   minimum wage: the full-month rate may not be below the recorded figure
+ */
+export function validateWageLimits(slip, rules = {}) {
+  const issues = [];
+  if (slip.total_deductions > slip.gross / 2) {
+    issues.push({ field: 'total_deductions', severity: 'error', code: 'DEDUCTIONS_OVER_LIMIT',
+      message: `Deductions ₹${slip.total_deductions} exceed half of gross pay ₹${slip.gross} (Code on Wages s.18(3)). Reduce the loan or advance recovery.` });
+  }
+  const min = rules['wages.minimum_monthly'];
+  const rate = (slip.earning_lines || []).reduce((t, l) => t + (Number(l.full_month) || 0), 0);
+  if (min != null && rate > 0 && rate < min) {
+    issues.push({ field: 'gross', severity: 'error', code: 'BELOW_MINIMUM_WAGE',
+      message: `Full-month pay ₹${rate} is below the recorded minimum wage ₹${min}.` });
+  }
+  return issues;
+}
+
 export const blockingIssues = (issues) => (issues || []).filter(i => i.severity === 'error');

@@ -19,6 +19,9 @@ router.post("/:id/read",  announcementController.markRead);
 // view only, so it reaches none of these. The list is gated on `add` rather than
 // `view` because it includes drafts, scheduled posts and other audiences.
 router.get("/",           requirePermission('announcements', 'add'),    announcementController.getAllAnnouncements);
+// The archive and its undo need the same right as archiving.
+router.get("/archived",   requirePermission('announcements', 'delete'), announcementController.getArchivedAnnouncements);
+router.put("/:id/restore", requirePermission('announcements', 'delete'), announcementController.restoreAnnouncement);
 router.post("/",          requirePermission('announcements', 'add'),    announcementController.createAnnouncement);
 router.put("/:id",        requirePermission('announcements', 'edit'),   announcementController.updateAnnouncement);
 router.put("/:id/toggle", requirePermission('announcements', 'edit'),   announcementController.toggleStatus);

@@ -1,4 +1,5 @@
 import express from 'express';
+import { canManageRecruitmentSetup } from '../recruitment/requisitionAccess.js';
 import pool from '../../config/db.js';
 import { companyOf } from '../../shared/scope.js';
 import { requirePermission, can } from '../../middlewares/auth.middleware.js';
@@ -150,6 +151,19 @@ const settingsGate = (action) => (req, res, next) => {
     return res.status(403).json({ error: 'Forbidden', code: 'SETTINGS_KEY_RESERVED', message: RESERVED_SETTINGS_KEYS[key] });
   }
   const permissionModule = SETTINGS_KEY_ALIAS[key] ?? key;
+  // Recruitment set-up is HR's: a department head can read it but not change
+  // it (owner decision 2026-11-18, recruitment/requisitionAccess.js).
+  if (action !== 'view' && key === 'recruitment') {
+    return requirePermission(permissionModule, action)(req, res, async (err) => {
+      if (err) return next(err);
+      try {
+        if (!(await canManageRecruitmentSetup(req))) {
+          return res.status(403).json({ error: 'Recruitment settings are managed by HR.', code: 'RECRUITMENT_SETUP_HR_ONLY' });
+        }
+        return next();
+      } catch (e) { return next(e); }
+    });
+  }
   return requirePermission(permissionModule, action)(req, res, next);
 };
 

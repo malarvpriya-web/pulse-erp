@@ -38,20 +38,6 @@ const scopeBranches = (req, startAt, alias = 'b.') => {
   return { where: ` AND ${alias}company_id = $${startAt}`, params: [cid] };
 };
 
-// Ensure branches table has branch_type column
-(async () => {
-  try {
-    await pool.query(`
-      ALTER TABLE branches
-        ADD COLUMN IF NOT EXISTS branch_type VARCHAR(50),
-        ADD COLUMN IF NOT EXISTS address     TEXT,
-        ADD COLUMN IF NOT EXISTS state       VARCHAR(100),
-        ADD COLUMN IF NOT EXISTS phone       VARCHAR(20),
-        ADD COLUMN IF NOT EXISTS email       VARCHAR(255)
-    `);
-  } catch (e) { console.error('[branchManagement] migration error:', e.message); }
-})();
-
 // GET /branches — requires at minimum a manager-level role
 router.get('/', allowRoles(...READ_ROLES), async (req, res) => {
   try {

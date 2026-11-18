@@ -144,7 +144,14 @@ router.get('/competencies', async (req, res) => {
              WHERE TRUE`;
     if (companyId)   { params.push(companyId);   q += ` AND pc.company_id = $${params.length}`; }
     if (review_id)   { params.push(review_id);   q += ` AND pc.review_id = $${params.length}`; }
-    if (employee_id) { params.push(employee_id); q += ` AND pc.employee_id = $${params.length}`; }
+    // An employee reads only their OWN competency scores. Unfiltered, this
+    // returned every employee's self and manager scores to anyone signed in
+    // (My Reviews calls it with no parameters) — same rule as /history above.
+    if (!isManagerPlus(req)) {
+      const me = await employeeOf(req, pool);
+      if (me == null) return res.json([]);
+      params.push(me); q += ` AND pc.employee_id = $${params.length}`;
+    } else if (employee_id) { params.push(employee_id); q += ` AND pc.employee_id = $${params.length}`; }
     q += ` ORDER BY pc.competency_name`;
     const { rows } = await pool.query(q, params);
     const shaped = rows.map(r => ({
@@ -165,8 +172,20 @@ router.get('/competencies', async (req, res) => {
 /* ── Save competency self-scores ── */
 router.post('/competencies', async (req, res) => {
   try {
-    const { review_id, employee_id, scores } = req.body;
+    const { review_id, scores } = req.body;
+    let { employee_id } = req.body;
     const companyId = cid(req);
+    // Self-scores are the employee's own: they could be written for any
+    // employee and any review. Pin a non-manager to their own review.
+    if (!isManagerPlus(req)) {
+      const me = await employeeOf(req, pool);
+      if (me == null) return forbidden(res);
+      const own = await pool.query(
+        `SELECT 1 FROM performance_reviews WHERE id = $1 AND employee_id = $2 AND deleted_at IS NULL`,
+        [review_id, me]);
+      if (!own.rows.length) return forbidden(res, 'You can score only your own review');
+      employee_id = me;
+    }
     for (const s of scores || []) {
       await pool.query(
         `INSERT INTO performance_competencies
@@ -205,8 +224,42 @@ router.post('/competencies/manager', async (req, res) => {
   }
 });
 
+/**
+ * Goals are SET by the manager (owner, 2026-11-11): the employee's reporting
+ * manager — or HR / admin, for anyone — adds, edits and deletes them. The
+ * employee sees their own goals and records progress (Check In); their manager
+ * may check in too. Everything stays inside the caller's company.
+ */
+async function managesEmployee(req, employeeId) {
+  const companyId = cid(req);
+  const { rows: [e] } = await pool.query(
+    `SELECT id, reporting_manager_id FROM employees
+      WHERE id = $1 AND deleted_at IS NULL AND ($2::int IS NULL OR company_id = $2)`, [employeeId, companyId]);
+  if (!e) return false;
+  if (isHRPlus(req)) return true;
+  const me = await employeeOf(req, pool);
+  return me != null && String(e.id) !== String(me) && String(e.reporting_manager_id) === String(me);
+}
+
+/** { owner, manager } for goal `id`, or null when it is not visible at all. */
+async function goalAccess(req, id) {
+  const { rows } = await pool.query(
+    `SELECT employee_id, company_id FROM performance_goals WHERE id = $1 AND deleted_at IS NULL`, [id],
+  ).catch(() => ({ rows: [] }));
+  const g = rows[0];
+  if (!g) return null;
+  const companyId = cid(req);
+  if (companyId && g.company_id != null && String(g.company_id) !== String(companyId)) return null;
+  const me = await employeeOf(req, pool);
+  const owner = me != null && String(g.employee_id) === String(me);
+  const manager = g.employee_id != null && await managesEmployee(req, g.employee_id);
+  return { owner, manager };
+}
+
 /* ── Goal check-in ── */
 router.post('/goals/:id/checkin', async (req, res) => {
+  const access = await goalAccess(req, req.params.id);
+  if (!access || !(access.owner || access.manager)) return forbidden(res, "You can check in only your own goals or your team's");
   try {
     const { achieved_value, note } = req.body;
     const pct_q = await pool.query(
@@ -216,17 +269,31 @@ router.post('/goals/:id/checkin', async (req, res) => {
     const target = Number(pct_q.rows[0]?.target_value || 1);
     const pct    = Math.min(100, Math.round((Number(achieved_value) / target) * 100));
     const status = pct >= 100 ? 'achieved' : pct < 30 ? 'at_risk' : 'active';
-    await pool.query(
-      `UPDATE performance_goals
-       SET achieved_value=$1, progress_pct=$2, status=$3, updated_at=NOW()
-       WHERE id=$4`,
-      [achieved_value, pct, status, req.params.id]
-    );
-    await pool.query(
-      `INSERT INTO goal_checkins (goal_id, achieved_value, note, checked_in_by)
-       VALUES ($1,$2,$3,$4)`,
-      [req.params.id, achieved_value, note || null, uid(req)]
-    );
+    // goal_checkins.checked_in_by references employees(id); this passed the
+    // LOGIN id, so every check-in hit the FK and 500'd — after the goal row had
+    // already been updated. Employee id now, and both writes in one transaction.
+    const checkedInBy = await employeeOf(req, pool);
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(
+        `UPDATE performance_goals
+         SET achieved_value=$1, progress_pct=$2, status=$3, updated_at=NOW()
+         WHERE id=$4`,
+        [achieved_value, pct, status, req.params.id]
+      );
+      await client.query(
+        `INSERT INTO goal_checkins (goal_id, achieved_value, note, checked_in_by)
+         VALUES ($1,$2,$3,$4)`,
+        [req.params.id, achieved_value, note || null, checkedInBy]
+      );
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw e;
+    } finally {
+      client.release();
+    }
     const { rows } = await pool.query(
       `SELECT * FROM performance_goals WHERE id=$1`, [req.params.id]
     );
@@ -238,6 +305,7 @@ router.post('/goals/:id/checkin', async (req, res) => {
 
 /* ── Delete goal (soft) ── */
 router.delete('/goals/:id', captureBefore('performance_goals'), async (req, res) => {
+  if (!(await goalAccess(req, req.params.id))?.manager) return forbidden(res, 'Goals are deleted by your manager');
   try {
     const companyId = cid(req);
     const params    = [req.params.id];
@@ -305,10 +373,19 @@ router.post('/reviews/:id/self-review', async (req, res) => {
 
     // RBAC: only the employee who owns the review can submit self-review
     const { rows: check } = await pool.query(
-      `SELECT employee_id FROM performance_reviews WHERE id=$1${companyId ? ' AND company_id=$2' : ''}`,
+      `SELECT employee_id, status FROM performance_reviews WHERE id=$1${companyId ? ' AND company_id=$2' : ''}`,
       companyId ? [req.params.id, companyId] : [req.params.id]
     );
     if (!check.length) return res.status(404).json({ error: 'Review not found' });
+    // Once the manager has reviewed it, the self-assessment is part of the
+    // record and no longer the employee's to rewrite.
+    if (['manager_submitted', 'completed'].includes(check[0].status)) {
+      const msg = 'Your manager has already reviewed this; the self-assessment can no longer be changed.';
+      return res.status(409).json({ error: msg, message: msg, code: 'REVIEW_LOCKED' });
+    }
+    if (self_rating == null || self_rating === '') {
+      return res.status(400).json({ error: 'Self rating is required', message: 'Self rating is required', code: 'RATING_REQUIRED' });
+    }
     // Owner only, whatever roles the caller holds: a self-review is the
     // employee's own assessment. HR corrects a review through PUT /reviews/:id.
     // review.employee_id is an employees.id, so it is compared with the
@@ -341,8 +418,74 @@ router.post('/reviews/:id/self-review', async (req, res) => {
 });
 
 /* ── Manager review submit ── */
+/**
+ * May the caller submit the manager review of `review`? (2026-11-11)
+ * Never their own. HR / admin: any review in the company. Anyone else — the
+ * manager role included — only as the employee's reporting manager or the
+ * manager named on the review. Before this, any `manager`-role login could
+ * review anybody (itself too), while a team lead on the plain employee role
+ * could review nobody, not even their own reports.
+ */
+async function managerReviewProblem(req, reviewId) {
+  const companyId = cid(req);
+  const { rows: [r] } = await pool.query(
+    `SELECT pr.employee_id, pr.manager_id, pr.status, e.reporting_manager_id
+       FROM performance_reviews pr JOIN employees e ON e.id = pr.employee_id
+      WHERE pr.id = $1 AND pr.deleted_at IS NULL AND ($2::int IS NULL OR pr.company_id = $2)`,
+    [reviewId, companyId]);
+  if (!r) return { status: 404, error: 'Review not found' };
+  const me = await employeeOf(req, pool);
+  if (me != null && String(r.employee_id) === String(me)) {
+    return { status: 403, error: 'You cannot submit the manager review of your own review', code: 'SELF_REVIEW' };
+  }
+  const hr = isHRPlus(req);
+  if (!hr && me == null) {
+    return { status: 400, error: 'Your login is not linked to an employee record, so it cannot submit a manager review.', code: 'NO_LINKED_EMPLOYEE' };
+  }
+  const theirManager = me != null && (String(r.reporting_manager_id) === String(me) || String(r.manager_id) === String(me));
+  if (!hr && !theirManager) return { status: 403, error: 'Only this employee\'s manager can review them', code: 'NOT_THEIR_MANAGER' };
+  if (r.status === 'completed') return { status: 409, error: 'This review is already finalised', code: 'REVIEW_FINAL' };
+  if (!hr && !['self_submitted', 'pending_manager_review', 'manager_submitted'].includes(r.status)) {
+    return { status: 409, error: 'The employee has not submitted their self-assessment yet', code: 'SELF_NOT_SUBMITTED' };
+  }
+  return null;
+}
+
+/* ── Reviews of the caller's team (reporting line / named manager) ── */
+router.get('/team-reviews', async (req, res) => {
+  try {
+    const me = await employeeOf(req, pool);
+    if (me == null) return res.json([]);
+    const companyId = cid(req);
+    // The latest review of each team member, newest cycle first.
+    const { rows } = await pool.query(
+      `SELECT DISTINCT ON (pr.employee_id)
+              pr.id, pr.employee_id, pr.status, pr.review_period, pr.self_rating, pr.self_comments,
+              pr.achievements, pr.challenges, pr.learnings, pr.next_goals, pr.self_submitted_at,
+              pr.manager_rating, pr.final_rating, pr.manager_comments, pr.kra_score, pr.behavioral_score,
+              pr.promotion_recommendation, pr.salary_revision_percentage, pr.manager_submitted_at,
+              e.name AS employee_name, e.designation, e.department,
+              rc.name AS cycle_name, rc.manager_review_deadline
+         FROM performance_reviews pr
+         JOIN employees e ON e.id = pr.employee_id
+         LEFT JOIN review_cycles rc ON rc.id = pr.review_cycle_id
+        WHERE pr.deleted_at IS NULL AND pr.employee_id <> $1
+          AND (e.reporting_manager_id = $1 OR pr.manager_id = $1)
+          AND ($2::int IS NULL OR pr.company_id = $2)
+        ORDER BY pr.employee_id, pr.created_at DESC`,
+      [me, companyId]);
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.post('/reviews/:id/manager-review', async (req, res) => {
-  if (!isManagerPlus(req)) return forbidden(res);
+  const blocked = await managerReviewProblem(req, req.params.id).catch(e => ({ status: 500, error: e.message }));
+  if (blocked) return res.status(blocked.status).json({ error: blocked.error, message: blocked.error, code: blocked.code });
+  if (req.body.manager_rating == null || req.body.manager_rating === '' || req.body.final_rating == null || req.body.final_rating === '') {
+    return res.status(400).json({ error: 'Manager rating and final rating are required', code: 'RATING_REQUIRED' });
+  }
   const { manager_rating, manager_comments, kra_score, behavioral_score,
           final_rating, promotion_recommendation, salary_revision_percentage } = req.body;
   // Both columns are numeric(3,1): one decimal is kept, more would be rounded
@@ -478,8 +621,21 @@ router.post('/reviews/:id/finalize', async (req, res) => {
 router.get('/goals', async (req, res) => {
   try {
     const filters = { ...req.query, company_id: cid(req) };
-    // Non-managers can only see their own goals
-    if (!isManagerPlus(req)) filters.employee_id = uid(req);
+    // With no employee_id: the caller's OWN goals — for everyone. (A manager or
+    // admin used to get every goal in the company here, so their own review
+    // counted the whole company's goals as theirs.) With an employee_id: that
+    // person's goals, for the person, their manager or HR. Linked employee id,
+    // never the login id.
+    const me = await employeeOf(req, pool);
+    if (req.query.employee_id != null && req.query.employee_id !== '') {
+      const target = Number(req.query.employee_id);
+      const allowed = (me != null && String(target) === String(me)) || await managesEmployee(req, target);
+      if (!allowed) return forbidden(res, "You can see only your own goals or your team's");
+      filters.employee_id = target;
+    } else {
+      if (me == null) return res.json([]);
+      filters.employee_id = me;
+    }
     const goals = await performanceRepository.findGoals(filters);
     res.json(goals);
   } catch (error) {
@@ -489,14 +645,43 @@ router.get('/goals', async (req, res) => {
 
 router.post('/goals', async (req, res) => {
   try {
-    const goal = await performanceRepository.createGoal({ ...req.body, company_id: cid(req) });
+    const body = { ...req.body, company_id: cid(req) };
+    const target = Number(body.employee_id);
+    if (!Number.isInteger(target) || target <= 0) {
+      return res.status(400).json({ error: 'Choose the team member this goal is for', code: 'EMPLOYEE_REQUIRED' });
+    }
+    if (!(await managesEmployee(req, target))) {
+      return forbidden(res, "Goals are set by the employee's manager");
+    }
+    body.employee_id = target;
+    const goal = await performanceRepository.createGoal(body);
     res.status(201).json(goal);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
+/* ── Who the caller sets goals for: direct reports; HR / admin: everyone ── */
+router.get('/my-team', async (req, res) => {
+  try {
+    const companyId = cid(req);
+    const me = await employeeOf(req, pool);
+    const hr = isHRPlus(req);
+    if (!hr && me == null) return res.json([]);
+    const { rows } = await pool.query(
+      `SELECT id, name, designation, department FROM employees
+        WHERE deleted_at IS NULL AND ($1::int IS NULL OR company_id = $1)
+          AND ($2::boolean OR reporting_manager_id = $3)
+          AND ($3::int IS NULL OR id <> $3 OR $2::boolean)
+        ORDER BY name`, [companyId, hr, me]);
+    res.json(rows);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 router.put('/goals/:id', async (req, res) => {
+  if (!(await goalAccess(req, req.params.id))?.manager) return forbidden(res, 'Goals are set and changed by your manager');
   try {
     const goal = await performanceRepository.updateGoal(req.params.id, req.body);
     res.json(goal);

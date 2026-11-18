@@ -25,9 +25,10 @@
 
 /* KPI Cards */
 .prob-kpi-row {
-  display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px;
+  display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px;
   margin-bottom: 24px;
 }
+@media (max-width: 1100px) { .prob-kpi-row { grid-template-columns: repeat(3,1fr); } }
 @media (max-width: 900px) { .prob-kpi-row { grid-template-columns: repeat(2,1fr); } }
 @media (max-width: 520px) { .prob-kpi-row { grid-template-columns: 1fr; } }
 
@@ -199,7 +200,7 @@
 @keyframes prob-bg-in { from { opacity: 0; } to { opacity: 1; } }
 
 .prob-modal {
-  background: #fff; border-radius: 20px; width: min(520px, 100%);
+  background: #fff; border-radius: 20px; width: min(440px, 100%);
   box-shadow: 0 20px 60px rgba(0,0,0,.22);
   animation: prob-modal-in .22s cubic-bezier(.34,1.56,.64,1);
   overflow: hidden;
@@ -357,13 +358,13 @@
 
 /* Decision modal */
 .prob-dec-modal {
-  background: #fff; border-radius: 20px; width: min(440px, 100%);
+  background: #fff; border-radius: 20px; width: min(520px, 100%);
   box-shadow: 0 20px 60px rgba(0,0,0,.22);
   animation: prob-modal-in .22s cubic-bezier(.34,1.56,.64,1);
   overflow: hidden;
 }
 .prob-dec-head {
-  background: linear-gradient(135deg, #1d4ed8 0%, #1e40af 100%);
+  background: linear-gradient(135deg, #6B3FDB 0%, #5B35D5 100%);
   padding: 18px 24px; color: #fff;
   display: flex; align-items: center; justify-content: space-between;
 }
@@ -421,3 +422,57 @@
 .prob-rv-stale .prob-dh-flag { margin-left: 0; justify-self: start; }
 .prob-rv-edit { display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .prob-rv-edit input { padding: 4px 6px; border: 1px solid #d1d5db; border-radius: 6px; min-width: 180px; }
+
+/* ── One decision path (2026-11-11) ───────────────────────────────────── */
+/* Views: On Probation · Open Reviews · History */
+.prob-views { display: flex; gap: 6px; margin: 4px 0 16px; border-bottom: 1px solid #ece9f8; flex-wrap: wrap; }
+.prob-view {
+  display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; margin-bottom: -1px;
+  background: none; border: 0; border-bottom: 2px solid transparent;
+  font-size: 13px; font-weight: 600; color: #6b7280; cursor: pointer;
+}
+.prob-view:hover { color: #6B3FDB; }
+.prob-view.active { color: #6B3FDB; border-bottom-color: #6B3FDB; }
+.prob-view .prob-tab-count { background: #f3f4f6; color: #374151; }
+.prob-view.active .prob-tab-count { background: #ede9fe; color: #5b21b6; }
+
+/* Employees who cannot be sent for review */
+.prob-banner {
+  display: flex; align-items: flex-start; gap: 10px; margin: 0 0 14px; padding: 10px 14px;
+  border: 1px solid #fde68a; background: #fffbeb; color: #92400e; border-radius: 10px; font-size: 12px;
+}
+.prob-banner > svg { flex: none; margin-top: 2px; }
+.prob-banner > div { flex: 1; min-width: 0; }
+.prob-banner ul { margin: 4px 0 0; padding-left: 16px; }
+.prob-banner .prob-hist-action-btn { flex: none; border-color: #b45309; color: #b45309; }
+.prob-banner .prob-hist-action-btn:hover { background: #b45309; color: #fff; }
+
+/* Review state on a card */
+.prob-card-review { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 10px 0 0; flex-wrap: wrap; }
+.prob-review-chip {
+  display: inline-block; padding: 3px 9px; border-radius: 999px; font-size: 11px; font-weight: 600;
+  background: #f5f3ff; color: #5b21b6;
+}
+.prob-review-chip.is-submitted { background: #fef3c7; color: #92400e; }
+.prob-review-chip.is-overdue { background: #fee2e2; color: #b91c1c; }
+.prob-review-chip.is-none { background: #f3f4f6; color: #6b7280; }
+.prob-card-cta { padding: 5px 12px; font-size: 12px; }
+.prob-card-cta:disabled { opacity: .5; cursor: not-allowed; }
+.prob-card-blocked { margin-top: 6px; font-size: 11px; color: #92400e; }
+
+/* HR decision modal */
+.prob-dec-modal { max-height: calc(100vh - 32px); display: flex; flex-direction: column; }
+.prob-dec-modal .prob-dec-body { overflow-y: auto; }
+.prob-dec-summary {
+  padding: 10px 12px; border-radius: 10px; background: #faf9ff; border: 1px solid #ede9fe;
+  font-size: 12px; color: #374151; display: flex; flex-direction: column; gap: 4px;
+}
+.prob-dec-summary-head { font-weight: 700; color: #111827; }
+.prob-dec-comments { margin: 2px 0 0; white-space: pre-wrap; color: #4b5563; }
+.prob-hist-decision-not_confirmed { background: #fee2e2; color: #b91c1c; }
+
+/* Reminder log: four columns now that decisions are gone */
+.prob-hist-row.prob-hist-row--log { grid-template-columns: 2fr 1.5fr 1.2fr 1fr; }
+.prob-hist-action-btn.prob-rv-cancel { border-color: #d1d5db; color: #6b7280; }
+.prob-hist-action-btn.prob-rv-cancel:hover { background: #fef2f2; border-color: #b91c1c; color: #b91c1c; }
+.prob-hist-action-btn svg { vertical-align: -2px; }

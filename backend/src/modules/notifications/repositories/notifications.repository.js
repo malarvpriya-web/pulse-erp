@@ -22,25 +22,50 @@ import { sendNotificationEmail, isEmailConfigured } from '../../../utils/mailer.
  * the company the person belongs to — so it is read from the users row below and
  * the hint is only a fallback for a user row that carries no company.
  */
-async function dispatchRuleChannels(userId, eventKey, title, message, companyId = null) {
+/**
+ * The recipient's company, by the same links RECIPIENT_IN_COMPANY trusts:
+ * users.company_id, then the linked employee's company, then — only if the
+ * login actually belongs to it — the caller's hint (a user_scope row), then a
+ * single user_scope company. It used to be users.company_id alone, which is NULL
+ * on 24 of 36 linked logins, so their rule lookup matched nothing and an
+ * email-enabled event silently skipped them.
+ */
+export async function recipientCompany(userId, hint = null, db = pool) {
+  const { rows } = await db.query(
+    `SELECT u.email, u.company_id AS user_company, e.company_id AS employee_company,
+            ARRAY(SELECT rs.company_id FROM user_scope rs
+                   WHERE rs.user_id = u.id AND rs.company_id IS NOT NULL
+                   ORDER BY rs.company_id) AS scope_companies
+       FROM users u
+       LEFT JOIN employees e ON e.id = u.employee_id
+      WHERE u.id = $1`,
+    [userId]);
+  const r = rows[0];
+  if (!r) return { email: null, companyId: null };
+  const scopes = (r.scope_companies || []).map(Number);
+  const hinted = hint != null && scopes.includes(Number(hint)) ? Number(hint) : null;
+  const companyId = r.user_company ?? r.employee_company ?? hinted
+    ?? (new Set(scopes).size === 1 ? scopes[0] : null);
+  return { email: r.email || null, companyId: companyId == null ? null : Number(companyId) };
+}
+
+export async function dispatchRuleChannels(userId, eventKey, title, message, companyId = null) {
+  const { email: toEmail, companyId: recipientCid } = await recipientCompany(userId, companyId);
+  if (!toEmail || recipientCid == null) return;
+
   const { rows } = await pool.query(
     `SELECT nr.channel
      FROM notification_rules nr
-     JOIN users u ON u.company_id = nr.company_id
-     WHERE u.id = $1 AND nr.event_key = $2 AND nr.enabled = true
+     WHERE nr.company_id = $1 AND nr.event_key = $2 AND nr.enabled = true
      LIMIT 1`,
-    [userId, eventKey]
+    [recipientCid, eventKey]
   );
   const channels = (rows[0]?.channel || '').split(',').map((c) => c.trim());
   if (!channels.includes('email')) return;
+  // SMTP of the company the person belongs to (see the note above).
+  if (!(await isEmailConfigured(recipientCid))) return;
 
-  const { rows: userRows } = await pool.query(`SELECT email, company_id FROM users WHERE id = $1`, [userId]);
-  const toEmail = userRows[0]?.email;
-  if (!toEmail) return;
-
-  await sendNotificationEmail(toEmail, {
-    title, message, companyId: userRows[0]?.company_id ?? companyId,
-  });
+  await sendNotificationEmail(toEmail, { title, message, companyId: recipientCid });
 }
 
 /**
@@ -109,9 +134,11 @@ const notificationsRepository = {
       }).catch(() => {});
     }
     const resolvedEventKey = event_key || (module_name && notification_type ? `${module_name}.${notification_type}` : null);
-    // await: see mailer.isEmailConfigured — un-awaited it is a truthy Promise.
-    if ((await isEmailConfigured(company_id)) && user_id != null && resolvedEventKey) {
-      dispatchRuleChannels(user_id, resolvedEventKey, title, message, company_id).catch(() => {});
+    // The SMTP check now happens inside, against the RECIPIENT's company: checking
+    // the caller's hint here skipped everyone whenever the hint was null.
+    if (user_id != null && resolvedEventKey) {
+      dispatchRuleChannels(user_id, resolvedEventKey, title, message, company_id)
+        .catch((err) => console.error('[notifications] email channel failed:', err.message));
     }
   },
 

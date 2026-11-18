@@ -68,7 +68,7 @@ const CATEGORIES = [
       { label: 'Payslip Generator',    page: 'PayslipGenerator',   desc: 'Payslip template and PDF generation',      status: 'configured' },
       { label: 'TDS Management',       page: 'TDSManagement',      desc: 'Tax deduction and Form 16 setup',          status: 'configured' },
     ],
-    wizard: 'PayrollSetupWizard',
+    wizard: null,
   },
   {
     id: 'inventory', label: 'Inventory', icon: Package, color: '#6B3FDB',

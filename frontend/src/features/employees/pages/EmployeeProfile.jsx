@@ -5,6 +5,12 @@ import { useToast } from '@/context/ToastContext';
 import { PageHero, PageShell } from '@/components/pulse-ui';
 import { openEmployeeFile, downloadEmployeeFile, loadEmployeeImage, probeEmployeeFiles, isExternalUrl, EMPLOYEE_DOC_FIELDS } from '../shared/employeeFiles';
 import PhotoLightbox from '../shared/PhotoLightbox';
+import RequestChangeDialog, { SECTION_FOR_TAB } from '@/components/RequestChangeDialog';
+import SelfTaxCard from '@/components/SelfTaxCard';
+import MyChangeRequests from '@/components/MyChangeRequests';
+import EditExitDetailsModal from '@/features/hr/components/EditExitDetailsModal';
+import ExitClearanceBlock from '@/features/hr/components/ExitClearanceBlock';
+import { hasLeft } from '@/features/hr/exitLetters';
 // The same money/date/badge helpers the BGV pages use, so this summary cannot
 // say something the BGV page contradicts.
 import { badgeFor as bgvBadge, money as bgvMoney, shortDate as bgvDate, requiredProgressLabel as bgvProgress } from '../bgv';
@@ -20,6 +26,10 @@ const BORDER = '#e9e4ff';
 // the general Documents tab is not, and this tab is a SUMMARY plus a way in, not
 // a second place to do the work.
 const BASE_TABS = ['Overview', 'Personal', 'Job', 'Payroll', 'Documents', 'Assets', 'Onboarding', 'Background Verification', 'History', 'Notes'];
+// Self view (HR > Self Service > My Details, 2026-11-11): the employee's own
+// record, read-only. Background verification, HR notes and the onboarding
+// checklist (owner, 2026-11-11) are HR's, not shown.
+const SELF_HIDDEN_TABS = new Set(['Background Verification', 'Notes', 'Exit Details', 'Onboarding']);
 
 // NOTE: InfoRow and Card are defined at module scope (not inside the component)
 // so their identity is stable across renders. Defining them inline would make
@@ -45,103 +55,11 @@ const Card = ({ title, children }) => (
 const EX_STATUSES = new Set(['left','terminated','resigned','inactive','ex-employee','notice','notice_period','notice period']);
 function isExStatus(s) { return EX_STATUSES.has((s || '').toLowerCase()); }
 
-const SEPARATION_OPTIONS = [
-  { value: 'resignation',  label: 'Resignation' },
-  { value: 'termination',  label: 'Termination' },
-  { value: 'retirement',   label: 'Retirement' },
-  { value: 'contract_end', label: 'Contract End' },
-  { value: 'attrition',    label: 'Attrition' },
-];
 
-// ── Offboard Modal ────────────────────────────────────────────────────────────
-function OffboardModal({ employee, onClose, onDone }) {
-  const today = new Date().toISOString().slice(0, 10);
-  const toast = useToast();
-  const [form, setForm] = useState({
-    separation_type: 'resignation',
-    last_working_date: today,
-    notice_period: '',
-    reason: '',
-  });
-  const [saving, setSaving] = useState(false);
-  const [err,    setErr]    = useState('');
-
-  async function submit() {
-    if (!form.last_working_date) { setErr('Last working date is required'); return; }
-    setSaving(true); setErr('');
-    try {
-      await api.post(`/employees/${employee.id}/offboard`, {
-        ...form,
-        notice_period: form.notice_period ? Number(form.notice_period) : undefined,
-      });
-      onDone();
-      onClose();
-    } catch (e) {
-      setErr(e.response?.data?.error || 'Offboard failed');
-    } finally { setSaving(false); }
-  }
-
-  const inp = {
-    padding: '8px 10px', border: `1px solid ${BORDER}`, borderRadius: 7,
-    fontSize: 13, width: '100%', boxSizing: 'border-box',
-  };
-
-  return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.5)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <div style={{ background: '#fff', borderRadius: 14, width: 460, padding: 28, boxShadow: '0 24px 64px rgba(0,0,0,.22)' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-          <h3 style={{ margin: 0, fontSize: 17, fontWeight: 700, color: '#111827' }}>Initiate Offboarding</h3>
-          <button onClick={onClose} style={{ border: 'none', background: 'none', cursor: 'pointer', fontSize: 20, color: '#6b7280' }}>×</button>
-        </div>
-        <p style={{ margin: '0 0 20px', fontSize: 13, color: '#6b7280' }}>
-          <strong>{employee.first_name} {employee.last_name}</strong> · {employee.designation} · {employee.department}
-        </p>
-
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-          <div>
-            <label style={{ fontSize: 12, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 4 }}>Separation Type *</label>
-            <select value={form.separation_type} onChange={e => setForm(f => ({ ...f, separation_type: e.target.value }))} style={inp}>
-              {SEPARATION_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-            </select>
-          </div>
-          <div>
-            <label style={{ fontSize: 12, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 4 }}>Last Working Date *</label>
-            <input type="date" value={form.last_working_date}
-              onChange={e => setForm(f => ({ ...f, last_working_date: e.target.value }))}
-              style={inp} />
-          </div>
-          <div>
-            <label style={{ fontSize: 12, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 4 }}>Notice Period (days)</label>
-            <input type="number" min="0" value={form.notice_period}
-              onChange={e => setForm(f => ({ ...f, notice_period: e.target.value }))}
-              placeholder="e.g. 60"
-              style={inp} />
-          </div>
-          <div>
-            <label style={{ fontSize: 12, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 4 }}>Reason / Notes</label>
-            <textarea rows={3} value={form.reason}
-              onChange={e => setForm(f => ({ ...f, reason: e.target.value }))}
-              placeholder="Brief reason for separation…"
-              style={{ ...inp, resize: 'vertical' }} />
-          </div>
-        </div>
-
-        {err && <p style={{ margin: '10px 0 0', color: '#b91c1c', fontSize: 12 }}>{err}</p>}
-
-        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 22 }}>
-          <button onClick={onClose} style={{ padding: '9px 18px', border: `1px solid ${BORDER}`, borderRadius: 8, background: '#fff', fontSize: 13, cursor: 'pointer' }}>Cancel</button>
-          <button onClick={submit} disabled={saving} style={{
-            padding: '9px 18px', border: 'none', borderRadius: 8,
-            background: '#dc2626', color: '#fff', fontSize: 13, fontWeight: 700,
-            cursor: saving ? 'default' : 'pointer', opacity: saving ? .7 : 1,
-          }}>
-            {saving ? 'Processing…' : 'Confirm Offboarding'}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
+// Offboard: hands the exit to Exit Management → Initiate Exit, pre-filled, the
+// same hand-off All Employees uses (exitHandOff.js). This page had its own
+// weaker form (no resignation date, no notice default, last day = UTC today)
+// until 2026-11-17.
 
 
 // ── Manage Checklist ──────────────────────────────────────────────────────────
@@ -372,7 +290,13 @@ function ManageChecklistModal({ onClose, onChanged }) {
   );
 }
 
-export default function EmployeeProfile({ employee: employeeProp, setPage, setSelectedEmployee: _setSelectedEmployee, urlParams }) {
+/**
+ * @param {boolean} [props.selfView] the signed-in employee looking at their OWN
+ *   record (My Details): no Offboard / Edit Employee / checklist controls, no
+ *   BGV or Notes tabs, and a "Request change" button that raises a Record
+ *   correction ticket to HR or Finance instead.
+ */
+export default function EmployeeProfile({ employee: employeeProp, setPage, setSelectedEmployee: _setSelectedEmployee, urlParams, selfView = false }) {
   const toast = useToast();
 
   const [employee, setEmployee] = useState(employeeProp || null);
@@ -390,9 +314,8 @@ export default function EmployeeProfile({ employee: employeeProp, setPage, setSe
   );
   const [notesList, setNotesList] = useState([]);
   const [notesLoading, setNotesLoading] = useState(false);
-  const [showOffboardModal, setShowOffboardModal] = useState(false);
   const [exitData, setExitData] = useState(null);
-  const [clearanceData, setClearanceData] = useState(null);
+  const [clearanceHistory, setClearanceHistory] = useState([]);
   const [docRecords, setDocRecords] = useState([]);
   const [assetRecords, setAssetRecords] = useState([]);
   const [assetLoading, setAssetLoading] = useState(false);
@@ -416,11 +339,9 @@ export default function EmployeeProfile({ employee: employeeProp, setPage, setSe
   const [bgv, setBgv] = useState(undefined);
   const [bgvDenied, setBgvDenied] = useState(false);
   const [manageChecklist, setManageChecklist] = useState(false);
-  const [clearanceSaving, setClearanceSaving] = useState(false);
   const [showExitEdit, setShowExitEdit] = useState(false);
-  const [exitEditForm, setExitEditForm] = useState({ separation_type: '', last_working_date: '', exit_reason: '' });
-  const [savingExit,   setSavingExit]   = useState(false);
-  const [exitEditErr,  setExitEditErr]  = useState('');
+  const [requestOpen,  setRequestOpen]  = useState(false);
+  const [requestsTick, setRequestsTick] = useState(0);   // reloads the self view's request list
 
   useEffect(() => {
     isMounted.current = true;
@@ -462,40 +383,13 @@ export default function EmployeeProfile({ employee: employeeProp, setPage, setSe
   };
 
   useEffect(() => {
-    if (employee?.id) fetchNotes();
+    // HR notes are HR's — never fetched for the employee's own view.
+    if (employee?.id && !selfView) fetchNotes();
   }, [employee?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const openExitEdit = () => {
-    setExitEditForm({
-      separation_type:   exitData?.separation_type || employee?.separation_type || '',
-      last_working_date: exitData?.last_working_date
-        ? exitData.last_working_date.slice(0, 10)
-        : (employee?.exit_date ? String(employee.exit_date).slice(0, 10) : ''),
-      exit_reason: exitData?.reason || employee?.exit_reason || '',
-    });
-    setExitEditErr('');
-    setShowExitEdit(true);
-  };
-
-  const saveExitDetails = async () => {
-    setSavingExit(true); setExitEditErr('');
-    try {
-      await api.patch(`/employees/ex/${employee.id}/exit-details`, {
-        separation_type:   exitEditForm.separation_type   || null,
-        last_working_date: exitEditForm.last_working_date || null,
-        exit_date:         exitEditForm.last_working_date || null,
-        exit_reason:       exitEditForm.exit_reason       || null,
-      });
-      const r = await api.get(`/exit/employee/${employee.id}`);
-      if (isMounted.current) {
-        setExitData(r.data?.exit_request ?? null);
-        setClearanceData(r.data?.clearance ?? null);
-      }
-      setShowExitEdit(false);
-    } catch (e) {
-      setExitEditErr(e.response?.data?.error || 'Save failed');
-    } finally { setSavingExit(false); }
-  };
+  const reloadExit = () => api.get(`/exit/employee/${employee.id}`)
+    .then(r => { if (isMounted.current) setExitData(r.data?.exit_request ?? null); })
+    .catch(() => {});
 
   // Load exit request + clearance data when viewing an ex-employee
   useEffect(() => {
@@ -505,9 +399,12 @@ export default function EmployeeProfile({ employee: employeeProp, setPage, setSe
       .then(r => {
         if (!isMounted.current) return;
         setExitData(r.data?.exit_request ?? null);
-        setClearanceData(r.data?.clearance ?? null);
       })
       .catch(() => { if (isMounted.current) toast.error('Could not load exit data'); });
+    // Earlier exits' clearance, archived when a later exit started (B7).
+    api.get(`/exit/clearance/${employee.id}/history`)
+      .then(r => { if (isMounted.current) setClearanceHistory(Array.isArray(r.data) ? r.data : []); })
+      .catch(() => { if (isMounted.current) setClearanceHistory([]); });
   }, [employee?.id, employee?.status]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Load supplemental document records from employee_documents table
@@ -679,13 +576,13 @@ export default function EmployeeProfile({ employee: employeeProp, setPage, setSe
     return (
       <div style={{ padding: 40, textAlign: 'center', color: '#6b7280' }}>
         {fetchError || 'No employee selected.'}{' '}
-        <button onClick={() => setPage('EmployeesData')} style={{ color: P, background: 'none', border: 'none', cursor: 'pointer', fontWeight: 600 }}>Go back</button>
+        {!selfView && <button onClick={() => setPage('EmployeesData')} style={{ color: P, background: 'none', border: 'none', cursor: 'pointer', fontWeight: 600 }}>Go back</button>}
       </div>
     );
   }
 
   const isEx  = isExStatus(employee.status);
-  const TABS  = isEx ? [...BASE_TABS, 'Exit Details'] : BASE_TABS;
+  const TABS  = (isEx ? [...BASE_TABS, 'Exit Details'] : BASE_TABS).filter(t => !(selfView && SELF_HIDDEN_TABS.has(t)));
 
 
   const fmtDate = (d) => d ? new Date(d.split('T')[0] + 'T00:00:00').toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—';
@@ -703,7 +600,7 @@ export default function EmployeeProfile({ employee: employeeProp, setPage, setSe
     <PageShell dock={
       <PageHero
         icon={AvatarChip}
-        eyebrow="Employees"
+        eyebrow={selfView ? 'My Details' : 'Employees'}
         // `${first}${last}` with no separator — the header read "MalarNatesh".
         title={employeeName}
         subtitle={[employee.office_id, employee.designation, employee.department].filter(Boolean).join(' · ') || null}
@@ -712,9 +609,17 @@ export default function EmployeeProfile({ employee: employeeProp, setPage, setSe
         // to List"), so the screen offered two. Removing the page copy is what
         // makes this page match the rest of the app — the Topbar's own Back is
         // untouched, and no per-page suppression is involved.
-        actions={<>
+        actions={selfView ? <>
+          {/* The employee changes nothing here — HR / Finance do, on request. */}
+          <button className="plh-cta" onClick={() => setRequestOpen(true)}>
+            ✉️ Request change
+          </button>
+        </> : <>
           {!isEx && (
-              <button className="plh-cta plh-cta--ghost" onClick={() => setShowOffboardModal(true)}>
+              <button className="plh-cta plh-cta--ghost" onClick={() => setPage('ExitCenter', {
+                tab: 'exit', initiate: String(employee.id),
+                name: `${employee.first_name || ''} ${employee.last_name || ''}`.trim(),
+              })}>
                 🚪 Offboard
               </button>
             )}
@@ -729,50 +634,27 @@ export default function EmployeeProfile({ employee: employeeProp, setPage, setSe
       />
     }>
 
-      {/* Edit Exit Details modal */}
+      {/* Edit Exit Details: the shared dialog (also on Ex-Employees). */}
       {showExitEdit && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.45)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <div style={{ background: '#fff', borderRadius: 12, width: 440, padding: 24, boxShadow: '0 20px 60px rgba(0,0,0,.2)' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-              <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: '#111827' }}>Edit Exit Details</h3>
-              <button onClick={() => setShowExitEdit(false)} style={{ border: 'none', background: 'none', cursor: 'pointer', fontSize: 20, color: '#6b7280' }}>×</button>
-            </div>
-            <p style={{ margin: '0 0 16px', fontSize: 13, color: '#6b7280' }}>
-              {employee.first_name} {employee.last_name} · {employee.office_id}
-            </p>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              <div>
-                <label style={{ fontSize: 12, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 4 }}>Separation Type</label>
-                <select value={exitEditForm.separation_type}
-                  onChange={e => setExitEditForm(f => ({ ...f, separation_type: e.target.value }))}
-                  style={{ padding: '7px 10px', border: `1px solid ${BORDER}`, borderRadius: 7, fontSize: 13, width: '100%', boxSizing: 'border-box' }}>
-                  <option value="">— Not specified —</option>
-                  {SEPARATION_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-                </select>
-              </div>
-              <div>
-                <label style={{ fontSize: 12, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 4 }}>Last Working Date</label>
-                <input type="date" value={exitEditForm.last_working_date}
-                  onChange={e => setExitEditForm(f => ({ ...f, last_working_date: e.target.value }))}
-                  style={{ padding: '7px 10px', border: `1px solid ${BORDER}`, borderRadius: 7, fontSize: 13, width: '100%', boxSizing: 'border-box' }} />
-              </div>
-              <div>
-                <label style={{ fontSize: 12, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 4 }}>Exit Reason / Details</label>
-                <textarea rows={3} value={exitEditForm.exit_reason}
-                  onChange={e => setExitEditForm(f => ({ ...f, exit_reason: e.target.value }))}
-                  placeholder="Reason for leaving…"
-                  style={{ padding: '7px 10px', border: `1px solid ${BORDER}`, borderRadius: 7, fontSize: 13, width: '100%', boxSizing: 'border-box', resize: 'vertical' }} />
-              </div>
-            </div>
-            {exitEditErr && <p style={{ margin: '12px 0 0', color: '#b91c1c', fontSize: 12 }}>{exitEditErr}</p>}
-            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 20 }}>
-              <button onClick={() => setShowExitEdit(false)} style={{ padding: '8px 16px', border: `1px solid ${BORDER}`, borderRadius: 7, background: '#fff', fontSize: 13, cursor: 'pointer' }}>Cancel</button>
-              <button onClick={saveExitDetails} disabled={savingExit} style={{ padding: '8px 16px', border: 'none', borderRadius: 7, background: P, color: '#fff', fontSize: 13, fontWeight: 600, cursor: savingExit ? 'default' : 'pointer', opacity: savingExit ? .7 : 1 }}>
-                {savingExit ? 'Saving…' : 'Save Changes'}
-              </button>
-            </div>
-          </div>
-        </div>
+        <EditExitDetailsModal
+          employee={employee}
+          initial={{
+            separation_type: exitData?.separation_type || employee?.separation_type,
+            last_working_date: exitData?.last_working_date || employee?.exit_date,
+            exit_reason: exitData?.reason || employee?.exit_reason,
+          }}
+          onClose={() => setShowExitEdit(false)}
+          onSaved={reloadExit}
+        />
+      )}
+
+      {/* Request change (self view) — a Record correction ticket to HR / Finance. */}
+      {selfView && requestOpen && (
+        <RequestChangeDialog
+          initialSection={SECTION_FOR_TAB[activeTab] || 'Personal'}
+          onClose={() => setRequestOpen(false)}
+          onSent={(t, to) => { setRequestOpen(false); setRequestsTick(v => v + 1); toast.success(`Sent to ${to}${t?.ticket_number ? ` — ticket ${t.ticket_number}` : ''}.`); }}
+        />
       )}
 
       {/* Full-size photo viewer — shared with View Intern (shared/PhotoLightbox). */}
@@ -793,21 +675,6 @@ export default function EmployeeProfile({ employee: employeeProp, setPage, setSe
           // Re-fetch this employee's checklist after any template change, so an
           // added item appears and a retired one drops out without a reload.
           onChanged={() => setOnboardingInit(v => !v)}
-        />
-      )}
-
-      {/* Offboard modal */}
-      {showOffboardModal && (
-        <OffboardModal
-          employee={employee}
-          onClose={() => setShowOffboardModal(false)}
-          onDone={() => {
-            // Reload employee so status badge and tabs update
-            api.get(`/employees/${employee.id}`).then(r => {
-              const data = r.data?.employee || r.data;
-              if (data?.id) setEmployee(data);
-            }).catch(() => {});
-          }}
         />
       )}
 
@@ -842,6 +709,7 @@ export default function EmployeeProfile({ employee: employeeProp, setPage, setSe
         {/* OVERVIEW */}
         {activeTab === 'Overview' && (
           <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:16 }}>
+            {selfView && <MyChangeRequests reload={requestsTick} />}
             <Card title="Personal">
               <InfoRow label="Full Name" value={`${employee.first_name || ''} ${employee.last_name || ''}`.trim()} />
               <InfoRow label="Gender" value={employee.gender} />
@@ -869,7 +737,7 @@ export default function EmployeeProfile({ employee: employeeProp, setPage, setSe
               <InfoRow label="Skill Type" value={employee.skill_type} />
               {/* Set when this hire was converted from an internship; the intern
                   record is kept as history (internConversion.js). */}
-              {employee.source_intern_id && (
+              {employee.source_intern_id && !selfView && (
                 <InfoRow label="Previously an Intern" value={
                   <button type="button" className="ai-link" onClick={() => setPage('ViewIntern', { id: employee.source_intern_id })}>
                     {employee.source_intern_code || `Intern #${employee.source_intern_id}`}
@@ -954,6 +822,7 @@ export default function EmployeeProfile({ employee: employeeProp, setPage, setSe
               <InfoRow label="Highest Qualification" value={employee.highest_qualification} />
               <InfoRow label="Basic Qualification" value={employee.basic_qualification} />
             </Card>
+            {selfView && <SelfTaxCard />}
           </div>
         )}
 
@@ -1022,14 +891,14 @@ export default function EmployeeProfile({ employee: employeeProp, setPage, setSe
                   {rows.length > 0 && <span style={{ marginLeft:8, fontWeight:400, color:'#6b7280' }}>({rows.length})</span>}
                 </div>
                 <div style={{ fontSize:11, color:'#9ca3af' }}>
-                  Uploaded on Add / Edit Employee. This tab is read-only.
+                  {selfView ? 'Kept by HR. To add or replace one, use Request change.' : 'Uploaded on Add / Edit Employee. This tab is read-only.'}
                 </div>
               </div>
 
               {missingCount > 0 && (
                 <div style={{ background:'#fef2f2', border:'1px solid #fecaca', borderRadius:10, padding:'10px 14px', fontSize:12, color:'#991b1b' }}>
                   <strong>{missingCount} document{missingCount === 1 ? ' has' : 's have'} no file in storage.</strong>
-                  {' '}The record still names a file, but nothing is stored against it — it needs to be uploaded again on Edit Employee.
+                  {' '}The record still names a file, but nothing is stored against it — {selfView ? 'ask HR to upload it again (Request change).' : 'it needs to be uploaded again on Edit Employee.'}
                 </div>
               )}
 
@@ -1038,8 +907,10 @@ export default function EmployeeProfile({ employee: employeeProp, setPage, setSe
                   <div style={{ fontSize:34, marginBottom:10 }}>{'\uD83D\uDCC4'}</div>
                   <div style={{ fontWeight:700, color:'#374151', marginBottom:6 }}>No documents on file</div>
                   <div style={{ color:'#6b7280', fontSize:13 }}>
-                    Documents are attached on <strong>Edit Employee &rarr; Upload Documents</strong>
-                    {' '}(Photo, PAN, Aadhaar, Cheque, Bank Statement, Resume, Offer Letter).
+                    {selfView
+                      ? <>HR keeps your documents (Photo, PAN, Aadhaar, Cheque, Bank Statement, Resume, Offer Letter). To send one, use <strong>Request change</strong>.</>
+                      : <>Documents are attached on <strong>Edit Employee &rarr; Upload Documents</strong>
+                        {' '}(Photo, PAN, Aadhaar, Cheque, Bank Statement, Resume, Offer Letter).</>}
                   </div>
                 </div>
               ) : (
@@ -1173,11 +1044,11 @@ export default function EmployeeProfile({ employee: employeeProp, setPage, setSe
                 items the checklist will be built from. */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 14, flexWrap: 'wrap' }}>
               <span style={{ fontSize: 13, fontWeight: 700, color: P }}>Onboarding Checklist</span>
-              <button
+              {!selfView && <button
                 onClick={() => setManageChecklist(true)}
                 style={{ padding: '7px 16px', background: '#fff', color: P, border: `1px solid ${BORDER}`, borderRadius: 8, fontSize: 12.5, fontWeight: 700, cursor: 'pointer' }}>
                 &#9881; Manage Checklist
-              </button>
+              </button>}
             </div>
             {onboardingLoading ? (
               <div style={{ padding: 24, textAlign: 'center', color: '#9ca3af' }}>Loading onboarding checklist…</div>
@@ -1191,8 +1062,8 @@ export default function EmployeeProfile({ employee: employeeProp, setPage, setSe
               <div style={{ background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 12, padding: 32, textAlign: 'center' }}>
                 <div style={{ fontSize: 36, marginBottom: 12 }}>📋</div>
                 <div style={{ fontWeight: 700, color: '#374151', marginBottom: 6 }}>No onboarding checklist yet</div>
-                <div style={{ color: '#6b7280', fontSize: 13, marginBottom: 16 }}>Initialize to create a checklist from default templates</div>
-                <button
+                <div style={{ color: '#6b7280', fontSize: 13, marginBottom: 16 }}>{selfView ? 'HR has not started your onboarding checklist.' : 'Initialize to create a checklist from default templates'}</div>
+                {!selfView && <button
                   onClick={async () => {
                     try {
                       await api.post(`/onboarding/progress/${employee.id}/init`);
@@ -1201,7 +1072,7 @@ export default function EmployeeProfile({ employee: employeeProp, setPage, setSe
                   }}
                   style={{ padding: '9px 20px', background: P, color: '#fff', border: 'none', borderRadius: 8, fontWeight: 700, fontSize: 13, cursor: 'pointer' }}>
                   Initialize Onboarding Checklist
-                </button>
+                </button>}
               </div>
             ) : (
               <div>
@@ -1229,7 +1100,9 @@ export default function EmployeeProfile({ employee: employeeProp, setPage, setSe
                     {items.map((item, i) => (
                       <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: i < items.length - 1 ? '1px solid #f3f4f6' : 'none' }}>
                         <button
+                          disabled={selfView}
                           onClick={async () => {
+                            if (selfView) return;   // HR ticks the checklist
                             try {
                               await api.patch(`/onboarding/progress/${employee.id}/item`, {
                                 category: item.category,
@@ -1246,8 +1119,8 @@ export default function EmployeeProfile({ employee: employeeProp, setPage, setSe
                               toast.error(e.response?.data?.message || 'Failed to update checklist item');
                             }
                           }}
-                          style={{ fontSize: 20, flexShrink: 0, background: 'none', border: 'none', cursor: 'pointer', padding: 0, lineHeight: 1 }}
-                          title={item.done ? 'Mark incomplete' : 'Mark complete'}
+                          style={{ fontSize: 20, flexShrink: 0, background: 'none', border: 'none', cursor: selfView ? 'default' : 'pointer', padding: 0, lineHeight: 1 }}
+                          title={selfView ? (item.done ? 'Done' : 'Not done yet') : (item.done ? 'Mark incomplete' : 'Mark complete')}
                         >
                           {item.done ? '✅' : '⬜'}
                         </button>
@@ -1509,12 +1382,17 @@ export default function EmployeeProfile({ employee: employeeProp, setPage, setSe
               <InfoRow label="Exit Request Status" value={exitData?.status || '—'} />
               <InfoRow label="Initiated On"      value={exitData?.created_at ? new Date(exitData.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—'} />
               <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 12 }}>
-                <button onClick={openExitEdit} style={{
-                  padding: '6px 14px', background: P, color: '#fff', border: 'none',
-                  borderRadius: 7, fontSize: 12, fontWeight: 600, cursor: 'pointer',
-                }}>
-                  Edit Exit Details
-                </button>
+                {/* Serving notice: the exit is still open and is changed in Exit
+                    Management (the records correction refuses it). */}
+                {hasLeft(employee) ? (
+                  <button className="pulse-btn-primary" onClick={() => setShowExitEdit(true)} style={{ fontSize: 12, padding: '6px 14px' }}>
+                    Edit Exit Details
+                  </button>
+                ) : (
+                  <button className="pulse-btn-secondary" onClick={() => setPage('ExitCenter', { tab: 'exit' })} style={{ fontSize: 12, padding: '6px 14px' }}>
+                    Open in Exit Management
+                  </button>
+                )}
               </div>
             </Card>
 
@@ -1523,60 +1401,52 @@ export default function EmployeeProfile({ employee: employeeProp, setPage, setSe
               <InfoRow label="F&F Status"  value={exitData?.fnf_status || 'Pending'} />
               <InfoRow label="Net Payable" value={exitData?.net_payable != null ? `₹${Number(exitData.net_payable).toLocaleString('en-IN')}` : '—'} />
               <InfoRow label="Interview Done" value={exitData?.interview_done ? 'Yes' : 'No'} />
+              {exitData?.id && exitData?.fnf_status && (
+                <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 12 }}>
+                  <a href={`/SettlementReview?exit=${exitData.id}`} className="pulse-btn-secondary" style={{ fontSize: 12, padding: '6px 14px', textDecoration: 'none' }}>
+                    Review settlement
+                  </a>
+                </div>
+              )}
             </Card>
 
-            {/* Clearance checklist */}
-            <Card title="Exit Clearance">
-              {(() => {
-                const CLEARANCE_FIELDS = [
-                  ['IT Assets Returned',    'it_assets_returned'],
-                  ['System Access Revoked', 'access_revoked'],
-                  ['Documents Collected',   'documents_collected'],
-                  ['Exit Interview Done',   'exit_interview_done'],
-                  ['NOC — IT',             'noc_it'],
-                  ['NOC — Admin',          'noc_admin'],
-                  ['NOC — Finance',        'noc_finance'],
-                  ['NOC — HR',             'noc_hr'],
-                  ['NOC — Manager',        'noc_manager'],
-                ];
-                const data = clearanceData || {};
-                const toggleClearance = async (field, currentVal) => {
-                  if (clearanceSaving) return;
-                  setClearanceSaving(true);
-                  const updated = { ...data, [field]: !currentVal };
-                  try {
-                    const r = await api.put(`/exit/clearance/${employee.id}`, updated);
-                    if (isMounted.current) setClearanceData(r.data);
-                  } catch { toast.error('Failed to update clearance'); }
-                  finally { if (isMounted.current) setClearanceSaving(false); }
-                };
-                return (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 4 }}>
-                    {CLEARANCE_FIELDS.map(([label, field]) => {
-                      const done = data[field];
-                      return (
-                        <div key={field} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0', borderBottom: `1px solid ${BORDER}` }}>
-                          <span style={{ fontSize: 13, color: '#374151' }}>{label}</span>
-                          <button
-                            onClick={() => toggleClearance(field, done)}
-                            disabled={clearanceSaving}
-                            style={{
-                              fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 5, cursor: 'pointer',
-                              background: done ? '#dcfce7' : '#ede9fe',
-                              color: done ? '#166534' : '#5b21b6',
-                              border: `1px solid ${done ? '#bbf7d0' : '#ddd6fe'}`,
-                              opacity: clearanceSaving ? 0.6 : 1,
-                            }}
-                          >
-                            {done ? '✓ Done' : 'Pending'}
-                          </button>
+            {/* Clearance: the same checks and sign-offs as the Exit Checklist, read-only
+                here. The old 9-toggle card had 6 flags the payment never read (2026-11-17). */}
+            <div style={{ gridColumn: '1 / -1' }}>
+              <Card title="Exit Clearance">
+                <ExitClearanceBlock employee={employee} readOnly onNotice={(m, t) => (t === 'error' ? toast.error(m) : toast.success(m))} />
+                {!hasLeft(employee) && (
+                  <button className="pulse-btn-secondary" style={{ fontSize: 12, padding: '6px 14px' }}
+                    onClick={() => setPage('ExitCenter', { tab: 'offboarding' })}>
+                    Open the Exit Checklist
+                  </button>
+                )}
+              </Card>
+            </div>
+
+            {clearanceHistory.length > 0 && (
+              <div style={{ gridColumn: '1 / -1' }}>
+                <Card title="Earlier exits">
+                  {clearanceHistory.map(h => {
+                    const c = h.clearance || {};
+                    const signed = [['HR', c.noc_hr], ['Finance', c.noc_finance], ['Manager', c.noc_manager]];
+                    return (
+                      <div key={h.id} style={{ padding: '8px 0', borderBottom: `1px solid ${BORDER}`, fontSize: 13 }}>
+                        <div style={{ fontWeight: 600, color: '#111827' }}>
+                          {(h.separation_type || 'Exit').replace(/_/g, ' ')} · last day {fmtDate(h.last_working_date ? String(h.last_working_date) : null)}
+                          <span style={{ fontWeight: 400, color: '#6b7280' }}> · {h.exit_status || 'closed'} · archived {fmtDate(h.archived_at ? String(h.archived_at) : null)}</span>
                         </div>
-                      );
-                    })}
-                  </div>
-                );
-              })()}
-            </Card>
+                        <div style={{ color: '#4b5563', marginTop: 2 }}>
+                          Sign-offs: {signed.map(([n, ok]) => `${n} ${ok ? '✓' : '✗'}`).join(' · ')}
+                          {Array.isArray(c.checklist_items) && c.checklist_items.length > 0 && ` · checklist ${c.checklist_items.filter(x => x.done).length}/${c.checklist_items.length} done`}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </Card>
+              </div>
+            )}
+
 
           </div>
         )}

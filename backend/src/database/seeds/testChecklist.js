@@ -153,7 +153,7 @@ const TABLE_CHECKS = [
   { table: 'job_openings',             minExpected: 5,   module: 'Recruitment' },
   { table: 'candidates',               minExpected: 12,  module: 'Recruitment' },
   { table: 'interviews',               minExpected: 3,   module: 'Recruitment' },
-  { table: 'job_offers',               minExpected: 0,   module: 'Recruitment' },
+  { table: 'offer_letters',            minExpected: 0,   module: 'Recruitment' },
   { table: 'onboarding_checklists',    minExpected: 0,   module: 'Recruitment' },
   { table: 'email_templates',          minExpected: 0,   module: 'Recruitment' },
   // Notifications & Audit

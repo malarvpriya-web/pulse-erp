@@ -12,6 +12,7 @@ import CameraClockModal from '@/components/attendance/CameraClockModal';
 import PunchModeNotice from '@/components/attendance/PunchModeNotice';
 import { getLocationString } from '@/components/attendance/geo';
 import usePunchMode from '@/hooks/usePunchMode';
+import useLocalWeather from './useLocalWeather';
 import { announcementText } from '@/features/hr/announcementFeed';
 import './Home.css';
 
@@ -135,8 +136,26 @@ const ApprovalRow = ({ a, onOpen }) => {
 // Download goes through Pulse (homeDocuments.js), which returns the file
 // itself: a Drive share link followed by the browser opens Drive's viewer, or
 // Google's sign-in page for an org-restricted file.
-const DocTile = ({ d, kind, onError }) => {
+const DocTile = ({ d, kind, onError, onDone }) => {
   const [busy, setBusy] = useState(false);
+  // Policies only. `acknowledged` is null for a login with no employee record,
+  // so there is nothing to offer it. The Policies page is HR-only since
+  // 11 Nov 26, so Home is where an employee acknowledges.
+  const [acked, setAcked] = useState(d.acknowledged === true);
+  const [acking, setAcking] = useState(false);
+  const canAck = kind === 'policy' && d.requires_acknowledgement && d.acknowledged != null;
+  const onAcknowledge = async () => {
+    setAcking(true);
+    try {
+      await api.post(`/hr/policies/${d.id}/acknowledge`);
+      setAcked(true);
+      onDone?.(`Thanks — you acknowledged "${d.title}".`);
+    } catch (e) {
+      onError(e?.response?.data?.error || e?.response?.data?.message || 'Could not record your acknowledgement.');
+    } finally {
+      setAcking(false);
+    }
+  };
   const meta = [d.version, d.effective_date && `Effective ${fmtShortDate(d.effective_date)}`]
     .filter(Boolean).join(' · ');
   const onDownload = async () => {
@@ -165,6 +184,17 @@ const DocTile = ({ d, kind, onError }) => {
       ) : (
         <span className="hm-doctile-dl hm-doctile-dl--muted">Not linked yet</span>
       )}
+      {canAck && (acked ? (
+        <span className="hm-doctile-dl hm-doctile-dl--acked" aria-label={`You acknowledged ${d.title}`}>
+          <CheckCheck size={11} /> Acknowledged
+        </span>
+      ) : (
+        <button type="button" className="hm-doctile-dl hm-doctile-dl--ack" onClick={onAcknowledge} disabled={acking}
+                title="I have read and understood this policy"
+                aria-label={`Acknowledge ${d.title}`}>
+          <ShieldCheck size={11} /> {acking ? 'Saving…' : 'Acknowledge'}
+        </button>
+      ))}
     </div>
   );
 };
@@ -219,6 +249,7 @@ export default function Home({ setPage }) {
   // Only field employees punch from the app; everyone else uses the office
   // face/biometric device and sees a notice instead of a button.
   const punch = usePunchMode(empId);
+  const weather = useLocalWeather();
 
   // Anyone linked to an employee record punches in from Home — managers, HR and
   // finance staff clock in too. Employee logins that HR never linked still get
@@ -362,6 +393,14 @@ export default function Home({ setPage }) {
               <span className="hm-date">
                 {new Date().toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short', year: '2-digit' })}
               </span>
+              {weather && (
+                <span className="hm-date hm-weather" title="Your current location and temperature">
+                  <MapPin size={11} />
+                  {weather.city}
+                  {weather.city && weather.temp != null && ' · '}
+                  {weather.temp != null && `${weather.temp}°C`}
+                </span>
+              )}
             </div>
             {/* Identity line: Name · email · Role */}
             <div className="hm-identity">
@@ -549,7 +588,7 @@ export default function Home({ setPage }) {
               : (loadError || degraded.includes('policies')) ? <Failed what="policies" onRetry={load} />
               : policies.length === 0
                 ? <Empty icon={<FileText size={28} color="#d1d5db" />} text="No policy documents yet." />
-                : <div className="hm-doc-grid">{policies.map((d, i) => <DocTile key={d.id || i} d={d} kind="policy" onError={m => showToast(m, 'err')} />)}</div>}
+                : <div className="hm-doc-grid">{policies.map((d, i) => <DocTile key={d.id || i} d={d} kind="policy" onError={m => showToast(m, 'err')} onDone={m => showToast(m)} />)}</div>}
           </CardShell>
 
           {/* Slot 5 — Brand Vault: templates & brand assets (ppt template, logo,

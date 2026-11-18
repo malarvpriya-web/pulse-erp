@@ -2,33 +2,35 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { CheckSquare, Square, ChevronDown, ChevronUp, AlertCircle, Download, Bell, Users } from 'lucide-react';
 import api from '@/services/api/client';
 import { exportCSV } from '@/features/_shared/exportUtils';
-import ConfirmDialog from '@/components/core/ConfirmDialog';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import ExitClearanceBlock from '../components/ExitClearanceBlock';
 
+// "Reset to defaults" in the template editor. It leaves out what the Exit
+// Checklist already checks by itself or by sign-off: assets and devices
+// returned, logins disabled, advances settled, the HR / Finance / manager
+// sign-offs and the settlement (owner decision 2026-11-17: one checklist).
 const DEFAULT_TEMPLATE = [
-  { category: 'IT & Access',    item_label: 'Revoke system access',                   default_assignee: 'IT' },
-  { category: 'IT & Access',    item_label: 'Collect company laptop/devices',          default_assignee: 'IT' },
-  { category: 'IT & Access',    item_label: 'Delete email account',                   default_assignee: 'IT' },
-  { category: 'IT & Access',    item_label: 'Revoke VPN access',                      default_assignee: 'IT' },
-  { category: 'IT & Access',    item_label: 'Deactivate Slack/Teams account',         default_assignee: 'IT' },
+  { category: 'IT & Access',    item_label: 'Delete or forward the email account',   default_assignee: 'IT' },
+  { category: 'IT & Access',    item_label: 'Revoke VPN and third-party tool access', default_assignee: 'IT' },
   { category: 'IT & Access',    item_label: 'Remove from email distribution lists',   default_assignee: 'IT' },
-  { category: 'HR & Payroll',   item_label: 'Process final settlement',               default_assignee: 'Finance' },
-  { category: 'HR & Payroll',   item_label: 'Issue experience letter',                default_assignee: 'HR' },
-  { category: 'HR & Payroll',   item_label: 'Complete tax documents (Form 16)',       default_assignee: 'Finance' },
-  { category: 'Finance',        item_label: 'Settle pending advances',               default_assignee: 'Finance' },
-  { category: 'Finance',        item_label: 'Process leave encashment',              default_assignee: 'Finance' },
-  { category: 'Finance',        item_label: 'Generate final payslip',               default_assignee: 'Finance' },
-  { category: 'Assets',         item_label: 'Return access cards/ID badge',         default_assignee: 'Admin' },
-  { category: 'Assets',         item_label: 'Return keys/locker',                   default_assignee: 'Admin' },
-  { category: 'Documents',      item_label: 'Issue relieving letter',               default_assignee: 'HR' },
-  { category: 'Documents',      item_label: 'Issue NOC if applicable',             default_assignee: 'HR' },
-  { category: 'Exit Interview', item_label: 'Exit interview conducted',             default_assignee: 'HR' },
-  { category: 'Exit Interview', item_label: 'Record exit feedback',                default_assignee: 'HR' },
-  { category: 'Manager',        item_label: 'Handover of ongoing projects',        default_assignee: 'Manager' },
-  { category: 'Manager',        item_label: 'Knowledge transfer session completed', default_assignee: 'Manager' },
+  { category: 'Admin',          item_label: 'Return access card / ID badge',          default_assignee: 'Admin' },
+  { category: 'Admin',          item_label: 'Return keys / locker',                   default_assignee: 'Admin' },
+  { category: 'Documents',      item_label: 'Issue relieving letter',                 default_assignee: 'HR' },
+  { category: 'Documents',      item_label: 'Issue experience letter',                default_assignee: 'HR' },
+  { category: 'Documents',      item_label: 'Form 16 for the year issued',            default_assignee: 'Finance' },
+  { category: 'Exit Interview', item_label: 'Exit interview conducted',               default_assignee: 'HR' },
+  { category: 'Handover',       item_label: 'Handover of ongoing work',               default_assignee: 'Reporting manager' },
+  { category: 'Handover',       item_label: 'Knowledge transfer completed',           default_assignee: 'Reporting manager' },
 ];
 
-const ASSIGNEES = ['HR', 'IT', 'Finance', 'Manager', 'Admin'];
+// Who owns an item: one of the company's departments (Notify tells its head,
+// set in HR → Department Heads) or the leaver's reporting manager. Was a fixed
+// list of five names that Notify could not reach (HR audit 2026-11-16).
+const MANAGER = 'Reporting manager';
+const assigneeOptions = (departments, current) => {
+  const list = [MANAGER, ...departments];
+  return current && !list.some(a => a.toLowerCase() === String(current).toLowerCase()) ? [...list, current] : list;
+};
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 const ymd = (v) => {
@@ -62,9 +64,20 @@ export default function Offboarding({ setPage, embedded = false }) {
   const [templateDupe,     setTemplateDupe]     = useState(false);
   const [showTemplate,     setShowTemplate]     = useState(false);
   const [saving,           setSaving]           = useState(false);
-  const [completing,       setCompleting]       = useState(false);
+  const [clearanceKey,     setClearanceKey]     = useState(0);   // reload the clearance block after a save
   const [toast,            setToast]            = useState(null);
-  const [pendingMarkComplete, setPendingMarkComplete] = useState(false);
+  const [departments,      setDepartments]      = useState([]);
+  useEffect(() => {
+    let live = true;
+    api.get('/department-heads')
+      .then(r => {
+        if (!live) return;
+        const rows = Array.isArray(r.data?.departments) ? r.data.departments : [];
+        setDepartments(rows.filter(d => d.department_active !== false).map(d => d.department).filter(Boolean));
+      })
+      .catch(() => {});
+    return () => { live = false; };
+  }, []);
 
   const isMounted     = useRef(true);
   const toastTimer    = useRef(null);
@@ -109,14 +122,15 @@ export default function Offboarding({ setPage, embedded = false }) {
     try {
       const res = await api.get('/hr/offboarding/templates');
       if (!isMounted.current) return;
-      const rows = Array.isArray(res.data) && res.data.length ? res.data : DEFAULT_TEMPLATE;
+      // What the server holds, even when empty: the payment check reads the same list.
+      const rows = Array.isArray(res.data) ? res.data : [];
       setTemplateRows(rows.map((r) => ({
         category:         r.category,
         item_label:       r.item_label,
         default_assignee: r.default_assignee || 'HR',
       })));
     } catch {
-      if (isMounted.current) setTemplateRows(DEFAULT_TEMPLATE);
+      if (isMounted.current) setTemplateRows([]);
     }
   }, []);
 
@@ -146,14 +160,7 @@ export default function Offboarding({ setPage, embedded = false }) {
       const res = await api.get(`/hr/offboarding/${emp.id}/checklist`);
       if (!isMounted.current) return;
       const rows   = Array.isArray(res.data) ? res.data : [];
-      const chosen = rows.length ? rows : templateRows.map((t) => ({
-        ...t,
-        done:           false,
-        assignee:       t.default_assignee || 'HR',
-        due_date:       emp.exit_date || emp.last_day || null,
-        handover_notes: '',
-        completed_at:   null,
-      }));
+      const chosen = rows;
       setChecklist(chosen);
       const exp = {};
       chosen.forEach((r) => { exp[r.category] = true; });
@@ -174,6 +181,7 @@ export default function Offboarding({ setPage, embedded = false }) {
       await api.patch(`/hr/offboarding/${selectedEmp.id}/checklist`, { items: rows });
       if (!isMounted.current) return;
       if (!quiet) showToast('Checklist saved');
+      setClearanceKey(k => k + 1);
     } catch {
       if (!isMounted.current) return;
       if (!quiet) showToast('Failed to save checklist', 'error');
@@ -200,35 +208,18 @@ export default function Offboarding({ setPage, embedded = false }) {
     setExpanded({});
   };
 
-  const markComplete = async () => {
-    if (!selectedEmp?.id) return;
-    if (!pendingMarkComplete) return;
-    setPendingMarkComplete(false);
-    setCompleting(true);
-    try {
-      await api.post(`/hr/offboarding/${selectedEmp.id}/complete`);
-      if (!isMounted.current) return;
-      showToast('Offboarding complete — employee moved to Ex-Employees');
-      setSelectedEmp(null);
-      setChecklist([]);
-      fetchEmployees();
-    } catch (err) {
-      if (!isMounted.current) return;
-      showToast(err.response?.data?.error || 'Failed to complete offboarding', 'error');
-    } finally {
-      if (isMounted.current) setCompleting(false);
-    }
-  };
+
 
   const notifyAssignee = async (assignee) => {
     if (!selectedEmp?.id) return;
     try {
-      await api.post(`/hr/offboarding/${selectedEmp.id}/checklist/notify`, { assignee });
+      const { data } = await api.post(`/hr/offboarding/${selectedEmp.id}/checklist/notify`, { assignee });
       if (!isMounted.current) return;
-      showToast(`Notification sent to ${assignee}`);
-    } catch {
+      showToast(data?.message || `Notification sent to ${assignee}`);
+    } catch (err) {
       if (!isMounted.current) return;
-      showToast('Notification failed', 'error');
+      // The server says why: no head for that department, no login, nothing open.
+      showToast(err?.response?.data?.error || 'Notification failed', 'error');
     }
   };
 
@@ -296,7 +287,7 @@ export default function Offboarding({ setPage, embedded = false }) {
       <PageHero
         icon={Users}
         eyebrow="Human Resources"
-        title="Offboarding"
+        title="Exit Checklist"
         actions={<>
           {actionList.map(a => (
             <button key={a.key} className={`plh-cta${a.ghost ? ' plh-cta--ghost' : ''}`}
@@ -316,15 +307,6 @@ export default function Offboarding({ setPage, embedded = false }) {
           ))}
         </div>
       )}
-      <ConfirmDialog
-        open={pendingMarkComplete}
-        title="Complete Offboarding"
-        message={selectedEmp ? `Mark ${selectedEmp.name || selectedEmp.employee_name}'s offboarding as complete? This will move them to Ex-Employees.` : ''}
-        confirmLabel="Complete"
-        variant="warning"
-        onConfirm={markComplete}
-        onCancel={() => setPendingMarkComplete(false)}
-      />
 
       {/* Toast */}
       {toast && (
@@ -383,7 +365,7 @@ export default function Offboarding({ setPage, embedded = false }) {
               onChange={(e) => setTemplateForm((f) => ({ ...f, default_assignee: e.target.value }))}
               style={{ padding: '7px 10px', border: '1px solid #d1d5db', borderRadius: 8, fontSize: 12 }}
             >
-              {ASSIGNEES.map((a) => <option key={a} value={a}>{a}</option>)}
+              {assigneeOptions(departments, templateForm.default_assignee).map((a) => <option key={a} value={a}>{a}</option>)}
             </select>
             <button
               onClick={addTemplateItem}
@@ -549,11 +531,14 @@ export default function Offboarding({ setPage, embedded = false }) {
             </div>
           </div>
 
+          {/* Automatic checks + sign-offs: the clearance part of the one checklist. */}
+          <ExitClearanceBlock employee={selectedEmp} refreshKey={clearanceKey} onNotice={(m, t) => showToast(m, t)} />
+
           {/* Progress bar */}
           {!checklistLoading && (
             <div style={{ background: '#fff', borderRadius: 12, border: '1px solid #e5e7eb', padding: '14px 16px', marginBottom: 16 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8, fontSize: 13 }}>
-                <span style={{ fontWeight: 600, color: '#374151' }}>Overall Progress</span>
+                <span style={{ fontWeight: 600, color: '#374151' }}>Company checklist items</span>
                 <span style={{ fontWeight: 700, color: pct === 100 ? '#059669' : '#6366f1' }}>
                   {doneItems}/{totalItems} ({pct}%)
                 </span>
@@ -624,7 +609,7 @@ export default function Offboarding({ setPage, embedded = false }) {
                                   onChange={(e) => updateItem(realIdx, { assignee: e.target.value })}
                                   style={{ padding: 6, borderRadius: 8, border: '1px solid #d1d5db', fontSize: 12 }}
                                 >
-                                  {ASSIGNEES.map((a) => <option key={a} value={a}>{a}</option>)}
+                                  {assigneeOptions(departments, item.assignee || 'HR').map((a) => <option key={a} value={a}>{a}</option>)}
                                 </select>
                                 <input
                                   type="date"
@@ -657,34 +642,16 @@ export default function Offboarding({ setPage, embedded = false }) {
             </div>
           )}
 
-          {/* Footer status + complete button */}
-          {!checklistLoading && totalItems > 0 && (
-            <>
-              {pct < 100 ? (
-                <div style={{ background: '#ede9fe', borderRadius: 8, padding: '10px 14px', display: 'flex', gap: 8, alignItems: 'center', marginBottom: 14, fontSize: 13, color: '#5b21b6' }}>
-                  <AlertCircle size={14} />
-                  {totalItems - doneItems} task{totalItems - doneItems !== 1 ? 's' : ''} remaining before offboarding can be completed
-                </div>
-              ) : (
-                <div style={{ background: '#dcfce7', borderRadius: 8, padding: '10px 14px', display: 'flex', gap: 8, alignItems: 'center', marginBottom: 14, fontSize: 13, color: '#166534' }}>
-                  <CheckSquare size={14} />
-                  All tasks complete — ready to finalise offboarding
-                </div>
-              )}
-              <button
-                onClick={() => setPendingMarkComplete(true)}
-                disabled={pct < 100 || completing}
-                style={{
-                  background: pct === 100 ? '#10b981' : '#d1d5db',
-                  color: '#fff', border: 'none', borderRadius: 8,
-                  padding: '10px 24px', fontWeight: 600, fontSize: 14,
-                  cursor: pct === 100 && !completing ? 'pointer' : 'not-allowed',
-                  opacity: completing ? 0.7 : 1,
-                }}
-              >
-                {completing ? 'Completing…' : 'Mark Offboarding Complete'}
-              </button>
-            </>
+          {!checklistLoading && totalItems === 0 && (
+            <div style={{ background: '#fff', borderRadius: 12, border: '1px dashed #d1d5db', padding: 16, fontSize: 13, color: '#6b7280', marginBottom: 14 }}>
+              Your company has no checklist items of its own yet. Add them in <strong>Template Config</strong>; the automatic checks and sign-offs above apply either way.
+            </div>
+          )}
+          {!checklistLoading && totalItems > 0 && pct < 100 && (
+            <div style={{ background: '#ede9fe', borderRadius: 8, padding: '10px 14px', display: 'flex', gap: 8, alignItems: 'center', marginBottom: 14, fontSize: 13, color: '#5b21b6' }}>
+              <AlertCircle size={14} />
+              {totalItems - doneItems} item{totalItems - doneItems !== 1 ? 's' : ''} open. The full &amp; final settlement cannot be paid until every item is done.
+            </div>
           )}
         </>
       )}

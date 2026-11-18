@@ -8,6 +8,7 @@
  *   - employee: only files linked to their own employee record
  *   - candidate résumés: any caller holding recruitment:view, same company
  *   - intern photos / documents: internships:view, same company
+ *   - visitor photos: gate_access:view, or the visitor's host, same company (§272)
  *
  * Access is audit-logged on every successful download.
  */
@@ -70,6 +71,24 @@ function sendFile(req, res, absPath, filename, userId) {
     res.setHeader('Content-Security-Policy', "default-src 'none'; img-src 'self'; object-src 'self'; frame-ancestors 'self'");
   }
   return res.sendFile(absPath);
+}
+
+// Is the caller the interviewer or on the panel of a live (not cancelled)
+// interview for this candidate? An interviewer needs the résumé they are
+// interviewing against without holding Recruitment access to every candidate
+// (My Interviews, 2026-11-17). Completed interviews count for 30 days.
+async function interviewPanelAccess(req, candidateId) {
+  const me = req.user?.employee_id
+    ?? (await pool.query(`SELECT employee_id FROM users WHERE id = $1`, [req.user?.userId ?? req.user?.id ?? null])
+          .then(r => r.rows[0]?.employee_id).catch(() => null));
+  if (!me) return false;
+  const { rows } = await pool.query(
+    `SELECT 1 FROM interview_schedules
+      WHERE candidate_id = $1 AND deleted_at IS NULL AND status <> 'cancelled'
+        AND (status = 'scheduled' OR interview_date >= CURRENT_DATE - 30)
+        AND (interviewer_id = $2 OR panel_employee_ids @> to_jsonb($2::int))
+      LIMIT 1`, [candidateId, me]);
+  return rows.length > 0;
 }
 
 // Does this caller hold recruitment:view? Mirrors requirePermission's lookup but
@@ -237,6 +256,27 @@ async function hrDocumentViewPermission(req) {
   } catch { return false; }
 }
 
+/**
+ * Is this filename a visitor's photo (Gate Pass & Visitors, §272)? Returns the
+ * visit's company and host. Matched on the exact stored path tail.
+ */
+async function visitorPhotoOwner(filename) {
+  const { rows } = await pool.query(
+    'SELECT company_id, host_employee_id FROM visitors WHERE photo_url LIKE $1 LIMIT 1', [`%/${filename}`]);
+  return rows[0] ?? null;
+}
+
+/** gate_access:view, or the caller is the visitor's host. */
+async function visitorPhotoPermission(req, owner) {
+  try {
+    const perm = await permissionFor(req, 'gate_access');
+    if (perm?.can_view === true) return true;
+  } catch { /* fall through */ }
+  if (owner.host_employee_id == null) return false;
+  const { rows } = await pool.query('SELECT 1 FROM users WHERE id = $1 AND employee_id = $2', [req.user?.id ?? req.user?.userId ?? null, owner.host_employee_id]);
+  return rows.length > 0;
+}
+
 /** internships:view, through the same resolver requirePermission uses. */
 async function internViewPermission(req) {
   try {
@@ -282,6 +322,46 @@ async function ownsEmployeeDocument(userId, employeeId) {
   return rows.length > 0;
 }
 
+/**
+ * IT declaration proofs (it_declarations.proof_file, POST
+ * /self-service/it-declarations/:id/proof, §264): the declaring employee, and
+ * it_declarations:view in the same company — the reviewers. Nobody else.
+ */
+async function declarationProofOwner(filename) {
+  const { rows } = await pool.query(
+    `SELECT d.employee_id, e.company_id
+       FROM it_declarations d JOIN employees e ON e.id = d.employee_id
+      WHERE d.proof_file LIKE $1
+      LIMIT 1`, [`%/${filename}`]);
+  return rows[0] || null;
+}
+/**
+ * Proof attached to a bank-detail change (employee_bank_change_requests
+ * .proof_cheque_file / .proof_statement_file, §267): employee_bank:view in the
+ * company — the HR people who approve bank details. Once approved the file is
+ * also the employee's cheque / statement and follows that rule.
+ */
+async function bankProofOwner(filename) {
+  const { rows } = await pool.query(
+    `SELECT company_id FROM employee_bank_change_requests
+      WHERE proof_cheque_file LIKE $1 OR proof_statement_file LIKE $1
+      LIMIT 1`, [`%/${filename}`]);
+  return rows[0] || null;
+}
+async function bankViewPermission(req) {
+  try {
+    const perm = await permissionFor(req, 'employee_bank');
+    return perm?.can_view === true;
+  } catch { return false; }
+}
+
+async function declarationViewPermission(req) {
+  try {
+    const perm = await permissionFor(req, 'it_declarations');
+    return perm?.can_view === true;
+  } catch { return false; }
+}
+
 async function canReadFile(req, filename) {
   const { userId, role } = req.user;
   const companyId = req.scope?.company_id ?? null;
@@ -300,7 +380,9 @@ async function canReadFile(req, filename) {
           e.cancelled_cheque_file  LIKE $1 OR
           e.bank_statement_file    LIKE $1 OR
           e.resume_file            LIKE $1 OR
-          e.offer_letter_file      LIKE $1
+          e.offer_letter_file      LIKE $1 OR
+          e.passport_file          LIKE $1 OR
+          e.driving_license_file   LIKE $1
         )
       LIMIT 1`,
     [`%${filename}`]
@@ -331,11 +413,30 @@ async function canReadFile(req, filename) {
       return await internViewPermission(req);
     }
 
+    const visitorPhoto = await visitorPhotoOwner(filename);
+    if (visitorPhoto) {
+      if (companyId != null && visitorPhoto.company_id !== companyId) return false;
+      return await visitorPhotoPermission(req, visitorPhoto);
+    }
+
     const doc = await employeeDocumentOwner(filename);
     if (doc) {
       if (companyId != null && doc.company_id !== companyId) return false;
       if (await ownsEmployeeDocument(userId, doc.employee_id)) return true;
       return await hrDocumentViewPermission(req);
+    }
+
+    const proof = await declarationProofOwner(filename);
+    if (proof) {
+      if (companyId != null && proof.company_id !== companyId) return false;
+      if (await ownsEmployeeDocument(userId, proof.employee_id)) return true;
+      return await declarationViewPermission(req);
+    }
+
+    const bankProof = await bankProofOwner(filename);
+    if (bankProof) {
+      if (companyId != null && bankProof.company_id !== companyId) return false;
+      return await bankViewPermission(req);
     }
 
     const { rows: cand } = await pool.query(
@@ -346,7 +447,7 @@ async function canReadFile(req, filename) {
     );
     if (cand.length > 0) {
       if (companyId != null && cand[0].company_id !== companyId) return false;
-      return await recruitmentViewPermission(req);
+      return (await recruitmentViewPermission(req)) || (await interviewPanelAccess(req, cand[0].id));
     }
     // Not linked to any record — admin only, same as the GET handler.
     return isAdmin;
@@ -409,7 +510,9 @@ router.get('/:filename', async (req, res) => {
             e.cancelled_cheque_file  LIKE $1 OR
             e.bank_statement_file    LIKE $1 OR
             e.resume_file            LIKE $1 OR
-            e.offer_letter_file      LIKE $1
+            e.offer_letter_file      LIKE $1 OR
+            e.passport_file          LIKE $1 OR
+            e.driving_license_file   LIKE $1
           )
         LIMIT 1`,
       [`%${filename}`]
@@ -453,6 +556,14 @@ router.get('/:filename', async (req, res) => {
         return sendFile(req, res, absPath, filename, userId);
       }
 
+      // Visitor photos — see visitorPhotoOwner(); the same question canReadFile() asks for HEAD.
+      const visitorPhoto = await visitorPhotoOwner(filename);
+      if (visitorPhoto) {
+        if (companyId != null && visitorPhoto.company_id !== companyId) return res.status(403).json({ error: 'Forbidden' });
+        if (!(await visitorPhotoPermission(req, visitorPhoto))) return res.status(403).json({ error: 'Forbidden' });
+        return sendFile(req, res, absPath, filename, userId);
+      }
+
       // Self-service / HR personnel documents — see employeeDocumentOwner().
       const doc = await employeeDocumentOwner(filename);
       if (doc) {
@@ -461,6 +572,25 @@ router.get('/:filename', async (req, res) => {
         if (!(await ownsEmployeeDocument(userId, doc.employee_id)) && !(await hrDocumentViewPermission(req))) {
           return res.status(403).json({ error: 'Forbidden' });
         }
+        return sendFile(req, res, absPath, filename, userId);
+      }
+
+      // IT declaration proofs — see declarationProofOwner(); the same question
+      // canReadFile() asks for HEAD.
+      const proof = await declarationProofOwner(filename);
+      if (proof) {
+        if (companyId != null && proof.company_id !== companyId) return res.status(403).json({ error: 'Forbidden' });
+        if (!(await ownsEmployeeDocument(userId, proof.employee_id)) && !(await declarationViewPermission(req))) {
+          return res.status(403).json({ error: 'Forbidden' });
+        }
+        return sendFile(req, res, absPath, filename, userId);
+      }
+
+      // Bank-change proof — see bankProofOwner(); the same question canReadFile() asks.
+      const bankProof = await bankProofOwner(filename);
+      if (bankProof) {
+        if (companyId != null && bankProof.company_id !== companyId) return res.status(403).json({ error: 'Forbidden' });
+        if (!(await bankViewPermission(req))) return res.status(403).json({ error: 'Forbidden' });
         return sendFile(req, res, absPath, filename, userId);
       }
 
@@ -481,7 +611,7 @@ router.get('/:filename', async (req, res) => {
         // Candidate PII is recruitment data: gate it on the same permission the
         // rest of the module uses rather than on a role name list, so a revoked
         // recruitment grant revokes résumé access too.
-        const perm = await recruitmentViewPermission(req);
+        const perm = (await recruitmentViewPermission(req)) || (await interviewPanelAccess(req, cand[0].id));
         if (!perm) return res.status(403).json({ error: 'Forbidden' });
         return sendFile(req, res, absPath, filename, userId);
       }

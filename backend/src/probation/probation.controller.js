@@ -24,8 +24,5 @@ export const getNotifications   = handle((cid) => service.getNotifications(cid))
 export const createNotification = handle((cid, req) => service.createNotification(cid, req.body));
 export const updateNotification = handle((cid, req) => service.updateNotification(cid, req.params.id, req.body));
 
-export const updateByEmployee = handle(async (cid, req) => {
-  const row = await service.updateByEmployee(cid, req.params.employee_id, req.body);
-  if (!row) throw new service.ProbationError(404, 'No pending probation record found for this employee');
-  return row;
-});
+// Retired (410): see probation.service.js updateNotification.
+export const updateByEmployee   = handle((cid, req) => service.updateByEmployee(cid, req.params.employee_id, req.body));

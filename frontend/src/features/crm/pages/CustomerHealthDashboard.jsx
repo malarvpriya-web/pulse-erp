@@ -152,8 +152,8 @@ function CustomerDetailDrawer({ customer, onClose }) {
 
   return (
     <div style={{
-      position: 'fixed', right: 0, top: 0, bottom: 0, width: 480,
-      background: '#fff', boxShadow: '-4px 0 20px rgba(0,0,0,.12)',
+      position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', maxHeight: 'calc(100vh - 48px)', borderRadius: 12, maxWidth: 'calc(100vw - 32px)', width: 480,
+      background: '#fff', boxShadow: '0 20px 60px rgba(0,0,0,.18)',
       zIndex: 1000, overflowY: 'auto', padding: 24,
     }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>

@@ -23,7 +23,7 @@ const ExitManagement = lazy(() => import('./ExitManagement'));
 
 export const TABS = [
   { id: 'exit', label: 'Exits & Settlement', icon: IcDoorOpen, page: 'ExitManagement', Component: ExitManagement },
-  { id: 'offboarding', label: 'Offboarding Checklist', icon: IcListChecks, page: 'Offboarding', Component: Offboarding },
+  { id: 'offboarding', label: 'Exit Checklist', icon: IcListChecks, page: 'Offboarding', Component: Offboarding },
 ];
 
 export default function ExitCenter({ setPage }) {

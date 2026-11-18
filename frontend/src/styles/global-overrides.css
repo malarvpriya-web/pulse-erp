@@ -488,3 +488,12 @@ td, th {
     grid-template-columns: repeat(2, 1fr) !important;
   }
 }
+/* Centered dialogs (formerly right-side drawers) — shared entrance animation. */
+@keyframes pulse-dialog-in {
+  from { opacity: 0; transform: translateY(8px) scale(.98); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes pulse-dialog-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}

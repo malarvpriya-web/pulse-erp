@@ -4,6 +4,7 @@ import { Plus, X, Search, ChevronDown, CheckCircle, Clock, AlertCircle, Plane } 
 import { STATUS_COLOR, fmt } from './travelUtils';
 import { PageHero, PageShell } from '@/components/pulse-ui';
 import VocabSelect from '@/components/core/VocabSelect';
+import { useAuth } from '@/context/AuthContext';
 
 const fmtDate = (d) => { if (!d) return '—'; const s = String(d); if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s.split('-').reverse().join('/'); const dt = new Date(d); return isNaN(dt.getTime()) ? '—' : dt.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }); };
 
@@ -30,6 +31,9 @@ export default function TravelRequests() {
   const [error,    setError]    = useState('');
   const [selected, setSelected] = useState(null); // detail view
   const [deptList, setDeptList] = useState([]);
+  // An employee raises a request only for themselves; the server records their
+  // own name and department, so the form shows no typed name or empty list.
+  const { isEmployeeOnly } = useAuth();
 
   const load = () => {
     setLoading(true);
@@ -40,10 +44,11 @@ export default function TravelRequests() {
   };
   useEffect(() => {
     load();
+    if (isEmployeeOnly) return;
     api.get('/admin/config/departments')
       .then(r => setDeptList(Array.isArray(r.data) ? r.data.map(d => d.name || d) : []))
       .catch(() => setDeptList([]));
-  }, []);
+  }, [isEmployeeOnly]);
 
   const filtered = requests.filter(r => {
     const matchStatus = statusFilter === 'All' || r.status === statusFilter;
@@ -237,6 +242,7 @@ export default function TravelRequests() {
             {error && <div style={{ background:'#fee2e2', color:'#991b1b', padding:'10px 14px', borderRadius:8, marginBottom:16, fontSize:13 }}>{error}</div>}
 
             {/* Section: Employee */}
+            {!isEmployeeOnly && (<>
             <div style={{ fontSize:12, fontWeight:700, color:'#6B3FDB', textTransform:'uppercase', letterSpacing:'0.5px', marginBottom:12 }}>Employee Details</div>
             <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16, marginBottom:20 }}>
               <div>
@@ -251,6 +257,7 @@ export default function TravelRequests() {
                 </select>
               </div>
             </div>
+            </>)}
 
             {/* Section: Commercial Linkage */}
             <div style={{ fontSize:12, fontWeight:700, color:'#6B3FDB', textTransform:'uppercase', letterSpacing:'0.5px', marginBottom:12 }}>Commercial Linkage</div>

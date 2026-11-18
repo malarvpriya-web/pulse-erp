@@ -54,13 +54,6 @@ import { postStock } from '../../production/subcontracting.routes.js';
 
 const router = express.Router();
 
-// ensure resolved_by column exists
-(async () => {
-  try {
-    await pool.query(`ALTER TABLE stock_alerts ADD COLUMN IF NOT EXISTS resolved_by INTEGER`);
-  } catch (_) {}
-})();
-
 // =====================================================
 // BATCH MANAGEMENT
 // =====================================================

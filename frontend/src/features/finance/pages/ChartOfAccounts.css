@@ -94,8 +94,8 @@
 .coa-legend-dot{width:8px;height:8px;border-radius:50%;}
 
 /* drawer */
-.coa-overlay{position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:500;display:flex;justify-content:flex-end;}
-.coa-drawer{width:min(520px,95vw);background:#fff;height:100vh;display:flex;flex-direction:column;box-shadow:-4px 0 30px rgba(0,0,0,.12);}
+.coa-overlay{position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:500;display:flex;align-items: center; justify-content: center; padding: 24px;}
+.coa-drawer{width:min(520px,95vw);background:#fff;max-width: 100%; max-height: calc(100vh - 48px); border-radius: 12px; overflow: auto;display:flex;flex-direction:column;box-shadow: 0 20px 60px rgba(0,0,0,.18);}
 .coa-drawer-hd{display:flex;justify-content:space-between;align-items:center;padding:18px 22px;border-bottom:1px solid #f0f0f4;flex-shrink:0;}
 .coa-drawer-hd h3{font-size:16px;font-weight:600;color:#111827;margin:0;}
 .coa-drawer-close{background:none;border:none;cursor:pointer;color:#9ca3af;display:flex;align-items:center;}

@@ -73,9 +73,7 @@ export async function getUpcomingJoinees({
     `SELECT DISTINCT ON (ol.candidate_id)
             ol.candidate_id,
             ol.id                                                   AS offer_id,
-            COALESCE(NULLIF(TRIM(c.full_name), ''),
-                     TRIM(COALESCE(c.first_name,'') || ' ' || COALESCE(c.last_name,'')),
-                     c.email)                                       AS name,
+            COALESCE(NULLIF(TRIM(c.full_name), ''), c.email)       AS name,
             c.email,
             ol.joining_date,
             LOWER(ol.offer_status)                                  AS offer_status,

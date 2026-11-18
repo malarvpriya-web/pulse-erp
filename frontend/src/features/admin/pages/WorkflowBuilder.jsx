@@ -270,9 +270,9 @@ function WorkflowPreview({ wf }) {
 function RunLogPanel({ wfName, runs, loading, onClose }) {
   const fmtTs = (s) => s ? new Date(s).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—';
   return (
-    <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.45)', zIndex:1000, display:'flex', alignItems:'flex-start', justifyContent:'flex-end' }}
+    <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.45)', zIndex:1000, display:'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}
       onClick={onClose}>
-      <div style={{ background:'#fff', width:520, maxWidth:'95vw', height:'100vh', overflowY:'auto', padding:24, boxShadow:'-4px 0 24px rgba(0,0,0,0.15)' }}
+      <div style={{ background:'#fff', width:520, maxWidth:'95vw', maxHeight: 'calc(100vh - 48px)', borderRadius: 12, overflowY:'auto', padding:24, boxShadow: '0 20px 60px rgba(0,0,0,.18)' }}
         onClick={e => e.stopPropagation()}>
         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20 }}>
           <div>

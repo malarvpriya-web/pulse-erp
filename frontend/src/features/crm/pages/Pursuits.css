@@ -150,9 +150,14 @@
 }
 .pu-modal-lg { width: 640px; }
 .pu-drawer {
-  position: fixed; right: 0; top: 0; bottom: 0; width: 460px; max-width: 100vw;
+  position: fixed;    width: 460px; 
   background: var(--color-background-primary, #fff); z-index: 1001; display: flex; flex-direction: column;
-  box-shadow: -4px 0 24px rgba(0,0,0,0.14);
+  box-shadow: 0 20px 60px rgba(0,0,0,.18);
+  /* centered dialog (was a right-side drawer) */
+  top: 50%; left: 50%; transform: translate(-50%, -50%);
+  max-width: calc(100vw - 32px); max-height: calc(100vh - 48px);
+  border-radius: 12px; overflow: hidden;
+  animation: pulse-dialog-fade .18s ease-out;
 }
 .pu-modal-hd {
   display: flex; align-items: center; justify-content: space-between; padding: 16px 20px;

@@ -186,10 +186,13 @@ function SimpleListTab({ endpoint, label, sharedTable = false }) {
     if (!name) { showToast('Name cannot be empty', 'error'); return; }
     if (id == null) { setEditId(null); return; }
     try {
-      await api.put(`${endpoint}/${id}`, { name });
+      const { data } = await api.put(`${endpoint}/${id}`, { name });
       setItems(prev => prev.map(i => i.id === id ? { ...i, name } : i));
       setEditId(null);
-      showToast('Updated');
+      // Departments: the records holding the old name move with it (§271).
+      showToast(data?.records_updated > 0
+        ? `Updated — ${data.records_updated} record${data.records_updated === 1 ? '' : 's'} moved to "${name}"`
+        : 'Updated');
     } catch (err) {
       showToast(err.response?.data?.error || err?.message || 'Failed to update', 'error');
     }

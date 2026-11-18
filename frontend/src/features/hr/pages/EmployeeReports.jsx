@@ -21,7 +21,7 @@
  */
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
-  BarChart3, Users, UserX, FileText, ArrowRight, RefreshCw, AlertTriangle, Info, Download,
+  BarChart3, Users, UserX, ArrowRight, RefreshCw, AlertTriangle, Info, Download,
 } from 'lucide-react';
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Cell,
@@ -48,8 +48,6 @@ export const REPORT_LINKS = [
     desc: 'Current headcount — filter by department, status and more, then export the filtered list as CSV.' },
   { page: 'ExEmployees',       module: 'employees', icon: UserX,    label: 'Ex-Employees',
     desc: 'Attrition — exits with reason, date, exit interview and F&F status, filterable by exit date and exportable.' },
-  { page: 'EmployeeDocuments', module: 'employee_documents', icon: FileText, label: 'Employee Documents',
-    desc: 'Document expiry — filter to expired or expiring documents and use "Export filtered".' },
 ];
 
 /** Composition cards, in display order. `drill` = the All Employees filter key, if it can express the bucket. */
@@ -399,6 +397,8 @@ export const SETTING_FIELDS = [
     help: 'Catches typing slips such as 1906 for 1996.' },
   { key: 'analytics_min_sample', label: 'Records needed to draw a chart', unit: 'records', min: 1, max: 50,
     help: 'Below this, a card shows a list instead of a chart.' },
+  { key: 'default_notice_period_days', label: 'Default notice period', unit: 'days', min: 0, max: 180,
+    help: 'Filled in for a new employee (90 = 3 months, 30 = 1 month) and used for an exit when the employee record has none. Change it per employee on their record, or per exit in Exit Management.' },
 ];
 
 export function WorkforceSettings({ canEdit, onSaved }) {

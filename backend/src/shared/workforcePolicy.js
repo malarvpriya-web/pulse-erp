@@ -12,6 +12,8 @@
  *   max_employee_age     80  — oldest plausible age; catches 1900-style typos.
  *   analytics_min_sample  5  — fewer recorded values than this and a
  *                              Workforce Analytics card shows a list, not a chart.
+ *   default_notice_period_days 90 — notice for a new employee and for an exit
+ *                              whose employee record has none (§275).
  *
  * Why it exists: EMP003's date of birth was saved as 27 Feb 2026 (8 months
  * old) and Workforce Analytics counted it as "Under 25". The only check was
@@ -24,6 +26,10 @@ export const WORKFORCE_POLICY_FIELDS = {
   min_employee_age:     { label: 'Minimum age on date of birth', default: 18, min: 14, max: 25 },
   max_employee_age:     { label: 'Maximum age on date of birth', default: 80, min: 50, max: 100 },
   analytics_min_sample: { label: 'Records needed to draw a chart', default: 5, min: 1, max: 50 },
+  // §275 (owner, 12 Nov 2026): "mostly 3 months". Pre-fills Add Employee and is
+  // the notice an exit uses when the employee record has none. Per employee it
+  // is edited on the employee record; per exit, on the exit.
+  default_notice_period_days: { label: 'Default notice period', default: 90, min: 0, max: 180 },
 };
 
 export const WORKFORCE_POLICY_DEFAULTS = Object.fromEntries(

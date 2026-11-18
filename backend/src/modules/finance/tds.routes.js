@@ -4,6 +4,7 @@ import pool from '../../config/db.js';
 import { requirePermission } from '../../middlewares/auth.middleware.js';
 import { companyOf } from '../../shared/scope.js';
 import { captureBefore } from '../../middlewares/captureBefore.js';
+import { salaryDetailsForYear } from '../payroll/payrollCompliance.service.js';
 
 const router = express.Router();
 
@@ -878,6 +879,13 @@ async function buildForm138({ companyId, financial_year, quarter }) {
     warnings.push({ code: x.is_test ? 'TEST_EXCLUDED' : 'NOT_FINAL_EXCLUDED', message: `${x.n} ${x.is_test ? 'test' : `"${x.status}"`} payroll record(s) excluded from this return` });
   }
 
+  // Q4 (or the whole year) carries each employee's salary and tax for the year.
+  const salaryDetails = (!quarter || quarter === 'Q4') ? await salaryDetailsForYear({ company_id: companyId, financial_year: fy.label }) : [];
+  for (const s of salaryDetails) {
+    if (s.difference < -1) warnings.push({ code: 'TDS_SHORT', employee_code: s.employee_code, message: `${s.employee_name} (${s.employee_code}): tax for the year ₹${s.tax_payable} but ₹${s.tds_deducted} deducted — short by ₹${-s.difference}. Deduct the balance before the year closes.` });
+    if (s.difference > 1) warnings.push({ code: 'TDS_EXCESS', employee_code: s.employee_code, message: `${s.employee_name} (${s.employee_code}): ₹${s.difference} more tax deducted than the year's tax — the employee claims it back in the return.` });
+  }
+
   const qs = Object.values(quarterMap).map(q => ({
     quarter: q.quarter, totals: q.totals,
     deductees: Object.values(q.deductees).map((d, i) => ({ sno: i + 1, ...d })),
@@ -896,6 +904,7 @@ async function buildForm138({ companyId, financial_year, quarter }) {
       source: 'payroll_runs (approved/paid, test excluded)',
       employer: { name: co?.name || null, tan: tan || null },
       quarters: qs,
+      salary_details: salaryDetails,
       grand_total: qs.reduce((a, q) => ({ salary: a.salary + q.totals.salary, tds: a.tds + q.totals.tds, deposited: a.deposited + q.totals.deposited }), { salary: 0, tds: 0, deposited: 0 }),
       validation: { ok: errors.length === 0, errors, warnings },
     },
@@ -935,6 +944,14 @@ router.get('/form24q-download', async (req, res) => {
         Math.round(d.total_salary), Math.round(d.total_tds), Math.round(d.total_deposited)].join('|'));
     }
     lines.push('', `TOTAL|||||| ${Math.round(b.grand_total.salary)}|${Math.round(b.grand_total.tds)}|${Math.round(b.grand_total.deposited)}`);
+    if (b.salary_details?.length) {
+      lines.push('', 'SALARY DETAILS FOR THE YEAR (Annexure II of the former Form 24Q)',
+        'Employee Code|Employee PAN|Employee Name|Regime|Gross Salary|Perquisites|Standard Deduction|Professional Tax|HRA/LTA Exempt|Chapter VI-A|Taxable Income|Tax|Surcharge|Cess|Tax Payable|TDS Deducted|Difference');
+      for (const s of b.salary_details) {
+        lines.push([s.employee_code, s.employee_pan, s.employee_name, s.regime, s.gross_salary, s.perquisites, s.standard_deduction, s.professional_tax,
+          Math.round((s.hra_exemption || 0) + (s.lta_exemption || 0)), s.chapter_via, s.taxable_income, s.tax, s.surcharge, s.cess, s.tax_payable, s.tds_deducted, s.difference].join('|'));
+      }
+    }
     lines.push('', 'NOTE: This is a validated data extract, not a filed return. "Act Section" is the statutory section, not an RPU section code. Prepare and validate the statement in the official utility (RPU/FVU) before filing.');
     const fileName = `Form${b.form_type}_${b.financial_year.replace('-', '_')}${req.query.quarter ? `_${req.query.quarter}` : ''}.txt`;
     res.setHeader('Content-Type', 'text/plain');

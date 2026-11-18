@@ -10,7 +10,8 @@
  *     Payable), 2032 (Professional Tax Payable), 2040 (Salary Payable, net),
  *     and for loan / advance installments recovered from pay: PRINCIPAL to
  *     the receivable and INTEREST to the income account Finance mapped
- *     (loanGlMapping.service.js) — never an assumed account.
+ *     (loanGlMapping.service.js) — never an assumed account; one-time
+ *     deductions (payroll_adjustments, §261) to the account HR named on each.
  *
  * PC-02a (PD-15, 04 Nov 26):
  *  - accounts are the COMPANY's (its own, else the shared chart) — the lookup
@@ -69,6 +70,7 @@ export async function postAccrualInTransaction(client, {
   payroll_run_id, payroll_month, net_salary, pf_employer, esi_employer, gross_salary,
   pf_employee = 0, esi_employee = 0, tds = 0, professional_tax = 0,
   lwf_employee = 0, lwf_employer = 0, loan_principal = 0, loan_interest = 0,
+  pf_charges = 0, other_deductions = [],
   companyId = null, userId = null,
 }) {
   if (!payroll_run_id || !/^\d{4}-(0[1-9]|1[0-2])$/.test(String(payroll_month || ''))) {
@@ -77,7 +79,9 @@ export async function postAccrualInTransaction(client, {
   if (companyId == null) throw new PayrollJournalError(400, 'A payroll journal is posted for one company; none was given', 'COMPANY_REQUIRED');
 
   const grossAmt = parseFloat(gross_salary || net_salary || 0);
-  const empPf = parseFloat(pf_employer || 0);
+  // Employer PF includes EDLI and the EPF administrative charge: same expense and
+  // same payable, all of it remitted to EPFO.
+  const empPf = parseFloat(pf_employer || 0) + parseFloat(pf_charges || 0);
   const empEsi = parseFloat(esi_employer || 0);
   const empLwf = parseFloat(lwf_employer || 0);
   const eePf = parseFloat(pf_employee || 0);
@@ -87,13 +91,18 @@ export async function postAccrualInTransaction(client, {
   const ptAmt = parseFloat(professional_tax || 0);
   const loanPrincipal = parseFloat(loan_principal || 0);
   const loanInterest = parseFloat(loan_interest || 0);
+  // [{ code, amount }] — one-time deductions by the account they are credited to.
+  const others = (Array.isArray(other_deductions) ? other_deductions : [])
+    .map(o => ({ code: String(o.code || '').trim(), amount: parseFloat(o.amount || 0) })).filter(o => o.amount !== 0);
+  if (others.some(o => !o.code)) throw new PayrollJournalError(422, 'A one-time deduction has no account to credit', 'ACCOUNTS_MISSING');
+  const otherTotal = others.reduce((t, o) => t + o.amount, 0);
   const totalExp = grossAmt + empPf + empEsi + empLwf;
   // `net_salary || gross` made a net pay of 0 (deductions = gross) credit gross.
   const salaryPayable = net_salary == null || net_salary === '' ? grossAmt : parseFloat(net_salary);
   const pfPayable = eePf + empPf;
   const esiPayable = eeEsi + empEsi;
   const lwfPayable = eeLwf + empLwf;
-  for (const v of [grossAmt, empPf, empEsi, empLwf, eePf, eeEsi, eeLwf, tdsAmt, ptAmt, loanPrincipal, loanInterest, salaryPayable]) {
+  for (const v of [grossAmt, empPf, empEsi, empLwf, eePf, eeEsi, eeLwf, tdsAmt, ptAmt, loanPrincipal, loanInterest, salaryPayable, ...others.map(o => o.amount)]) {
     if (!Number.isFinite(v) || v < 0) throw new PayrollJournalError(422, 'Payroll amounts must be non-negative numbers', 'AMOUNT_INVALID');
   }
   if (totalExp <= 0) return { posted: false, reason: 'nothing_to_accrue' };
@@ -108,7 +117,10 @@ export async function postAccrualInTransaction(client, {
     loanAccts = mapping.accounts;
   }
 
-  const am = await companyAccounts(client, companyId, COA_CODES);
+  const am = await companyAccounts(client, companyId, [...COA_CODES, ...others.map(o => o.code)]);
+  for (const o of others) {
+    if (!am[o.code]) throw new PayrollJournalError(422, `Account ${o.code}, named on a one-time deduction, is not an active account in the chart of accounts`, 'ACCOUNTS_MISSING');
+  }
   if (loanAccts) {
     am[loanAccts.receivable.code] = loanAccts.receivable;
     am[loanAccts.interest_income.code] = loanAccts.interest_income;
@@ -131,7 +143,7 @@ export async function postAccrualInTransaction(client, {
 
   // Refuse, never post, an entry that does not balance.
   const debitCents = cents(totalExp);
-  const creditCents = cents(pfPayable + esiPayable + lwfPayable + tdsAmt + ptAmt + loanPrincipal + loanInterest + salaryPayable);
+  const creditCents = cents(pfPayable + esiPayable + lwfPayable + tdsAmt + ptAmt + loanPrincipal + loanInterest + otherTotal + salaryPayable);
   if (debitCents !== creditCents) {
     throw new PayrollJournalError(422, `Payroll journal would not balance (debits ${debitCents / 100}, credits ${creditCents / 100})`, 'JOURNAL_UNBALANCED');
   }
@@ -175,6 +187,7 @@ export async function postAccrualInTransaction(client, {
     if (ptAmt > 0) await line('2032', 0, ptAmt, `Professional tax — ${payroll_month}`);
     if (loanPrincipal > 0) await line(loanAccts.receivable.code, 0, loanPrincipal, `Loan / advance principal recovered — ${payroll_month}`);
     if (loanInterest > 0) await line(loanAccts.interest_income.code, 0, loanInterest, `Interest on employee loans — ${payroll_month}`);
+    for (const o of others) await line(o.code, 0, o.amount, `One-time deductions from salary — ${payroll_month}`);
     await line('2040', 0, salaryPayable, `Salary payable — ${payroll_month}`);
     // The posting guards: balanced, accounts usable, lock date, open period.
     const posted = await journalRepo.postEntry(client, je.id);
@@ -185,7 +198,7 @@ export async function postAccrualInTransaction(client, {
       summary: {
         gross_salary: grossAmt, pf_employer: empPf, esi_employer: empEsi, lwf_employer: empLwf,
         pf_payable: pfPayable, esi_payable: esiPayable, lwf_payable: lwfPayable,
-        tds: tdsAmt, professional_tax: ptAmt, salary_payable: salaryPayable,
+        tds: tdsAmt, professional_tax: ptAmt, other_deductions: otherTotal, salary_payable: salaryPayable,
       },
     };
   } catch (err) {
@@ -229,8 +242,17 @@ export async function postPayrollJournal(params) {
   }
 }
 
+/** One-time deductions of a batch by credit account (the same sum approval posts). */
+export function deductionCreditsOf(runs) {
+  const by = new Map();
+  for (const r of runs) for (const a of (Array.isArray(r.adjustment_lines) ? r.adjustment_lines : [])) {
+    if (a.kind === 'deduction' && Number(a.amount) > 0) by.set(a.account_code, (by.get(a.account_code) || 0) + Number(a.amount));
+  }
+  return [...by].map(([code, amount]) => ({ code, amount }));
+}
+
 const RUN_TOTALS = ['gross', 'net_pay', 'employer_pf', 'employer_esi', 'employee_pf', 'employee_esi', 'tds',
-  'professional_tax', 'lwf_employee', 'lwf_employer'];
+  'professional_tax', 'lwf_employee', 'lwf_employer', 'edli_employer', 'pf_admin_employer'];
 
 /**
  * Post the accrual every approval batch of one company-period is missing.
@@ -247,7 +269,7 @@ export async function recoverPayrollJournals({ companyId, month, year, userId = 
   }
   const tag = `${y}-${String(m).padStart(2, '0')}`;
   const { rows: runs } = await pool.query(
-    `SELECT pr.id, pr.approved_at, ${RUN_TOTALS.map(c => `pr.${c}`).join(', ')}
+    `SELECT pr.id, pr.approved_at, pr.adjustment_lines, ${RUN_TOTALS.map(c => `pr.${c}`).join(', ')}
        FROM payroll_runs pr JOIN employees e ON e.id = pr.employee_id
       WHERE e.company_id = $1 AND pr.month = $2 AND pr.year = $3 AND pr.is_test = false
         AND pr.status IN ('approved', 'paid') AND pr.approved_at IS NOT NULL
@@ -271,9 +293,10 @@ export async function recoverPayrollJournals({ companyId, month, year, userId = 
          FROM payroll_loan_repayments WHERE source = 'payroll' AND payroll_run_id = ANY($1::int[])`, [ids]);
     const r = await postPayrollJournal({
       payroll_run_id: reference, payroll_month: tag, gross_salary: t.gross, net_salary: t.net_pay,
-      pf_employer: t.employer_pf, esi_employer: t.employer_esi, pf_employee: t.employee_pf, esi_employee: t.employee_esi,
+      pf_employer: t.employer_pf, pf_charges: t.edli_employer + t.pf_admin_employer, esi_employer: t.employer_esi, pf_employee: t.employee_pf, esi_employee: t.employee_esi,
       tds: t.tds, professional_tax: t.professional_tax, lwf_employee: t.lwf_employee, lwf_employer: t.lwf_employer,
-      loan_principal: Number(loan.principal), loan_interest: Number(loan.interest), companyId, userId,
+      loan_principal: Number(loan.principal), loan_interest: Number(loan.interest),
+      other_deductions: deductionCreditsOf(rows), companyId, userId,
     });
     results.push(r.success
       ? { reference, run_count: ids.length, status: 'posted', journal_entry_id: r.journal_entry.id }

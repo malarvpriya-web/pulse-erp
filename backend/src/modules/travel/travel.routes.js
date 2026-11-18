@@ -27,178 +27,6 @@ async function ownEmployeeId(req) {
   } catch { return null; }
 }
 
-// ── Startup schema bootstrap ─────────────────────────────────────────────────
-;(async () => {
-  try {
-    await pool.query(`
-      ALTER TABLE travel_requests
-        ADD COLUMN IF NOT EXISTS employee_name    VARCHAR(150),
-        ADD COLUMN IF NOT EXISTS department       VARCHAR(100),
-        ADD COLUMN IF NOT EXISTS mode             VARCHAR(50),
-        ADD COLUMN IF NOT EXISTS hotel_required   BOOLEAN DEFAULT false,
-        ADD COLUMN IF NOT EXISTS advance_required BOOLEAN DEFAULT false,
-        ADD COLUMN IF NOT EXISTS notes            TEXT,
-        ADD COLUMN IF NOT EXISTS company_id       INTEGER,
-        ADD COLUMN IF NOT EXISTS customer_name    VARCHAR(200),
-        ADD COLUMN IF NOT EXISTS project_number   VARCHAR(100),
-        ADD COLUMN IF NOT EXISTS request_number   VARCHAR(50)
-    `);
-  } catch (e) { console.warn('[travel] alter travel_requests:', e.message); }
-
-  try {
-    await pool.query(`
-      UPDATE travel_requests
-        SET request_number = 'TR-' || LPAD(id::text, 3, '0')
-        WHERE request_number IS NULL
-    `);
-  } catch (e) { console.warn('[travel] backfill request_number:', e.message); }
-
-  try {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS travel_advances (
-        id                  SERIAL PRIMARY KEY,
-        employee_id         INTEGER,
-        company_id          INTEGER,
-        amount              NUMERIC(12,2) DEFAULT 0,
-        purpose             TEXT,
-        required_by         DATE,
-        travel_request_id   INTEGER,
-        settled_amount      NUMERIC(12,2),
-        status              VARCHAR(50)  DEFAULT 'Pending',
-        created_by          INTEGER,
-        created_at          TIMESTAMPTZ  DEFAULT NOW(),
-        updated_at          TIMESTAMPTZ  DEFAULT NOW()
-      )
-    `);
-  } catch (e) { console.warn('[travel] create travel_advances:', e.message); }
-
-  try {
-    await pool.query(`
-      ALTER TABLE travel_advances
-        ADD COLUMN IF NOT EXISTS company_id        INTEGER,
-        ADD COLUMN IF NOT EXISTS required_by       DATE,
-        ADD COLUMN IF NOT EXISTS travel_request_id INTEGER,
-        ADD COLUMN IF NOT EXISTS settled_amount    NUMERIC(12,2),
-        ADD COLUMN IF NOT EXISTS document_link     TEXT,
-        ADD COLUMN IF NOT EXISTS finance_comments  TEXT,
-        ADD COLUMN IF NOT EXISTS finance_by        INTEGER,
-        ADD COLUMN IF NOT EXISTS finance_at        TIMESTAMPTZ,
-        ADD COLUMN IF NOT EXISTS manager_comments  TEXT,
-        ADD COLUMN IF NOT EXISTS manager_by        INTEGER,
-        ADD COLUMN IF NOT EXISTS manager_at        TIMESTAMPTZ,
-        ADD COLUMN IF NOT EXISTS resubmission_count INTEGER DEFAULT 0,
-        ADD COLUMN IF NOT EXISTS payment_ref       VARCHAR(100),
-        ADD COLUMN IF NOT EXISTS payment_date      DATE,
-        ADD COLUMN IF NOT EXISTS disbursed_by      INTEGER,
-        ADD COLUMN IF NOT EXISTS disbursed_at      TIMESTAMPTZ
-    `);
-  } catch (e) { console.warn('[travel] alter travel_advances cols:', e.message); }
-
-  try {
-    // Legacy rows created before the Finance→Manager workflow enter at the finance step
-    await pool.query(`UPDATE travel_advances SET status='Pending Finance' WHERE status='Pending'`);
-  } catch (e) { console.warn('[travel] migrate advance statuses:', e.message); }
-
-  try {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS travel_bookings (
-        id                SERIAL PRIMARY KEY,
-        travel_request_id INTEGER,
-        booking_type      VARCHAR(100),
-        booking_ref       VARCHAR(100),
-        details           TEXT,
-        amount            NUMERIC(12,2) DEFAULT 0,
-        status            VARCHAR(50)  DEFAULT 'Pending',
-        created_by        INTEGER,
-        created_at        TIMESTAMPTZ  DEFAULT NOW(),
-        updated_at        TIMESTAMPTZ  DEFAULT NOW()
-      )
-    `);
-  } catch (e) { console.warn('[travel] create travel_bookings:', e.message); }
-
-  try {
-    await pool.query(`
-      ALTER TABLE travel_bookings
-        ADD COLUMN IF NOT EXISTS destination   VARCHAR(200),
-        ADD COLUMN IF NOT EXISTS mode          VARCHAR(50),
-        ADD COLUMN IF NOT EXISTS from_date     DATE,
-        ADD COLUMN IF NOT EXISTS to_date       DATE,
-        ADD COLUMN IF NOT EXISTS employee_name VARCHAR(150),
-        ADD COLUMN IF NOT EXISTS airline_train VARCHAR(100),
-        ADD COLUMN IF NOT EXISTS notes         TEXT,
-        ADD COLUMN IF NOT EXISTS company_id    INTEGER
-    `);
-  } catch (e) { console.warn('[travel] alter travel_bookings columns:', e.message); }
-
-  try {
-    // Backfill pending_booking rows for already-Approved requests that have no booking yet
-    await pool.query(`
-      INSERT INTO travel_bookings
-        (travel_request_id, destination, from_date, to_date, mode,
-         employee_name, status, company_id, created_by)
-      SELECT tr.id, tr.destination, tr.from_date, tr.to_date, tr.mode,
-             tr.employee_name, 'pending_booking', tr.company_id, tr.created_by
-      FROM travel_requests tr
-      WHERE tr.status = 'Approved'
-        AND tr.id NOT IN (
-          SELECT travel_request_id FROM travel_bookings WHERE travel_request_id IS NOT NULL
-        )
-    `);
-  } catch (e) { console.warn('[travel] backfill pending bookings:', e.message); }
-
-  try {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS travel_expense_items (
-        id                    SERIAL PRIMARY KEY,
-        company_id            INTEGER,
-        category              VARCHAR(100),
-        amount                NUMERIC(12,2) DEFAULT 0,
-        gst_amount            NUMERIC(12,2) DEFAULT 0,
-        total_amount          NUMERIC(12,2),
-        expense_date          DATE,
-        description           TEXT,
-        receipt_ref           VARCHAR(200),
-        google_drive_link     TEXT,
-        bill_upload_path      TEXT,
-        customer_id           INTEGER,
-        customer_name         VARCHAR(200),
-        project_id            INTEGER,
-        project_number        VARCHAR(100),
-        site_name             VARCHAR(200),
-        opportunity_id        INTEGER,
-        opportunity_ref       VARCHAR(100),
-        po_number             VARCHAR(100),
-        travel_request_id     INTEGER,
-        status                VARCHAR(50)  DEFAULT 'Draft',
-        reimbursement_status  VARCHAR(50)  DEFAULT 'Pending',
-        created_by            INTEGER,
-        created_at            TIMESTAMPTZ  DEFAULT NOW(),
-        updated_at            TIMESTAMPTZ  DEFAULT NOW()
-      )
-    `);
-  } catch (e) { console.warn('[travel] create travel_expense_items:', e.message); }
-
-  try {
-    await pool.query(`
-      ALTER TABLE travel_expense_items
-        ADD COLUMN IF NOT EXISTS company_id           INTEGER,
-        ADD COLUMN IF NOT EXISTS gst_amount           NUMERIC(12,2) DEFAULT 0,
-        ADD COLUMN IF NOT EXISTS total_amount         NUMERIC(12,2),
-        ADD COLUMN IF NOT EXISTS google_drive_link    TEXT,
-        ADD COLUMN IF NOT EXISTS bill_upload_path     TEXT,
-        ADD COLUMN IF NOT EXISTS customer_id          INTEGER,
-        ADD COLUMN IF NOT EXISTS customer_name        VARCHAR(200),
-        ADD COLUMN IF NOT EXISTS project_id           INTEGER,
-        ADD COLUMN IF NOT EXISTS project_number       VARCHAR(100),
-        ADD COLUMN IF NOT EXISTS site_name            VARCHAR(200),
-        ADD COLUMN IF NOT EXISTS opportunity_id       INTEGER,
-        ADD COLUMN IF NOT EXISTS opportunity_ref      VARCHAR(100),
-        ADD COLUMN IF NOT EXISTS po_number            VARCHAR(100),
-        ADD COLUMN IF NOT EXISTS reimbursement_status VARCHAR(50) DEFAULT 'Pending'
-    `);
-  } catch (e) { console.warn('[travel] alter travel_expense_items cols:', e.message); }
-})();
-
 const TRAVEL_APPROVE_ROLES = ['admin', 'super_admin', 'hr', 'manager'];
 const VALID_TRAVEL_STATUSES = new Set(['Pending', 'Approved', 'Rejected', 'Cancelled']);
 
@@ -1330,6 +1158,17 @@ router.post('/requests/v2', async (req, res) => {
     const actorId = req.user?.userId ?? req.user?.id;
     // Employees can only raise requests for themselves.
     const empId = isEmployeeRole(req) ? ((await ownEmployeeId(req)) ?? null) : employee_id;
+    // ...and their name and department come from their own record, not from
+    // free text: the form had a typed "Employee Name" and a Department list
+    // that is empty for employees (GET /admin/config/departments is 403 to
+    // them), so their requests carried whatever was typed, or no department.
+    let empName = employee_name, empDept = department;
+    if (isEmployeeRole(req) && empId) {
+      const own = await pool.query(
+        `SELECT COALESCE(NULLIF(TRIM(name), ''), TRIM(CONCAT_WS(' ', first_name, last_name))) AS name, department
+           FROM employees WHERE id = $1`, [empId]).catch(() => ({ rows: [] }));
+      if (own.rows[0]) { empName = own.rows[0].name || empName; empDept = own.rows[0].department || empDept; }
+    }
     const { rows } = await pool.query(
       `INSERT INTO travel_requests
          (employee_id, employee_name, department,
@@ -1341,7 +1180,7 @@ router.post('/requests/v2', async (req, res) => {
           status, approval_level, created_by, company_id)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,'Pending',0,$21,$22)
        RETURNING *`,
-      [empId, employee_name, department,
+      [empId, empName, empDept,
        customer_id, customer_name,
        project_id, project_number, site_name,
        opportunity_id, opportunity_ref, po_number,

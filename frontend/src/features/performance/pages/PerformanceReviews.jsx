@@ -14,6 +14,8 @@ import { useToast } from '@/context/ToastContext';
 import api from '@/services/api/client';
 import { submitErrorMessage } from '../submitErrorMessage';
 import './PerformanceReviews.css';
+import TeamReviews from '../components/TeamReviews';
+import { useTeamReviews } from '../components/useTeamReviews';
 import { PageHero, PageShell } from '@/components/pulse-ui';
 
 function EmptyState({ icon: Icon, title, sub, action }) {
@@ -75,11 +77,13 @@ const Toast = ({ toast, onClose }) => {
 function SelfAssessmentDrawer({ review, onClose, onSubmit }) {
   const toast = useToast();
   const [form, setForm] = useState({
+    // Pre-filled with what was submitted, so it can be corrected until the
+    // manager reviews it.
     self_rating: review?.self_rating || 0,
-    highlights: '',
-    challenges: '',
-    learnings: '',
-    next_goals: '',
+    highlights: review?.strengths || '',
+    challenges: review?.improvements || '',
+    learnings: review?.learnings || '',
+    next_goals: review?.next_goals || '',
   });
   const [saving, setSaving] = useState(false);
 
@@ -89,7 +93,11 @@ function SelfAssessmentDrawer({ review, onClose, onSubmit }) {
     if (!form.self_rating) { toast.error('Please select a self rating'); return; }
     setSaving(true);
     try {
-      await api.post(`/performance/reviews/${review.id}/self-review`, form);
+      // The server stores highlights as `achievements` (and the manager and
+      // the History tab read that column); sent as `highlights` they were
+      // silently dropped (2026-11-11).
+      const { highlights, ...rest } = form;
+      await api.post(`/performance/reviews/${review.id}/self-review`, { ...rest, achievements: highlights });
     } catch (err) {
       // A refused submit (not the owner, no linked employee, invalid rating)
       // used to be swallowed and reported as submitted.
@@ -122,7 +130,7 @@ function SelfAssessmentDrawer({ review, onClose, onSubmit }) {
             <textarea
               className="prf-textarea"
               rows={4}
-              placeholder="What did you accomplish this period?"
+              placeholder="What did you accomplish this year?"
               value={form.highlights}
               onChange={e => set('highlights', e.target.value)}
             />
@@ -148,11 +156,11 @@ function SelfAssessmentDrawer({ review, onClose, onSubmit }) {
             />
           </section>
           <section>
-            <label className="prf-field-label">Goals for Next Period</label>
+            <label className="prf-field-label">Goals for Next Year</label>
             <textarea
               className="prf-textarea"
               rows={3}
-              placeholder="What do you aim to achieve next quarter?"
+              placeholder="What do you aim to achieve next year?"
               value={form.next_goals}
               onChange={e => set('next_goals', e.target.value)}
             />
@@ -207,6 +215,15 @@ function GoalRow({ goal }) {
   );
 }
 
+// Cycle dates arrive as 'YYYY-MM-DD' or an ISO timestamp; shown DD Mon YY.
+// The date part is read as text — new Date('Y-M-D') is UTC midnight.
+function fmtCycleDate(v) {
+  if (!v) return 'Not set';
+  const [y, m, d] = String(v).slice(0, 10).split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit', timeZone: 'UTC' });
+}
+const todayYmd = () => new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+
 /* ── Main Component ─────────────────────────────────── */
 export default function PerformanceReviews() {
   const { user: _user } = useAuth();
@@ -216,11 +233,10 @@ export default function PerformanceReviews() {
   const [competencies, setCompetencies] = useState([]);
   const [history, setHistory] = useState([]);
   const [showDrawer, setShowDrawer] = useState(false);
-  const [showManagerForm, setShowManagerForm] = useState(false);
-  const [mgr, setMgr] = useState({ manager_rating: 0, manager_comments: '', kra_score: '', behavioral_score: '', final_rating: '', promotion_recommendation: false, salary_revision_percentage: '' });
-  const [mgrSaving, setMgrSaving] = useState(false);
   const [toast, setToast] = useState(null);
   const [loading, setLoading] = useState(true);
+  // Reviews of the people who report to the caller (My Team tab).
+  const { team, reload: reloadTeam } = useTeamReviews();
 
   const showToast = (msg, type = 'success') => setToast({ msg, type });
 
@@ -246,11 +262,18 @@ export default function PerformanceReviews() {
         manager_reviewed_at:rd.manager_submitted_at,
         strengths:          rd.achievements  || '',
         improvements:       rd.challenges    || '',
+        learnings:          rd.learnings     || '',
+        next_goals:         rd.next_goals    || '',
         manager_comments:   rd.manager_comments || '',
         employee_name:      rd.employee_name || '',
         manager_name:       rd.manager_name  || '',
         kra_score:          rd.kra_score     || null,
         behavioral_score:   rd.behavioral_score || null,
+        cycle_start:        rd.cycle_start || null,
+        cycle_end:          rd.cycle_end || null,
+        self_deadline:      rd.self_review_deadline || null,
+        manager_deadline:   rd.manager_review_deadline || null,
+        calibration_deadline: rd.calibration_deadline || null,
       });
     }
     if (goalsRes.status === 'fulfilled' && Array.isArray(goalsRes.value?.data) && goalsRes.value.data.length) {
@@ -284,35 +307,18 @@ export default function PerformanceReviews() {
 
   useEffect(() => { loadData(); }, [loadData]);
 
-  const handleSelfSubmit = (data) => {
-    setReview(r => ({ ...r, self_rating: data.self_rating, status: 'pending_manager_review', self_submitted_at: new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) }));
+  const handleSelfSubmit = () => {
     setShowDrawer(false);
-    showToast('Self assessment submitted successfully');
-  };
-
-  const handleManagerSubmit = async () => {
-    if (!mgr.manager_rating || !mgr.final_rating) {
-      showToast('Manager rating and final rating are required', 'error'); return;
-    }
-    setMgrSaving(true);
-    try {
-      await api.post(`/performance/reviews/${review.id}/manager-review`, {
-        ...mgr,
-        manager_rating: Number(mgr.manager_rating),
-        final_rating:   Number(mgr.final_rating),
-        kra_score:      Number(mgr.kra_score) || null,
-        behavioral_score: Number(mgr.behavioral_score) || null,
-        salary_revision_percentage: Number(mgr.salary_revision_percentage) || 0,
-      });
-      setReview(r => ({ ...r, manager_rating: Number(mgr.manager_rating), final_rating: Number(mgr.final_rating), status: 'completed', manager_comments: mgr.manager_comments }));
-      setShowManagerForm(false);
-      showToast('Manager review submitted');
-    } catch (err) { showToast(submitErrorMessage(err, 'Failed to submit manager review'), 'error'); }
-    finally { setMgrSaving(false); }
+    showToast('Self assessment submitted — your manager will review it');
+    loadData();   // the server's status ('self_submitted'), not a guessed one
   };
 
   const statusConfig = {
     self_review_pending: { label: 'Self Review Pending', icon: <Clock size={14}/>, color: '#7c5cf0' },
+    // The statuses the server actually writes (self-review / manager-review /
+    // finalize) — without these two every in-flight review read "In Progress".
+    self_submitted: { label: 'Self Assessment Submitted — waiting for your manager', icon: <Clock size={14}/>, color: '#6366f1' },
+    manager_submitted: { label: 'Manager Reviewed — waiting for HR to finalise', icon: <Clock size={14}/>, color: '#0ea5e9' },
     pending_manager_review: { label: 'Awaiting Manager Review', icon: <Clock size={14}/>, color: '#6366f1' },
     completed: { label: 'Review Completed', icon: <CheckCircle size={14}/>, color: '#22c55e' },
     in_progress: { label: 'In Progress', icon: <RefreshCw size={14}/>, color: '#3b82f6' },
@@ -343,6 +349,9 @@ export default function PerformanceReviews() {
           title="No active review cycle"
           sub="An admin needs to configure a review cycle in Performance Settings before reviews can be shown."
         />
+        {/* A manager with no review of their own still reviews their team. */}
+        {team.length > 0 && <div style={{ marginTop: 16 }}><TeamReviews team={team} reload={reloadTeam} onToast={showToast} /></div>}
+        <Toast toast={toast} onClose={() => setToast(null)}/>
       </div>
     );
   }
@@ -359,13 +368,16 @@ export default function PerformanceReviews() {
             Refresh
           </button>
           {review.status === 'self_review_pending' && (
-            <button className="plh-cta plh-cta--ghost" onClick={() => setShowDrawer(true)}>
+            <button className="plh-cta" onClick={() => setShowDrawer(true)}>
               <FileText size={15}/> Start Self Assessment
             </button>
           )}
-          {(review.status === 'self_submitted' || review.status === 'pending_manager_review') && (
-            <button className="plh-cta" onClick={() => setShowManagerForm(true)}>
-              <Star size={15}/> Submit Manager Review
+          {/* Editable until the manager reviews it. The manager review of
+              one's OWN review used to be offered here — managers now review
+              their team from the My Team tab. */}
+          {review.status === 'self_submitted' && (
+            <button className="plh-cta plh-cta--ghost" onClick={() => setShowDrawer(true)}>
+              <FileText size={15}/> Edit Self Assessment
             </button>
           )}
         </>}
@@ -424,6 +436,7 @@ export default function PerformanceReviews() {
           { key: 'goals',         label: 'Goals & KPIs',  icon: <Target size={14}/> },
           { key: 'competencies',  label: 'Competencies',  icon: <Award size={14}/> },
           { key: 'history',       label: 'History',       icon: <Clock size={14}/> },
+          ...(team.length ? [{ key: 'team', label: `My Team (${team.length})`, icon: <Star size={14}/> }] : []),
         ].map(t => (
           <button
             key={t.key}
@@ -442,13 +455,13 @@ export default function PerformanceReviews() {
           <div className="prf-card prf-card-lg">
             <h2 className="prf-card-title">Review Timeline</h2>
             <div className="prf-timeline">
+              {/* From the review cycle's own dates (2026-11-11) — these were
+                  hard-coded to a 2025 cycle and showed on every review. */}
               {[
-                { label: 'Review Period Started', date: 'Oct 1 2025', done: true },
-                { label: 'Goals Finalized',       date: 'Oct 10 2025', done: true },
-                { label: 'Mid-Cycle Check-In',    date: 'Nov 15 2025', done: true },
-                { label: 'Self Assessment Due',   date: 'Dec 20 2025', done: review.status !== 'self_review_pending' },
-                { label: 'Manager Review',         date: 'Jan 5 2026',  done: review.status === 'completed' },
-                { label: 'Final Rating Published', date: 'Jan 15 2026', done: review.status === 'completed' },
+                { label: 'Review Period Started', date: fmtCycleDate(review.cycle_start), done: !!review.cycle_start && review.cycle_start.slice(0, 10) <= todayYmd() },
+                { label: 'Self Assessment Due',   date: fmtCycleDate(review.self_deadline), done: review.status !== 'self_review_pending' },
+                { label: 'Manager Review',         date: fmtCycleDate(review.manager_deadline), done: review.status === 'completed' },
+                { label: 'Final Rating Published', date: fmtCycleDate(review.calibration_deadline || review.cycle_end), done: review.status === 'completed' },
               ].map((step, i) => (
                 <div key={i} className="prf-timeline-step">
                   <div className={`prf-tl-dot ${step.done ? 'prf-tl-done' : ''}`}>
@@ -573,6 +586,10 @@ export default function PerformanceReviews() {
       )}
 
       {/* ─── History Tab ─── */}
+      {tab === 'team' && team.length > 0 && (
+        <TeamReviews team={team} reload={reloadTeam} onToast={showToast} />
+      )}
+
       {tab === 'history' && (
         <div className="prf-grid">
           <div className="prf-card prf-card-full">
@@ -620,69 +637,7 @@ export default function PerformanceReviews() {
       )}
 
       {/* ─── Manager Review Modal ─── */}
-      {showManagerForm && (
-        <div className="prf-overlay" onClick={() => setShowManagerForm(false)}>
-          <div className="prf-mgr-modal" onClick={e => e.stopPropagation()}>
-            <div className="prf-mgr-modal-hd">
-              <div>
-                <h3>Manager Review</h3>
-                <p className="prf-drawer-sub">{review.employee_name} · {review.cycle}</p>
-              </div>
-              <button className="prf-drawer-close" onClick={() => setShowManagerForm(false)}><X size={20}/></button>
-            </div>
-            <div className="prf-mgr-modal-body">
-              <section>
-                <label className="prf-field-label">Manager Rating *</label>
-                <StarRating value={mgr.manager_rating} onChange={v => setMgr(m => ({ ...m, manager_rating: v }))} />
-              </section>
-              <section>
-                <label className="prf-field-label">Final Rating *</label>
-                <StarRating value={mgr.final_rating} onChange={v => setMgr(m => ({ ...m, final_rating: v }))} />
-              </section>
-              <div className="prf-mgr-row">
-                <section>
-                  <label className="prf-field-label">KRA Score (0–100)</label>
-                  <input className="prf-input" type="number" min="0" max="100"
-                    placeholder="85" value={mgr.kra_score}
-                    onChange={e => setMgr(m => ({ ...m, kra_score: e.target.value }))} />
-                </section>
-                <section>
-                  <label className="prf-field-label">Behavioral Score (0–100)</label>
-                  <input className="prf-input" type="number" min="0" max="100"
-                    placeholder="80" value={mgr.behavioral_score}
-                    onChange={e => setMgr(m => ({ ...m, behavioral_score: e.target.value }))} />
-                </section>
-              </div>
-              <section>
-                <label className="prf-field-label">Manager Comments</label>
-                <textarea className="prf-textarea" rows={4}
-                  placeholder="Overall feedback, strengths observed, areas for improvement…"
-                  value={mgr.manager_comments}
-                  onChange={e => setMgr(m => ({ ...m, manager_comments: e.target.value }))} />
-              </section>
-              <div className="prf-mgr-row">
-                <section>
-                  <label className="prf-field-label">Salary Revision (%)</label>
-                  <input className="prf-input" type="number" min="0" max="100"
-                    placeholder="0" value={mgr.salary_revision_percentage}
-                    onChange={e => setMgr(m => ({ ...m, salary_revision_percentage: e.target.value }))} />
-                </section>
-                <section style={{ display: 'flex', alignItems: 'center', gap: 10, paddingTop: 22 }}>
-                  <input type="checkbox" id="promo" checked={mgr.promotion_recommendation}
-                    onChange={e => setMgr(m => ({ ...m, promotion_recommendation: e.target.checked }))} />
-                  <label htmlFor="promo" className="prf-field-label" style={{ cursor: 'pointer' }}>Recommend for Promotion</label>
-                </section>
-              </div>
-            </div>
-            <div className="prf-drawer-footer">
-              <button className="prf-btn-ghost" onClick={() => setShowManagerForm(false)}>Cancel</button>
-              <button className="prf-btn-primary" onClick={handleManagerSubmit} disabled={mgrSaving}>
-                {mgrSaving ? 'Submitting…' : 'Submit Manager Review'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* The manager-review form lives in TeamReviews (My Team tab). */}
     </PageShell>
   );
 }

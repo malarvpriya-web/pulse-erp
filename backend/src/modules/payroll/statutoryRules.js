@@ -39,6 +39,16 @@ const OLD_REGIME_SLABS = [
   { min: 500000,  max: 1000000, rate: 0.20 },
   { min: 1000000, max: null,    rate: 0.30 },
 ];
+// Finance Act 2026, First Schedule Part III Paragraph A items (II) and (III):
+// residents aged 60–79 / 80 and over at any time in the tax year (old regime).
+const OLD_REGIME_AGE_SLABS = [
+  { min_age: 60, slabs: [{ min: 0, max: 300000, rate: 0 }, { min: 300000, max: 500000, rate: 0.05 }, { min: 500000, max: 1000000, rate: 0.20 }, { min: 1000000, max: null, rate: 0.30 }] },
+  { min_age: 80, slabs: [{ min: 0, max: 500000, rate: 0 }, { min: 500000, max: 1000000, rate: 0.20 }, { min: 1000000, max: null, rate: 0.30 }] },
+];
+// Paragraph F Table 1 (individuals): rate of surcharge by total income. Income
+// under s.202 (the new regime) stops at 25% (s.2(12)(b) Table, Sl. No. 10).
+const SURCHARGE_OLD_2026 = [{ min: 5000000, rate: 10 }, { min: 10000000, rate: 15 }, { min: 20000000, rate: 25 }, { min: 50000000, rate: 37 }];
+const SURCHARGE_NEW_2026 = [{ min: 5000000, rate: 10 }, { min: 10000000, rate: 15 }, { min: 20000000, rate: 25 }];
 
 // Professional Tax: monthly gross → PT per month. Carried over unchanged from
 // the engine's previous hard-coded table; overridable per state by a new version.
@@ -77,7 +87,7 @@ const PT_SLABS = {
   ],
 };
 
-const V = 'verified', U = 'unverified', D = 'decision_required';
+const V = 'verified', U = 'unverified', D = 'decision_required', S = 'company_setting';
 
 export const BUILT_IN_RULES = {
   // ── Provident Fund (Code on Social Security, 2020 — Chapter III) ──────────
@@ -130,6 +140,18 @@ export const BUILT_IN_RULES = {
     evidence: 'Act text read (CoSS, Gazette copy): s.2(82) "Provided that for the purposes of Chapter III, the age of superannuation shall be fifty-eight years". ' +
       'NOT covered: EPS membership of new joiners above the wage ceiling (EPFO FAQ, pre-Code Rs 15,000) — Pulse has no per-employee EPS-membership field (PAYROLL_DATA_FLOW_AUDIT.md Part 6)' }],
 
+  // Employer-only PF charges. Company settings: they never change an employee's
+  // pay and never block approval, but they are part of what is remitted to EPFO.
+  'pf.edli_rate': [{ effective_from: '2014-09-01', value: 0.5, status: S,
+    source: 'EDLI employer contribution 0.5% of wages up to the ceiling',
+    evidence: 'Published EPFO rate summaries and adviser notes (2026); confirm against the current EPFO rate sheet' }],
+  'pf.admin_rate': [{ effective_from: '2018-06-01', value: 0.5, status: S,
+    source: 'EPF administrative charge 0.5% of EPF wages',
+    evidence: 'Published EPFO rate summaries and adviser notes (2026); confirm against the current EPFO rate sheet' }],
+  'pf.admin_min_monthly': [{ effective_from: '2018-06-01', value: 500, status: S,
+    source: 'EPF administrative charge: minimum per establishment per month',
+    evidence: 'Adviser notes (2026); confirm against the current EPFO rate sheet' }],
+
   // ── ESI ───────────────────────────────────────────────────────────────────
   'esi.wage_threshold': [{ effective_from: '2017-01-01', value: 21000, status: V,
     source: 'ESI coverage wage limit Rs 21,000/month',
@@ -172,7 +194,14 @@ export const BUILT_IN_RULES = {
     source: 'Income-tax Act 2025 s.202 (tax year 2026-27) / Finance Act 2025',
     evidence: 'Act text read (Income-tax Act 2025 as enacted, e-Gazette 265620.pdf): s.202(1) table 4L/8L/12L/16L/20L/24L at nil/5/10/15/20/25/30%; ' +
       's.156(2) rebate 100% or ₹60,000 up to ₹12L with marginal relief above; s.19(1) Table Sl.2 standard deduction ₹75,000 under s.202(1); s.202(2)(a)(iv) no PT deduction. ' +
-      'Cess 4%: Finance Bill 2026 cl.2 (as introduced). STILL UNVERIFIED — the ENACTED Finance Act 2026 / the Act "as amended by FA 2026" (incometaxindia.gov.in refuses scripted download; a person can download it)',
+      'Cess 4%: Finance Bill 2026 cl.2 (as introduced). STILL UNVERIFIED for this version — tax years before 2026-27 were not re-read',
+  }, {
+    effective_from: '2026-04-01',
+    value: { slabs: NEW_REGIME_SLABS_2025, standard_deduction: 75000, rebate_limit: 1200000, rebate_max: 60000, marginal_relief: true, cess_pct: 4, surcharge: SURCHARGE_NEW_2026 },
+    status: V,
+    source: 'Income-tax Act 2025 s.202(1), s.156(2), s.19(1) (Act 30 of 2025); Finance Act 2026 (No. 4 of 2026), Gazette of India Extraordinary Part II Section 1 No. 9, 30-Mar-2026 (CG-DL-E-31032026-271439) s.2(16)',
+    evidence: 'Act text read (e-Gazette 265620.pdf): s.202(1) table, s.156(2) rebate, s.19(1) standard deduction. Enacted Finance Act 2026 read (e-Gazette 271439.pdf): s.2(16) cess 4%; s.56 omits only s.202(2)(a)(iii) (s.144), and no clause amends s.19 or s.156. ' +
+      'Surcharge (2026-11-09): enacted text read (271439.pdf p.25–26, s.2(12)(b) Table Sl. No. 10, income under s.202): 10% above ₹50,00,000, 15% above ₹1,00,00,000, 25% above ₹2,00,00,000; marginal relief per Part III Paragraph F Table 2. No amending Act after 30-Mar-2026 was searched for',
   }],
   'tax.old': [{
     effective_from: '2023-04-01',
@@ -181,13 +210,61 @@ export const BUILT_IN_RULES = {
     source: 'Optional regime — Income-tax Act 2025 s.202(4) option',
     evidence: 'Option under s.202(4) verified (Finance Bill 2026 Memorandum). s.156(1) ₹12,500 up to ₹5L and s.19 standard deduction ₹50,000: Act text read. ' +
       'Slabs 2.5L/5L/10L nil/5/20/30%: Finance Bill 2026 First Schedule Part III Para A(I) (as introduced) — enacted text not read. ' +
-      'NOT MODELLED: senior-citizen slabs (₹3L at 60–79, ₹5L at 80+, Para A(II)/(III))',
+      'NOT MODELLED: senior-citizen slabs (₹3L at 60–79, ₹5L at 80+, Para A(II)/(III)). Tax years before 2026-27 were not re-read',
+  }, {
+    effective_from: '2026-04-01',
+    value: { slabs: OLD_REGIME_SLABS, standard_deduction: 50000, rebate_limit: 500000, rebate_max: 12500, marginal_relief: false, cess_pct: 4, surcharge: SURCHARGE_OLD_2026, age_slabs: OLD_REGIME_AGE_SLABS },
+    status: V,
+    source: 'Finance Act 2026 (No. 4 of 2026), Gazette of India Extraordinary Part II Section 1 No. 9, 30-Mar-2026 (CG-DL-E-31032026-271439), First Schedule Part III Para A(I); Income-tax Act 2025 s.202(4), s.156(1), s.19',
+    evidence: 'Enacted text read (e-Gazette 271439.pdf): Part III Para A(I) nil to ₹2,50,000, 5% to ₹5,00,000, 20% to ₹10,00,000, 30% above; s.2(16) cess 4%; no clause amends s.19 or s.156. Act text read (265620.pdf): s.156(1), s.19. ' +
+      'Senior-citizen slabs and surcharge (2026-11-09): enacted text read (271439.pdf p.96–100, Part III Paragraph A items (II)–(III) and Paragraph F Tables 1–2): 60–79 nil to ₹3,00,000; 80+ nil to ₹5,00,000; surcharge 10% / 15% / 25% / 37% above ₹50L / ₹1Cr / ₹2Cr / ₹5Cr with marginal relief. No amending Act after 30-Mar-2026 was searched for',
   }],
+
+  // ── Perquisites ───────────────────────────────────────────────────────────
+  // A loan below the benchmark rate is taxable (Income-tax Rules 2026, rule 15
+  // Table IV): the SBI rate on 1 April for that kind of loan. Its rates change
+  // each year, so they are the company's entry. Blocks approval only for a
+  // payroll that has such a loan (payroll.service.js periodReadiness).
+  'perq.loan': [{ effective_from: '2014-04-01', status: U,
+    value: { exempt_limit: 20000, sbi_rates: { loan: null, advance: null } },
+    source: 'Income-tax Rules 1962, rule 3(7)(i) — interest-free or concessional loans',
+    evidence: 'Not re-read: SBI rate on 1 April less the rate charged; nil when loans total ₹20,000 or less; medical loans exempt' },
+  { effective_from: '2026-04-01', status: U,
+    value: { exempt_limit: 200000, sbi_rates: { loan: null, advance: null } },
+    source: 'Income-tax Rules 2026, rule 15 Table IV — interest-free or concessional loans',
+    evidence: 'Secondary sources only (Vialto, Khaitan & Co, Taxscan, Mar–Apr 2026): perquisite = SBI rate on 1 April for the same kind of loan, on the maximum monthly balance, less interest charged; nil when loans total ₹2,00,000 or less; medical loans exempt. Rules text not read. Enter the SBI rates for this tax year with their source' }],
 
   // ── Overtime ──────────────────────────────────────────────────────────────
   'ot.max_multiplier': [{ effective_from: '1948-04-01', value: 2, status: V,
     source: 'Factories Act 1948 s.59; OSH Code 2020 s.27 — twice the ordinary rate; MoLE Additional FAQs on Labour Codes 16-Mar-2026 Q24',
     evidence: 'FAQ text read: "a worker shall in respect of such overtime work be entitled to wages at the rate of twice the normal rate of wages". Eligibility (Q5: employees whose minimum wage is fixed under the Code on Wages) is not modelled' }],
+
+  // The lowest full-month gross the company may pay for its scheduled employment.
+  // Null = not recorded: a warning on the release check, not a blocker. It is a
+  // figure from the State notification for the company's own schedule.
+  'wages.minimum_monthly': [{ effective_from: '2020-04-01', value: null, status: S,
+    source: 'No minimum wage recorded', evidence: 'Enter the figure from the notification for your scheduled employment' }],
+
+  // ── Bonus ─────────────────────────────────────────────────────────────────
+  // Company settings, not statutory confirmations: they never block approval
+  // (COMPANY_SETTING_KEYS). The figures below feed the statutory bonus report only.
+  'bonus.statutory': [{ effective_from: '2020-04-01', status: S,
+    value: { wage_eligibility: 21000, calc_ceiling: 7000, min_pct: 8.33, max_pct: 20 },
+    source: 'Figures carried unchanged from the statutory bonus report',
+    evidence: 'Not checked against a primary source. Settlement rule settlement.bonus holds its own figures for a final settlement' }],
+  // Paid through monthly payroll in the listed months. type: fixed (rupees),
+  // pct_basic or pct_gross (percent of the month's earned Basic or regular gross).
+  'bonus.plans': [{ effective_from: '2020-04-01', status: S,
+    value: { plans: [] },
+    source: 'No bonus plan recorded', evidence: 'The company enters its own plans' }],
+  // Yearly sales incentive (modules/sales/salesIncentive.service.js). Each salesperson's
+  // yearly target is set in Sales → Targets; at the end of the financial year the
+  // achievement % picks one slab. type: pct_salary (% of the year's Basic or gross,
+  // salary_basis), pct_sales (% of the sales achieved) or fixed (rupees).
+  // pay_month: the payroll month it is normally added to (4 = April, after March).
+  'incentive.sales': [{ effective_from: '2020-04-01', status: S,
+    value: { salary_basis: 'basic', pay_month: 4, slabs: [] },
+    source: 'No incentive slabs recorded', evidence: 'The company enters its own slabs' }],
 
   // ── State levies ──────────────────────────────────────────────────────────
   // A slab may carry month_pt: { <month 1-12>: amount } for a month that differs.
@@ -230,6 +307,161 @@ export const BUILT_IN_RULES = {
 };
 
 export const RULE_KEYS = Object.keys(BUILT_IN_RULES);
+
+// The company's own settings: never a release blocker, whatever their status.
+export const COMPANY_SETTING_KEYS = ['bonus.statutory', 'bonus.plans', 'incentive.sales', 'pf.edli_rate', 'pf.admin_rate', 'pf.admin_min_monthly', 'wages.minimum_monthly'];
+export const BONUS_PLAN_TYPES = ['fixed', 'pct_basic', 'pct_gross'];
+export const INCENTIVE_SLAB_TYPES = ['pct_salary', 'pct_sales', 'fixed'];
+
+/** The values a decision rule may take, or null when the rule is not a choice. */
+export function decisionOptions(key) {
+  return BUILT_IN_RULES[key]?.find(v => v.options)?.options ?? null;
+}
+
+// jsonb does not keep key order, so a recorded value is compared by content.
+const canon = (v) => (Array.isArray(v) ? v.map(canon)
+  : v && typeof v === 'object' ? Object.fromEntries(Object.keys(v).sort().map(k => [k, canon(v[k])])) : v);
+export const sameValue = (a, b) => JSON.stringify(canon(a)) === JSON.stringify(canon(b));
+
+const NUMBER_RULES = {
+  'pf.employee_rate': { max: 100 }, 'pf.employer_rate': { max: 100 }, 'pf.eps_rate': { max: 100 },
+  'pf.wage_ceiling': { min: 1 }, 'pf.wage_floor_pct': { max: 100, nullable: true }, 'pf.eps_age_limit': { min: 1, max: 120 },
+  'esi.wage_threshold': { min: 1 }, 'esi.employee_rate': { max: 100 }, 'esi.employer_rate': { max: 100 },
+  'ot.max_multiplier': { min: 1, max: 10 },
+  'pf.edli_rate': { max: 100 }, 'pf.admin_rate': { max: 100 }, 'pf.admin_min_monthly': {},
+  'wages.minimum_monthly': { nullable: true },
+};
+const isAmount = (n) => Number.isFinite(n) && n >= 0;
+
+// Bands start at 0 and end open. Tax bands share their boundary (next min = max);
+// PT bands are whole rupees (next min = max + 1).
+function bandProblems(slabs, step, amountOk, amountName) {
+  if (!Array.isArray(slabs) || !slabs.length) return ['needs at least one band'];
+  const p = [];
+  if (slabs[0]?.min !== 0) p.push('the first band must start at 0');
+  slabs.forEach((s, i) => {
+    if (!s || typeof s !== 'object') { p.push(`band ${i + 1} is not an object`); return; }
+    if (!amountOk(s[amountName])) p.push(`band ${i + 1}: ${amountName} is not valid`);
+    const last = i === slabs.length - 1;
+    if (last && s.max != null) p.push('the last band must have no upper limit');
+    if (!last && !(Number.isFinite(s.max) && s.max > s.min)) p.push(`band ${i + 1}: the upper limit must be above where the band starts`);
+    if (!last && slabs[i + 1]?.min !== s.max + step) p.push(`band ${i + 2} must start at ${s.max + step}`);
+  });
+  return p;
+}
+
+/**
+ * What is wrong with a value someone typed, as messages. Values reach the engine
+ * unchecked, where NaN or a gap between bands silently produces wrong pay.
+ */
+export function ruleValueProblems(key, v) {
+  const options = decisionOptions(key);
+  if (options) return options.includes(v) ? [] : [`must be one of: ${options.join(', ')}`];
+  const num = NUMBER_RULES[key];
+  if (num) {
+    if (v === null && num.nullable) return [];
+    const lo = num.min ?? 0;
+    if (!Number.isFinite(v) || v < lo || (num.max != null && v > num.max)) return [`must be a number from ${lo}${num.max != null ? ` to ${num.max}` : ' upward'}`];
+    return [];
+  }
+  const isObject = v && typeof v === 'object' && !Array.isArray(v);
+  if (key === 'bonus.statutory') {
+    if (!isObject) return ['must be an object'];
+    const p = [];
+    for (const f of ['wage_eligibility', 'calc_ceiling']) if (!(isAmount(v[f]) && v[f] > 0)) p.push(`${f} must be a number above 0`);
+    for (const f of ['min_pct', 'max_pct']) if (!(isAmount(v[f]) && v[f] <= 100)) p.push(`${f} must be a number from 0 to 100`);
+    if (!p.length && v.min_pct > v.max_pct) p.push('min_pct cannot be above max_pct');
+    return p;
+  }
+  if (key === 'bonus.plans') {
+    if (!isObject || !Array.isArray(v.plans)) return ['must be an object with a list of plans'];
+    const names = new Set();
+    return v.plans.flatMap((plan, i) => {
+      const name = String(plan?.name ?? '').trim(), at = `plan ${i + 1}`, p = [];
+      if (!name) p.push(`${at}: name is required`);
+      else if (names.has(name.toLowerCase())) p.push(`${at}: the name "${name}" is used twice`);
+      names.add(name.toLowerCase());
+      if (!BONUS_PLAN_TYPES.includes(plan?.type)) p.push(`${at}: type must be one of ${BONUS_PLAN_TYPES.join(', ')}`);
+      if (!isAmount(plan?.amount)) p.push(`${at}: amount must be a number of 0 or more`);
+      else if (plan.type !== 'fixed' && plan.amount > 100) p.push(`${at}: a percentage cannot be above 100`);
+      if (!Array.isArray(plan?.months) || !plan.months.length || plan.months.some(m => !Number.isInteger(m) || m < 1 || m > 12)) p.push(`${at}: months must list the pay months from 1 to 12`);
+      if (typeof plan?.active !== 'boolean') p.push(`${at}: active must be yes or no`);
+      // Optional, for a final settlement (settlementEngine festivalBonusLines).
+      for (const f of ['prorate_on_exit', 'counts_as_statutory']) if (plan?.[f] != null && typeof plan[f] !== 'boolean') p.push(`${at}: ${f} must be yes or no`);
+      if (plan?.min_service_months != null && !(Number.isInteger(plan.min_service_months) && plan.min_service_months >= 0 && plan.min_service_months <= 120)) p.push(`${at}: minimum service must be whole months from 0 to 120`);
+      return p;
+    });
+  }
+  if (key === 'incentive.sales') {
+    if (!isObject || !Array.isArray(v.slabs)) return ['must be an object with a list of slabs'];
+    const p = [];
+    if (!['basic', 'gross'].includes(v.salary_basis)) p.push('salary_basis must be basic or gross');
+    if (!(Number.isInteger(v.pay_month) && v.pay_month >= 1 && v.pay_month <= 12)) p.push('pay_month must be a month from 1 to 12');
+    const sorted = [...v.slabs].sort((a, b) => Number(a?.from_pct) - Number(b?.from_pct));
+    sorted.forEach((sl, i) => {
+      const at = `slab ${i + 1}`;
+      if (!(isAmount(sl?.from_pct) && sl.from_pct <= 1000)) p.push(`${at}: from % must be a number from 0 to 1000`);
+      if (sl?.to_pct != null && !(isAmount(sl.to_pct) && sl.to_pct > sl.from_pct)) p.push(`${at}: to % must be above from %, or blank for no upper limit`);
+      if (!INCENTIVE_SLAB_TYPES.includes(sl?.type)) p.push(`${at}: type must be one of ${INCENTIVE_SLAB_TYPES.join(', ')}`);
+      if (!isAmount(sl?.amount)) p.push(`${at}: amount must be a number of 0 or more`);
+      else if (sl.type !== 'fixed' && sl.amount > 100) p.push(`${at}: a percentage cannot be above 100`);
+      const nxt = sorted[i + 1];
+      if (nxt && (sl?.to_pct == null || Number(sl.to_pct) > Number(nxt.from_pct))) p.push(`${at} overlaps slab ${i + 2}`);
+    });
+    return p;
+  }
+  if (key === 'perq.loan') {
+    if (!isObject) return ['must be an object'];
+    const p = [];
+    if (!isAmount(v.exempt_limit)) p.push('exempt_limit must be a number of 0 or more');
+    for (const k of ['loan', 'advance']) {
+      const r = v.sbi_rates?.[k];
+      if (r != null && !(isAmount(r) && r <= 100)) p.push(`sbi_rates.${k} must be a percentage from 0 to 100, or empty`);
+    }
+    return p;
+  }
+  if (key === 'tax.new' || key === 'tax.old') {
+    if (!isObject) return ['must be an object'];
+    const p = bandProblems(v.slabs, 0, r => Number.isFinite(r) && r >= 0 && r <= 1, 'rate');
+    if (v.surcharge != null && (!Array.isArray(v.surcharge) || v.surcharge.some(b => !isAmount(b?.min) || !(isAmount(b?.rate) && b.rate <= 100)))) p.push('surcharge must be a list of { min, rate } bands');
+    if (v.age_slabs != null && (!Array.isArray(v.age_slabs) || v.age_slabs.some(b => !Number.isInteger(b?.min_age) || bandProblems(b.slabs, 0, r => Number.isFinite(r) && r >= 0 && r <= 1, 'rate').length))) p.push('age_slabs must list { min_age, slabs } with valid slabs');
+    for (const f of ['standard_deduction', 'rebate_limit', 'rebate_max']) if (!isAmount(v[f])) p.push(`${f} must be a number of 0 or more`);
+    if (!(isAmount(v.cess_pct) && v.cess_pct <= 100)) p.push('cess_pct must be a number from 0 to 100');
+    if (typeof v.marginal_relief !== 'boolean') p.push('marginal_relief must be yes or no');
+    return p;
+  }
+  if (key === 'pt.slabs') {
+    if (!isObject) return ['must be an object keyed by state code'];
+    return Object.entries(v).flatMap(([state, e]) =>
+      (Array.isArray(e) ? bandProblems(e, 1, isAmount, 'pt') : halfYearPtProblems(e)).map(m => `${state}: ${m}`));
+  }
+  if (key === 'lwf.rates') {
+    if (!isObject) return ['must be an object keyed by state code'];
+    return Object.entries(v).flatMap(([state, e]) => {
+      const p = [];
+      if (!isAmount(e?.employee)) p.push('employee must be a number of 0 or more');
+      if (!isAmount(e?.employer)) p.push('employer must be a number of 0 or more');
+      if (!Array.isArray(e?.months) || e.months.some(m => !Number.isInteger(m) || m < 1 || m > 12)) p.push('months must list wage months from 1 to 12');
+      return p.map(m => `${state}: ${m}`);
+    });
+  }
+  return [];
+}
+
+// What is still unconfirmed in a state-wide table, by state. The version-level
+// evidence narrates whichever state changed last, which tells a company in
+// another state nothing about what it must check. Status stays per version:
+// these only say what the blocker asks this company to confirm.
+export const STATE_RULE_GAPS = {
+  'pt.slabs': {
+    TN: 'Tamil Nadu: the urban table is read from the Urban Local Bodies Rules 2023 r.275(2) and applies "till such time as the next general revision of tax is carried out by the Council". Confirm with your municipality that its council has not revised the table.',
+    KA: 'Karnataka: the February ₹300 rate is from a Commercial Taxes portal notice citing DPAL 08 SHASANA 2025; the Amendment Act text itself was not obtained.',
+  },
+  'lwf.rates': {
+    TN: 'Tamil Nadu: ₹20 employee / ₹40 employer read from G.O. Ms. No. 161 of 2-Dec-2022 (r.11-A). Rule 12 was NOT read: Pulse deducts in December wages, assuming payment by 31 January, while at least one published reading of r.12 says payment is due by 31 July on June wages. Confirm the wage month, the employee exclusions and coverage from the Rules or the Labour Welfare Board.',
+    KA: 'Karnataka: ₹50 / ₹100 read from the KLWB press note of 05-12-2025. Not verified: the wage month of the deduction (December assumed) and applicability (commercial/IT establishments need 50+ employees).',
+  },
+};
 
 /**
  * Shape of a half-yearly PT entry ({ basis: 'half_year', deduct_months, slabs }).
@@ -338,7 +570,7 @@ export function versionsOf(key, dbVersions = []) {
 export async function loadRuleRows(pool, companyId) {
   try {
     const { rows } = await pool.query(
-      `SELECT rule_key, effective_from, value, company_id, source_reference, created_by
+      `SELECT rule_key, effective_from, value, company_id, source_reference, created_by, created_at
          FROM payroll_statutory_rules
         WHERE company_id IS NULL OR company_id = $1`,
       [companyId ?? null]

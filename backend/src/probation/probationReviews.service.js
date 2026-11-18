@@ -1,12 +1,13 @@
 import pool from "../config/db.js";
-import { isCurrentSql, statusExpr } from "../shared/employeeStatus.js";
-import { toIsoDate } from "../shared/probationDates.js";
+import { isCurrentSql, statusExpr, NOTICE_STATUS } from "../shared/employeeStatus.js";
+import { toIsoDate, probationEndDate, parseProbationMonths } from "../shared/probationDates.js";
 import { logAudit } from "../services/AuditService.js";
 import { ProbationError, insertNotifications, dispatchAfterCommit } from "./probation.service.js";
+import { freshClearance } from "../modules/hr/exitCase.js";
 
 /**
- * Probation reviews (20261014000007_probation_reviews) — request and
- * department-head submission. The HR decision stage is NOT here.
+ * Probation reviews (20261014000007_probation_reviews) — request,
+ * department-head submission and the HR decision.
  *
  *   HR  : request a review for an employee on probation whose saved end date
  *         exists. The reviewer is resolved — never supplied — from the
@@ -17,8 +18,16 @@ import { ProbationError, insertNotifications, dispatchAfterCommit } from "./prob
  *         reviewer id in the request is ignored, and the head is re-verified
  *         at submission time.
  *
- * Neither step touches the employee row, probation dates, confirmation,
- * payroll or exit records. Both are written to the audit trail (logAudit,
+ *   HR  : decide a SUBMITTED review (decideReview). This is the only step that
+ *         changes the employee: confirmed → Active + confirmation date;
+ *         extended → a new probation end date; not confirmed → an exit request
+ *         (termination) and status Notice. Review and employee commit together.
+ *
+ *   HR  : cancel an open review with a reason (cancelReview), and print the
+ *         confirmation / extension letter of a decided one (letterContent).
+ *
+ * Request, submission and cancellation never touch the employee row, probation dates,
+ * confirmation, payroll or exit records. Every step is written to the audit trail (logAudit,
  * recordType 'probation_review'). The reviewer is notified in-app once per
  * review: the notification and reviewer_notified_at commit together, and a
  * repeated request returns the existing open review without notifying again.
@@ -103,16 +112,20 @@ const REVIEW_SELECT = `
   r.requested_at, r.reviewer_due_date::text AS reviewer_due_date, r.reviewer_notified_at,
   r.reviewer_employee_id, r.department_id,
   r.rating, r.comments, r.recommendation, r.submitted_at,
+  r.decision, r.decision_notes, r.decided_at, r.extension_months, r.new_end_date::text AS new_end_date,
+  r.cancelled_at, r.cancel_reason,
   (r.status = 'requested' AND r.reviewer_due_date < CURRENT_DATE) AS is_overdue,
   e.office_id, e.first_name, e.last_name, e.department,
   rv.first_name AS reviewer_first_name, rv.last_name AS reviewer_last_name, rv.office_id AS reviewer_office_id,
-  rq.name AS requested_by, sb.name AS submitted_by`;
+  rq.name AS requested_by, sb.name AS submitted_by, dc.name AS decided_by, cx.name AS cancelled_by`;
 const REVIEW_FROM = `
   FROM probation_reviews r
   JOIN employees e  ON e.id  = r.employee_id
   JOIN employees rv ON rv.id = r.reviewer_employee_id
   LEFT JOIN users rq ON rq.id = r.requested_by_user_id
-  LEFT JOIN users sb ON sb.id = r.submitted_by_user_id`;
+  LEFT JOIN users sb ON sb.id = r.submitted_by_user_id
+  LEFT JOIN users dc ON dc.id = r.decided_by_user_id
+  LEFT JOIN users cx ON cx.id = r.cancelled_by_user_id`;
 const shape = (r) => ({
   id: r.id, employee_id: r.employee_id, employee: fullName(r), office_id: r.office_id, department: r.department,
   cycle_no: r.cycle_no, period_start: r.period_start, original_end_date: r.original_end_date, status: r.status,
@@ -121,6 +134,9 @@ const shape = (r) => ({
   reviewer_due_date: r.reviewer_due_date, reviewer_notified_at: r.reviewer_notified_at, is_overdue: r.is_overdue,
   rating: r.rating, comments: r.comments, recommendation: r.recommendation,
   submitted_at: r.submitted_at, submitted_by: r.submitted_by,
+  decision: r.decision, decision_notes: r.decision_notes, decided_at: r.decided_at, decided_by: r.decided_by,
+  extension_months: r.extension_months, new_end_date: r.new_end_date,
+  cancelled_at: r.cancelled_at, cancelled_by: r.cancelled_by, cancel_reason: r.cancel_reason,
 });
 
 /**
@@ -136,7 +152,9 @@ export async function worklist(companyId, query = {}) {
   const { rows } = await pool.query(
     `SELECT ${REVIEW_SELECT} ${REVIEW_FROM}
       WHERE r.company_id = $1 AND ($2::text IS NULL OR r.status = $2)
-      ORDER BY (r.status = 'requested') DESC, r.reviewer_due_date, r.id`,
+      ORDER BY CASE r.status WHEN 'submitted' THEN 0 WHEN 'requested' THEN 1 ELSE 2 END,
+               CASE WHEN r.status IN ('requested', 'submitted') THEN r.reviewer_due_date END,
+               r.decided_at DESC NULLS LAST, r.id DESC`,
     [companyId, status],
   );
   const { rows: candidates } = await pool.query(
@@ -299,10 +317,15 @@ export async function requestReview(companyId, body = {}, actorUserId, req = nul
     // Cycle numbering and the period it covers. A later cycle (after an
     // extension, once decisions exist) starts the day after the previous
     // cycle's end; the first starts at joining.
+    // A CANCELLED review keeps its cycle number (unique) but covered no period,
+    // so the period starts after the last review that was not cancelled.
+    const { rows: [last] } = await client.query(
+      `SELECT cycle_no FROM probation_reviews WHERE employee_id = $1 ORDER BY cycle_no DESC LIMIT 1`, [emp.id]);
     const { rows: [prev] } = await client.query(
       `SELECT cycle_no, original_end_date::text AS original_end_date
-         FROM probation_reviews WHERE employee_id = $1 ORDER BY cycle_no DESC LIMIT 1`, [emp.id]);
-    const cycleNo = (prev?.cycle_no ?? 0) + 1;
+         FROM probation_reviews WHERE employee_id = $1 AND status <> 'cancelled'
+        ORDER BY cycle_no DESC LIMIT 1`, [emp.id]);
+    const cycleNo = (last?.cycle_no ?? 0) + 1;
     const periodStart = prev ? addDaysIso(prev.original_end_date, 1) : (emp.joining_date ?? emp.probation_end_date);
     if (periodStart > emp.probation_end_date) {
       throw new ProbationError(409, `The saved probation end date ${emp.probation_end_date} is not after the previous review period. Correct the end date first.`);
@@ -404,7 +427,7 @@ export async function mySummary(companyId, req) {
     `SELECT
         COALESCE(ARRAY(
           SELECT md.name FROM department_heads dh
-            JOIN master_departments md ON md.id = dh.department_id
+            JOIN master_departments md ON md.id = dh.department_id AND md.is_active = true
            WHERE dh.company_id = $1 AND dh.head_employee_id = $2 AND dh.ended_at IS NULL
            ORDER BY md.name), '{}') AS departments,
         (SELECT COUNT(*)::int FROM probation_reviews
@@ -642,5 +665,340 @@ export async function reassignReview(companyId, reviewId, body = {}, actorUserId
     notified: sent.filter((n) => n.notification_type === 'probation_review_request').length,
     notified_previous: sent.filter((n) => n.notification_type === 'probation_review_reassigned').length,
     review: await reviewById(companyId, id),
+  };
+}
+
+/* ── HR: decision ──────────────────────────────────────────────────────── */
+
+const DECISIONS = ['confirmed', 'extended', 'not_confirmed'];
+const NOTES_MAX = 4000;
+const CLOSED_EXIT_STATUSES = ['closed', 'paid', 'cancelled', 'rejected'];
+
+/**
+ * HR decides a SUBMITTED review. One transaction locks the review and the
+ * employee, writes the decision onto the review, applies it to the employee
+ * record, and records an audit row with the before and after:
+ *
+ *   confirmed      status → Active, confirmation_date = effective_date
+ *                  (default today; not in the future, not before joining)
+ *   extended       probation_end_date → the last day of `extension_months`
+ *                  more months, counted from the day after the current end
+ *                  (shared/probationDates.js — the one calendar rule). Status
+ *                  stays Probation, so the reminder job and the next review
+ *                  cycle pick up the new end date.
+ *   not_confirmed  an exit request (separation_type 'termination') with the
+ *                  given last working date, its clearance row, status → Notice
+ *                  — the same as Exit Management's "initiate"; the nightly exit
+ *                  job finalises it on the last working day.
+ *
+ * Notes are required for extended and not_confirmed. Refused, with nothing
+ * written, when the review is not 'submitted', the employee is no longer a
+ * current probationer, an exit is already open, or the caller is the
+ * employee being decided.
+ */
+export async function decideReview(companyId, reviewId, body = {}, actorUserId, req = null) {
+  const id = positiveInt(reviewId);
+  if (!id) throw new ProbationError(400, 'Invalid review id.');
+  const decision = String(body.decision ?? '').trim();
+  if (!DECISIONS.includes(decision)) {
+    throw new ProbationError(400, `decision must be one of: ${DECISIONS.join(', ')}.`);
+  }
+  const notes = String(body.notes ?? '').trim();
+  if (notes.length > NOTES_MAX) throw new ProbationError(400, `notes must be at most ${NOTES_MAX} characters.`);
+  if (decision !== 'confirmed' && !notes) {
+    throw new ProbationError(400, decision === 'extended'
+      ? 'A reason is required to extend a probation.'
+      : 'A reason is required when a probation is not confirmed.');
+  }
+  let months = null;
+  if (decision === 'extended') {
+    months = parseProbationMonths(body.extension_months);
+    if (months == null) throw new ProbationError(400, 'extension_months must be a whole number of months from 1 to 24.');
+  }
+
+  const me = await linkedEmployee(req);
+  const client = await pool.connect();
+  let sent = [];
+  let result;
+  try {
+    await client.query('BEGIN');
+    const { rows: [r] } = await client.query(
+      `SELECT id, employee_id, reviewer_employee_id, status, recommendation,
+              original_end_date::text AS original_end_date
+         FROM probation_reviews WHERE id = $1 AND company_id = $2
+         FOR UPDATE`, [id, companyId]);
+    if (!r) throw new ProbationError(404, 'Review not found.');
+    if (r.status !== 'submitted') {
+      throw new ProbationError(409, r.status === 'requested'
+        ? 'The department head has not submitted this review yet.'
+        : `This review has already been ${r.status}.`);
+    }
+    if (me != null && me === r.employee_id) {
+      throw new ProbationError(403, 'You cannot decide your own probation.');
+    }
+
+    const { rows: [emp] } = await client.query(
+      `SELECT id, office_id, first_name, last_name, status,
+              joining_date::text AS joining_date, probation_end_date::text AS probation_end_date,
+              confirmation_date::text AS confirmation_date,
+              (deleted_at IS NULL AND ${isCurrentSql('status')}) AS is_current
+         FROM employees WHERE id = $1 AND company_id = $2
+         FOR UPDATE`, [r.employee_id, companyId]);
+    if (!emp) throw new ProbationError(404, 'Review not found.');
+    if (!emp.is_current || String(emp.status ?? '').trim().toLowerCase() !== 'probation') {
+      throw new ProbationError(409,
+        `${fullName(emp)} is no longer on probation (status: ${emp.status ?? 'none'}), so this decision cannot be applied.`);
+    }
+
+    const today = await todayIso(client);
+    const before = {
+      status: emp.status, probation_end_date: emp.probation_end_date, confirmation_date: emp.confirmation_date,
+    };
+    let after;
+    let newEndDate = null;
+    let exitRequestId = null;
+
+    if (decision === 'confirmed') {
+      let effective = today;
+      if (body.effective_date != null && String(body.effective_date).trim() !== '') {
+        effective = toIsoDate(body.effective_date);
+        if (!effective) throw new ProbationError(400, `"${body.effective_date}" is not a valid date. Expected YYYY-MM-DD.`);
+      }
+      if (effective > today) throw new ProbationError(400, 'The confirmation date cannot be in the future.');
+      if (emp.joining_date && effective < emp.joining_date) {
+        throw new ProbationError(400, `The confirmation date cannot be before the joining date (${emp.joining_date}).`);
+      }
+      await client.query(
+        `UPDATE employees SET status = 'Active', confirmation_date = $3::date, updated_at = NOW()
+          WHERE id = $1 AND company_id = $2`, [emp.id, companyId, effective]);
+      after = { status: 'Active', confirmation_date: effective };
+    } else if (decision === 'extended') {
+      const from = emp.probation_end_date ?? r.original_end_date;
+      newEndDate = probationEndDate(addDaysIso(from, 1), months);
+      await client.query(
+        `UPDATE employees SET probation_end_date = $3::date, updated_at = NOW()
+          WHERE id = $1 AND company_id = $2`, [emp.id, companyId, newEndDate]);
+      after = { probation_end_date: newEndDate };
+    } else {
+      const lwd = toIsoDate(body.last_working_date);
+      if (!lwd) throw new ProbationError(400, 'last_working_date is required (YYYY-MM-DD) when a probation is not confirmed.');
+      if (lwd < today) throw new ProbationError(400, 'The last working date cannot be in the past.');
+      let noticeDays = null;
+      if (body.notice_days != null && String(body.notice_days).trim() !== '') {
+        noticeDays = Number(body.notice_days);
+        if (!Number.isInteger(noticeDays) || noticeDays < 0 || noticeDays > 365) {
+          throw new ProbationError(400, 'notice_days must be a whole number from 0 to 365.');
+        }
+      }
+      const { rows: [openExit] } = await client.query(
+        `SELECT id FROM exit_requests
+          WHERE employee_id = $1 AND LOWER(COALESCE(status, '')) <> ALL($2::text[])
+          LIMIT 1`, [emp.id, CLOSED_EXIT_STATUSES]);
+      if (openExit) {
+        throw new ProbationError(409,
+          `${fullName(emp)} already has an open exit request (#${openExit.id}). Close it in Exit Management first.`);
+      }
+      const { rows: [er] } = await client.query(
+        `INSERT INTO exit_requests (employee_id, separation_type, last_working_date, notice_period, reason, status)
+         VALUES ($1, 'termination', $2::date, $3, $4, 'active') RETURNING id`,
+        [emp.id, lwd, noticeDays, `Probation not confirmed: ${notes}`]);
+      exitRequestId = er.id;
+      // A fresh clearance, as every other exit path starts (B7): DO NOTHING here
+      // let a rehire's earlier exit's ticks carry into this one.
+      await freshClearance(client, emp.id);
+      await client.query(
+        `UPDATE employees SET status = $3, updated_at = NOW() WHERE id = $1 AND company_id = $2`,
+        [emp.id, companyId, NOTICE_STATUS]);
+      after = { status: NOTICE_STATUS, exit_request_id: exitRequestId, last_working_date: lwd };
+    }
+
+    await client.query(
+      `UPDATE probation_reviews
+          SET decision = $3, decision_notes = $4, decided_by_user_id = $5, decided_at = NOW(),
+              extension_months = $6, new_end_date = $7::date, status = 'decided', updated_at = NOW()
+        WHERE id = $1 AND company_id = $2 AND status = 'submitted'`,
+      [id, companyId, decision, notes || null, actorUserId, months, newEndDate]);
+
+    // The head who reviewed is told the outcome, which closes their loop.
+    const { rows: logins } = await client.query(
+      `SELECT id FROM users WHERE employee_id = $1 AND is_active = true ORDER BY id`, [r.reviewer_employee_id]);
+    const outcome = decision === 'confirmed' ? 'confirmed'
+      : decision === 'extended' ? `extended to ${newEndDate}` : 'not confirmed';
+    sent = await insertNotifications(client, logins.map((u) => u.id), {
+      title: `Probation decided — ${fullName(emp)}`,
+      message: `HR has recorded the probation decision for ${fullName(emp)} (${emp.office_id || 'no ID'}): ${outcome}.`,
+      module_name: 'probation',
+      reference_id: null,
+      notification_type: 'probation_review_decided',
+      company_id: companyId,
+    });
+
+    // In-transaction audit (same shape as logAudit), so the decision, the
+    // employee change and its record commit or roll back together.
+    await client.query(
+      `INSERT INTO audit_logs (user_id, module_name, action_type, reference_id, reference_type,
+                               old_data_json, new_data_json, ip_address, user_agent, company_id)
+       VALUES ($1, 'hr', 'decide_review', $2, 'probation_review', $3, $4, $5, $6, $7)`,
+      [actorUserId, String(id),
+        JSON.stringify({ employee_id: emp.id, ...before, recommendation: r.recommendation }),
+        JSON.stringify({ employee_id: emp.id, decision, notes: notes || null, extension_months: months, ...after }),
+        req?.ip ?? null, req?.get?.('user-agent') ?? null, companyId]);
+    if (req) req._auditLogged = true;
+    await client.query('COMMIT');
+    result = { decision, employee_id: emp.id, new_end_date: newEndDate, exit_request_id: exitRequestId };
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+  await dispatchAfterCommit(sent);
+  return { decided: true, ...result, review: await reviewById(companyId, id) };
+}
+
+/* ── HR: cancel ────────────────────────────────────────────────────────── */
+
+/**
+ * Withdraw an OPEN review (requested or submitted), with a reason — e.g. the
+ * employee resigned, moved department, or was confirmed some other way.
+ * Nothing on the employee changes. One transaction: lock the review, mark it
+ * cancelled with who/when/why, tell the reviewer generically if it was still
+ * waiting on them, and write the audit row. A cancelled review frees the
+ * employee for a new request (the one-open-review index covers only
+ * requested/submitted).
+ */
+export async function cancelReview(companyId, reviewId, body = {}, actorUserId, req = null) {
+  const id = positiveInt(reviewId);
+  if (!id) throw new ProbationError(400, 'Invalid review id.');
+  const reason = String(body.reason ?? '').trim();
+  if (!reason) throw new ProbationError(400, 'A reason is required to cancel a review.');
+  if (reason.length > 500) throw new ProbationError(400, 'reason must be at most 500 characters.');
+
+  const client = await pool.connect();
+  let sent = [];
+  try {
+    await client.query('BEGIN');
+    const { rows: [r] } = await client.query(
+      `SELECT id, employee_id, reviewer_employee_id, status
+         FROM probation_reviews WHERE id = $1 AND company_id = $2
+         FOR UPDATE`, [id, companyId]);
+    if (!r) throw new ProbationError(404, 'Review not found.');
+    if (r.status !== 'requested' && r.status !== 'submitted') {
+      throw new ProbationError(409, `Only an open review can be cancelled; this one is ${r.status}.`);
+    }
+    await client.query(
+      `UPDATE probation_reviews
+          SET status = 'cancelled', cancelled_by_user_id = $3, cancelled_at = NOW(), cancel_reason = $4,
+              updated_at = NOW()
+        WHERE id = $1 AND company_id = $2`, [id, companyId, actorUserId, reason]);
+
+    if (r.status === 'requested') {
+      const { rows: logins } = await client.query(
+        `SELECT id FROM users WHERE employee_id = $1 AND is_active = true ORDER BY id`, [r.reviewer_employee_id]);
+      sent = await insertNotifications(client, logins.map((u) => u.id), {
+        title: 'Probation review withdrawn',
+        message: 'HR has withdrawn a probation review that was waiting for you. No action is needed from you.',
+        module_name: 'probation',
+        reference_id: null,
+        notification_type: 'probation_review_cancelled',
+        company_id: companyId,
+      });
+    }
+
+    await client.query(
+      `INSERT INTO audit_logs (user_id, module_name, action_type, reference_id, reference_type,
+                               old_data_json, new_data_json, ip_address, user_agent, company_id)
+       VALUES ($1, 'hr', 'cancel_review', $2, 'probation_review', $3, $4, $5, $6, $7)`,
+      [actorUserId, String(id),
+        JSON.stringify({ status: r.status, employee_id: r.employee_id }),
+        JSON.stringify({ status: 'cancelled', reason, notified_reviewer: sent.length }),
+        req?.ip ?? null, req?.get?.('user-agent') ?? null, companyId]);
+    if (req) req._auditLogged = true;
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+  await dispatchAfterCommit(sent);
+  return { cancelled: true, review: await reviewById(companyId, id) };
+}
+
+/* ── HR: confirmation / extension letter ──────────────────────────────── */
+
+/**
+ * The content of the letter for a DECIDED review: a Confirmation Letter for
+ * 'confirmed', a Probation Extension Letter for 'extended'. 'not_confirmed'
+ * has no letter here — separation letters belong to Exit Management.
+ *
+ * Read from the records as they are now: the employee's confirmation date
+ * (written by the decision) and the review's extension. The wording is the
+ * default below; utils/probationLetterPdf.js lays it out.
+ */
+export async function letterContent(companyId, reviewId) {
+  const id = positiveInt(reviewId);
+  if (!id) throw new ProbationError(400, 'Invalid review id.');
+  const { rows: [r] } = await pool.query(
+    `SELECT r.id, r.status, r.decision, r.extension_months, r.cycle_no,
+            r.original_end_date::text AS previous_end_date, r.new_end_date::text AS new_end_date,
+            r.decided_at, dc.name AS decided_by,
+            e.office_id, e.first_name, e.last_name, e.designation, e.department,
+            e.joining_date::text AS joining_date, e.confirmation_date::text AS confirmation_date,
+            c.name AS company_name, c.address, c.city, c.state, c.pincode
+       FROM probation_reviews r
+       JOIN employees e ON e.id = r.employee_id
+       JOIN companies c ON c.id = r.company_id
+       LEFT JOIN users dc ON dc.id = r.decided_by_user_id
+      WHERE r.id = $1 AND r.company_id = $2`, [id, companyId]);
+  if (!r) throw new ProbationError(404, 'Review not found.');
+  if (r.status !== 'decided') throw new ProbationError(409, 'A letter is available once HR has recorded the decision.');
+  if (r.decision !== 'confirmed' && r.decision !== 'extended') {
+    throw new ProbationError(409, 'There is no probation letter for this decision; separation letters are issued from Exit Management.');
+  }
+  const fmt = (iso) => {
+    if (!iso) return '-';
+    const [y, m, d] = String(iso).slice(0, 10).split('-').map(Number);
+    return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString('en-GB', { day: '2-digit', month: 'long', year: 'numeric', timeZone: 'UTC' });
+  };
+  const name = fullName(r);
+  const decidedIso = new Date(r.decided_at).toISOString().slice(0, 10);
+  const role = [r.designation, r.department ? `in ${r.department}` : null].filter(Boolean).join(' ');
+  const common = {
+    companyName: r.company_name,
+    companyAddress: [r.address, [r.city, r.state, r.pincode].filter(Boolean).join(', ')].filter(Boolean).join('\n'),
+    reference: `PROB/${r.office_id || r.id}/${r.cycle_no}`,
+    letterDate: fmt(decidedIso),
+    recipient: [name, r.office_id ? `Employee ID: ${r.office_id}` : null, r.designation, r.department].filter(Boolean),
+    signatoryName: r.decided_by || '',
+    signatoryTitle: 'Human Resources',
+  };
+  if (r.decision === 'confirmed') {
+    return {
+      ...common,
+      kind: 'confirmation',
+      filename: `Confirmation_Letter_${(r.office_id || name).replace(/[^A-Za-z0-9_-]+/g, '_')}.pdf`,
+      subject: 'Confirmation of Employment',
+      body: [
+        `Dear ${name},`,
+        `Further to your appointment${role ? ` as ${role}` : ''} with effect from ${fmt(r.joining_date)}, we are pleased to inform you that you have successfully completed your probation period.`,
+        `Your employment with ${r.company_name} is confirmed with effect from ${fmt(r.confirmation_date || decidedIso)}.`,
+        'All other terms and conditions of your appointment remain unchanged.',
+        'We appreciate your contribution and wish you continued success with us.',
+      ].join('\n\n'),
+    };
+  }
+  const months = r.extension_months;
+  return {
+    ...common,
+    kind: 'extension',
+    filename: `Probation_Extension_Letter_${(r.office_id || name).replace(/[^A-Za-z0-9_-]+/g, '_')}.pdf`,
+    subject: 'Extension of Probation Period',
+    body: [
+      `Dear ${name},`,
+      `Your probation period${role ? ` as ${role}` : ''}, which was due to end on ${fmt(r.previous_end_date)}, has been reviewed.`,
+      `Your probation is extended by ${months} ${months === 1 ? 'month' : 'months'} and will now end on ${fmt(r.new_end_date)}. Your performance will be reviewed again before that date.`,
+      'All other terms and conditions of your appointment remain unchanged.',
+    ].join('\n\n'),
   };
 }

@@ -37,8 +37,8 @@
 .po-empty   { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 200px; gap: 12px; color: #9ca3af; background: #fff; border-radius: 12px; border: 1px solid #f0f0f4; }
 
 /* drawer */
-.po-overlay     { position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 1000; display: flex; justify-content: flex-end; }
-.po-drawer      { background: #fff; width: 480px; height: 100vh; display: flex; flex-direction: column; box-shadow: -8px 0 32px rgba(0,0,0,.12); }
+.po-overlay     { position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 1000; display: flex; align-items: center; justify-content: center; padding: 24px; }
+.po-drawer      { background: #fff; width: 480px; max-width: 100%; max-height: calc(100vh - 48px); border-radius: 12px; overflow: auto; display: flex; flex-direction: column; box-shadow: 0 20px 60px rgba(0,0,0,.18); }
 .po-drawer-wide { width: 680px; }
 .po-drawer-hd   { display: flex; align-items: flex-start; justify-content: space-between; padding: 20px; border-bottom: 1px solid #f0f0f4; }
 .po-drawer-hd h3{ margin: 0; font-size: 16px; font-weight: 700; color: #111827; }

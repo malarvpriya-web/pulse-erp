@@ -68,6 +68,7 @@
   font-size: 11px; color: rgba(255,255,255,.55); margin: 0;
   font-weight: 500;
 }
+.hm-weather { display: inline-flex; align-items: center; gap: 4px; }
 
 /* right — compact KPI cards (clickable) */
 .hm-hero-r { display: flex; gap: 10px; flex-wrap: wrap; }
@@ -557,6 +558,14 @@ button.hm-doctile-dl { font-family: inherit; line-height: 1.2; }
   cursor: default;
 }
 .hm-doctile-dl--muted:hover { background: #f3f4f6; border-color: #e5e7eb; color: var(--color-text-muted); }
+/* Policy acknowledgement (11 Nov 26): filled brand button until done, then a
+   green "Acknowledged" chip — the one tile action that is a commitment. */
+.hm-doctile-dl--ack { background: #5B35D5; border-color: #5B35D5; color: #fff; }
+.hm-doctile-dl--ack:hover { background: #4B2BB8; border-color: #4B2BB8; color: #fff; }
+.hm-doctile-dl--ack:disabled,
+.hm-doctile-dl--ack:disabled:hover { background: #5B35D5; border-color: #5B35D5; color: #fff; opacity: .6; }
+.hm-doctile-dl--acked,
+.hm-doctile-dl--acked:hover { background: #ecfdf5; border-color: #a7f3d0; color: #047857; cursor: default; }
 
 /* ══════════════════════════════════════════
    HERO REFRESH BUTTON

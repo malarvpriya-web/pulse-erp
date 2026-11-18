@@ -164,7 +164,7 @@ export default function ModuleSettingsPanel({
             value={val ?? ''}
             placeholder={field.placeholder || ''}
             onChange={e => set(field.key, e.target.value)}
-            style={{ ...base, width: 380, minHeight: 80, resize: 'vertical', lineHeight: 1.5 }}
+            style={{ ...base, width: 380, maxWidth: '100%', minHeight: 80, resize: 'vertical', lineHeight: 1.5 }}
           />
         );
 
@@ -186,7 +186,7 @@ export default function ModuleSettingsPanel({
             value={val ?? ''}
             placeholder={field.placeholder || ''}
             onChange={e => set(field.key, e.target.value)}
-            style={{ ...base, width: 280 }}
+            style={{ ...base, width: 280, maxWidth: '100%' }}
           />
         );
     }

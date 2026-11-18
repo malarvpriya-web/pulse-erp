@@ -151,6 +151,47 @@ function badRequest(message, statusCode = 400) {
 }
 
 /**
+ * Biometric device user id and default shift (HR audit 2026-11-16): neither
+ * could be set from any screen. Punch Import matches a punch by employee code
+ * OR biometric_user_id, so a device that numbers people 1, 2, 3 matched no one;
+ * attendance falls back to default_shift_id when no shift assignment applies.
+ * Returns the [column, value] pairs to write for the keys present in `data`
+ * (absent = leave as is, '' = clear). Validated against the employee's company.
+ */
+async function attendanceKeys(db, data, companyId, employeeId = null) {
+  const out = [];
+  if ('biometric_user_id' in data) {
+    const raw = String(data.biometric_user_id ?? '').trim();
+    if (raw && !/^[A-Za-z0-9_-]{1,32}$/.test(raw)) {
+      throw badRequest('Biometric user ID: up to 32 letters, digits, - or _ (as the device shows it).');
+    }
+    if (raw) {
+      const { rows: [dup] } = await db.query(
+        `SELECT office_id FROM employees
+          WHERE biometric_user_id = $1 AND deleted_at IS NULL
+            AND company_id IS NOT DISTINCT FROM $2::int AND ($3::int IS NULL OR id <> $3::int)
+          LIMIT 1`, [raw, companyId, employeeId]);
+      if (dup) throw badRequest(`Biometric user ID ${raw} is already used by ${dup.office_id}.`, 409);
+    }
+    out.push(['biometric_user_id', raw || null]);
+  }
+  if ('default_shift_id' in data) {
+    const raw = String(data.default_shift_id ?? '').trim();
+    if (!raw) out.push(['default_shift_id', null]);
+    else {
+      if (!/^\d+$/.test(raw)) throw badRequest('Default shift: choose a shift from the list.');
+      const { rows: [shift] } = await db.query(
+        `SELECT id FROM hr_shifts
+          WHERE id = $1 AND deleted_at IS NULL AND (company_id IS NULL OR company_id IS NOT DISTINCT FROM $2::int)`,
+        [Number(raw), companyId]);
+      if (!shift) throw badRequest('Default shift: that shift does not exist in this company.');
+      out.push(['default_shift_id', shift.id]);
+    }
+  }
+  return out;
+}
+
+/**
  * ZONE — resolve `employees.zone_id` from the zone master.
  *
  * ── Why both columns ────────────────────────────────────────────────────────
@@ -431,6 +472,10 @@ export const addEmployee = async (data) => {
     branch_id,
     passport_number,
     driving_license_number,
+    passport_file,
+    passport_expiry,
+    driving_license_file,
+    driving_license_expiry,
     notice_period_days,
     basic_salary,
     special_allowance,
@@ -534,6 +579,16 @@ export const addEmployee = async (data) => {
     const problem = dobProblem(dob, await getWorkforcePolicy(pool, company_id ?? null));
     if (problem) throw badRequest(problem);
   }
+
+  // NOTICE PERIOD (§275) — blank means the company default (Workforce
+  // Analytics → Settings, 90 days unless changed), so every record has one.
+  const noticeSent = String(notice_period_days ?? '').trim();
+  if (noticeSent && !(/^\d+$/.test(noticeSent) && Number(noticeSent) <= 180)) {
+    throw badRequest('Notice period must be a whole number of days from 0 to 180.');
+  }
+  const noticeDays = noticeSent
+    ? Number(noticeSent)
+    : (await getWorkforcePolicy(pool, company_id ?? null)).default_notice_period_days;
 
   // PROBATION — the one server-side rule (shared/probationDates.js), replacing
   // a hidden joining_date + 90 days that the form never showed and that three
@@ -650,14 +705,16 @@ export const addEmployee = async (data) => {
         -- Appended LAST on purpose: this INSERT takes 60+ POSITIONAL
         -- parameters, and adding a column in the middle silently shifts every
         -- $n after it onto the wrong column.
-        zone_id, basic_salary, workforce_category_id, probation_months
+        zone_id, basic_salary, workforce_category_id, probation_months,
+        passport_file, passport_expiry, driving_license_file, driving_license_expiry
       )
       VALUES (
         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
         $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29,
         $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43,
         $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57,
-        $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69, $70
+        $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69, $70,
+        $71, $72, $73, $74
       )
       RETURNING *;
     `;
@@ -739,7 +796,7 @@ export const addEmployee = async (data) => {
       toIntOrNull(branch_id),
       passport_number || null,
       driving_license_number || null,
-      toIntOrNull(notice_period_days),
+      noticeDays,
       is_field_employee === true || is_field_employee === 'true',
       // $67 — see the column list above.
       resolvedZone ? resolvedZone.id : null,
@@ -757,10 +814,24 @@ export const addEmployee = async (data) => {
       // $70 — the period the end date was calculated from; null when HR gave
       // an explicit end date only, or when no probation applies.
       probation.probation_months ?? null,
+      // $71–$74 — passport / driving licence copy and expiry (20261111000006).
+      cleanText(passport_file) || null,
+      cleanText(passport_expiry) ? String(passport_expiry).slice(0, 10) : null,
+      cleanText(driving_license_file) || null,
+      cleanText(driving_license_expiry) ? String(driving_license_expiry).slice(0, 10) : null,
     ];
 
     const result = await client.query(query, values);
-    const emp = result.rows[0];
+    let emp = result.rows[0];
+    // Biometric id and default shift: kept out of the 74-parameter INSERT
+    // above (a mid-list column shifts every $n after it); same transaction.
+    const keys = await attendanceKeys(client, data, emp.company_id ?? null, emp.id);
+    if (keys.length) {
+      const setList = keys.map(([c], i) => `${c} = $${i + 3}`).join(', ');
+      emp = (await client.query(
+        `UPDATE employees SET ${setList} WHERE id = $1 AND company_id IS NOT DISTINCT FROM $2::int RETURNING *`,
+        [emp.id, emp.company_id ?? null, ...keys.map(([, v]) => v)])).rows[0];
+    }
     if (conversion) {
       await linkConversion(client, { ...conversion, employee: emp, userId: converted_by_user_id });
       emp.source_intern_id = conversion.intern.id;
@@ -882,6 +953,7 @@ const PII_DROP_FIELDS = [
   'passport_number', 'driving_license_number',
   'pan_file', 'aadhaar_file', 'cancelled_cheque_file', 'bank_statement_file',
   'resume_file', 'offer_letter_file',
+  'passport_file', 'passport_expiry', 'driving_license_file', 'driving_license_expiry',
   'notes',
 ];
 
@@ -1145,6 +1217,15 @@ export const getEmployees = async ({ status, department, designation, employment
     const statusLower = String(status).trim().toLowerCase();
     if (statusLower === 'all') {
       // Explicit "all" — no status filter; return every employee regardless of status
+    } else if (statusLower.includes(',')) {
+      // A list, e.g. `?status=active,probation` (Asset Management and
+      // Installation Requests pickers). It used to be compared as ONE status,
+      // 'active,probation', which matches nobody, so both pickers were empty
+      // (verified 11 Nov 26: 0 rows vs 3). Each item is matched the way the
+      // single-status branches match it — normalised, NULL/blank = 'active'.
+      const list = statusLower.split(',').map(s => s.trim()).filter(Boolean);
+      values.push(list);
+      conditions.push(`${statusExpr()} = ANY($${i++}::text[])`);
     } else if (statusLower === "probation") {
       // Probation is a STATUS, not an employment type.
       //
@@ -1224,7 +1305,9 @@ export const getEmployees = async ({ status, department, designation, employment
 const EX_STATUSES = isExitedSql('e.status');
 
 export const getExEmployees = async ({ exit_date_from, exit_date_to, company_id, callerRole } = {}) => {
-  const conditions = [EX_STATUSES];
+  // A deleted record is not a former employee: it was removed as test or
+  // duplicate data. Without this, 32 deleted test rows were listed as ex-staff.
+  const conditions = [EX_STATUSES, 'e.deleted_at IS NULL'];
   const values = [];
   let idx = 1;
 
@@ -1341,9 +1424,13 @@ const UPDATABLE_TEXT = [
   'bank_name', 'branch_name', 'account_number', 'ifsc_code', 'nominee_name',
   'emergency_name', 'emergency_phone', 'emergency_relationship',
   'pan_number', 'aadhaar_number', 'pf_number', 'uan_number', 'esic_number',
+  // Accepted on create since 20260612000002 but never on edit, so a corrected
+  // passport or licence number was silently dropped.
+  'passport_number', 'driving_license_number',
   'notes', 'exit_reason',
 ];
-const UPDATABLE_DATES = ['dob', 'anniversary_date', 'joining_date', 'exit_date'];
+const UPDATABLE_DATES = ['dob', 'anniversary_date', 'joining_date', 'exit_date',
+                         'passport_expiry', 'driving_license_expiry'];
 
 /** Upload field name → employees column. Photo is the one whose names differ. */
 const FILE_COLUMNS = {
@@ -1354,6 +1441,8 @@ const FILE_COLUMNS = {
   bank_statement_file: 'bank_statement_file',
   resume_file: 'resume_file',
   offer_letter_file: 'offer_letter_file',
+  passport_file: 'passport_file',
+  driving_license_file: 'driving_license_file',
 };
 
 /**
@@ -1548,6 +1637,15 @@ export const updateEmployee = async (id, data, company_id = null) => {
     if (!has(col)) continue;
     set(col, cleanText(data[col] == null ? null : String(data[col]).slice(0, 10)));
   }
+  // §275: notice period was accepted on create only, so it could never be
+  // corrected. '' resets it to the company default.
+  if ('notice_period_days' in data) {
+    const n = String(data.notice_period_days ?? '').trim();
+    if (n && !(/^\d+$/.test(n) && Number(n) <= 180)) {
+      throw badRequest('Notice period must be a whole number of days from 0 to 180.');
+    }
+    set('notice_period_days', n ? Number(n) : (await getWorkforcePolicy(pool, company_id ?? null)).default_notice_period_days);
+  }
   if ('previous_years_1' in data) set('previous_years_1', prevYears1Update);
   if ('previous_years_2' in data) set('previous_years_2', prevYears2Update);
   if ('is_field_employee' in data && data.is_field_employee != null && data.is_field_employee !== '') {
@@ -1656,6 +1754,8 @@ export const updateEmployee = async (id, data, company_id = null) => {
       set('zone_id', resolved ? resolved.id : null);
       set('zone', resolved ? resolved.name : zoneName);
     }
+
+    for (const [col, val] of await attendanceKeys(client, data, current.company_id ?? company_id ?? null, id)) set(col, val);
 
     let emp;
     if (sets.length) {
@@ -1775,6 +1875,24 @@ export const updateEmployee = async (id, data, company_id = null) => {
 export const deleteEmployee = async (id, company_id = null) => {
   const scopeClause = company_id != null ? 'AND company_id = $2' : '';
   const params = company_id != null ? [id, company_id] : [id];
+  // An employee still holding company assets cannot be deleted: the delete
+  // never checked, so a laptop and a headset were left 'allocated' to a
+  // deleted person with nobody accountable for them (rows 28/29, found
+  // 11 Nov 26). 'damaged' counts as handed back; 'lost' does not — HR must
+  // dispose (write off) a lost asset first, the same rule Exit Clearance uses.
+  const { rows: held } = await pool.query(
+    `SELECT asset_name FROM employee_asset_allocations
+      WHERE employee_id = $1 AND status NOT IN ('returned', 'disposed', 'damaged')`,
+    [id]
+  );
+  if (held.length) {
+    const err = new Error(
+      `This employee still holds ${held.length} asset(s): ${held.map(a => a.asset_name).join(', ')}. ` +
+      'Return or dispose of them in Employee Records → Asset Management first.'
+    );
+    err.status = 409;
+    throw err;
+  }
   const result = await pool.query(
     `UPDATE employees SET status = 'terminated', deleted_at = NOW()
      WHERE id = $1 AND status != 'terminated' ${scopeClause}

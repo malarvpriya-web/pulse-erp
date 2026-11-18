@@ -12,6 +12,7 @@ import { PageHero, PageShell, LoadingState, LoadError } from '@/components/pulse
 import { loadEmployeeImage, isExternalUrl, openEmployeeFile } from '../shared/employeeFiles';
 import { pickCurrentRevision, salaryInputValue } from '../shared/salaryRevision';
 import { useAuth } from '@/context/AuthContext';
+import BankChangePending from '../shared/BankChangePending';
 
 /**
  * Validated fields in the order the form presents them, with the accordion
@@ -33,6 +34,7 @@ const FIELD_ORDER = [
   { key: 'status',        section: 'job',        id: 'ae-status' },
   { key: 'probationMonths', section: 'job',      id: 'ae-probation-months' },
   { key: 'probationEnd',  section: 'job',        id: 'ae-probation-end' },
+  { key: 'noticeDays',    section: 'job',        id: 'ae-notice-days' },
   { key: 'basicSalary',      section: 'job',        id: 'ae-basic-salary' },
   { key: 'specialAllowance', section: 'job',        id: 'ae-special-allowance' },
   { key: 'previousYears1', section: 'experience', id: 'ae-prev-years-1' },
@@ -43,10 +45,12 @@ const FIELD_ORDER = [
   { key: 'currentAddress', section: 'address',   id: 'ae-current-address' },
   { key: 'accountNumber', section: 'bank',       id: 'ae-account-number' },
   { key: 'ifscCode',      section: 'bank',       id: 'ae-ifsc' },
+  { key: 'accountHolderName', section: 'bank',   id: 'ae-account-holder' },
+  { key: 'bankProof',     section: 'bank',       id: 'ae-account-holder' },
 ];
 
 /**
- * The seven upload slots, in the order the Documents section shows them.
+ * The nine upload slots, in the order the Documents section shows them.
  * `field` is the multipart name the API takes; `column` is where the stored
  * path lives on the employee row (only the photo's differ). Edit mode reads
  * `column` to show what is already on file, and names `field` in
@@ -60,6 +64,8 @@ const DOC_SLOTS = [
   { field: 'bank_statement_file',   column: 'bank_statement_file',   label: 'Bank Statement' },
   { field: 'resume_file',           column: 'resume_file',           label: 'Resume' },
   { field: 'offer_letter_file',     column: 'offer_letter_file',     label: 'Offer Letter' },
+  { field: 'passport_file',         column: 'passport_file',         label: 'Passport' },
+  { field: 'driving_license_file',  column: 'driving_license_file',  label: 'Driving Licence' },
 ];
 
 /** The red asterisk. aria-hidden — the control's own `required` carries the
@@ -321,6 +327,18 @@ function EmployeeForm({ setPage, employee, setSelectedEmployee, salaryRevisions,
   const [workforceCategoryId,setWorkforceCategoryId]=useState(
     employee?.workforce_category_id != null ? String(employee.workforce_category_id) : "");
   const [isFieldEmployee,setIsFieldEmployee]=useState(employee?.is_field_employee === true);
+  // Biometric device user id + default shift (HR audit 2026-11-16): no screen
+  // set either. Punch Import matches a punch by employee code or this id.
+  const [biometricId,setBiometricId]=useState(employee?.biometric_user_id || "");
+  const [defaultShiftId,setDefaultShiftId]=useState(employee?.default_shift_id != null ? String(employee.default_shift_id) : "");
+  const [shiftOptions,setShiftOptions]=useState(null);
+  useEffect(() => {
+    let live = true;
+    api.get('/hr/shifts')
+      .then(r => { if (live) setShiftOptions(Array.isArray(r.data) ? r.data : (r.data?.data || [])); })
+      .catch(() => { if (live) setShiftOptions([]); });
+    return () => { live = false; };
+  }, []);
   // ZONE — like Location, the id is canonical and the text is the display
   // value. `zone_id` (FK -> master_zones) was NULL on all 46 live rows while
   // the text column carried the value; `holidays.zone_id` is a real consumer,
@@ -359,6 +377,16 @@ function EmployeeForm({ setPage, employee, setSelectedEmployee, salaryRevisions,
   // offers "Recalculate" and the person saving sees the new date first.
   const storedProbationEnd = employee?.probation_end_date ? String(employee.probation_end_date).slice(0, 10) : '';
   const [probationMonths,setProbationMonths] = useState(employee?.probation_months != null ? String(employee.probation_months) : '');
+  // §275 contractual notice; '' = the company default (applied by the server).
+  const [noticeDays,setNoticeDays] = useState(employee?.notice_period_days != null ? String(employee.notice_period_days) : '');
+  const [defaultNoticeDays,setDefaultNoticeDays] = useState(null);
+  useEffect(() => {
+    let live = true;
+    api.get('/analytics/workforce-settings')
+      .then(r => { const d = r?.data?.settings?.default_notice_period_days; if (live && Number.isInteger(d)) setDefaultNoticeDays(d); })
+      .catch(() => {});
+    return () => { live = false; };
+  }, []);
   const [probationEnd,setProbationEnd] = useState(storedProbationEnd);
   const [probationDirty,setProbationDirty] = useState(false);
   const [probationManual,setProbationManual] = useState(false);
@@ -405,6 +433,8 @@ function EmployeeForm({ setPage, employee, setSelectedEmployee, salaryRevisions,
   const [branchName,setBranchName]=useState(employee?.branch_name || "");
   const [accountNumber,setAccountNumber]=useState(employee?.account_number || "");
   const [ifscCode,setIfscCode]=useState(employee?.ifsc_code || "");
+  // §267: whose name the bank holds the account in — checked by the second HR person.
+  const [accountHolderName,setAccountHolderName]=useState(employee?.account_holder_name || "");
   const [nomineeName,setNomineeName]=useState(employee?.nominee_name || "");
 
   // EMERGENCY
@@ -418,6 +448,10 @@ function EmployeeForm({ setPage, employee, setSelectedEmployee, salaryRevisions,
   const [pfNumber,setPfNumber]=useState(employee?.pf_number || "");
   const [uanNumber,setUanNumber]=useState(employee?.uan_number || "");
   const [esicNumber,setEsicNumber]=useState(employee?.esic_number || "");
+  const [passportNumber,setPassportNumber]=useState(employee?.passport_number || "");
+  const [passportExpiry,setPassportExpiry]=useState(employee?.passport_expiry ? String(employee.passport_expiry).slice(0, 10) : "");
+  const [licenceNumber,setLicenceNumber]=useState(employee?.driving_license_number || "");
+  const [licenceExpiry,setLicenceExpiry]=useState(employee?.driving_license_expiry ? String(employee.driving_license_expiry).slice(0, 10) : "");
 
   // COMPENSATION
   // Create: the first revision, effective the joining date.
@@ -428,7 +462,12 @@ function EmployeeForm({ setPage, employee, setSelectedEmployee, salaryRevisions,
   // Setting or correcting the salary is payroll:edit (PC-01 closure decision 5);
   // without it the employee is created / edited with no salary fields at all —
   // the server refuses a salary it is sent, it never drops one silently.
-  const { hasPermission } = useAuth();
+  const { hasPermission, hasAnyRole } = useAuth();
+  // A super admin verifies bank details themself; nobody else checks them (§261).
+  const isSuperAdmin = typeof hasAnyRole === 'function' && hasAnyRole('super_admin');
+  const [bankVerifiedNow, setBankVerifiedNow] = useState(false);
+  const [bankPending, setBankPending] = useState(false);   // a change waits for a second HR person (§266)
+  const [bankPanelKey, setBankPanelKey] = useState(0);     // reload the waiting-change panel after a request
   const canEditSalary = typeof hasPermission === 'function' && hasPermission('payroll', 'edit');
   const salaryEditable = canEditSalary && (!employee || Array.isArray(salaryRevisions));
   const initialBasic = salaryInputValue(currentRevision?.basic_salary);
@@ -616,6 +655,10 @@ function EmployeeForm({ setPage, employee, setSelectedEmployee, salaryRevisions,
           errs.probationMonths = 'Probation period must be a whole number of months from 1 to 24.';
         }
       }
+      if (String(noticeDays).trim() !== '') {
+        const n = String(noticeDays).trim();
+        if (!/^\d+$/.test(n) || Number(n) > 180) errs.noticeDays = 'Notice period must be a whole number of days from 0 to 180.';
+      }
       if (showProbation && probationManual && probationEnd && joiningDate && probationEnd < joiningDate) {
         errs.probationEnd = 'Probation end date cannot be before the joining date.';
       }
@@ -654,6 +697,18 @@ function EmployeeForm({ setPage, employee, setSelectedEmployee, salaryRevisions,
       if (blank(ifscCode) && mustHave(employee?.ifsc_code)) errs.ifscCode = 'IFSC code is required.';
       else if (!blank(ifscCode) && !/^[A-Z]{4}0[A-Z0-9]{6}$/i.test(ifscCode.trim())) {
         errs.ifscCode = 'IFSC must look like HDFC0001234.';
+      }
+      // §267: a new account (number or IFSC entered or changed) needs the
+      // account-holder name and a cancelled cheque or bank statement attached in
+      // this save — the second HR person checks the details against it. The
+      // server refuses the save without them (BANK_PROOF_REQUIRED).
+      const normBank = (v) => String(v ?? '').replace(/\s+/g, '').toUpperCase();
+      const acctNew = !/^X{4}\S{1,4}$/.test(accountNumber.trim())
+        && (normBank(accountNumber) !== normBank(employee?.account_number) || normBank(ifscCode) !== normBank(employee?.ifsc_code))
+        && !blank(accountNumber);
+      if (acctNew) {
+        if (blank(accountHolderName)) errs.accountHolderName = 'Enter the account-holder name — the name the bank holds this account in.';
+        if (!docFiles.cancelled_cheque_file && !docFiles.bank_statement_file) errs.bankProof = 'Attach a cancelled cheque or a bank statement for this account.';
       }
 
       // Numeric ranges. Mirrors the service-layer guard exactly (SALARY_RANGE /
@@ -760,6 +815,9 @@ function EmployeeForm({ setPage, employee, setSelectedEmployee, salaryRevisions,
         // edit mode an absent key means "leave it", so clearing needs ''.
         workforce_category_id: workforceCategoryId || '',
         is_field_employee:isFieldEmployee,
+        // '' clears on edit / means none on create.
+        biometric_user_id: String(biometricId).trim(),
+        default_shift_id: defaultShiftId || '',
         zone,
         zone_id: zoneId || '',
         status,
@@ -773,6 +831,7 @@ function EmployeeForm({ setPage, employee, setSelectedEmployee, salaryRevisions,
         branch_name:branchName,
         account_number:accountNumber,
         ifsc_code:ifscCode,
+        account_holder_name:accountHolderName,
         nominee_name:nomineeName,
         emergency_name:emergencyName,
         emergency_phone:emergencyPhone,
@@ -782,6 +841,14 @@ function EmployeeForm({ setPage, employee, setSelectedEmployee, salaryRevisions,
         pf_number:pfNumber,
         uan_number:uanNumber,
         esic_number:esicNumber,
+        passport_number:passportNumber,
+        driving_license_number:licenceNumber,
+        // Empty string clears a stored expiry on edit; on create the server
+        // reads "" as "not given".
+        passport_expiry:passportExpiry,
+        driving_license_expiry:licenceExpiry,
+        // '' = company default on create, and clears a stored figure on edit.
+        notice_period_days: String(noticeDays).trim(),
         notes,
         ...salaryPayload(),
       };
@@ -832,8 +899,10 @@ function EmployeeForm({ setPage, employee, setSelectedEmployee, salaryRevisions,
       const bankNote = (resp) => {
         const r = resp?.bank_change_request;
         if (!r) return '';
+        // A super admin's own entry is approved at once (§261).
+        if (r.status === 'approved') return ' The bank details were saved and marked verified by you (super admin — no second person needed).';
         return r.status === 'pending'
-          ? ' The bank details were sent to another HR person for approval (HR → Bank Detail Approvals) and take effect once approved.'
+          ? ' The bank details were sent to another HR person for approval and take effect once approved. They approve it on this employee\'s Edit page or in the Approval Center.'
           : ' The bank details could not be recorded for approval — enter them again.';
       };
 
@@ -1304,6 +1373,30 @@ function EmployeeForm({ setPage, employee, setSelectedEmployee, salaryRevisions,
         </div>
 
         <div>
+          <label htmlFor="ae-biometric-id">Biometric Device User ID</label>
+          <input id="ae-biometric-id" value={biometricId} maxLength={32}
+            onChange={e=>setBiometricId(e.target.value)}
+            placeholder="As the attendance device shows it, e.g. 17" />
+          <small style={{ color:'#6b7280' }}>
+            Punch Import matches a punch to this employee by employee code or by this ID. Leave blank if the device uses the employee code.
+          </small>
+        </div>
+
+        <div>
+          <label htmlFor="ae-default-shift">Default Shift</label>
+          <select id="ae-default-shift" value={defaultShiftId} onChange={e=>setDefaultShiftId(e.target.value)}>
+            <option value="">-- None (use shift assignments) --</option>
+            {(shiftOptions || []).map(sh => (
+              <option key={sh.id} value={String(sh.id)}>{sh.name}{sh.start_time ? ` (${String(sh.start_time).slice(0,5)}–${String(sh.end_time || '').slice(0,5)})` : ''}</option>
+            ))}
+            {defaultShiftId && shiftOptions && !shiftOptions.some(sh => String(sh.id) === defaultShiftId) && (
+              <option value={defaultShiftId}>Shift #{defaultShiftId} (no longer listed)</option>
+            )}
+          </select>
+          <small style={{ color:'#6b7280' }}>Used when no shift assignment covers the day. Shifts are set up in Attendance → Shifts.</small>
+        </div>
+
+        <div>
           <label htmlFor="ae-zone">Zone</label>
           {/* POST /master/zones additionally accepts the hr roles, so the add
               option stays available to the people who fill this form in. */}
@@ -1406,6 +1499,19 @@ function EmployeeForm({ setPage, employee, setSelectedEmployee, salaryRevisions,
             </span>
           </Field>
         )}
+
+        {/* §275: the contractual notice. Pre-filled from the company default
+            (Workforce Analytics → Settings); an exit starts from this figure. */}
+        <Field id="ae-notice-days" label="Notice Period (days)" error={fieldErrors.noticeDays}>
+          <input id="ae-notice-days" name="noticeDays" type="number" min={0} max={180} step={1}
+            inputMode="numeric" value={noticeDays}
+            aria-describedby={fieldErrors.noticeDays ? 'ae-notice-days-err' : 'ae-notice-help'}
+            placeholder={defaultNoticeDays != null ? `${defaultNoticeDays} (company default)` : 'Company default'}
+            onChange={e => { setNoticeDays(e.target.value); clearFieldError('noticeDays'); }} />
+          <span id="ae-notice-help" style={{ display: 'block', marginTop: 4, fontSize: 12, color: '#6b7280' }}>
+            30 = 1 month, 90 = 3 months. Leave empty for the company default.
+          </span>
+        </Field>
       </div>
 
       {/*
@@ -1557,23 +1663,68 @@ function EmployeeForm({ setPage, employee, setSelectedEmployee, salaryRevisions,
         <Field id="ae-ifsc" label="IFSC" required error={fieldErrors.ifscCode}>
           <input id="ae-ifsc" value={ifscCode} onChange={e=>setIfscCode(e.target.value.toUpperCase())} placeholder="HDFC0001234" />
         </Field>
+        <Field id="ae-account-holder" label="Account-holder name" error={fieldErrors.accountHolderName}>
+          <input id="ae-account-holder" maxLength={150} value={accountHolderName} onChange={e=>setAccountHolderName(e.target.value)}
+            placeholder="As printed on the cheque / passbook" />
+        </Field>
+        {/* §267: the proof for a new account travels with the change and is shown
+            to the second HR person; it becomes the record's cheque / statement
+            only once the change is approved. Same slots as the Documents section. */}
+        <div style={{ gridColumn: '1/-1' }}>
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>Proof for a new or changed account (cancelled cheque or bank statement)</div>
+          <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 12 }}>
+            <label>Cancelled cheque{' '}
+              <input type="file" aria-label="Cancelled cheque" accept="application/pdf,image/*" onChange={e => setDocFile('cancelled_cheque_file', e.target.files?.[0])} />
+            </label>
+            <label>Bank statement{' '}
+              <input type="file" aria-label="Bank statement" accept="application/pdf,image/*" onChange={e => setDocFile('bank_statement_file', e.target.files?.[0])} />
+            </label>
+          </div>
+          {(docFiles.cancelled_cheque_file || docFiles.bank_statement_file) && (
+            <div style={{ fontSize: 11, color: '#6b7280', marginTop: 2 }}>
+              Attached: {[docFiles.cancelled_cheque_file?.name, docFiles.bank_statement_file?.name].filter(Boolean).join(', ')}
+            </div>
+          )}
+          {fieldErrors.bankProof && <div role="alert" style={{ fontSize: 12, color: '#dc2626', marginTop: 2 }}>{fieldErrors.bankProof}</div>}
+        </div>
         {/* "Verify as-is" (§206): details on record that predate the
             maker-checker go to a second HR person unchanged. The server checks
             they are valid and not yet verified; the result shows in the dialog. */}
-        {employee && employee.account_number && !employee.bank_verified_at && (
+        {/* A change waiting for a second HR person: decided right here, or in the
+            Approval Center (§266 — no separate approvals page). */}
+        {employee && (
+          <BankChangePending key={bankPanelKey} employeeId={employee.id} onPendingChange={setBankPending}
+            onMessage={(type, text) => setDialog({ type: type === 'ok' ? 'success' : 'error', title: type === 'ok' ? 'Bank details' : 'Not saved', message: text })}
+            onApproved={(p) => {
+              if (p.source !== 'verify') {
+                setAccountNumber(p.account_number || ''); setIfscCode(p.ifsc_code || '');
+                setBankName(p.bank_name || ''); setBranchName(p.branch_name || ''); setAccountHolderName(p.account_holder_name || '');
+              }
+              setBankVerifiedNow(true);
+            }} />
+        )}
+        {employee && employee.account_number && !employee.bank_verified_at && !bankVerifiedNow && !bankPending && (
           <div style={{ gridColumn: '1/-1', fontSize: 12, color: '#6b7280' }}>
-            These bank details have not been verified by a second HR person.{' '}
+            {isSuperAdmin
+              ? 'These bank details are not marked verified. As super admin you can verify them yourself.'
+              : 'These bank details have not been verified by a second HR person.'}{' '}
             <button type="button" className="btn-secondary" disabled={verifyBusy}
               onClick={async () => {
                 setVerifyBusy(true);
                 try {
-                  await api.post(`/employees/${employee.id}/bank-verification-request`);
-                  setDialog({ type:'success', title:'Verification requested', message:'The bank details on record were sent to another HR person to verify (HR → Bank Detail Approvals). Nothing on the record changes.' });
+                  const { data } = await api.post(`/employees/${employee.id}/bank-verification-request`);
+                  if (data?.bank_change_request?.status === 'approved') {
+                    setBankVerifiedNow(true);
+                    setDialog({ type:'success', title:'Bank details verified', message:'The bank details on record are now marked verified by you. Nothing else on the record changed.' });
+                  } else {
+                    setBankPanelKey(k => k + 1);
+                    setDialog({ type:'success', title:'Verification requested', message:'The bank details on record were sent to another HR person to verify — on this employee\'s Edit page or in the Approval Center. Nothing on the record changes.' });
+                  }
                 } catch (err) {
                   setDialog({ type:'error', title:'Verification not requested', message: err.response?.data?.error || 'The request could not be made.' });
                 } finally { setVerifyBusy(false); }
               }}>
-              {verifyBusy ? 'Requesting…' : 'Request verification'}
+              {verifyBusy ? (isSuperAdmin ? 'Verifying…' : 'Requesting…') : (isSuperAdmin ? 'Mark as verified' : 'Request verification')}
             </button>
           </div>
         )}
@@ -1608,7 +1759,19 @@ function EmployeeForm({ setPage, employee, setSelectedEmployee, salaryRevisions,
         <div><label htmlFor="ae-pf">PF Number</label><input id="ae-pf" name="pfNumber" value={pfNumber} onChange={e=>setPfNumber(e.target.value)} /></div>
         <div><label htmlFor="ae-uan">UAN Number</label><input id="ae-uan" name="uanNumber" value={uanNumber} onChange={e=>setUanNumber(e.target.value)} /></div>
         <div><label htmlFor="ae-esic">ESIC Number</label>
-          <input id="ae-esic" name="esicNumber" value={esicNumber} onChange={e=>setEsicNumber(e.target.value)}
+          <input id="ae-esic" name="esicNumber" value={esicNumber} onChange={e=>setEsicNumber(e.target.value)} />
+        </div>
+        <div><label htmlFor="ae-passport">Passport Number</label>
+          <input id="ae-passport" name="passportNumber" maxLength={20} value={passportNumber} onChange={e=>setPassportNumber(e.target.value)} />
+        </div>
+        <div><label htmlFor="ae-passport-expiry">Passport Expiry</label>
+          <input id="ae-passport-expiry" name="passportExpiry" type="date" value={passportExpiry} onChange={e=>setPassportExpiry(e.target.value)} />
+        </div>
+        <div><label htmlFor="ae-licence">Driving Licence Number</label>
+          <input id="ae-licence" name="licenceNumber" maxLength={30} value={licenceNumber} onChange={e=>setLicenceNumber(e.target.value)} />
+        </div>
+        <div><label htmlFor="ae-licence-expiry">Driving Licence Expiry</label>
+          <input id="ae-licence-expiry" name="licenceExpiry" type="date" value={licenceExpiry} onChange={e=>setLicenceExpiry(e.target.value)}
                  onKeyDown={(e)=>handleLastFieldTab(e,"compliance")} />
         </div>
       </div>

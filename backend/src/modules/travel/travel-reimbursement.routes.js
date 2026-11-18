@@ -53,17 +53,6 @@ async function ownEmployeeId(req) {
   } catch { return null; }
 }
 
-// ── Startup schema bootstrap ─────────────────────────────────────────────────
-;(async () => {
-  try {
-    await pool.query(`
-      ALTER TABLE expense_claims
-        ADD COLUMN IF NOT EXISTS advance_adjusted NUMERIC(12,2) DEFAULT 0,
-        ADD COLUMN IF NOT EXISTS net_payable      NUMERIC(12,2)
-    `);
-  } catch (e) { console.warn('[reimbursement] alter expense_claims advance cols:', e.message); }
-})();
-
 // Travel type → cost type mapping (Part 8)
 const COST_TYPE_MAP = {
   'Sales Visit':            'SALES_TRAVEL',

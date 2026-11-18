@@ -30,8 +30,8 @@
 .lact-meta { font-size: 11px; color: #6b7280; background: #f3f4f6; padding: 2px 8px; border-radius: 10px; }
 .lact-outcome { font-size: 11px; font-weight: 600; color: #15803d; background: #dcfce7; padding: 2px 8px; border-radius: 10px; }
 .lact-assignee { font-size: 11px; color: #9ca3af; margin-left: auto; }
-.lact-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.4); z-index: 50; display: flex; justify-content: flex-end; }
-.lact-drawer { width: 420px; background: #fff; height: 100vh; display: flex; flex-direction: column; animation: lact-slide .25s ease; }
+.lact-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.4); z-index: 50; display: flex; align-items: center; justify-content: center; padding: 24px; }
+.lact-drawer { width: 420px; background: #fff; max-width: 100%; max-height: calc(100vh - 48px); border-radius: 12px; overflow: auto; display: flex; flex-direction: column; animation: pulse-dialog-in .18s ease-out; }
 @keyframes lact-slide { from { transform: translateX(100%); } to { transform: translateX(0); } }
 .lact-drawer-hd { display: flex; justify-content: space-between; align-items: center; padding: 20px; border-bottom: 1px solid #e5e7eb; }
 .lact-drawer-hd h3 { font-size: 16px; font-weight: 700; color: #111827; margin: 0; }

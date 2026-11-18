@@ -110,8 +110,8 @@ function TestRunDetail({ run, onClose, onRefresh }) {
   const inp = { padding: '6px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 12, boxSizing: 'border-box' };
 
   return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', justifyContent: 'flex-end' }}>
-      <div style={{ background: '#fff', width: 620, height: '100vh', overflowY: 'auto', padding: 24, display: 'flex', flexDirection: 'column', gap: 14 }}>
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+      <div style={{ background: '#fff', width: 620, maxWidth: '100%', maxHeight: 'calc(100vh - 48px)', borderRadius: 12, boxShadow: '0 20px 60px rgba(0,0,0,.18)', overflowY: 'auto', padding: 24, display: 'flex', flexDirection: 'column', gap: 14 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between' }}>
           <div>
             <h3 style={{ margin: 0 }}>{run.test_type} — {run.title}</h3>

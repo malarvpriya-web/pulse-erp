@@ -71,17 +71,6 @@ const bootstrapLinkError = (so, body = {}) => foreignLinkIn(so.company_id ?? nul
   ['projects', body.project_id, 'Project'],
 ]);
 
-/* ─── table migrations ─────────────────────────────────────── */
-(async () => {
-  try {
-    await pool.query(`
-      ALTER TABLE lifecycle_instances     ADD COLUMN IF NOT EXISTS company_id INTEGER;
-      ALTER TABLE commissioning_reports   ADD COLUMN IF NOT EXISTS company_id INTEGER;
-      ALTER TABLE amc_contracts           ADD COLUMN IF NOT EXISTS company_id INTEGER;
-    `);
-  } catch (e) { console.error('[lifecycle] migration error:', e.message); }
-})();
-
 export async function createProductionOrderFromSalesOrder(client, salesOrder, req, opts = {}) {
   const {
     product_name,

@@ -1,4 +1,5 @@
 import pool from '../../shared/db.js';
+import { openingAllocation } from '../services/leaveAccrual.service.js';
 
 function workflowError(message, code) {
   return Object.assign(new Error(message), { code });
@@ -81,12 +82,14 @@ const leavesRepository = {
 
   async initializeLeaveBalance(employee_id, year, company_id = null) {
     const leaveTypes = await this.getLeaveTypes(company_id);
+    const { rows: [emp] } = await pool.query(
+      `SELECT to_char(joining_date, 'YYYY-MM-DD') AS joining_date FROM employees WHERE id = $1`, [employee_id]);
     for (const leaveType of leaveTypes) {
       await pool.query(
         `INSERT INTO leave_balances (employee_id, leave_type_id, year, allocated_days)
          VALUES ($1, $2, $3, $4)
          ON CONFLICT (employee_id, leave_type_id, year) DO NOTHING`,
-        [employee_id, leaveType.id, year, leaveType.annual_quota]
+        [employee_id, leaveType.id, year, openingAllocation(leaveType, emp?.joining_date, Number(year))]
       );
     }
   },
@@ -421,9 +424,11 @@ const leavesRepository = {
   async incrementUsedBalance(client, application) {
     const year = new Date(application.start_date).getFullYear();
     const { rows: [lt] } = await client.query(
-      `SELECT annual_quota, is_comp_off_type FROM leave_types WHERE id = $1 LIMIT 1`, [application.leave_type_id]
+      `SELECT lt.annual_quota, lt.accrual_type, lt.is_comp_off_type, to_char(e.joining_date, 'YYYY-MM-DD') AS joining_date
+         FROM leave_types lt LEFT JOIN employees e ON e.id = $2 WHERE lt.id = $1 LIMIT 1`, [application.leave_type_id, application.employee_id]
     ).catch(() => ({ rows: [] }));
-    const allocatedDays = lt?.annual_quota ?? 0;
+    // Only used when no balance row exists yet: the same opening figure as everywhere else.
+    const allocatedDays = lt ? openingAllocation(lt, lt.joining_date, year) : 0;
 
     await client.query(
       `INSERT INTO leave_balances (employee_id, leave_type_id, year, allocated_days, used_days, updated_at)

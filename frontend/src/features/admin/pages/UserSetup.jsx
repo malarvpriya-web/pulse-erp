@@ -57,11 +57,34 @@ function RoleBadge({ role }) {
   );
 }
 
-const EMPTY_FORM = { name: '', email: '', password: '', role: 'employee', department: '' };
+// The employee a login belongs to. users.employee_id is the ONLY link the
+// server uses to find a login's employee record — without it payslips, leave,
+// attendance and claims are empty for that login. An employee already linked
+// to another active login is shown but disabled: one person, one login.
+function EmployeeLinkSelect({ employees, value, onChange, userId = null, style }) {
+  return (
+    <select value={value ?? ''} onChange={e => onChange(e.target.value)} style={style}>
+      <option value="">— Not an employee —</option>
+      {employees.map(e => {
+        const takenByOther = e.linked_user_id != null && e.linked_user_id !== userId;
+        return (
+          <option key={e.id} value={String(e.id)} disabled={takenByOther}>
+            {e.name || '(no name)'}{e.office_id ? ` · ${e.office_id}` : ''}
+            {takenByOther ? ` — has login ${e.linked_user_email}` : ''}
+          </option>
+        );
+      })}
+    </select>
+  );
+}
+
+const EMPTY_FORM = { name: '', email: '', password: '', role: 'employee', department: '', employee_id: '' };
 
 export default function UserSetup() {
   const roles    = useRoleCatalog();
   const [users,               setUsers]               = useState([]);
+  const [employees,           setEmployees]           = useState([]);
+  const [showInactive,        setShowInactive]        = useState(false);
   const [loading,             setLoading]             = useState(false);
   const [showCreate,          setShowCreate]          = useState(false);
   const [editUser,            setEditUser]            = useState(null);
@@ -84,9 +107,14 @@ export default function UserSetup() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const r = await api.get('/admin/users');
+      const [r, emps] = await Promise.all([
+        api.get('/admin/users'),
+        // The picker is optional: a failure here must not blank the user list.
+        api.get('/admin/users/employee-options').catch(() => ({ data: [] })),
+      ]);
       if (!isMounted.current) return;
       setUsers(Array.isArray(r.data) ? r.data : []);
+      setEmployees(Array.isArray(emps.data) ? emps.data : []);
     } catch {
       if (isMounted.current) setUsers([]);
     } finally {
@@ -106,7 +134,10 @@ export default function UserSetup() {
     if (form.password.length < 8)
       return toast('Password must be at least 8 characters', 'err');
     try {
-      await api.post('/admin/users', form);
+      await api.post('/admin/users', {
+        ...form,
+        employee_id: form.employee_id === '' ? null : Number(form.employee_id),
+      });
       toast('User created successfully');
       setShowCreate(false);
       setForm(EMPTY_FORM);
@@ -119,11 +150,18 @@ export default function UserSetup() {
   const saveEdit = async () => {
     if (!editUser) return;
     try {
-      await api.put(`/admin/users/${editUser.id}`, {
+      if (!String(editUser.name ?? '').trim())
+        return toast('Name cannot be blank', 'err');
+      const body = {
+        name:       editUser.name.trim(),
         role:       editUser.role,
         status:     editUser.status,
         department: editUser.department,
-      });
+      };
+      // Only send the link when it changed — absent means "leave it alone".
+      if (String(editUser.employee_id ?? '') !== String(editUser.original_employee_id ?? ''))
+        body.employee_id = editUser.employee_id === '' ? null : Number(editUser.employee_id);
+      await api.put(`/admin/users/${editUser.id}`, body);
       toast('User updated');
       setEditUser(null);
       load();
@@ -172,6 +210,13 @@ export default function UserSetup() {
   };
 
   const suspects = users.filter(u => isSuspectSeed(u) && u.status === 'active');
+
+  // Deactivated logins (mostly people who have left) are hidden by default.
+  // They are NOT deleted: every one is referenced by history — audit rows,
+  // approvals, created_by columns — so removing the row would fail or wipe
+  // that record. Deactivated already means they cannot sign in.
+  const inactiveCount = users.filter(u => u.status === 'inactive').length;
+  const shownUsers    = showInactive ? users : users.filter(u => u.status !== 'inactive');
 
   const toggleSeed = id =>
     setSelectedSeeds(prev => {
@@ -327,6 +372,29 @@ export default function UserSetup() {
             <h3 style={{ margin: 0, color: '#4c1d95', fontSize: 16, fontWeight: 700 }}>Create New User</h3>
             <button onClick={() => { setShowCreate(false); setForm(EMPTY_FORM); }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#6b7280' }}><X size={18} /></button>
           </div>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 12 }}>
+            <span style={{ fontSize: 12, fontWeight: 600, color: '#374151' }}>Employee (who this login belongs to)</span>
+            <EmployeeLinkSelect
+              employees={employees}
+              value={form.employee_id}
+              onChange={v => {
+                const emp = employees.find(e => String(e.id) === v);
+                // Prefill from the employee record; never overwrite what was typed.
+                setForm(f => ({
+                  ...f,
+                  employee_id: v,
+                  name:       f.name       || emp?.name          || '',
+                  email:      f.email      || emp?.company_email || '',
+                  department: f.department || emp?.department    || '',
+                }));
+              }}
+              style={{ padding: '8px 12px', border: '1px solid #e5e7eb', borderRadius: 8, fontSize: 13, background: '#fff', outline: 'none' }}
+            />
+            <span style={{ fontSize: 11, color: '#6b7280' }}>
+              Pick the employee so their payslips, leave and attendance work on this login. Leave blank only for a login that is not a person on the payroll.
+              An employee who already has a login is greyed out: change that login's role instead.
+            </span>
+          </label>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
             {[['Full Name', 'name', 'text'], ['Email', 'email', 'email'], ['Password', 'password', 'password']].map(([label, key, type]) => (
               <label key={key} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -394,17 +462,32 @@ export default function UserSetup() {
       )}
 
       {/* Users table */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, margin: '0 0 8px', fontSize: 12, color: '#6b7280', flexWrap: 'wrap' }}>
+        <span>
+          {users.length - inactiveCount} active login{users.length - inactiveCount === 1 ? '' : 's'}
+          {inactiveCount > 0 && !showInactive && ` · ${inactiveCount} deactivated hidden`}
+        </span>
+        {inactiveCount > 0 && (
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}
+            title="Deactivated logins cannot sign in. They are kept, not deleted, because past records (approvals, audit trail) point at them.">
+            <input type="checkbox" checked={showInactive} onChange={e => setShowInactive(e.target.checked)} />
+            Show deactivated ({inactiveCount})
+          </label>
+        )}
+      </div>
       <div style={card}>
         {loading ? (
           <div style={{ textAlign: 'center', padding: 48, color: '#9ca3af' }}>Loading users…</div>
-        ) : users.length === 0 ? (
-          <div style={{ textAlign: 'center', padding: 48, color: '#9ca3af' }}>No users found.</div>
+        ) : shownUsers.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: 48, color: '#9ca3af' }}>
+            {users.length === 0 ? 'No users found.' : 'No active users. Tick "Show deactivated" to see the rest.'}
+          </div>
         ) : (
           <div style={{ overflowX: 'auto' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
               <thead>
                 <tr style={{ background: '#f9fafb' }}>
-                  {['Name / Email', 'Role', 'Department', 'Status', '2FA', 'Last Login', 'Actions'].map(h => (
+                  {['Name / Email', 'Employee', 'Role', 'Department', 'Status', '2FA', 'Last Login', 'Actions'].map(h => (
                     <th key={h} style={{ padding: '10px 14px', textAlign: 'left', fontWeight: 600, color: '#374151', borderBottom: '1px solid #e5e7eb', whiteSpace: 'nowrap', fontSize: 12 }}>
                       {h}
                     </th>
@@ -412,15 +495,43 @@ export default function UserSetup() {
                 </tr>
               </thead>
               <tbody>
-                {users?.map(u => {
+                {shownUsers.map(u => {
                   const isEditing = editUser?.id === u.id;
                   const sc = STATUS_CFG[u?.status] ?? STATUS_CFG.inactive;
                   return (
                     <tr key={u.id} style={{ borderBottom: '1px solid #f3f4f6', opacity: u?.status === 'inactive' ? 0.6 : 1 }}>
 
                       <td style={{ padding: '10px 14px' }}>
-                        <div style={{ fontWeight: 600, color: '#111827' }}>{u?.name ?? 'Unknown'}</div>
+                        {isEditing ? (
+                          <input
+                            value={editUser.name}
+                            onChange={e => setEditUser(x => ({ ...x, name: e.target.value }))}
+                            aria-label="Name"
+                            style={{ padding: '5px 8px', border: '1px solid #a78bfa', borderRadius: 6, fontSize: 13, fontWeight: 600, width: 170, outline: 'none' }}
+                          />
+                        ) : (
+                          <div style={{ fontWeight: 600, color: '#111827' }}>{u?.name ?? 'Unknown'}</div>
+                        )}
                         <div style={{ fontSize: 11, color: '#9ca3af' }}>{u?.email ?? ''}</div>
+                      </td>
+
+                      <td style={{ padding: '10px 14px', fontSize: 12 }}>
+                        {isEditing ? (
+                          <EmployeeLinkSelect
+                            employees={employees}
+                            userId={u.id}
+                            value={editUser.employee_id}
+                            onChange={v => setEditUser(x => ({ ...x, employee_id: v }))}
+                            style={{ padding: '5px 8px', border: '1px solid #a78bfa', borderRadius: 6, fontSize: 12, background: '#fff', outline: 'none', maxWidth: 200 }}
+                          />
+                        ) : u?.employee_id ? (
+                          <span style={{ color: '#111827' }}>
+                            {u.employee_name || '(no name)'}
+                            {u.employee_office_id && <span style={{ color: '#9ca3af' }}> · {u.employee_office_id}</span>}
+                          </span>
+                        ) : (
+                          <span style={{ color: '#9ca3af' }} title="Not linked to an employee: no payslips, leave or attendance on this login">Not linked</span>
+                        )}
                       </td>
 
                       <td style={{ padding: '10px 14px' }}>
@@ -483,7 +594,11 @@ export default function UserSetup() {
                           ) : (
                             <>
                               <button
-                                onClick={() => setEditUser({ id: u.id, role: u?.role ?? 'employee', status: u?.status ?? 'active', department: u?.department ?? '' })}
+                                onClick={() => setEditUser({
+                                  id: u.id, name: u?.name ?? '', role: u?.role ?? 'employee', status: u?.status ?? 'active', department: u?.department ?? '',
+                                  employee_id: u?.employee_id != null ? String(u.employee_id) : '',
+                                  original_employee_id: u?.employee_id != null ? String(u.employee_id) : '',
+                                })}
                                 title="Edit"
                                 style={{ padding: '5px 8px', background: '#f5f3ff', color: '#6B3FDB', border: 'none', borderRadius: 6, cursor: 'pointer' }}>
                                 <Edit2 size={13} />

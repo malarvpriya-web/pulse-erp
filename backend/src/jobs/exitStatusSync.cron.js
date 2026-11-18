@@ -30,26 +30,39 @@ function terminalStatusFor(separationType) {
   return EXIT_STATUS;
 }
 
-async function runExitStatusSync() {
+/**
+ * §275: runs the morning AFTER the last working day (`<` today, not `<=`): at
+ * 08:45 on the last day the person is still at work, and flipping them then
+ * dropped that day from attendance and the final month from payroll. It also
+ * records the exit date (the last working day) — only F&F payment used to, so
+ * until then headcount history counted the person as still employed and
+ * attrition was dated by the record's last edit. Deleted employees are skipped.
+ * `today` is the business date (APP_TIMEZONE); tests pass their own, and
+ * `onlyEmployeeIds` so a test run cannot touch other suites' rows.
+ */
+export async function runExitStatusSync({ today = null, onlyEmployeeIds = null } = {}) {
   console.log(`[Exit Status Sync Cron] Running at ${new Date().toISOString()}`);
 
   const { rows: due } = await pool.query(`
-    SELECT er.id AS exit_request_id, er.employee_id, er.separation_type
+    SELECT er.id AS exit_request_id, er.employee_id, er.separation_type,
+           to_char(er.last_working_date, 'YYYY-MM-DD') AS last_working_date
     FROM exit_requests er
-    JOIN employees e ON e.id = er.employee_id
+    JOIN employees e ON e.id = er.employee_id AND e.deleted_at IS NULL
     WHERE er.status = 'active'
       AND LOWER(e.status) = 'notice'
       AND er.last_working_date IS NOT NULL
-      AND er.last_working_date::date <= CURRENT_DATE
-  `);
+      AND er.last_working_date::date < COALESCE($1::date, CURRENT_DATE)
+      AND ($2::int[] IS NULL OR er.employee_id = ANY($2::int[]))
+  `, [today, onlyEmployeeIds]);
 
   let updated = 0;
   for (const row of due) {
     try {
       const terminal = terminalStatusFor(row.separation_type);
       const { rowCount } = await pool.query(
-        `UPDATE employees SET status=$1 WHERE id=$2 AND LOWER(status)='notice'`,
-        [terminal, row.employee_id]
+        `UPDATE employees SET status=$1, exit_date = COALESCE(exit_date, $3::date), updated_at = NOW()
+          WHERE id=$2 AND LOWER(status)='notice'`,
+        [terminal, row.employee_id, row.last_working_date]
       );
       updated += rowCount;
       if (rowCount) {
@@ -61,6 +74,7 @@ async function runExitStatusSync() {
   }
 
   console.log(`[Exit Status Sync Cron] Done — ${updated}/${due.length} employee status(es) finalized.`);
+  return { updated, due: due.length };
 }
 
 export function startExitStatusSyncCron() {

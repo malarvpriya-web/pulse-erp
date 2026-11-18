@@ -4,6 +4,7 @@ import {
   FileSpreadsheet, FileImage, FileArchive, File, ExternalLink, Edit2,
   Clock, ChevronRight, Users,
 } from 'lucide-react';
+import VocabSelect from "@/components/core/VocabSelect";
 import api from "@/services/api/client";
 import { useAuth } from "@/context/AuthContext";
 import { PageHero, PageShell } from '@/components/pulse-ui';
@@ -12,7 +13,9 @@ import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const DRIVE_ROOT = import.meta.env.VITE_DOCUMENTS_BASE_URL || null;
 
-const CATEGORIES = ["All", "Letters", "Forms", "Onboarding", "Templates", "Policies", "Other"];
+// Categories are the HR_DOCUMENT_CATEGORY master (Settings → Master Data, or
+// "+ Add new…" in the form), not a constant (HR audit 2026-11-16). The filter
+// tabs are the master's values plus any category a stored document still uses.
 
 const CATEGORY_META = {
   Letters:    { emoji: "✉️",  bg: "#ede9fe", color: "#6B3FDB", desc: "Offer, Appointment, Experience & more" },
@@ -243,9 +246,8 @@ function DocModal({ form, setForm, onClose, onSubmit, submitting, formErr, isEdi
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
             <div>
               <label style={labelStyle}>Category *</label>
-              <select value={form.category} onChange={e => set("category", e.target.value)} style={inputStyle}>
-                {CATEGORIES.filter(c => c !== "All").map(c => <option key={c} value={c}>{c}</option>)}
-              </select>
+              <VocabSelect vocab="hr-document-categories" ariaLabel="Category" selectStyle={inputStyle}
+                value={form.category} onChange={v => set("category", v || "")} />
             </div>
             <div>
               <label style={labelStyle}>File Type</label>
@@ -339,6 +341,14 @@ export default function Downloads() {
   const [error,      setError]      = useState(null);
   const [search,     setSearch]     = useState("");
   const [catFilter,  setCatFilter]  = useState("All");
+  const [masterCats, setMasterCats] = useState([]);
+  useEffect(() => {
+    let live = true;
+    api.get("/master/v/hr-document-categories")
+      .then(r => { if (live) setMasterCats((Array.isArray(r.data) ? r.data : []).filter(c => c.is_active !== false).map(c => c.name).filter(Boolean)); })
+      .catch(() => {});
+    return () => { live = false; };
+  }, []);
   const [showModal,  setShowModal]  = useState(false);
   const [editItem,   setEditItem]   = useState(null);
   const [form,       setForm]       = useState(emptyForm());
@@ -503,7 +513,7 @@ export default function Downloads() {
           />
         </div>
         <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-          {CATEGORIES.map(cat => (
+          {["All", ...new Set([...masterCats, ...items.map(i => i.category).filter(Boolean)])].map(cat => (
             <button key={cat}
               onClick={() => setCatFilter(cat)}
               style={{

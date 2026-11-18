@@ -91,7 +91,7 @@ export async function managesEmployee({ managerEmployeeId, employeeId, companyId
          OR EXISTS (
               SELECT 1
                 FROM department_heads dh
-                JOIN master_departments d ON d.id = dh.department_id
+                JOIN master_departments d ON d.id = dh.department_id AND d.is_active = true
                 JOIN employees e ON LOWER(TRIM(e.department)) = LOWER(TRIM(d.name))
                WHERE dh.head_employee_id = $2
                  AND dh.ended_at IS NULL

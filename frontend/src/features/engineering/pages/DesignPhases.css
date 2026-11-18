@@ -355,16 +355,16 @@
 /* ── Edit Drawer ────────────────────────────────────────────────── */
 .dpp-drawer-overlay {
   position: fixed; inset: 0; background: rgba(0,0,0,.35);
-  z-index: 900; display: flex; justify-content: flex-end;
+  z-index: 900; display: flex; align-items: center; justify-content: center; padding: 24px;
   animation: dpp-fade-in .15s ease;
 }
 @keyframes dpp-fade-in { from { opacity: 0; } to { opacity: 1; } }
 
 .dpp-drawer {
-  width: 420px; max-width: 100vw; height: 100%;
+  width: 420px; max-width: 100vw; max-height: calc(100vh - 48px); border-radius: 12px;
   background: #fff; display: flex; flex-direction: column;
-  box-shadow: -8px 0 32px rgba(0,0,0,.12);
-  animation: dpp-slide-in .2s cubic-bezier(.4,0,.2,1);
+  box-shadow: 0 20px 60px rgba(0,0,0,.18);
+  animation: pulse-dialog-in .18s ease-out;
   overflow-y: auto;
 }
 @keyframes dpp-slide-in {

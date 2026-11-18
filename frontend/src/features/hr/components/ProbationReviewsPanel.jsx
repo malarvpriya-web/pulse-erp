@@ -4,11 +4,12 @@ import api from "@/services/api/client";
 import { useAuth } from "@/context/AuthContext";
 
 /**
- * Probation Reviews (HR) — open reviews and whether each one's reviewer is
- * still the eligible department head.
+ * Probation Reviews (HR) — OPEN reviews: those waiting for the department
+ * head, and those the head has submitted and HR must now decide.
  *
- * Reads GET /probation-reviews?status=requested (existing, hr:view). For each
- * open review the server says, using the same rule it enforces on submission:
+ * Reads GET /probation-reviews (hr:view) and keeps the open ones (requested,
+ * submitted); decided ones are the page's History. For each review still
+ * waiting for the head, the server says, using the same rule it enforces on submission:
  *   current           the reviewer is still the head
  *   reviewer_replaced someone else is the head now — reassignable to them
  *   no_eligible_head  no head can be resolved — HR must assign one first
@@ -18,7 +19,13 @@ import { useAuth } from "@/context/AuthContext";
  * everything under its locks, so this list is only ever a snapshot. The button
  * is shown only to hr:edit holders and only when the server says the review is
  * reassignable. The worklist is reloaded after every action.
+ *
+ * A SUBMITTED review shows the head's recommendation and, when the page passes
+ * `onDecide` (hr:edit holders), a "Record decision" button. `reloadKey`
+ * reloads the list when the page changes something; `onChanged` tells the
+ * page after a reassignment.
  */
+const RECOMMENDATION_LABEL = { confirm: 'Confirm', extend: 'Extend', not_confirm: 'Do not confirm' };
 const STATE_LABEL = {
   reviewer_replaced: 'Reviewer is no longer the head',
   no_eligible_head: 'No eligible head',
@@ -32,27 +39,27 @@ const fmt = (d) => {
     .toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit', timeZone: 'UTC' });
 };
 
-export default function ProbationReviewsPanel() {
+export default function ProbationReviewsPanel({ reloadKey = 0, onDecide, onChanged } = {}) {
   const { hasPermission } = useAuth();
   const canEdit = !!hasPermission?.('hr', 'edit');
 
   const [open, setOpen] = useState(true);
   const [reviews, setReviews] = useState(null);
   const [error, setError] = useState(null);
-  const [editing, setEditing] = useState(null);   // { id, reason }
+  const [editing, setEditing] = useState(null);   // { id, reason, mode: 'reassign' | 'cancel' }
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState(null);
 
   const load = useCallback(async () => {
     try {
-      const { data } = await api.get('/probation-reviews', { params: { status: 'requested' } });
+      const { data } = await api.get('/probation-reviews');
       // A panel must never take the Probation page down with it.
       if (!Array.isArray(data?.reviews)) {
         setReviews(null);
         setError('Could not load probation reviews.');
         return;
       }
-      setReviews(data.reviews);
+      setReviews(data.reviews.filter((r) => r.status === 'requested' || r.status === 'submitted'));
       setError(null);
     } catch (err) {
       setReviews(null);
@@ -61,7 +68,30 @@ export default function ProbationReviewsPanel() {
         : err?.response?.data?.error || 'Could not load probation reviews.');
     }
   }, []);
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load, reloadKey]);
+
+  // Withdraw an open review (POST /probation-reviews/:id/cancel, hr:edit). The
+  // employee record is untouched; a new review can be requested afterwards.
+  const cancel = async (review) => {
+    const reason = String(editing?.reason ?? '').trim();
+    if (!reason) {
+      setMessage({ type: 'error', text: 'A reason is required to cancel a review.' });
+      return;
+    }
+    setSaving(true);
+    setMessage(null);
+    try {
+      await api.post(`/probation-reviews/${review.id}/cancel`, { reason });
+      setMessage({ type: 'success', text: `${review.employee}'s review was cancelled.` });
+    } catch (err) {
+      setMessage({ type: 'error', text: err?.response?.data?.error || 'Could not cancel the review.' });
+    } finally {
+      setEditing(null);
+      setSaving(false);
+      await load();
+      onChanged?.();
+    }
+  };
 
   const reassign = async (review) => {
     const reason = String(editing?.reason ?? '').trim();
@@ -89,6 +119,7 @@ export default function ProbationReviewsPanel() {
     } finally {
       setSaving(false);
       await load();
+      onChanged?.();
     }
   };
 
@@ -101,7 +132,7 @@ export default function ProbationReviewsPanel() {
       {open && (
         <div className="prob-dh-body">
           <p className="prob-dh-help">
-            Reviews waiting for a department head. A flagged review&apos;s reviewer is no longer the eligible head of the employee&apos;s department.
+            Reviews waiting for a department head, and reviews the head has submitted for your decision. A flagged review&apos;s reviewer is no longer the eligible head of the employee&apos;s department.
           </p>
           {message && (
             <div role={message.type === 'error' ? 'alert' : 'status'} className={`prob-dh-msg is-${message.type}`}>{message.text}</div>
@@ -132,29 +163,54 @@ export default function ProbationReviewsPanel() {
                             <span className="prob-dh-flag">{STATE_LABEL[r.reviewer_state] || 'Check reviewer'}</span>
                             {r.reviewer_state_reason && <div className="prob-dh-muted">{r.reviewer_state_reason}</div>}
                             {r.reviewer_state === 'no_eligible_head' && (
-                              <div className="prob-dh-muted">Assign a department head first (Department Heads, above), then reassign this review.</div>
+                              <div className="prob-dh-muted">Assign a department head first (HR › Department Heads), then reassign this review.</div>
                             )}
                           </div>
                         )}
                       </td>
                       <td>{fmt(r.reviewer_due_date)}{r.is_overdue && <span className="prob-dh-flag">Overdue</span>}</td>
-                      <td>Awaiting review</td>
+                      <td>
+                        {r.status === 'submitted' ? (
+                          <>
+                            <span className="prob-review-chip is-submitted">Awaiting HR decision</span>
+                            <div className="prob-dh-muted">
+                              Recommends {RECOMMENDATION_LABEL[r.recommendation] || r.recommendation} · {r.rating}/5
+                            </div>
+                          </>
+                        ) : 'Awaiting head'}
+                      </td>
                       <td className="prob-dh-actions">
+                        {r.status === 'submitted' && onDecide && (
+                          <button type="button" className="prob-hist-action-btn" onClick={() => onDecide(r)}>
+                            Record decision
+                          </button>
+                        )}
                         {canEdit && r.reassignable && !isEditing && (
                           <button type="button" className="prob-hist-action-btn"
-                            onClick={() => { setMessage(null); setEditing({ id: r.id, reason: '' }); }}>
+                            onClick={() => { setMessage(null); setEditing({ id: r.id, reason: '', mode: 'reassign' }); }}>
                             Reassign to {r.current_head?.name || 'current head'}
+                          </button>
+                        )}
+                        {canEdit && !isEditing && (
+                          <button type="button" className="prob-hist-action-btn prob-rv-cancel"
+                            onClick={() => { setMessage(null); setEditing({ id: r.id, reason: '', mode: 'cancel' }); }}>
+                            Cancel review
                           </button>
                         )}
                         {isEditing && (
                           <span className="prob-rv-edit">
-                            <input type="text" maxLength={500} placeholder="Reason (required)"
-                              aria-label={`Reason to reassign ${r.employee}'s review`} value={editing.reason}
+                            <input type="text" maxLength={500}
+                              placeholder={editing.mode === 'cancel' ? 'Why is this review cancelled? (required)' : 'Reason (required)'}
+                              aria-label={editing.mode === 'cancel'
+                                ? `Reason to cancel ${r.employee}'s review`
+                                : `Reason to reassign ${r.employee}'s review`}
+                              value={editing.reason}
                               onChange={(e) => setEditing((x) => ({ ...x, reason: e.target.value }))} />
-                            <button type="button" className="prob-modal-send" disabled={saving} onClick={() => reassign(r)}>
-                              {saving ? 'Saving…' : 'Confirm'}
+                            <button type="button" className="prob-modal-send" disabled={saving}
+                              onClick={() => (editing.mode === 'cancel' ? cancel(r) : reassign(r))}>
+                              {saving ? 'Saving…' : editing.mode === 'cancel' ? 'Cancel review' : 'Confirm'}
                             </button>
-                            <button type="button" className="prob-modal-cancel" onClick={() => setEditing(null)}>Cancel</button>
+                            <button type="button" className="prob-modal-cancel" onClick={() => setEditing(null)}>Back</button>
                           </span>
                         )}
                       </td>

@@ -1,3 +1,5 @@
+import "./src/config/appLogin.js";
+import "./src/config/timezone.js";   // business time zone for the process + every DB session
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
@@ -79,6 +81,7 @@ import perfOKRRoutes         from "./src/modules/performance/routes/okr.routes.j
 import recruitmentRoutes      from "./src/modules/recruitment/routes/recruitment.routes.js";
 import talentRoutes           from "./src/modules/talent/talent.routes.js";
 import candidateIntelligenceRoutes from "./src/modules/recruitment/routes/candidateIntelligence.routes.js";
+import myInterviewsRoutes from "./src/modules/recruitment/routes/myInterviews.routes.js";
 import leavesNewRoutes        from "./src/modules/leaves/routes/leaves.routes.js";
 import compOffRoutes          from "./src/modules/leaves/routes/compoff.routes.js";
 import encashmentRoutes       from "./src/modules/leaves/routes/encashment.routes.js";
@@ -104,6 +107,7 @@ import { ingestRouter as supportMailIngestRouter, adminRouter as supportMailAdmi
 import lndSettingsRoutes      from "./src/modules/hr/lnd-settings.routes.js";
 import successionRoutes       from "./src/modules/hr/succession.routes.js";
 import biometricRoutes        from "./src/modules/hr/biometric.routes.js";
+import gateAccessRoutes       from "./src/modules/hr/gateAccess.routes.js";
 import selfServiceRoutes      from "./src/modules/hr/selfservice.routes.js";
 import exitRoutes             from "./src/modules/hr/exit.routes.js";
 import employeeAssetsRoutes   from "./src/modules/hr/employee-assets.routes.js";
@@ -114,6 +118,7 @@ import onboardingRoutes       from "./src/modules/hr/onboarding.routes.js";
 import bgvRoutes              from "./src/modules/hr/bgv.routes.js";
 import internshipRoutes       from "./src/modules/hr/internships.routes.js";
 import internEvaluationRoutes from "./src/modules/hr/internEvaluations.routes.js";
+import internStipendRoutes from "./src/modules/hr/internStipends.routes.js";
 
 // ── CRM & Sales ──────────────────────────────────────────────────────────────
 import crmRoutes              from "./src/modules/crm/routes/index.js";
@@ -286,10 +291,13 @@ import { startMarketingJourneyCron } from "./src/jobs/marketingJourney.cron.js";
 import { startReorderPrCron } from "./src/jobs/reorderPr.cron.js";
 import { startDepreciationCron } from "./src/jobs/depreciation.cron.js";
 import { startFnfAutoTriggerCron } from "./src/jobs/fnfAutoTrigger.cron.js";
+import { startFnfOverdueReminderCron } from "./src/jobs/fnfOverdueReminder.cron.js";
 import { startExitStatusSyncCron } from "./src/jobs/exitStatusSync.cron.js";
 import { startVendorDocExpiryCron } from "./src/jobs/vendorDocExpiry.cron.js";
 import { startInterviewReminderCron } from "./src/jobs/interviewReminder.cron.js";
 import { startComplianceRemindersCron } from "./src/jobs/complianceReminders.cron.js";
+import { startPayrollRemindersCron } from "./src/jobs/payrollReminders.cron.js";
+import { startTimesheetAutoSubmitCron } from "./src/jobs/timesheetAutoSubmit.cron.js";
 import { startCalibrationDueAlertsCron } from "./src/jobs/calibrationDueAlerts.cron.js";
 import { startNcrEscalationCron } from "./src/jobs/ncrEscalation.cron.js";
 import { startPatentRenewalCron } from "./src/jobs/patentRenewal.cron.js";
@@ -592,6 +600,8 @@ const employeeUpload = (req, res, next) => {
     { name: 'bank_statement_file',   maxCount: 1 },
     { name: 'resume_file',           maxCount: 1 },
     { name: 'offer_letter_file',     maxCount: 1 },
+    { name: 'passport_file',         maxCount: 1 },
+    { name: 'driving_license_file',  maxCount: 1 },
   ])(req, res, next);
 };
 app.use("/api/employees", verifyToken, employeeUpload);
@@ -698,6 +708,9 @@ v1Router.use("/performance/okr",          verifyToken, auditMutations('performan
 // Mounted before the main recruitment router so /recruitment/careers-portal
 // is not swallowed by a /:id route, and gated by the same recruitment
 // permission as everything else in the module.
+// Interviewer self-service: login only, every route scoped to the caller's own
+// interviews (lead or panel) — interviewers often hold no Recruitment access.
+v1Router.use("/my-interviews",   verifyToken, auditMutations('recruitment'), myInterviewsRoutes);
 v1Router.use("/recruitment",     verifyToken, auditMutations('recruitment'), careersAdminRoutes);
 // The redesign's endpoints (notes, timeline, Stage-1 screening, role
 // suitability, Talent Bank, recontacts, bulk actions, work queue). Mounted
@@ -725,11 +738,14 @@ v1Router.use("/competencies",    verifyToken, auditMutations('training'), compet
 v1Router.use("/knowledge",       verifyToken, auditMutations('training'), knowledgeRoutes);
 v1Router.use("/lnd-settings",    verifyToken, auditMutations('training'), lndSettingsRoutes);
 v1Router.use("/succession",      verifyToken, auditMutations('hr'), successionRoutes);
-// biometric.routes.js defines full paths (/biometric/*, /gate-passes, /visitors).
-// Scope verifyToken to those prefixes — a bare use(verifyToken, ...) mounts the guard
-// at "/" and turns it into a global auth gate that blocks public routes registered later.
-v1Router.use(["/biometric", "/gate-passes", "/visitors"], verifyToken);
+// biometric.routes.js (/biometric/*) and gateAccess.routes.js (/gate-passes,
+// /visitors, /gate-access — §272) define full paths. Scope verifyToken to those
+// prefixes — a bare use(verifyToken, ...) mounts the guard at "/" and turns it
+// into a global auth gate that blocks public routes registered later.
+v1Router.use(["/biometric", "/gate-passes", "/visitors", "/gate-access"], verifyToken);
+v1Router.use(["/gate-passes", "/visitors", "/gate-access"], auditMutations('gate_access'));
 v1Router.use(biometricRoutes);
+v1Router.use(gateAccessRoutes);
 v1Router.use("/self-service",    verifyToken, auditMutations('employees'), selfServiceRoutes);
 v1Router.use("/employee-assets", auditMutations('assets'), employeeAssetsRoutes);
 v1Router.use("/employee-skills", auditMutations('hr'), employeeSkillsRoutes);
@@ -743,6 +759,7 @@ v1Router.use("/interns",         verifyToken, auditMutations('internships'), int
 // Mentor evaluation + HR review. Mentor routes are gated by identity (the intern's
 // current mentor), not by an internships permission — see the router header.
 v1Router.use("/intern-evaluations", verifyToken, auditMutations('internships'), internEvaluationRoutes);
+v1Router.use("/intern-stipends",   verifyToken, requireCompanyScope, internStipendRoutes); // HR audit 11-16: stipend dues + payment (writes audited in the router)
 v1Router.use("/exit",            verifyToken, auditMutations('hr'), exitRoutes);
 
 // CRM & SALES
@@ -1184,10 +1201,16 @@ startCandidateRecontactCron();
     startReorderPrCron();
     startDepreciationCron();
     startFnfAutoTriggerCron();
+    // §276: F&F past its 2-working-day due date → Finance and HR, once a day.
+    startFnfOverdueReminderCron();
     startExitStatusSyncCron();
     startVendorDocExpiryCron();
     startInterviewReminderCron();
     startComplianceRemindersCron();
+    // §262: attendance cutoff, approval / payment by the pay date, statutory dues; payslip email after payment.
+    startPayrollRemindersCron();
+    // Mondays: submit last week's timesheet, pre-filled from attendance, for anyone on a project who did not.
+    startTimesheetAutoSubmitCron();
     startCalibrationDueAlertsCron();
     startNcrEscalationCron();
     startPatentRenewalCron();

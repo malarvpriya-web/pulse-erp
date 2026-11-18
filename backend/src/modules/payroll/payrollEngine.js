@@ -66,18 +66,70 @@ function slabTax(income, slabs) {
  * Annual income tax incl. 87A rebate (+ marginal relief in the new regime) and
  * 4% cess. `taxRule` is a resolved 'tax.new' / 'tax.old' value.
  */
-export function computeIncomeTax(annualTaxableIncome, regime = 'new', taxRule = null) {
+/**
+ * The year's tax, item by item (Finance Act 2026, First Schedule Part III):
+ *   slabs     Paragraph A — for the old regime, the age bands of items (II) and
+ *             (III) (60–79: nil to ₹3,00,000; 80+: nil to ₹5,00,000) when the rule
+ *             carries `age_slabs` and the employee's age is known
+ *   rebate    s.156 (with marginal relief above the new-regime limit)
+ *   surcharge Paragraph F Table 1 — rate by total income (`surcharge` bands),
+ *             with the marginal relief of Table 2: tax + surcharge may not exceed
+ *             the tax + surcharge at the band's start plus the income above it
+ *   cess      4% of tax + surcharge
+ * @param opts { age }  age at any time in the tax year (its last day)
+ */
+export function computeIncomeTaxDetail(annualTaxableIncome, regime = 'new', taxRule = null, opts = {}) {
   const rule = taxRule || resolveRules(new Date()).values[regime === 'old' ? 'tax.old' : 'tax.new'];
   const income = Math.max(0, num(annualTaxableIncome));
-  let tax = slabTax(income, rule.slabs);
-  if (income <= rule.rebate_limit) {
-    tax = Math.max(0, tax - rule.rebate_max);
-  } else if (rule.marginal_relief) {
-    // Finance Act 2025: tax above the rebate limit may not exceed the income
-    // above it — ₹12,10,000 pays ₹10,000, not ₹61,500.
-    tax = Math.min(tax, income - rule.rebate_limit);
+  const age = opts.age;
+  const band = regime === 'old' && age != null && Array.isArray(rule.age_slabs)
+    ? [...rule.age_slabs].sort((a, b) => b.min_age - a.min_age).find(b => age >= b.min_age) : null;
+  const slabs = band ? band.slabs : rule.slabs;
+  const baseTax = (x) => {
+    let t = slabTax(x, slabs);
+    if (x <= rule.rebate_limit) t = Math.max(0, t - rule.rebate_max);
+    else if (rule.marginal_relief) t = Math.min(t, x - rule.rebate_limit);
+    return t;
+  };
+  const tax = baseTax(income);
+  const bands = Array.isArray(rule.surcharge) ? [...rule.surcharge].sort((a, b) => a.min - b.min) : [];
+  const rateAt = (x) => bands.filter(b => x > b.min).reduce((r, b) => b.rate, 0);
+  const withSurcharge = (x) => baseTax(x) * (1 + rateAt(x) / 100);
+  let total = withSurcharge(income);
+  const start = bands.filter(b => income > b.min).pop();
+  if (start) total = Math.min(total, withSurcharge(start.min) + (income - start.min));
+  const surcharge = Math.max(0, total - tax);
+  const cess = (tax + surcharge) * rule.cess_pct / 100;
+  return { tax: round(tax), surcharge: round(surcharge), cess: round(cess), total: round(tax + surcharge + cess),
+    slabs_used: band ? `age ${band.min_age}+` : 'standard' };
+}
+
+export function computeIncomeTax(annualTaxableIncome, regime = 'new', taxRule = null, opts = {}) {
+  return computeIncomeTaxDetail(annualTaxableIncome, regime, taxRule, opts).total;
+}
+
+/**
+ * A loan at less than the benchmark rate is a taxable perquisite (Income-tax
+ * Rules 2026, rule 15 Table IV): interest at the benchmark (SBI) rate for that
+ * kind of loan on the month's highest balance, less the interest the employee
+ * pays. Nothing when the employee's loans together do not exceed the limit, and
+ * nothing on a medical loan. It is taxed, never paid.
+ * @param loans  [{ balance, interest_rate, loan_type, purpose }]
+ * @param rule   { exempt_limit, sbi_rates: { loan, advance } }
+ * @returns { monthly, unpriced } — unpriced: a benchmark rate is missing
+ */
+export function loanPerquisite(loans = [], rule = null) {
+  const list = (loans || []).filter(l => num(l.balance) > 0 && l.purpose !== 'medical');
+  if (!rule || !list.length) return { monthly: 0, unpriced: false };
+  const total = list.reduce((s, l) => s + num(l.balance), 0);
+  if (total <= num(rule.exempt_limit)) return { monthly: 0, unpriced: false };
+  let monthly = 0, unpriced = false;
+  for (const l of list) {
+    const sbi = rule.sbi_rates?.[l.loan_type === 'advance' ? 'advance' : 'loan'];
+    if (sbi == null) { unpriced = true; continue; }
+    monthly += num(l.balance) * Math.max(0, num(sbi) - num(l.interest_rate)) / 100 / 12;
   }
-  return round(tax * (1 + rule.cess_pct / 100));
+  return { monthly: round(monthly), unpriced };
 }
 
 /**
@@ -202,29 +254,120 @@ export function prorationFor(month, year, joiningDate, exitDate) {
  *                         force), joining_date, exit_date, dob, state/work_state
  * @param {Object} config  month, year, structureComponents, settings toggles,
  *                         rules (resolved values), lop_days, overtime_hours,
- *                         ot_multiplier, night_shift_days, bonus,
+ *                         ot_multiplier, night_shift_days, night_shift_rate, bonus,
+ *                         adjustments [{id, kind earning|deduction, label, amount, account_code}],
  *                         arrears {amount, employee_pf, employer_pf},
  *                         recoveries [{type, id, amount}],
- *                         ytd {gross, tds}  (FINALISED months of this FY before
- *                         this one), months_remaining (incl. this month)
+ *                         ytd {gross, tds, employee_pf, months}  (opening balance
+ *                         + FINALISED months of this FY before this one),
+ *                         months_remaining (incl. this month),
+ *                         prior_revision {effective_from, basic_salary, breakdown,
+ *                         structureComponents} when a revision takes effect inside
+ *                         the month, esi_period_covered, deduction_80c,
+ *                         rent_paid_annual, hra_metro_city
  */
+/**
+ * What a company's bonus plans pay in a month. Percentages are of the month's earned
+ * Basic or regular gross, so a month with loss of pay pays a smaller bonus.
+ */
+/** Whole months from a joining date to a period end (YYYY-MM-DD), or null when unknown. */
+export function completedMonths(joining, end) {
+  if (!joining || !end) return null;
+  const parts = (d) => String(d instanceof Date ? d.toISOString() : d).slice(0, 10).split('-').map(Number);
+  const j = parts(joining), e = parts(end);
+  if (j.some(x => !Number.isFinite(x)) || e.some(x => !Number.isFinite(x))) return null;
+  let m = (e[0] - j[0]) * 12 + (e[1] - j[1]);
+  if (e[2] < j[2]) m -= 1;
+  return Math.max(0, m);
+}
+
+export function planBonus(plans, month, { basic = 0, gross = 0, serviceMonths = null } = {}) {
+  // min_service_months: a plan can require some service. An unknown joining date
+  // (serviceMonths null) does not block it.
+  const served = (p) => !(num(p.min_service_months) > 0) || serviceMonths == null || serviceMonths >= num(p.min_service_months);
+  return (plans || []).filter(p => p.active && p.months.includes(month) && served(p)).reduce((sum, p) => {
+    if (p.type === 'fixed') return sum + round(num(p.amount));
+    return sum + round((p.type === 'pct_basic' ? basic : gross) * num(p.amount) / 100);
+  }, 0);
+}
+
+/**
+ * What an employee's declarations take off taxable salary under the OLD regime
+ * (the new regime allows none of these against salary). One function for the
+ * monthly TDS and the Form 138 annual figures (§262).
+ *   80C              employee PF + declared 80C, together at most ₹1,50,000
+ *   own NPS          declared '80CCD': the first ₹50,000 is the extra NPS deduction
+ *                    (formerly 80CCD(1B)); the rest counts inside the ₹1,50,000 above,
+ *                    up to 10% of Basic (formerly 80CCD(1))
+ *   80D              health insurance: self / spouse / children at most ₹25,000, and
+ *                    parents a further ₹25,000 — each ₹50,000 when that person is 60
+ *                    or over (⚖ confirm the 2025 Act figures; §264)
+ *   home-loan        declared 'HOME_LOAN' interest on a self-occupied house, at most
+ *   interest         ₹2,00,000 (formerly s.24(b); an employer may allow it for TDS)
+ * Employer NPS (formerly 80CCD(2)) is NOT here: it needs an employer NPS
+ * contribution in the salary, which Pulse does not pay.
+ * @param declarations  { '80c', '80d' (self/family), '80d_parents', '80ccd', 'home_loan' } annual amounts
+ * @param self_senior   the employee is 60 or over at the end of the tax year
+ * @param parents_senior a parent the 80D parents premium is for is 60 or over
+ * @param employee_pf   employee PF of the whole year (paid + projected)
+ * @param basic_year    Basic of the whole year (for the 10% NPS limit)
+ */
+export const OLD_REGIME_LIMITS = { c80: 150000, d80: 25000, d80_senior: 50000, nps_extra: 50000, nps_pct_of_basic: 10, home_loan_interest: 200000 };
+export function oldRegimeDeductions({ declarations = {}, employee_pf = 0, basic_year = 0, self_senior = false, parents_senior = false } = {}) {
+  const L = OLD_REGIME_LIMITS;
+  const d = (k) => Math.max(0, num(declarations[k]));
+  const c80Base = Math.min(num(employee_pf) + d('80c'), L.c80);
+  const nps = d('80ccd');
+  const npsExtra = Math.min(nps, L.nps_extra);
+  const npsIn80C = Math.max(0, Math.min(nps - npsExtra, L.c80 - c80Base, num(basic_year) * L.nps_pct_of_basic / 100));
+  const d80Self = Math.min(d('80d'), self_senior ? L.d80_senior : L.d80);
+  const d80Parents = Math.min(d('80d_parents'), parents_senior ? L.d80_senior : L.d80);
+  const d80 = d80Self + d80Parents;
+  const homeLoan = Math.min(d('home_loan'), L.home_loan_interest);
+  const c80 = c80Base + npsIn80C;
+  return { c80, nps_in_80c: round(npsIn80C), nps_extra: npsExtra, d80, d80_self: d80Self, d80_parents: d80Parents, home_loan_interest: homeLoan, total: round(c80 + npsExtra + d80 + homeLoan) };
+}
+
+/**
+ * HRA exemption for a whole year (old regime): the least of the HRA received,
+ * rent paid above 10% of Basic, and 40% of Basic (50% in a metro city). Monthly
+ * TDS (projected year) and the year-end salary details (actual year) both use it.
+ */
+export function hraExemption({ hra_received = 0, rent_paid = 0, basic = 0, metro = false } = {}) {
+  if (!(num(rent_paid) > 0)) return 0;
+  return Math.max(0, Math.min(num(hra_received), num(rent_paid) - 0.1 * num(basic), (metro ? 0.5 : 0.4) * num(basic)));
+}
+
 export function computePayroll(emp, config = {}) {
   const {
     month = new Date().getMonth() + 1,
     year = new Date().getFullYear(),
     lop_days = 0,
     overtime_hours = 0,
-    ot_multiplier = 1.5,
+    ot_multiplier = null,
     bonus = 0,
+    bonus_plans = null,
     night_shift_days = 0,
-    night_shift_rate = 200,
+    night_shift_rate = null,
+    adjustments = [],
     arrears = null,
     recoveries = [],
     ytd = null,
     months_remaining = null,
     deduction_80d = 0,
+    deduction_80d_parents = 0,
+    parents_senior = false,
     deduction_nps_80ccd = 0,
+    home_loan_interest = 0,
     lta_claimed = 0,
+    deduction_80c = 0,
+    rent_paid_annual = 0,
+    hra_metro_city = false,
+    esi_period_covered = false,
+    carried_lop_days = 0,
+    carried_base_days = 0,
+    perq_loans = [],
+    prior_revision = null,
     state: configState,
     working_days = 26,
     regime = 'new',
@@ -233,7 +376,6 @@ export function computePayroll(emp, config = {}) {
     professional_tax: pt_enabled = true,
     tds_auto_calculate = true,
     pf_restrict_to_ceiling = true,
-    round_net_pay = 1,
     structureComponents,
   } = config;
   const togglesOn = (name) => config[TOGGLE_FOR[name]] !== false;
@@ -257,49 +399,82 @@ export function computePayroll(emp, config = {}) {
     throw new PayrollInputError('NO_STRUCTURE', 'No salary structure assigned and no default structure exists');
   }
   const wd = num(working_days) || 26;
-  const lop = Math.min(Math.max(0, num(lop_days)), wd);
-  const otMult = num(ot_multiplier) || 1.5;
-  if (num(overtime_hours) > 0 && (otMult < 1 || otMult > rules['ot.max_multiplier'])) {
+  // Loss of pay is a share of the working days attendance counted for this
+  // employee (from joining, up to exit); a day valued at 1/26 while attendance
+  // counted 22 working days paid 4/26 of a month to someone absent all month.
+  const lopBase = num(config.lop_base_days) > 0 ? num(config.lop_base_days) : wd;
+  const lop = Math.min(Math.max(0, num(lop_days)), lopBase);
+  // Overtime is paid at the statutory rate (Factories Act s.59 / OSH Code s.27:
+  // twice the ordinary rate), whatever lower multiple an attendance policy or an
+  // old record holds. A record above that rate is bad data and stops the employee
+  // rather than being paid (a seed row held 89).
+  const otMult = rules['ot.max_multiplier'];
+  const recordedOt = num(ot_multiplier);
+  if (num(overtime_hours) > 0 && recordedOt > otMult) {
     throw new PayrollInputError('OT_MULTIPLIER',
-      `Overtime multiplier ${otMult} is outside the allowed range 1–${rules['ot.max_multiplier']} — correct the OT record`);
+      `Overtime multiplier ${recordedOt} is above the statutory ${otMult} — correct the OT record`);
   }
 
   // ── Earnings ─────────────────────────────────────────────────────────────
   const proration = prorationFor(month, year, emp.joining_date, emp.exit_date);
-  const lopFactor = 1 - lop / wd;
+  const lopFactor = 1 - lop / lopBase;
   const payFactor = proration.factor * lopFactor;
 
-  const { lines } = approvedComponents
-    ? { lines: approvedComponents.map(c => ({ name: c.name, calculation_type: 'approved', amount: num(c.amount) })) }
-    : computeEarningsFromComponents(structureComponents, basicMonthly);
+  const linesOf = (components, breakdown, basic) => {
+    const approved = Array.isArray(breakdown?.monthly?.components) && breakdown.monthly.components.length ? breakdown.monthly.components : null;
+    return approved
+      ? approved.map(c => ({ name: c.name, calculation_type: 'approved', amount: num(c.amount) }))
+      : computeEarningsFromComponents(components, basic).lines;
+  };
+  const { lines } = { lines: linesOf(structureComponents, emp.breakdown, basicMonthly) };
+
+  // A revision that takes effect inside the month is paid day by day: the old
+  // rate up to the day before, the new rate from that day. `rate` stays the new
+  // full-month figure, used for coverage tests and for projecting later months.
+  let basicForRates = basicMonthly;
+  for (const l of lines) l.rate = l.amount;
+  if (prior_revision && proration.paid_days > 0) {
+    const eff = String(prior_revision.effective_from).slice(0, 10);
+    const toDate = [pEnd, emp.exit_date ? String(emp.exit_date).slice(0, 10) : null].filter(Boolean).sort()[0];
+    const daysNew = Math.max(0, Math.min(proration.paid_days, Math.round((Date.parse(toDate) - Date.parse(eff)) / 86400000) + 1));
+    const newShare = daysNew / proration.paid_days;
+    const old = new Map(linesOf(prior_revision.structureComponents, prior_revision.breakdown, num(prior_revision.basic_salary)).map(l => [l.name, l]));
+    for (const l of lines) {
+      l.amount = l.rate * newShare + num(old.get(l.name)?.amount) * (1 - newShare);
+      old.delete(l.name);
+    }
+    for (const l of old.values()) lines.push({ name: l.name, calculation_type: l.calculation_type, rate: 0, amount: num(l.amount) * (1 - newShare) });
+    basicForRates = basicMonthly * newShare + num(prior_revision.basic_salary) * (1 - newShare);
+  }
   const earnings = {};
   const earningLines = [];
   let fullMonthRegular = 0;
   let regularGross = 0;
+  // Absence after LAST month's cutoff day (counted by this month's attendance
+  // sync): each line loses that many days of a full month, at last month's
+  // working-day count.
+  const carriedDays = Math.max(0, num(carried_lop_days));
+  const carriedShare = carriedDays > 0 ? carriedDays / (num(carried_base_days) > 0 ? num(carried_base_days) : wd) : 0;
+  let carriedAmount = 0;
   for (const l of lines) {
     if (!approvedComponents && l.name !== 'Basic' && TOGGLE_FOR[l.name] && !togglesOn(l.name)) continue;
-    const amount = round(l.amount * payFactor);
-    fullMonthRegular += l.amount;
+    const amount = Math.max(0, round(l.amount * payFactor - l.rate * carriedShare));
+    carriedAmount += round(l.amount * payFactor) - amount;
+    fullMonthRegular += l.rate;
     regularGross += amount;
     const key = LINE_KEY[l.name];
     if (key) earnings[key] = (earnings[key] || 0) + amount;
-    earningLines.push({ name: l.name, full_month: round(l.amount), amount });
+    earningLines.push({ name: l.name, full_month: round(l.rate), amount });
   }
   const basic = earnings.basic || 0;
-
-  const overtimePay = round((basicMonthly / (wd * 8)) * num(overtime_hours) * otMult);
-  const nightShiftAllowance = round(num(night_shift_days) * (num(night_shift_rate) || 200));
-  const bonusAmt = round(num(bonus));
-  const arrearAmt = round(num(arrears?.amount));
-  const oneTime = overtimePay + nightShiftAllowance + bonusAmt + arrearAmt;
-  const gross = regularGross + oneTime;
 
   // ── Provident Fund ───────────────────────────────────────────────────────
   // Wages = Basic (+DA, none modelled). CoSS s.2(88) first proviso: if the
   // excluded payments exceed (100 − floor)% of all remuneration, the excess is
   // deemed wages. WHAT "all remuneration" contains is rule 'pf.wage_floor_basis':
   //   gross_excl_employer_contributions        regular pay + OT + night shift
-  //                                            (the engine's original basis)
+  //                                            + one-time earnings (the engine's
+  //                                            original basis)
   //   include_employer_pf_and_statutory_bonus  + employer PF/pension contribution
   //                                            + bonus (MoLE FAQ 16-Mar-2026)
   // Arrears are outside the monthly test either way. Under the second basis the
@@ -322,7 +497,30 @@ export function computePayroll(emp, config = {}) {
     return w;
   };
   const includeErPf = floorBasis === 'include_employer_pf_and_statutory_bonus';
-  const remuneration = regularGross + overtimePay + nightShiftAllowance + (includeErPf ? bonusAmt : 0);
+
+  // ── One-time pay ──────────────────────────────────────────────────────────
+  // Overtime (OSH Code s.27, Factories Act s.59): twice the rate of WAGES, and
+  // wages are the Code's (CoSS / Code on Wages s.2: Basic, raised to the floor
+  // % of all regular remuneration), not Basic alone (§261). Before the Code
+  // (pf.wage_floor_pct null) this is Basic, as it always was. Overtime itself is
+  // left out of the remuneration that sets its own rate.
+  const otWageMonthly = codeWage(basicForRates, fullMonthRegular, includeErPf);
+  const overtimePay = round((otWageMonthly / (wd * 8)) * num(overtime_hours) * otMult);
+  // The rate is Payroll Settings → night_shift_rate (₹ per night); 0 pays nothing.
+  const nightRate = night_shift_rate == null || night_shift_rate === '' ? 200 : num(night_shift_rate);
+  const nightShiftAllowance = round(num(night_shift_days) * nightRate);
+  const bonusAmt = round(num(bonus)) + planBonus(bonus_plans, month, { basic, gross: regularGross, serviceMonths: completedMonths(emp.joining_date, pEnd) });
+  const arrearAmt = round(num(arrears?.amount));
+  // HR's one-time amounts for this employee and month (payroll_adjustments).
+  const adjustmentLines = (adjustments || []).filter(a => num(a.amount) > 0)
+    .map(a => ({ id: a.id ?? null, kind: a.kind === 'deduction' ? 'deduction' : 'earning', label: String(a.label || '').trim() || 'Adjustment',
+      amount: round(num(a.amount)), account_code: a.account_code || null }));
+  const otherEarnings = adjustmentLines.filter(a => a.kind === 'earning').reduce((t, a) => t + a.amount, 0);
+  const adjDeductions = adjustmentLines.filter(a => a.kind === 'deduction').reduce((t, a) => t + a.amount, 0);
+  const oneTime = overtimePay + nightShiftAllowance + bonusAmt + arrearAmt + otherEarnings;
+  const gross = regularGross + oneTime;
+
+  const remuneration = regularGross + overtimePay + nightShiftAllowance + otherEarnings + (includeErPf ? bonusAmt : 0);
   const pfWage = round(codeWage(basic, remuneration, includeErPf));
   const pfContribWage = contribWageOf(pfWage);
   const age = ageOn(emp.dob ?? emp.date_of_birth, pEnd);
@@ -333,6 +531,9 @@ export function computePayroll(emp, config = {}) {
   const epfEmployer = employerPFTotal - eps;
   const arrearPfEmployee = pf_enabled ? round(num(arrears?.employee_pf)) : 0;
   const arrearPfEmployer = pf_enabled ? round(num(arrears?.employer_pf)) : 0;
+  // Employer-only PF charges, on top of the 12%: never deducted from the employee.
+  const edliEmployer = pf_enabled ? round(Math.min(pfWage, ceiling) * num(rules['pf.edli_rate']) / 100) : 0;
+  const pfAdminEmployer = pf_enabled ? round(pfContribWage * num(rules['pf.admin_rate']) / 100) : 0;
 
   // ── ESI: coverage is decided on the monthly wage RATE (full month, before
   // LOP/proration); contribution is on wages actually earned. BOTH shares are
@@ -348,7 +549,10 @@ export function computePayroll(emp, config = {}) {
   const esiCoverageWage = esiBasis === 'code_wages'
     ? codeWage(fullMonthBasic, fullMonthRegular, includeErPf)
     : fullMonthRegular;
-  const esiApplicable = esi_enabled && esiCoverageWage <= rules['esi.wage_threshold'];
+  // Coverage holds to the end of the contribution period (April–September,
+  // October–March): someone already contributing in the period keeps contributing,
+  // on actual wages, after a raise takes them over the limit.
+  const esiApplicable = esi_enabled && (esiCoverageWage <= rules['esi.wage_threshold'] || !!esi_period_covered);
   const esiWage = esiBasis === 'code_wages' ? pfWage : gross - bonusAmt;
   const upToRupee = (v) => Math.ceil(Math.round(v * 100) / 100);
   const employeeESI = esiApplicable ? upToRupee(esiWage * rules['esi.employee_rate'] / 100) : 0;
@@ -364,17 +568,32 @@ export function computePayroll(emp, config = {}) {
   //   month + this month's one-time pay (once). Tax still due is spread over
   //   the remaining months; tax caused by one-time pay is deducted now.
   const taxRule = rules[regime === 'old' ? 'tax.old' : 'tax.new'];
-  const remaining = Math.max(1, num(months_remaining) || 12);
+  // Months still to be paid stop at the exit month: someone leaving in September
+  // has no October salary. Later months project at the full-month rate, so one
+  // month of loss of pay or a mid-month joining date is not assumed to repeat.
+  let remaining = Math.max(1, num(months_remaining) || 12);
+  if (emp.exit_date) {
+    const x = String(emp.exit_date instanceof Date ? emp.exit_date.toISOString() : emp.exit_date).slice(0, 7);
+    const toExit = (Number(x.slice(0, 4)) - year) * 12 + Number(x.slice(5, 7)) - month + 1;
+    if (toExit >= 1 && toExit < remaining) remaining = toExit;
+  }
   const ytdGross = num(ytd?.gross);
   const ytdTds = num(ytd?.tds);
-  const projectedRegular = ytdGross + regularGross * remaining;
+  const projectedRegular = ytdGross + regularGross + fullMonthRegular * (remaining - 1);
   const projectedAnnual = projectedRegular + oneTime;
 
   let otherDeductions = 0;
+  let oldRegime = null;
   if (regime === 'old') {
-    const pf80C = Math.min(employeePF * remaining + num(ytd?.employee_pf), 150000);
-    const d80D = Math.min(num(deduction_80d), 25000);
-    const dNPS = Math.min(num(deduction_nps_80ccd), 50000);
+    // 80C with PF, own NPS (extra ₹50,000, and inside 80C up to 10% of Basic), 80D, home-loan interest
+    const viaYearMonths = num(ytd?.months) + remaining;
+    oldRegime = oldRegimeDeductions({
+      declarations: { '80c': deduction_80c, '80d': deduction_80d, '80d_parents': deduction_80d_parents, '80ccd': deduction_nps_80ccd, home_loan: home_loan_interest },
+      self_senior: (ageOn(emp.dob ?? emp.date_of_birth, `${month >= 4 ? year + 1 : year}-03-31`) ?? 0) >= 60,
+      parents_senior: parents_senior === true,
+      employee_pf: employeePF * remaining + num(ytd?.employee_pf),
+      basic_year: basicMonthly * viaYearMonths,
+    });
     // the twelve months the state actually levies (KA: 11 × 200 + February 300), capped at
     // the Constitution art.276(2) maximum of 2,500
     const ptAnnual = pt_enabled
@@ -384,16 +603,25 @@ export function computePayroll(emp, config = {}) {
     // employer pays — the structure's LTA component for the year. It used to be
     // capped at 2 × this month's HRA, which mixed the house-rent component into
     // an unrelated exemption (and allowed an LTA exemption with no LTA paid).
-    // HRA exemption (s.10(13A)) is NOT computed: it needs rent paid and the
-    // metro / non-metro city, which Pulse does not capture —
-    // PAYROLL_DATA_FLOW_AUDIT.md Part 11, item 5.
+    // HRA exemption: the least of HRA received, rent paid above 10% of Basic, and
+    // 40% of Basic (50% in a metro city), over the months of the year employed.
     const ltaAnnual = earningLines.filter(l => /^(lta|leave travel)/i.test(l.name)).reduce((t, l) => t + l.full_month, 0) * 12;
-    otherDeductions = pf80C + d80D + dNPS + ptAnnual + Math.min(num(lta_claimed), ltaAnnual);
+    const yearMonths = num(ytd?.months) + remaining;
+    const hraRate = earningLines.filter(l => l.name === 'HRA').reduce((t, l) => t + l.full_month, 0);
+    const hraExempt = hraExemption({ hra_received: hraRate * yearMonths, rent_paid: rent_paid_annual, basic: basicMonthly * yearMonths, metro: hra_metro_city });
+    otherDeductions = oldRegime.total + ptAnnual + Math.min(num(lta_claimed), ltaAnnual) + hraExempt;
   }
-  const taxableOf = (income) => Math.max(0, income - taxRule.standard_deduction - otherDeductions);
+  // Perquisites are income, never pay: they raise the tax, not the salary.
+  const perq = loanPerquisite(perq_loans, rules['perq.loan']);
+  const perquisiteYear = num(ytd?.perquisites) + perq.monthly * remaining;
+  const taxableOf = (income) => Math.max(0, income + perquisiteYear - taxRule.standard_deduction - otherDeductions);
+  // Age at any time in the tax year = on its last day (31 March).
+  const fyEnd = `${month >= 4 ? year + 1 : year}-03-31`;
+  const taxAge = ageOn(emp.dob ?? emp.date_of_birth, fyEnd);
   const annualTaxable = taxableOf(projectedAnnual);
-  const annualTax = tds_auto_calculate ? computeIncomeTax(annualTaxable, regime, taxRule) : 0;
-  const taxWithoutOneTime = tds_auto_calculate ? computeIncomeTax(taxableOf(projectedRegular), regime, taxRule) : 0;
+  const taxDetail = tds_auto_calculate ? computeIncomeTaxDetail(annualTaxable, regime, taxRule, { age: taxAge }) : { tax: 0, surcharge: 0, cess: 0, total: 0 };
+  const annualTax = taxDetail.total;
+  const taxWithoutOneTime = tds_auto_calculate ? computeIncomeTax(taxableOf(projectedRegular), regime, taxRule, { age: taxAge }) : 0;
   const tdsRegular = Math.max(0, round((taxWithoutOneTime - ytdTds) / remaining));
   const tdsOneTime = Math.max(0, annualTax - taxWithoutOneTime);
   const monthlyTDS = tds_auto_calculate ? tdsRegular + tdsOneTime : 0;
@@ -404,20 +632,22 @@ export function computePayroll(emp, config = {}) {
 
   // ── Net pay: EMPLOYEE deductions only ────────────────────────────────────
   const statutoryDeductions = employeePF + arrearPfEmployee + employeeESI + professionalTax + monthlyTDS + lwf_employee;
-  const totalDeductions = statutoryDeductions + loanDeduction + advanceDeduction;
+  const totalDeductions = statutoryDeductions + loanDeduction + advanceDeduction + adjDeductions;
   const rawNet = gross - totalDeductions;
   if (rawNet < 0) {
     throw new PayrollInputError('NEGATIVE_NET',
-      `Deductions (₹${totalDeductions}) exceed gross pay (₹${gross}) — check loan EMI / advance recovery`);
+      `Deductions (₹${totalDeductions}) exceed gross pay (₹${gross}) — check loan EMI / advance recovery and one-time deductions`);
   }
-  const roundTo = Math.max(1, parseInt(round_net_pay) || 1);
-  const netPay = Math.round(rawNet / roundTo) * roundTo;
+  // Whole rupees, and exactly gross minus deductions. Rounding to ₹10 or ₹100 left
+  // a difference with no account to post to, so the accrual journal refused.
+  const netPay = rawNet;
 
   const employerPF = employerPFTotal + arrearPfEmployer;
   const employerContributions = {
     pf_total: employerPF, eps, epf: epfEmployer + arrearPfEmployer,
     esi: employerESI, lwf: lwf_employer,
-    total: employerPF + employerESI + lwf_employer,
+    edli: edliEmployer, pf_admin: pfAdminEmployer,
+    total: employerPF + employerESI + lwf_employer + edliEmployer + pfAdminEmployer,
   };
 
   // Gratuity PAYABLE if the employee left now (15/26 × monthly Basic × completed
@@ -444,6 +674,10 @@ export function computePayroll(emp, config = {}) {
     payroll_period: `${getMonthName(month)} ${year}`,
     working_days: wd,
     lop_days: lop,
+    lop_carried_days: carriedDays,
+    lop_carried_amount: carriedAmount,
+    perquisite_value: perq.monthly,
+    perquisite_unpriced: perq.unpriced,
     paid_days: proration.paid_days,
     days_in_month: proration.days_in_month,
 
@@ -456,7 +690,10 @@ export function computePayroll(emp, config = {}) {
     earning_lines: earningLines,
     salary_source: approvedComponents ? 'approved_breakdown' : 'structure',
     overtime_pay: overtimePay,
+    overtime_wage_monthly: round(otWageMonthly),
     night_shift_allowance: nightShiftAllowance,
+    other_earnings: otherEarnings,
+    adjustment_lines: adjustmentLines,
     bonus: bonusAmt,
     arrears: arrearAmt,
     gross,
@@ -469,6 +706,7 @@ export function computePayroll(emp, config = {}) {
     tds: monthlyTDS,
     loan_deduction: loanDeduction,
     advance_deduction: advanceDeduction,
+    other_deductions: adjDeductions,
     total_deductions: totalDeductions,
     net_pay: netPay,
 
@@ -479,6 +717,8 @@ export function computePayroll(emp, config = {}) {
     epf_employer: epfEmployer + arrearPfEmployer,
     employer_esi: employerESI,
     lwf_employer,
+    edli_employer: edliEmployer,
+    pf_admin_employer: pfAdminEmployer,
 
     // Statutory working
     pf_wage: pfWage,
@@ -487,9 +727,15 @@ export function computePayroll(emp, config = {}) {
     pf_contribution_wage: pfContribWage,
     eps_wage: pf_enabled && epsEligible ? Math.min(pfWage, ceiling) : 0,
     annual_taxable_income: round(annualTaxable),
+    // §262: the old-regime declarations as allowed (null under the new regime)
+    tax_deductions: oldRegime,
     annual_tax: annualTax,
+    annual_surcharge: taxDetail.surcharge,
+    annual_cess: taxDetail.cess,
+    tax_slabs_used: taxDetail.slabs_used,
     tax_regime: regime,
     esi_applicable: esiApplicable,
+    esi_wage: esiApplicable ? round(esiWage) : 0,
     pf_applicable: !!pf_enabled,
 
     // ctc_monthly = employer cost of THIS month (see above). There is no
@@ -575,5 +821,48 @@ export function generateForm16Summary(emp, payrollRecords, rules = null) {
     tax_payable: num(last?.annual_tax),
     tds_deducted: sum('tds'),
     tax_regime: last?.tax_regime || 'new',
+  };
+}
+
+/**
+ * Statutory bonus for one employee and one accounting year (Payment of Bonus Act
+ * 1965 s.8, s.10, s.12; Code on Wages 2019 s.26–s.27), from the year's FINALISED
+ * months. §261 — the report used to take the average Basic × 12, which gave a full
+ * year's bonus to someone paid for three months, and capped it at ₹7,000 even
+ * where the minimum wage is higher.
+ *   eligibility  average monthly wage ≤ rule.wage_eligibility, and at least 30
+ *                working days in the year (when the months carry worked_days)
+ *   bonus wage   each month: the wage, capped at rule.calc_ceiling OR that month's
+ *                minimum wage, whichever is higher
+ *   minimum      min_pct of the year's bonus wages, or ₹100, whichever is higher
+ *   maximum      max_pct of the year's bonus wages
+ * @param months      [{ month, year, wage, worked_days? }]
+ * @param rule        resolved 'bonus.statutory' { wage_eligibility, calc_ceiling, min_pct, max_pct }
+ * @param minWageOf   (month, year) => the minimum monthly wage in force, or null
+ */
+export function computeStatutoryBonus(months, rule, minWageOf = () => null) {
+  const list = (months || []).filter(x => num(x.wage) > 0);
+  const avg = list.length ? list.reduce((t, x) => t + num(x.wage), 0) / list.length : 0;
+  const daysKnown = list.length > 0 && list.every(x => x.worked_days != null);
+  const workedDays = daysKnown ? list.reduce((t, x) => t + num(x.worked_days), 0) : null;
+  const reasons = [];
+  if (!list.length) reasons.push('No finalised salary in the year');
+  if (avg > num(rule.wage_eligibility)) reasons.push(`Average wage ₹${round(avg).toLocaleString('en-IN')} is above the ₹${num(rule.wage_eligibility).toLocaleString('en-IN')} limit`);
+  if (daysKnown && workedDays < 30) reasons.push(`Worked ${workedDays} day(s) in the year; at least 30 are needed`);
+  const eligible = reasons.length === 0;
+  const perMonth = list.map(x => {
+    const mw = minWageOf(x.month, x.year);
+    const cap = Math.max(num(rule.calc_ceiling), mw != null ? num(mw) : 0);
+    return { month: x.month, year: x.year, wage: num(x.wage), cap, bonus_wage: Math.min(num(x.wage), cap) };
+  });
+  const bonusWages = perMonth.reduce((t, x) => t + x.bonus_wage, 0);
+  return {
+    eligible, reasons,
+    months_worked: list.length, worked_days: workedDays,
+    avg_wage: round(avg),
+    bonus_wages: round(bonusWages),
+    min_bonus: eligible ? Math.max(100, round(bonusWages * num(rule.min_pct) / 100)) : 0,
+    max_bonus: eligible ? round(bonusWages * num(rule.max_pct) / 100) : 0,
+    per_month: perMonth,
   };
 }

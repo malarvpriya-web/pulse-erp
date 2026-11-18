@@ -7,6 +7,8 @@ import { CLOSED_PROJECT_STATUSES } from '../../projects/projectStatus.js';
 import { respondError } from '../../../shared/pgErrors.js';
 import { notifyWorkflowEvent } from '../../../services/WorkflowNotificationService.js';
 import { requirePermission, permissionFor, rolesOf } from '../../../middlewares/auth.middleware.js';
+import { getWeek, saveWeek, onAProject, TimesheetError } from '../autoTimesheet.service.js';
+import { todayIST } from '../../payroll/payroll.service.js';
 
 /*
  * Access control (LEGACY_MIS_TO_PULSE_AUDIT.md, P0 Task 3). Before this, no
@@ -295,6 +297,46 @@ router.get('/timesheets/weekly-summary', requireTenant, weeklySummary);
 // build its "missing" list from all of them.
 router.get('/timesheets/weekly-report', requireTenant, requireReporter, (req, res) => weeklyReport(req, res));
 
+// ── My week: pre-filled from attendance, submitted in one step (2026-11-11) ──
+// See autoTimesheet.service.js. Own week only; reviewers use the grids above.
+const sendTsError = (res, e) => (e instanceof TimesheetError
+  ? res.status(e.status).json({ error: e.message, code: e.code })
+  : res.status(500).json({ error: e.message }));
+
+router.get('/timesheets/my-week', requireTenant, async (req, res) => {
+  try {
+    const a = await accessOf(req);
+    if (!a.me) return res.status(400).json({ error: 'No employee is linked to this login', code: 'NO_EMPLOYEE' });
+    const weekStart = req.query.week_start || todayIST();
+    res.json(stripRates(await getWeek(a.me, cid(req), weekStart), a));
+  } catch (e) { sendTsError(res, e); }
+});
+
+router.put('/timesheets/my-week', requireTenant, async (req, res) => {
+  try {
+    const a = await accessOf(req);
+    if (!a.me) return res.status(400).json({ error: 'No employee is linked to this login', code: 'NO_EMPLOYEE' });
+    const { week_start, rows, submit } = req.body || {};
+    const week = await saveWeek(a.me, cid(req), week_start, rows, { submit: submit === true });
+    if (submit === true) {
+      const { rows: [e] } = await pool.query('SELECT reporting_manager_id FROM employees WHERE id = $1', [a.me]);
+      if (e?.reporting_manager_id) {
+        notifyWorkflowEvent('submitted', { module: 'Timesheet', recordId: a.me, recipientIds: [e.reporting_manager_id] });
+      }
+    }
+    res.json(week);
+  } catch (e) { sendTsError(res, e); }
+});
+
+// Drives the menu: My Timesheet is shown to an employee only while they are on
+// an active project (Sidebar.jsx). Never an error — false on any doubt.
+router.get('/timesheets/eligibility', requireTenant, async (req, res) => {
+  try {
+    const a = await accessOf(req);
+    res.json({ on_project: await onAProject(a.me, cid(req), todayIST()).catch(() => false) });
+  } catch { res.json({ on_project: false }); }
+});
+
 router.get('/timesheets/:id', requireTenant, async (req, res) => {
   try {
     const a = await accessOf(req);
@@ -510,7 +552,26 @@ async function reviewTargets(req, a) {
   return { ids, rows };
 }
 
-router.post('/timesheets/approve', requireTenant, requirePermission('timesheets', 'approve'), async (req, res) => {
+/**
+ * Approve / reject: the timesheets:approve grant, OR being the reporting
+ * manager / project manager of every entry (reviewTargets checks that for
+ * anyone who is not company-wide). A team lead on the plain employee role
+ * holds no grant, and was refused their own team's timesheets (2026-11-11).
+ */
+const requireTimesheetReviewer = async (req, res, next) => {
+  try {
+    const a = await accessOf(req);
+    if (a.reviewer || a.companyWide) return next();
+    if (!a.me) return res.status(403).json({ error: 'Forbidden', code: 'PERMISSION_DENIED' });
+    const { rows } = await pool.query(
+      `SELECT 1 FROM employees WHERE reporting_manager_id = $1
+       UNION ALL SELECT 1 FROM projects WHERE project_manager_id = $1 LIMIT 1`, [a.me]);
+    if (!rows.length) return res.status(403).json({ error: 'Forbidden', code: 'PERMISSION_DENIED' });
+    next();
+  } catch (e) { res.status(500).json({ error: e.message }); }
+};
+
+router.post('/timesheets/approve', requireTenant, requireTimesheetReviewer, async (req, res) => {
   try {
     const a = await accessOf(req);
     const t = await reviewTargets(req, a);
@@ -550,7 +611,7 @@ router.post('/timesheets/approve', requireTenant, requirePermission('timesheets'
   }
 });
 
-router.post('/timesheets/reject', requireTenant, requirePermission('timesheets', 'approve'), async (req, res) => {
+router.post('/timesheets/reject', requireTenant, requireTimesheetReviewer, async (req, res) => {
   try {
     const a = await accessOf(req);
     const { reason } = req.body;

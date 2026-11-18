@@ -25,8 +25,8 @@
 .pcos-margin { font-weight: 700; }
 .pcos-view-btn { background: #f3f4f6; border: none; border-radius: 6px; padding: 5px 8px; cursor: pointer; color: #6b7280; display: flex; }
 .pcos-view-btn:hover { background: #e5e7eb; }
-.pcos-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.4); z-index: 50; display: flex; justify-content: flex-end; }
-.pcos-drawer { width: 420px; background: #fff; height: 100vh; display: flex; flex-direction: column; animation: pcos-slide .25s ease; }
+.pcos-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.4); z-index: 50; display: flex; align-items: center; justify-content: center; padding: 24px; }
+.pcos-drawer { width: 420px; background: #fff; max-width: 100%; max-height: calc(100vh - 48px); border-radius: 12px; overflow: auto; display: flex; flex-direction: column; animation: pulse-dialog-in .18s ease-out; }
 @keyframes pcos-slide { from { transform: translateX(100%); } to { transform: translateX(0); } }
 .pcos-drawer-hd { display: flex; justify-content: space-between; align-items: center; padding: 20px; border-bottom: 1px solid #e5e7eb; }
 .pcos-drawer-hd h3 { font-size: 15px; font-weight: 700; color: #111827; margin: 0; }

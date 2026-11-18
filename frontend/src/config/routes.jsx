@@ -1,10 +1,14 @@
 import { lazy } from 'react';
+import { Navigate } from 'react-router-dom';
 
 export const ROUTES = {
   // ── Core pages ────────────────────────────────────────────────────────────
   Home:                  { component: lazy(() => import('@/pages/Home')),                props: ctx => ({ setPage: ctx.setPage }) },
   AdminDashboard:        { component: lazy(() => import('@/pages/AdminDashboard')),      props: ctx => ({ setPage: ctx.setPage }) },
   EmployeeDashboard:     { component: lazy(() => import('@/pages/EmployeeDashboard')),   props: ctx => ({ setPage: ctx.setPage }) },
+  // HR > Self Service > My Details: View Employee on the caller's OWN record in
+  // self view (read-only) with "Request change" → a Record correction ticket.
+  MyEmployeeRecord:      { component: lazy(() => import('@/pages/MyEmployeeRecord')), props: ctx => ({ setPage: ctx.setPage }) },
   MyAnalytics:           { component: lazy(() => import('@/pages/MyAnalytics')),         props: ctx => ({ setPage: ctx.setPage }) },
   ExecutiveDashboard:    { component: lazy(() => import('@/pages/ExecutiveDashboard')),  props: ctx => ({ setPage: ctx.setPage }) },
   HRDashboard:           { component: lazy(() => import('@/pages/HRDashboard')),         props: ctx => ({ setPage: ctx.setPage }) },
@@ -24,7 +28,8 @@ export const ROUTES = {
   AttendanceSetupWizard:    { component: lazy(() => import('@/features/admin/pages/AttendanceSetupWizard')), props: ctx => ({ setPage: ctx.setPage }) },
   InventorySetupWizard:     { component: lazy(() => import('@/features/admin/pages/InventorySetupWizard')), props: ctx => ({ setPage: ctx.setPage }) },
   EngineeringSetupWizard:   { component: lazy(() => import('@/features/admin/pages/EngineeringSetupWizard')), props: ctx => ({ setPage: ctx.setPage }) },
-  PayrollSetupWizard:       { component: lazy(() => import('@/features/admin/pages/PayrollSetupWizard')),    props: ctx => ({ setPage: ctx.setPage }) },
+  // Payroll is configured in one place. Old links land there.
+  PayrollSetupWizard:       { component: () => <Navigate to="/PayrollCenter?tab=settings" replace /> },
   APIDocumentation:      { component: lazy(() => import('@/features/admin/pages/APIDocumentation')) },
   ApproverSetup:         { component: lazy(() => import('@/features/admin/pages/ApproverSetup')), props: ctx => ({ setPage: ctx.setPage }) },
   AssetMaintenance:      { component: lazy(() => import('@/features/admin/pages/AssetMaintenance')) },
@@ -82,7 +87,7 @@ export const ROUTES = {
   SalesPerformance:         { component: lazy(() => import('@/features/sales/pages/SalesPerformance')), props: ctx => ({ setPage: ctx.setPage }) },
   FinanceAccounting:        { module: 'finance', component: lazy(() => import('@/features/finance/pages/FinanceAccounting')), props: ctx => ({ setPage: ctx.setPage }) },
   EmployeeRecords:          { component: lazy(() => import('@/features/hr/pages/EmployeeRecords')), props: ctx => ({ setPage: ctx.setPage }) },
-  ExitCenter:               { component: lazy(() => import('@/features/hr/pages/ExitCenter')), props: ctx => ({ setPage: ctx.setPage }) },
+  ExitCenter:               { module: 'exit', component: lazy(() => import('@/features/hr/pages/ExitCenter')), props: ctx => ({ setPage: ctx.setPage }) },
   InterviewCenter:          { module: 'recruitment', component: lazy(() => import('@/features/recruitment/pages/InterviewCenter')), props: ctx => ({ setPage: ctx.setPage }) },
   HiringAdmin:              { module: 'recruitment', component: lazy(() => import('@/features/recruitment/pages/HiringAdmin')), props: ctx => ({ setPage: ctx.setPage }) },
   OnboardingCenter:         { module: 'recruitment', component: lazy(() => import('@/features/recruitment/pages/OnboardingCenter')), props: ctx => ({ setPage: ctx.setPage }) },
@@ -175,6 +180,10 @@ export const ROUTES = {
   // department heads hold no hr permission and must still reach it. The entry
   // is `probationReviewerOnly` (see NAV_ITEMS); the API decides what is shown.
   MyProbationReviews:    { component: lazy(() => import('@/features/hr/pages/MyProbationReviews')) },
+  // Interviewer self-service (2026-11-17): no `module` on purpose — interviewers
+  // usually hold no Recruitment access; /my-interviews returns only the caller's
+  // own interviews. In PERSONAL_PAGES; reached from the bell and Home's approvals card.
+  MyInterviews:          { component: lazy(() => import('@/features/recruitment/pages/MyInterviews')) },
   // Open to every role (PERSONAL_PAGES, no module): the bell's destination for
   // an announcement. The API returns only what is addressed to the caller.
   MyAnnouncements:       { component: lazy(() => import('@/features/hr/pages/MyAnnouncements')) },
@@ -190,19 +199,38 @@ export const ROUTES = {
   PayrollForm16:         { module: 'payroll', component: lazy(() => import('@/features/hr/pages/PayrollForm16')),              props: ctx => ({ setPage: ctx.setPage }) },
   PayrollForm24Q:        { module: 'payroll_tds_extract', moduleActions: ['export'], component: lazy(() => import('@/features/hr/pages/PayrollForm24Q')),             props: ctx => ({ setPage: ctx.setPage }) },
   Announcements:         { component: lazy(() => import('@/features/hr/pages/Announcements')) },
-  BiometricAccess:       { component: lazy(() => import('@/features/hr/pages/BiometricAccess')) },
+  // Gate Pass & Visitors (§272): the register is gated on the gate_access
+  // module; My Gate Passes is every employee's own (the server scopes it). The
+  // old BiometricAccess key redirects, so bookmarks and Page Access grants
+  // still resolve; its attendance import is Attendance → Punch Import now.
+  GatePassVisitors:      { module: 'gate_access', component: lazy(() => import('@/features/hr/pages/GatePassVisitors')) },
+  MyGatePasses:          { component: lazy(() => import('@/features/hr/pages/MyGatePasses')), props: ctx => ({ setPage: ctx.setPage }) },
+  BiometricAccess:       { module: 'gate_access', component: () => <Navigate to="/GatePassVisitors" replace /> },
+  // attendance:edit — the import and sync write punches (biometric.routes.js).
+  PunchImport:           { module: 'attendance', moduleActions: ['edit'], component: lazy(() => import('@/features/attendance/pages/PunchImport')) },
   Downloads:             { component: lazy(() => import('@/features/hr/pages/Downloads')) },
   EmployeeDirectory:     { component: lazy(() => import('@/features/hr/pages/EmployeeDirectory')) },
   // The HR register across employees (§207). Everyone's OWN documents live in
   // Self Service → Document Vault, so the register is for employee_documents
   // holders only — the gate also hides the Employee Records tab (TabHub).
-  EmployeeDocuments:     { component: lazy(() => import('@/features/hr/pages/EmployeeDocuments')), module: 'employee_documents' },
-  EmployeeSelfService:   { component: lazy(() => import('@/features/hr/pages/EmployeeSelfService')), props: ctx => ({ setPage: ctx.setPage }) },
+  // Employee Documents register removed 11 Nov 26 — documents live on Add Employee.
+  EmployeeDocuments:     { component: () => <Navigate to="/EmployeeRecords" replace />, module: 'employee_documents' },
+  // Employee Self-Service was removed (owner decision 2026-11-11): IT
+  // declarations are entered by Finance (Payroll Center → Tax & Statutory → IT
+  // declarations), documents and profile changes by HR, expense claims stay in
+  // Travel Desk → Expense Claims. Old links land on My Dashboard.
+  EmployeeSelfService:   { component: () => <Navigate to="/EmployeeDashboard" replace /> },
   // Reviewer side of Self-Service IT declarations (§203); the matrix grant decides.
   ITDeclarationReview:   { component: lazy(() => import('@/features/hr/pages/ITDeclarationReview')), module: 'it_declarations' },
   // Checker side of the bank-detail maker-checker (§204); the matrix grant decides.
-  BankChangeApprovals:   { component: lazy(() => import('@/features/hr/pages/BankChangeApprovals')), module: 'employee_bank', moduleActions: ['view', 'add'] },
-  ExitManagement:        { component: lazy(() => import('@/features/hr/pages/ExitManagement')), props: ctx => ({ setPage: ctx.setPage }) },
+  // §266: no separate page — a waiting change is decided on Edit Employee or in the Approval Center.
+  BankChangeApprovals:   { component: () => <Navigate to="/ApprovalCenter" replace /> },
+  // F&F review / approve / pay (HR audit 2026-11-16). Opened from the Approval
+  // Center and Exit Management; not a menu row. fnf:view — Finance holds it.
+  // Finance's view of intern stipends (HR audit 2026-11-16); HR uses Internships → Stipends.
+  InternStipends:        { module: 'payroll_payment', moduleActions: ['approve'], component: lazy(() => import('@/features/internships/pages/InternStipends')) },
+  SettlementReview:      { module: 'fnf', component: lazy(() => import('@/features/hr/pages/SettlementReview')), props: ctx => ({ setPage: ctx.setPage }) },
+  ExitManagement:        { module: 'exit', component: lazy(() => import('@/features/hr/pages/ExitManagement')), props: ctx => ({ setPage: ctx.setPage }) },
   HolidayCalendar:       { component: lazy(() => import('@/features/hr/pages/HolidayCalendar')) },
   LearningDevelopment:   { component: lazy(() => import('@/features/hr/pages/LearningDevelopment')) },
   LearningDashboard:     { component: lazy(() => import('@/features/hr/pages/LearningDashboard')) },
@@ -213,19 +241,25 @@ export const ROUTES = {
   TrainingReports:       { component: lazy(() => import('@/features/hr/pages/TrainingReports')) },
   CompetencyFramework:   { component: lazy(() => import('@/features/hr/pages/CompetencyFramework')) },
   LNDSettings:           { component: lazy(() => import('@/features/hr/pages/LNDSettings')), props: ctx => ({ setPage: ctx.setPage }) },
-  Offboarding:           { component: lazy(() => import('@/features/hr/pages/Offboarding')), props: ctx => ({ setPage: ctx.setPage }) },
+  // `exit` like its hub (exit review 2026-11-17): the URL had no module gate, and the API now checks exit:view/edit too.
+  Offboarding:           { module: 'exit', component: lazy(() => import('@/features/hr/pages/Offboarding')), props: ctx => ({ setPage: ctx.setPage }) },
   Payroll:               { module: 'payroll', component: lazy(() => import('@/features/hr/pages/Payroll')), props: ctx => ({ setPage: ctx.setPage }) },
   PayslipGenerator:      { module: 'payroll', component: lazy(() => import('@/features/hr/pages/PayslipGenerator')) },
   PayslipViewer:         { component: lazy(() => import('@/features/hr/pages/PayslipViewer')) },
   Policies:              { component: lazy(() => import('@/features/hr/pages/Policies')) },
-  Probation:             { component: lazy(() => import('@/features/hr/pages/Probation')) },
+  Probation:             { component: lazy(() => import('@/features/hr/pages/Probation')), props: ctx => ({ setPage: ctx.setPage }) },
+  DepartmentHeads:       { component: lazy(() => import('@/features/hr/pages/DepartmentHeads')) },
   SalaryStructure:       { module: 'payroll', component: lazy(() => import('@/features/hr/pages/SalaryStructure')) },
-  SuccessionPlanning:        { module: 'succession', component: lazy(() => import('@/features/hr/pages/SuccessionPlanning')) },
-  LeadershipPipeline:        { module: 'succession', component: lazy(() => import('@/features/hr/pages/LeadershipPipeline')) },
-  DevelopmentPlans:          { module: 'succession', component: lazy(() => import('@/features/hr/pages/DevelopmentPlans')) },
-  EmployeeSuccessionPools:   { module: 'succession', component: lazy(() => import('@/features/hr/pages/EmployeeSuccessionPools')) },
-  SuccessionReports:         { module: 'succession', component: lazy(() => import('@/features/hr/pages/SuccessionReports')) },
-  SuccessionSettings:        { module: 'succession', component: lazy(() => import('@/features/hr/pages/SuccessionSettings')), props: ctx => ({ setPage: ctx.setPage }) },
+  // The six Succession sections live only inside the Succession Center
+  // (2026-11-12). Each used to be a page of its own as well, with its own
+  // hero, so a bookmark opened a second copy of the same screen. Old links
+  // land on the matching hub tab; succession:view still guards them.
+  SuccessionPlanning:        { module: 'succession', component: () => <Navigate to="/SuccessionCenter?tab=planning" replace /> },
+  LeadershipPipeline:        { module: 'succession', component: () => <Navigate to="/SuccessionCenter?tab=pipeline" replace /> },
+  DevelopmentPlans:          { module: 'succession', component: () => <Navigate to="/SuccessionCenter?tab=plans" replace /> },
+  EmployeeSuccessionPools:   { module: 'succession', component: () => <Navigate to="/SuccessionCenter?tab=pools" replace /> },
+  SuccessionReports:         { module: 'succession', component: () => <Navigate to="/SuccessionCenter?tab=reports" replace /> },
+  SuccessionSettings:        { module: 'succession', component: () => <Navigate to="/SuccessionCenter?tab=settings" replace /> },
   SkillMatrix:               { component: lazy(() => import('@/features/hr/pages/SkillMatrix')), props: ctx => ({ setPage: ctx.setPage }) },
   // hr:view — every number on the page comes from GET /analytics/workforce, which
   // requires it. Drill-through additionally checks employees:view in the page.
@@ -559,18 +593,16 @@ export const ROUTES = {
   // pattern). The pages they wrap keep their own route entries so existing
   // setPage('JobOpenings')-style calls and deep links stay valid.
   Jobs:                  { module: 'recruitment', component: lazy(() => import('@/features/recruitment/pages/Jobs')),                  props: ctx => ({ setPage: ctx.setPage }) },
-  Sourcing:              { module: 'recruitment', component: lazy(() => import('@/features/recruitment/pages/Sourcing')),              props: ctx => ({ setPage: ctx.setPage }) },
+  // Sourcing hub removed 11-17 (Talent Pools merged into Talent Bank): the old key opens Agencies.
+  Sourcing:              { module: 'recruitment', component: lazy(() => import('@/features/recruitment/pages/RecruitmentAgencies')) },
   JobRequisitionPipeline:{ module: 'recruitment', component: lazy(() => import('@/features/recruitment/pages/JobRequisitionPipeline')) },
-  JobOpenings:           { module: 'recruitment', component: lazy(() => import('@/features/recruitment/pages/JobOpenings')),           props: ctx => ({ setPage: ctx.setPage }) },
+  // Job Openings tab removed 11-17 (jobs are posted from their requisition): the old page key opens Jobs.
+  JobOpenings:           { module: 'recruitment', component: lazy(() => import('@/features/recruitment/pages/Jobs')),                  props: ctx => ({ setPage: ctx.setPage }) },
   Candidates:            { module: 'recruitment', component: lazy(() => import('@/features/recruitment/pages/Candidates')),         props: ctx => ({ setPage: ctx.setPage }) },
   CandidatePipeline:     { module: 'recruitment', component: lazy(() => import('@/features/recruitment/pages/CandidatePipeline')),     props: ctx => ({ setPage: ctx.setPage }) },
-  AllCandidates:         { module: 'recruitment', component: lazy(() => import('@/features/recruitment/pages/AllCandidates')),      props: ctx => ({ setPage: ctx.setPage }) },
   // ── 2026-09-27 Recruitment redesign ──────────────────────────────────────
-  // CandidateWorkbench replaces AllCandidates as the Candidates hub's list tab.
-  // AllCandidates stays registered rather than being deleted: it is still a
-  // working page, several audit/Playwright fixtures address it by name, and
-  // keeping it means the rollout is reversible by changing one line in
-  // Candidates.jsx instead of restoring a file.
+  // CandidateWorkbench is the Candidates hub's list tab. The page it replaced,
+  // AllCandidates, was deleted 2026-11-17.
   CandidateWorkbench:    { module: 'recruitment', component: lazy(() => import('@/features/recruitment/pages/CandidateWorkbench')),  props: ctx => ({ setPage: ctx.setPage }) },
   CandidateScreening:    { module: 'recruitment', component: lazy(() => import('@/features/recruitment/pages/CandidateScreening')),  props: ctx => ({ setPage: ctx.setPage }) },
   TalentBank:            { module: 'recruitment', component: lazy(() => import('@/features/recruitment/pages/TalentBank')),          props: ctx => ({ setPage: ctx.setPage }) },
@@ -582,17 +614,16 @@ export const ROUTES = {
   InterviewQuestionBank: { module: 'recruitment', component: lazy(() => import('@/features/recruitment/pages/InterviewQuestionBank')) },
   OfferManagement:       { module: 'recruitment', component: lazy(() => import('@/features/recruitment/pages/OfferManagement')) },
   RecruitmentReports:    { module: 'recruitment', component: lazy(() => import('@/features/recruitment/pages/RecruitmentReports')) },
-  ResumeDatabase:        { module: 'recruitment', component: lazy(() => import('@/features/recruitment/pages/ResumeDatabase')) },
-  TalentPools:           { module: 'recruitment', component: lazy(() => import('@/features/recruitment/pages/TalentPools')),      props: ctx => ({ setPage: ctx.setPage }) },
-  TalentPoolDetail:      { module: 'recruitment', component: lazy(() => import('@/features/recruitment/pages/TalentPoolDetail')), props: ctx => ({ setPage: ctx.setPage, urlParams: ctx.urlParams }) },
+  // Talent Pools + Talent Pool Detail removed 11-17: same table as the Talent Bank's
+  // categories, managed there now. Old keys/links open the Talent Bank.
+  TalentPools:           { module: 'recruitment', component: lazy(() => import('@/features/recruitment/pages/TalentBank')),      props: ctx => ({ setPage: ctx.setPage }) },
+  TalentPoolDetail:      { module: 'recruitment', component: lazy(() => import('@/features/recruitment/pages/TalentBank')),      props: ctx => ({ setPage: ctx.setPage }) },
   RecruitmentAgencies:   { module: 'recruitment', component: lazy(() => import('@/features/recruitment/pages/RecruitmentAgencies')) },
-  RecruiterDashboard:    { module: 'recruitment', component: lazy(() => import('@/features/recruitment/pages/RecruiterDashboard')), props: ctx => ({ setPage: ctx.setPage }) },
   // Registered manually rather than left to autoRouter. AUTO_ROUTES now derives
   // `module` from its folder config, so these would be gated either way — but
   // explicit beats inherited for the two pages that hold candidate feedback and
   // onboarding data, and it keeps them visible in this list beside their 25
   // siblings instead of only existing as a glob match.
-  InterviewFeedback:     { module: 'recruitment', component: lazy(() => import('@/features/recruitment/pages/InterviewFeedback')),  props: ctx => ({ setPage: ctx.setPage }) },
   OnboardingChecklist:   { module: 'recruitment', component: lazy(() => import('@/features/recruitment/pages/OnboardingChecklist')), props: ctx => ({ setPage: ctx.setPage }) },
 
   // ── Service Desk ─────────────────────────────────────────────────────────
@@ -1199,11 +1230,9 @@ export const NAV_ITEMS = [
     // Own `module`: the HR section is also held by hr, hr_exec, manager and
     // employee, who hold no it_declarations grant — Sidebar drops the row for
     // them and Layout refuses the URL (§203).
-    { name: 'IT Declaration Review',     page: 'ITDeclarationReview', module: 'it_declarations' },
     // employee_bank:view holders (hr, hr_manager, admin by default) — §204 —
     // and propose-only :add holders, who see only their own requests (§206;
     // no role holds :add as seeded).
-    { name: 'Bank Detail Approvals',     page: 'BankChangeApprovals', module: 'employee_bank', moduleActions: ['view', 'add'] },
     { name: 'Announcements',             page: 'Announcements' },
     // Workforce Analytics & Reports needs hr:view (its data endpoint does), so it
     // belongs to the section the hr:view roles hold. It used to sit under
@@ -1215,19 +1244,24 @@ export const NAV_ITEMS = [
     { name: 'Workforce Analytics & Reports', page: 'EmployeeReports', module: 'hr' },
     { name: 'Self Service',              separator: true },
     { name: 'My Dashboard',              page: 'EmployeeDashboard' },
-    // employeeLinkOnly: the portal is the signed-in person's OWN records, so
-    // Sidebar.jsx drops the row for a login with no linked employee (a system
-    // administrator) instead of offering an empty page. The URL still opens and
-    // says why it is empty.
-    { name: 'Self Service',              page: 'EmployeeSelfService', employeeLinkOnly: true },
-    { name: 'Employee Records',          page: 'EmployeeRecords' },   // Documents·Assets·Policies·HR Documents
+    // employeeLinkOnly: a login with no employee (a system administrator) has no
+    // record to show, so Sidebar.jsx drops the row; the URL says why it is empty.
+    { name: 'My Details',                page: 'MyEmployeeRecord', employeeLinkOnly: true },
+    // Request a gate pass / material pass, pre-register visitors (§272).
+    { name: 'My Gate Passes',            page: 'MyGatePasses', employeeLinkOnly: true },
+    { name: 'Employee Records',          page: 'EmployeeRecords' },   // Assets·Policies·HR Documents
+    // Who heads each department: probation reviewer, first gate-pass approver
+    // and manager access to the department's records. Was a panel inside
+    // Probation Management (2026-11-11). hr:view reads, hr:edit changes.
+    { name: 'Department Heads',          page: 'DepartmentHeads' },
     { name: 'Lifecycle',                 separator: true },
     // Probation and exit are separate workflows (an employee being confirmed vs
     // one leaving), so each has its own row. Probation used to be a tab of the
     // 'Exit & Probation' hub; the hub key ExitCenter is kept — it is the Exit
     // Management page now — so bookmarks and Page Access grants still resolve.
     { name: 'Probation Management',      page: 'Probation' },
-    { name: 'Exit Management',           page: 'ExitCenter' },   // Exits & settlement·Offboarding checklist
+    // exit:view (B4, migration 20261116000005): Roles Setup decides who sees it.
+    { name: 'Exit Management',           page: 'ExitCenter', module: 'exit' },   // Exits & settlement·Offboarding checklist
     // Own `module` (§209): talent ratings are confidential, so the row shows
     // only to succession:view holders (hr, hr_manager, admin, super_admin by
     // default; any other role by explicit grant in Roles Setup). Everyone else
@@ -1241,7 +1275,10 @@ export const NAV_ITEMS = [
     // (hr/biometric.routes.js) and this section all agree — putting the row under
     // Attendance instead would leave getSectionForPage() resolving 'Attendance'
     // while the file's folder module stays 'hr'.
-    { name: 'Gate Pass & Visitors',      page: 'BiometricAccess' },   // Attendance import·Gate passes·Visitors
+    // §272: its own `module` — gate_access (view = the registers). The page
+    // was BiometricAccess (now a redirect route, gated on gate_access too);
+    // its attendance-import tab moved to Attendance → Punch Import.
+    { name: 'Gate Pass & Visitors',      page: 'GatePassVisitors', module: 'gate_access' },   // Gate passes·Material passes·Visitors
 
     // ── Consolidated into the hubs above (2026-09-16 IA pass) ──────────
     // These rows are NOT drawn in the sidebar — Sidebar.jsx skips any entry
@@ -1250,7 +1287,6 @@ export const NAV_ITEMS = [
     // which makes canRoleAccessPageBySection wave it through for every
     // role. Keeping them preserves the section gate exactly, and TabHub
     // re-checks each tab with canRoleOpenPage() before drawing it.
-    { name: 'EmployeeDocuments',         page: 'EmployeeDocuments', inHub: 'EmployeeRecords' },
     { name: 'EmployeeAssets',            page: 'EmployeeAssets', inHub: 'EmployeeRecords' },
     { name: 'Policies',                  page: 'Policies', inHub: 'EmployeeRecords' },
     { name: 'Downloads',                 page: 'Downloads', inHub: 'EmployeeRecords' },
@@ -1273,13 +1309,12 @@ export const NAV_ITEMS = [
     // charts", with Work Queue first in its own priority list. The analytics
     // Dashboard is still here, one row down.
     { name: 'My Work',                   page: 'RecruitmentWorkQueue' },
-    { name: 'Pipeline Snapshot',         page: 'RecruiterDashboard' },
     { name: 'Dashboard',                 page: 'RecruitmentDashboard' },
     { name: 'Pipeline',                  separator: true },
     { name: 'Jobs',                      page: 'Jobs' },
     { name: 'Candidates',                page: 'Candidates' },
     { name: 'Talent Bank',               page: 'TalentBank' },
-    { name: 'Sourcing',                  page: 'Sourcing' },
+    { name: 'Agencies',                  page: 'RecruitmentAgencies' },
     { name: 'Interviews',                page: 'InterviewCenter' },   // Schedule·Feedback·Question Bank
     { name: 'Offer & Onboarding',        page: 'OnboardingCenter' },   // Offers·Checklist·Employee creation
     { name: 'Reports & Setup',           separator: true },
@@ -1306,25 +1341,21 @@ export const NAV_ITEMS = [
     // a real tab of the hub it names.
     //
     // NOT listed here, deliberately:
-    //  · CandidateDetail, CandidateScreening, TalentPoolDetail — drill-downs
+    //  · CandidateDetail, CandidateScreening — drill-downs
     //    reached by clicking a record, not tabs. Tab membership is the only
     //    mechanism this codebase has for resolving a page's section, so these
-    //    three keep the pre-existing `section === null` behaviour; the
+    //    two keep the pre-existing `section === null` behaviour; the
     //    `recruitment` module gate still covers them.
-    //  · AllCandidates — superseded by CandidateWorkbench and no longer a tab of
-    //    anything. Its ROUTES entry is kept so a direct URL and the existing audit
-    //    fixtures still resolve, and so the rollout reverts by changing one import
-    //    in Candidates.jsx.
+    //  · AllCandidates, ResumeDatabase, RecruiterDashboard (Pipeline Snapshot),
+    //    InterviewFeedback — deleted 2026-11-17 (recruitment page audit: duplicate
+    //    candidate lists, a third overview screen, and a feedback tab that could
+    //    never load). Candidates + Candidate Detail, My Work + Dashboard, and the
+    //    interview timeline on Candidate Detail replace them.
     { name: 'CandidateWorkbench',        page: 'CandidateWorkbench', inHub: 'Candidates' },
     { name: 'CandidatePipeline',         page: 'CandidatePipeline', inHub: 'Candidates' },
-    { name: 'ResumeDatabase',            page: 'ResumeDatabase', inHub: 'Candidates' },
-    { name: 'TalentPools',               page: 'TalentPools', inHub: 'Sourcing' },
-    { name: 'RecruitmentAgencies',       page: 'RecruitmentAgencies', inHub: 'Sourcing' },
-    { name: 'JobOpenings',               page: 'JobOpenings', inHub: 'Jobs' },
     { name: 'JobRequisitionPipeline',    page: 'JobRequisitionPipeline', inHub: 'Jobs' },
 
     { name: 'InterviewScheduler',        page: 'InterviewScheduler', inHub: 'InterviewCenter' },
-    { name: 'InterviewFeedback',         page: 'InterviewFeedback', inHub: 'InterviewCenter' },
     { name: 'InterviewQuestionBank',     page: 'InterviewQuestionBank', inHub: 'InterviewCenter' },
     { name: 'OfferManagement',           page: 'OfferManagement', inHub: 'OnboardingCenter' },
     { name: 'OnboardingChecklist',       page: 'OnboardingChecklist', inHub: 'OnboardingCenter' },
@@ -1333,7 +1364,7 @@ export const NAV_ITEMS = [
     { name: 'RecruitmentReports',        page: 'RecruitmentReports', inHub: 'HiringAdmin' },
     { name: 'EmailTemplates',            page: 'EmailTemplates', inHub: 'HiringAdmin' },
     { name: 'RecruitmentSettings',       page: 'RecruitmentSettings', inHub: 'HiringAdmin' },
-    { name: 'CareersPageAdmin',          page: 'CareersPageAdmin', inHub: 'HiringAdmin' },
+    { name: 'CareersPageAdmin',          page: 'CareersPageAdmin', inHub: 'Jobs' },   // Careers Website tab (11-17)
   ]},
 
   { name: 'Learning Center', icon: <FaGraduationCap />, submenu: [
@@ -1358,6 +1389,9 @@ export const NAV_ITEMS = [
     { name: 'Live Workforce',            page: 'LiveWorkforceDashboard' },
     { name: 'Team Attendance',           page: 'TeamAttendance' },
     { name: 'Shift Calendar',            page: 'ShiftCalendar' },
+    // Device sync, CSV import and the punch log (§272; was a tab of HR → Gate
+    // Pass & Visitors). moduleActions: only attendance:edit holders see the row.
+    { name: 'Punch Import',              page: 'PunchImport', module: 'attendance', moduleActions: ['edit'] },
     { name: 'Approvals',                 separator: true },
     { name: 'Approvals',                 page: 'AttendanceApprovals' },   // Regularization·Overtime·Delegation
     { name: 'Reporting',                 separator: true },

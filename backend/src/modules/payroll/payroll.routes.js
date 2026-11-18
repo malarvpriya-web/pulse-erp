@@ -1,4 +1,5 @@
 import express from 'express';
+import PDFDocument from 'pdfkit';
 import { verifyToken, requirePermission, can } from '../../middlewares/auth.middleware.js';
 import pool from '../../config/db.js';
 import { planLoan, LoanInputError, installmentFor, remainingInstallments } from './loanSchedule.js';
@@ -30,12 +31,31 @@ import {
   getStatutoryRules,
   addStatutoryRule,
   getReleaseReadiness,
+  listRuleChanges,
+  decideRuleChange,
 } from './payroll.controller.js';
 import { companyOf } from '../../shared/scope.js';
 import { buildPeriodContext } from './payroll.service.js';
-import { computePayroll, PayrollInputError } from './payrollEngine.js';
+import { computePayroll, PayrollInputError, computeStatutoryBonus, periodEndDate } from './payrollEngine.js';
 import { captureBefore } from '../../middlewares/captureBefore.js';
 import { csvCell } from '../../shared/csv.js';
+import * as ops from './payroll.service.js';
+import * as compliance from './payrollCompliance.service.js';
+import * as adjustments from './payrollAdjustments.service.js';
+import * as salesIncentive from '../sales/services/salesIncentive.service.js';
+import { logAudit } from '../../services/AuditService.js';
+import { loadRules as loadRulesForExport, loadRuleRows as loadRuleRowsForBonus, resolveRules as resolveRulesForBonus } from './statutoryRules.js';
+
+const uidOf = (req) => req.user?.userId ?? req.user?.id ?? null;
+// One error shape for the routes below (PayrollHttpError carries status + details).
+const act = (fn) => async (req, res) => {
+  try { await fn(req, res); }
+  catch (e) {
+    if (e instanceof ops.PayrollHttpError) return res.status(e.status).json({ success: false, message: e.message, ...(e.details || {}) });
+    console.error('[payroll]', e);
+    res.status(500).json({ success: false, message: e.message });
+  }
+};
 
 const router = express.Router();
 
@@ -189,6 +209,10 @@ router.get('/release-readiness',  verifyToken, perm('view'), getReleaseReadiness
 router.get('/statutory-rules',    verifyToken, perm('view'), getStatutoryRules);
 // Recording a rule version (incl. the CTC policy) clears release blockers: D3.
 router.post('/statutory-rules',   verifyToken, requirePermission('payroll_statutory_config', 'edit'), addStatutoryRule);
+// A rule change proposed by one person is confirmed or rejected by another.
+router.get('/statutory-rules/changes', verifyToken, perm('view'), listRuleChanges);
+router.post('/statutory-rules/changes/:id/confirm', verifyToken, requirePermission('payroll_statutory_config', 'edit'), (req, res) => { req.params.decision = 'confirm'; return decideRuleChange(req, res); });
+router.post('/statutory-rules/changes/:id/reject', verifyToken, requirePermission('payroll_statutory_config', 'edit'), (req, res) => { req.params.decision = 'reject'; return decideRuleChange(req, res); });
 // Form 16 lifecycle for a FY (must precede /form16/:employeeId).
 router.get('/form16-status',      verifyToken, perm('view'), getForm16Status);
 // Employee self-service: no permission — controller filters by JWT userId
@@ -200,7 +224,18 @@ router.get('/payslips',           verifyToken, ownPayslipOrForbidden, getPayslip
 router.get('/payslips/:id',       verifyToken, perm('view'), getEmployeePayslip);
 router.get('/form16/:employeeId',   verifyToken, perm('view'), getForm16);
 router.get('/form16/:employeeId/pdf', verifyToken, perm('view'), streamForm16Pdf);
-router.get('/payslip-pdf/:id',      verifyToken, perm('view'), streamPayslipPdf);
+// Form No. 123 (formerly 12BA): the statement of perquisites, with the annual certificate.
+router.get('/form123/:employeeId', verifyToken, perm('view'), act(async (req, res) => {
+  res.json({ success: true, data: await compliance.form123({ company_id: companyOf(req), employee_id: req.params.employeeId, financial_year: req.query.financial_year }) });
+}));
+router.get('/form123/:employeeId/pdf', verifyToken, perm('view'), act(async (req, res) => {
+  const f = await compliance.form123({ company_id: companyOf(req), employee_id: req.params.employeeId, financial_year: req.query.financial_year });
+  const status = await getForm16StatusData(companyOf(req), f.financial_year, req.params.employeeId);
+  if (!status?.can_generate) return res.status(409).json({ success: false, message: `${f.form} is issued with the annual certificate, which is not ready`, blockers: status?.blockers || [] });
+  streamForm123Pdf(res, f);
+}));
+// Everyone downloads the same server PDF; self-service callers only their own released payslip.
+router.get('/payslip-pdf/:id',      verifyToken, ownPayslipOrForbidden, streamPayslipPdf);
 router.get('/history/:employeeId',  verifyToken, perm('view'), getPayrollHistory);
 
 // ── Approval workflow ─────────────────────────────────────────────────────────
@@ -223,6 +258,140 @@ router.post('/email-payslip',           verifyToken, ownPayslipOrForbidden, emai
 router.post('/bulk-generate',           verifyToken, perm('view'), bulkGenerateSlips);
 // D2 (temporary until PC-02): explicitly authorised Finance payer, never the preparer.
 router.post('/:id/mark-paid',           verifyToken, requirePermission('payroll_payment', 'approve'), validateMarkPaid, paymentSeparation, markPaid);
+
+// ── Go-live controls (2026-11-09) ─────────────────────────────────────────────
+// What Generate Payroll would produce now (the confirmation box) — writes nothing.
+router.get('/preview-run', verifyToken, perm('view'), act(async (req, res) => {
+  res.json({ success: true, data: await ops.previewRun({ company_id: companyOf(req), month: req.query.month, year: req.query.year }) });
+}));
+// Reopen an approved, unpaid month (reverses the accrual journal).
+router.post('/reopen', verifyToken, perm('approve'), act(async (req, res) => {
+  const { month, year, reason } = req.body || {};
+  const data = await ops.reopenPayroll({ month, year, reason, company_id: companyOf(req), userId: uidOf(req) });
+  logAudit({ userId: uidOf(req), module: 'payroll', recordId: null, recordType: 'payroll_run', action: 'reopen', newData: { month, year, reason, ...data }, req });
+  res.json({ success: true, data, message: `${data.reopened} record(s) back to draft; ${data.journals_reversed} accrual journal(s) reversed` });
+}));
+// Hold one employee's salary out of approval, or release it.
+router.post('/:id/hold', verifyToken, perm('add'), act(async (req, res) => {
+  const { month, year, reason, hold = true } = req.body || {};
+  if (hold && String(reason || '').trim().length < 5) return res.status(400).json({ success: false, message: 'Give the reason for holding this salary' });
+  const data = await ops.setHold({ employee_id: req.params.id, month, year, company_id: companyOf(req), hold: hold !== false });
+  logAudit({ userId: uidOf(req), module: 'payroll', recordId: data.run_id, recordType: 'payroll_run', action: hold !== false ? 'hold' : 'release_hold', newData: { employee_id: Number(req.params.id), month, year, reason }, req });
+  res.json({ success: true, data });
+}));
+// Delete drafts for a month (or one employee). Approved payroll is never touched.
+router.post('/discard', verifyToken, perm('add'), act(async (req, res) => {
+  const { month, year, employee_id = null } = req.body || {};
+  const data = await ops.discardDrafts({ month, year, employee_id, company_id: companyOf(req) });
+  logAudit({ userId: uidOf(req), module: 'payroll', recordId: null, recordType: 'payroll_run', action: 'discard_drafts', oldData: { rows: data.rows }, newData: { month, year, employee_id, discarded: data.discarded }, req });
+  res.json({ success: true, data: { discarded: data.discarded }, message: `${data.discarded} draft record(s) discarded` });
+}));
+// One-time earnings and deductions for one employee in one month (§261).
+router.get('/adjustments', verifyToken, perm('view'), act(async (req, res) => {
+  res.json({ success: true, data: await adjustments.listAdjustments({ company_id: companyOf(req), month: req.query.month, year: req.query.year }) });
+}));
+router.get('/adjustments/accounts', verifyToken, perm('view'), act(async (req, res) => {
+  res.json({ success: true, data: await adjustments.creditAccounts({ company_id: companyOf(req) }) });
+}));
+router.post('/adjustments', verifyToken, perm('edit'), act(async (req, res) => {
+  const b = req.body || {};
+  const row = await adjustments.addAdjustment({ company_id: companyOf(req), employee_id: b.employee_id, month: b.month, year: b.year,
+    kind: b.kind, label: b.label, amount: b.amount, account_code: b.account_code, reason: b.reason, userId: uidOf(req) });
+  logAudit({ userId: uidOf(req), module: 'payroll', recordId: row.id, recordType: 'payroll_adjustment', action: 'create', newData: row, req });
+  res.status(201).json({ success: true, data: row,
+    message: row.draft_needs_regenerate ? 'Saved. Generate the payroll again for this month so the draft includes it.' : 'Saved. It is included when the month is generated.' });
+}));
+router.delete('/adjustments/:id', verifyToken, perm('edit'), act(async (req, res) => {
+  const r = await adjustments.removeAdjustment({ company_id: companyOf(req), id: req.params.id });
+  logAudit({ userId: uidOf(req), module: 'payroll', recordId: r.removed.id, recordType: 'payroll_adjustment', action: 'delete', oldData: r.removed, req });
+  res.json({ success: true, data: { id: r.removed.id },
+    message: r.draft_needs_regenerate ? 'Removed. Generate the payroll again for this month so the draft no longer includes it.' : 'Removed.' });
+}));
+// Yearly sales incentive: each salesperson's target, achievement and slab for a
+// financial year, and adding it to a payroll month as a one-time earning.
+router.get('/sales-incentives', verifyToken, perm('view'), act(async (req, res) => {
+  res.json({ success: true, data: await salesIncentive.incentiveReport({ companyId: companyOf(req), fy: req.query.fy }) });
+}));
+router.post('/sales-incentives/add', verifyToken, perm('edit'), act(async (req, res) => {
+  const b = req.body || {};
+  if (companyOf(req) == null) return res.status(400).json({ success: false, message: 'Payroll is per company — select a company first' });
+  const ids = Array.isArray(b.employee_ids) ? b.employee_ids.map(Number).filter(Number.isInteger) : null;
+  const data = await salesIncentive.addIncentivesToPayroll({ companyId: companyOf(req), fy: Number(b.fy), month: b.month, year: b.year, userId: uidOf(req), employeeIds: ids });
+  logAudit({ userId: uidOf(req), module: 'payroll', recordId: null, recordType: 'sales_incentive', action: 'add_to_payroll', newData: { fy: b.fy, month: b.month, year: b.year, added: data.added.map(a => ({ employee_id: a.employee_id, amount: a.amount, adjustment_id: a.adjustment_id })) }, req });
+  res.json({ success: true, data, message: `${data.added.length} incentive(s) added to payroll${data.skipped.length ? `, ${data.skipped.length} skipped` : ''}. Generate the month again so the drafts include them.` });
+}));
+// Statutory dues of a month, and payments to the authorities.
+router.get('/statutory-dues', verifyToken, perm('view'), act(async (req, res) => {
+  res.json({ success: true, data: await compliance.statutoryDues({ company_id: companyOf(req), month: req.query.month, year: req.query.year }) });
+}));
+router.post('/remittances', verifyToken, requirePermission('payroll_payment', 'approve'), act(async (req, res) => {
+  const row = await compliance.recordRemittance({ ...req.body, company_id: companyOf(req), userId: uidOf(req) });
+  logAudit({ userId: uidOf(req), module: 'payroll', recordId: row.id, recordType: 'payroll_statutory_remittance', action: 'create', newData: row, req });
+  res.status(201).json({ success: true, data: row });
+}));
+// A payment recorded wrongly: its journal is reversed and the levy is due again (§262).
+router.put('/remittances/:id/cancel', verifyToken, requirePermission('payroll_payment', 'approve'), act(async (req, res) => {
+  const r = await compliance.cancelRemittance({ company_id: companyOf(req), id: req.params.id, reason: req.body?.reason, userId: uidOf(req) });
+  logAudit({ userId: uidOf(req), module: 'payroll', recordId: r.row.id, recordType: 'payroll_statutory_remittance', action: 'cancel', oldData: r.before, newData: r.row, req });
+  res.json({ success: true, data: r.row,
+    message: `${r.label} payment record cancelled${r.row.reversal_journal_id ? ' and its journal reversed' : ''}. Record the correct payment now.` });
+}));
+// Employees who are not PF members (excluded employees, Form 11) — §262.
+router.put('/pf-exclusions/:employeeId', verifyToken, perm('edit'), act(async (req, res) => {
+  const r = await compliance.setPfExclusion({ ...req.body, employee_id: req.params.employeeId, company_id: companyOf(req), userId: uidOf(req) });
+  logAudit({ userId: uidOf(req), module: 'payroll', recordId: r.row.id, recordType: 'payroll_pf_exclusion', action: 'create', newData: r.row, req });
+  res.status(201).json({ success: true, data: r.row,
+    message: `Recorded: no PF from ${req.body.effective_from} (PF wage ₹${Math.round(r.pf_wage).toLocaleString('en-IN')} is above the ₹${r.ceiling.toLocaleString('en-IN')} ceiling). Generate any draft from that month again.` });
+}));
+router.put('/pf-exclusions/:employeeId/end', verifyToken, perm('edit'), act(async (req, res) => {
+  const r = await compliance.endPfExclusion({ ...req.body, employee_id: req.params.employeeId, company_id: companyOf(req), userId: uidOf(req) });
+  logAudit({ userId: uidOf(req), module: 'payroll', recordId: r.row.id, recordType: 'payroll_pf_exclusion', action: 'end', oldData: r.before, newData: r.row, req });
+  res.json({ success: true, data: r.row, message: `PF will be deducted from the month of ${req.body.ended_on}. Generate any draft from that month again.` });
+}));
+// Tax regime and opening balances.
+router.get('/tax-setup', verifyToken, perm('view'), act(async (req, res) => {
+  res.json({ success: true, data: await compliance.taxSetup({ company_id: companyOf(req), financial_year: req.query.financial_year }) });
+}));
+// Only the Finance Manager records a regime (tax_regime:edit, migration 20261111000002).
+router.put('/tax-regime/:employeeId', verifyToken, requirePermission('tax_regime', 'edit'), act(async (req, res) => {
+  const row = await compliance.setTaxRegime({ ...req.body, employee_id: req.params.employeeId, company_id: companyOf(req), userId: uidOf(req) });
+  logAudit({ userId: uidOf(req), module: 'payroll', recordId: row.id, recordType: 'employee_tax_regime', action: 'update', newData: row, req });
+  res.json({ success: true, data: row });
+}));
+router.put('/my-tax-regime', verifyToken, act(async (req, res) => {
+  const own = await ownEmployeeId(req);
+  if (own == null) return res.status(403).json({ success: false, message: 'No employee record linked to this account' });
+  // 2026-11-11: Finance records each employee's regime (PUT /tax-regime/:id,
+  // Payroll Center → Tax setup). Self-declaring needs self_service:edit, which
+  // no role holds since migration 20261111000001.
+  if (!(await can(req, 'self_service', 'edit'))) {
+    return res.status(403).json({ success: false, message: 'Your tax regime is recorded by Finance. Please tell Finance which regime you choose.' });
+  }
+  const row = await compliance.setTaxRegime({ ...req.body, employee_id: own, company_id: companyOf(req), userId: uidOf(req), selfService: true });
+  logAudit({ userId: uidOf(req), module: 'payroll', recordId: row.id, recordType: 'employee_tax_regime', action: 'self_declare', newData: row, req });
+  res.json({ success: true, data: row });
+}));
+router.get('/my-tax-regime', verifyToken, act(async (req, res) => {
+  const own = await ownEmployeeId(req);
+  if (own == null) return res.status(403).json({ success: false, message: 'No employee record linked to this account' });
+  const fy = req.query.financial_year;
+  const { employees, financial_year } = await compliance.taxSetup({ company_id: companyOf(req), financial_year: fy });
+  const me = employees.find(e => e.employee_id === own);
+  res.json({ success: true, data: { financial_year, regime: me?.regime || 'new', declared: !!me?.regime_declared } });
+}));
+router.put('/opening-balances/:employeeId', verifyToken, perm('edit'), act(async (req, res) => {
+  const row = await compliance.setOpeningBalance({ ...req.body, employee_id: req.params.employeeId, company_id: companyOf(req), userId: uidOf(req) });
+  logAudit({ userId: uidOf(req), module: 'payroll', recordId: row.id, recordType: 'payroll_opening_balance', action: 'update', newData: row, req });
+  res.json({ success: true, data: row });
+}));
+// The salary transfer list for the payer (full account numbers; audited).
+router.get('/bank-file', verifyToken, requirePermission('payroll_payment', 'approve'), act(async (req, res) => {
+  const f = await compliance.bankFile({ company_id: companyOf(req), month: req.query.month, year: req.query.year });
+  logAudit({ userId: uidOf(req), module: 'payroll', recordId: null, recordType: 'payroll_bank_file', action: 'export', newData: { month: req.query.month, year: req.query.year, count: f.count, total: f.total }, req });
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="Salary_transfers_${f.label.replace(' ', '_')}.xlsx"`);
+  res.send(f.buffer);
+}));
 
 // ── Reports & Exports ─────────────────────────────────────────────────────────
 
@@ -277,7 +446,10 @@ router.get('/register', verifyToken, perm('export'), async (req, res) => {
         COALESCE(pr.loan_deduction, 0)       AS loan_deduction,
         pr.total_deductions,
         pr.net_pay,
-        pr.lop_days,
+        pr.lop_days, pr.paid_days, COALESCE(pr.advance_deduction, 0) AS advance_deduction,
+        COALESCE(pr.edli_employer, 0) + COALESCE(pr.pf_admin_employer, 0) AS pf_charges,
+        COALESCE(pr.night_shift_allowance, 0) AS night_shift_allowance, COALESCE(pr.arrears_amount, 0) AS arrears_amount,
+        COALESCE(pr.other_earnings, 0) AS other_earnings, COALESCE(pr.other_deductions, 0) AS other_deductions,
         pr.status,
         COALESCE(pr.payment_mode, '')        AS payment_mode,
         e.account_number AS bank_account, e.ifsc_code
@@ -299,7 +471,11 @@ router.get('/register', verifyToken, perm('export'), async (req, res) => {
       'Emp Code','Employee Name','Department','Designation',
       'Basic','HRA','Conveyance','Medical','Special Allowance','Overtime','Bonus','Gross Pay',
       'Emp PF','Emr PF','EPS','Emp ESI','Emr ESI','Prof Tax','LWF','TDS','Loan Deduction',
-      'Total Deductions','Net Pay','LOP Days','Status','Payment Mode','Bank Account','IFSC Code'
+      'Total Deductions','Net Pay','LOP Days','Status','Payment Mode','Bank Account','IFSC Code',
+      // added 2026-11: at the end, so existing column positions do not move
+      'Advance Recovery','EDLI + EPF admin (Emr)','Paid Days',
+      // added 2026-11-10 (§261), also at the end
+      'Night Shift Allowance','Arrears','One-time Earnings','One-time Deductions'
     ];
     // employee_name and designation were quoted but never escaped, and
     // department was not quoted at all — a department containing a comma
@@ -315,6 +491,8 @@ router.get('/register', verifyToken, perm('export'), async (req, res) => {
       r.professional_tax, r.lwf_employee, r.tds, r.loan_deduction,
       r.total_deductions, r.net_pay, r.lop_days, fl(STATUS_LABEL[r.status] || r.status), fl(r.payment_mode),
       fl((fullBank ? r.bank_account : maskAccountNumber(r.bank_account)) || ''), fl(r.ifsc_code || ''),
+      r.advance_deduction, r.pf_charges, r.paid_days ?? '',
+      r.night_shift_allowance, r.arrears_amount, r.other_earnings, r.other_deductions,
     ].join(','));
 
     const csv = [headers.join(','), ...csvRows].join('\n');
@@ -410,6 +588,9 @@ router.get('/pf-ecr', verifyToken, perm('export'), async (req, res) => {
         FROM payroll_runs pr JOIN employees e ON e.id = pr.employee_id
        WHERE pr.month = $1 AND pr.year = $2 AND e.company_id = $3 AND pr.is_test = false
          AND pr.employee_pf > 0
+         -- A salary on hold is left out of the month's approval, so it is not part
+         -- of this month's ECR either (it used to refuse the whole file, §261).
+         AND pr.status <> 'on_hold'
        ORDER BY e.first_name, e.last_name`, [m, y, cid]);
     if (!rows.length) return res.status(404).json({ message: 'No PF contributions for this period. Generate and approve payroll first.' });
     const notFinal = rows.filter(r => !['approved', 'paid'].includes(r.status));
@@ -423,11 +604,13 @@ router.get('/pf-ecr', verifyToken, perm('export'), async (req, res) => {
       return res.status(409).json({ message: 'Some approved runs predate PF-wage tracking (2026-10-20). Regenerate is not possible for approved payroll; prepare this ECR manually.' });
     }
     // EPFO ECR text file: 11 fields separated by #~#, no header row.
+    const { values: ecrRules } = await loadRulesForExport(pool, cid, `${y}-${String(m).padStart(2, '0')}-28`);
     const lines = rows.map(r => [
       String(r.uan_number).trim(),
       `${r.first_name || ''} ${r.last_name || ''}`.trim().toUpperCase(),
       Math.round(Number(r.gross)), Math.round(Number(r.pf_contribution_wage)),
-      Math.round(Number(r.eps_wage || 0)), Math.round(Number(r.pf_contribution_wage)),
+      // EDLI wages never exceed the ceiling, even when PF is paid on full wages.
+      Math.round(Number(r.eps_wage || 0)), Math.round(Math.min(Number(r.pf_contribution_wage), ecrRules['pf.wage_ceiling'])),
       Math.round(Number(r.employee_pf)), Math.round(Number(r.eps)), Math.round(Number(r.epf_employer)),
       Math.round(Number(r.lop_days || 0)), 0,
     ].join('#~#'));
@@ -450,7 +633,7 @@ router.get('/esi-challan', verifyToken, perm('export'), async (req, res) => {
     const { rows } = await pool.query(`
       SELECT
         pr.employee_id,
-        pr.gross            AS gross_wages,
+        COALESCE(pr.esi_wage, pr.gross) AS gross_wages,
         pr.employee_esi,
         pr.employer_esi,
         e.first_name, e.last_name,
@@ -466,6 +649,12 @@ router.get('/esi-challan', verifyToken, perm('export'), async (req, res) => {
     `, [m, y, cid]);
 
     if (!rows.length) return res.status(404).json({ message: 'No ESI-applicable employees for this period.' });
+    const noIp = rows.filter(r => !/^[0-9]{10}$/.test(String(r.ip_number || '').trim()));
+    if (noIp.length) {
+      return res.status(422).json({ message: `${noIp.length} employee(s) have no valid 10-digit ESI IP number — the challan cannot be filed until they do.`,
+        employees: noIp.map(r => ({ employee_code: r.employee_code, name: `${r.first_name || ''} ${r.last_name || ''}`.trim() })) });
+    }
+    const { values: esiRules } = await loadRulesForExport(pool, cid, `${y}-${String(m).padStart(2, '0')}-28`);
 
     const monthName = ['', 'January', 'February', 'March', 'April', 'May', 'June',
       'July', 'August', 'September', 'October', 'November', 'December'][m];
@@ -478,10 +667,10 @@ router.get('/esi-challan', verifyToken, perm('export'), async (req, res) => {
     const csvLines = [
       `ESI Challan - ${monthName} ${y}`,
       ``,
-      `IP Number,Employee Code,Employee Name,Gross Wages,Employee ESI (0.75%),Employer ESI (3.25%),Total ESI`,
+      `IP Number,Employee Code,Employee Name,ESI Wages,Employee ESI (${esiRules['esi.employee_rate']}%),Employer ESI (${esiRules['esi.employer_rate']}%),Total ESI`,
       ...rows.map(r => {
         const name = `${r.first_name || ''} ${r.last_name || ''}`.trim();
-        return `${csvCell(r.ip_number || 'PENDING', { minimal: true })},${csvCell(r.employee_code || r.employee_id, { minimal: true })},${csvCell(name)},${parseFloat(r.gross_wages || 0).toFixed(2)},${parseFloat(r.employee_esi || 0).toFixed(2)},${parseFloat(r.employer_esi || 0).toFixed(2)},${(parseFloat(r.employee_esi || 0) + parseFloat(r.employer_esi || 0)).toFixed(2)}`;
+        return `${csvCell(r.ip_number, { minimal: true })},${csvCell(r.employee_code || r.employee_id, { minimal: true })},${csvCell(name)},${parseFloat(r.gross_wages || 0).toFixed(2)},${parseFloat(r.employee_esi || 0).toFixed(2)},${parseFloat(r.employer_esi || 0).toFixed(2)},${(parseFloat(r.employee_esi || 0) + parseFloat(r.employer_esi || 0)).toFixed(2)}`;
       }),
       ``,
       `TOTAL,,,${rows.reduce((s, r) => s + parseFloat(r.gross_wages || 0), 0).toFixed(2)},${totEmpESI.toFixed(2)},${totEmrESI.toFixed(2)},${totESI.toFixed(2)}`,
@@ -495,84 +684,68 @@ router.get('/esi-challan', verifyToken, perm('export'), async (req, res) => {
   }
 });
 
-// ── Statutory Bonus (Payment of Bonus Act 1965) ───────────────────────────────
+// ── Statutory Bonus (Payment of Bonus Act 1965 / Code on Wages s.26) ─────────
 // GET /payroll/statutory-bonus?year=&department=
-// Bonus Act: eligible employees earn ≤ ₹21,000/month; bonus = 8.33% of wages (min)
-// Wage basis: basic salary (no DA in this model). Bonus year = Apr to Mar.
+// Eligibility limit, calculation ceiling and rates: rule 'bonus.statutory' on the
+// last day of the bonus year; the minimum wage: rule 'wages.minimum_monthly' at
+// each month's end. Wage basis: Basic (no DA in this model). Bonus year = Apr–Mar.
+// Each month counts the wage actually earned that month — payrollEngine
+// computeStatutoryBonus (§261).
 router.get('/statutory-bonus', verifyToken, perm('export'), async (req, res) => {
   const bonusYear = parseInt(req.query.year) || new Date().getFullYear();
   const dept      = req.query.department;
   const cid       = companyOf(req);
-  // FY: Apr (bonusYear) → Mar (bonusYear+1)
+  if (cid == null) return res.status(400).json({ message: 'Company context required' });
   const fyStart   = bonusYear, fyEnd = bonusYear + 1;
-
   try {
-    // Aggregate annual wages from payroll_runs for the FY
     let q = `
-      SELECT
-        pr.employee_id,
-        TRIM(COALESCE(e.first_name,'') || ' ' || COALESCE(e.last_name,'')) AS employee_name,
-        e.office_id  AS emp_code,
-        e.department, e.designation,
-        e.joining_date,
-        COUNT(DISTINCT pr.month || '-' || pr.year)::INT AS months_worked,
-        ROUND(AVG(pr.basic))::NUMERIC                    AS avg_basic,
-        ROUND(SUM(pr.basic))::NUMERIC                    AS annual_basic_wages
-      FROM payroll_runs pr
-      JOIN employees e ON e.id = pr.employee_id
-      WHERE (
-        (pr.year = $1 AND pr.month >= 4)
-        OR (pr.year = $2 AND pr.month <= 3)
-      )
-      AND e.company_id = $3 AND pr.is_test = false
-      AND pr.status IN ('approved', 'paid')
-    `;
+      SELECT pr.employee_id,
+             TRIM(COALESCE(e.first_name,'') || ' ' || COALESCE(e.last_name,'')) AS employee_name,
+             e.office_id AS emp_code, e.department, e.designation,
+             json_agg(json_build_object('month', pr.month, 'year', pr.year, 'wage', pr.basic,
+               'worked_days', CASE WHEN pr.paid_days IS NULL THEN NULL ELSE GREATEST(pr.paid_days - COALESCE(pr.lop_days, 0), 0) END)
+               ORDER BY pr.year, pr.month) AS months
+        FROM payroll_runs pr
+        JOIN employees e ON e.id = pr.employee_id
+       WHERE ((pr.year = $1 AND pr.month >= 4) OR (pr.year = $2 AND pr.month <= 3))
+         AND e.company_id = $3 AND pr.is_test = false AND pr.status IN ('approved', 'paid')`;
     const params = [fyStart, fyEnd, cid];
     if (dept) { params.push(dept); q += ` AND e.department = $${params.length}`; }
-    q += ` GROUP BY pr.employee_id, e.first_name, e.last_name, e.office_id, e.department, e.designation, e.joining_date`;
-
+    q += ` GROUP BY pr.employee_id, e.first_name, e.last_name, e.office_id, e.department, e.designation ORDER BY e.first_name`;
     const { rows } = await pool.query(q, params);
 
-    const BONUS_WAGE_CEILING = 21000;    // gross eligibility ceiling
-    const MIN_BONUS_PCT      = 8.33 / 100;
-    const MAX_BONUS_PCT      = 20.00 / 100;
-    const BONUS_CALC_CEILING = 7000;     // wage ceiling for bonus calculation
+    const ruleRows = await loadRuleRowsForBonus(pool, cid);
+    const bonusRule = resolveRulesForBonus(`${fyEnd}-03-31`, ruleRows).values['bonus.statutory'];
+    const minWage = new Map();
+    const minWageOf = (m, y) => {
+      const k = `${y}-${m}`;
+      if (!minWage.has(k)) minWage.set(k, resolveRulesForBonus(periodEndDate(m, y), ruleRows).values['wages.minimum_monthly'] ?? null);
+      return minWage.get(k);
+    };
 
     const result = rows.map(r => {
-      const avgBasic    = parseFloat(r.avg_basic || 0);
-      const eligible    = avgBasic <= BONUS_WAGE_CEILING;
-      const calcWage    = Math.min(avgBasic, BONUS_CALC_CEILING);
-      const minBonus    = eligible ? Math.round(calcWage * 12 * MIN_BONUS_PCT) : 0;
-      const maxBonus    = eligible ? Math.round(calcWage * 12 * MAX_BONUS_PCT) : 0;
+      const b = computeStatutoryBonus(r.months, bonusRule, minWageOf);
       return {
-        employee_id:    r.employee_id,
-        employee_name:  r.employee_name,
-        emp_code:       r.emp_code,
-        department:     r.department,
-        designation:    r.designation,
-        months_worked:  r.months_worked,
-        avg_basic:      avgBasic,
-        eligible:       eligible,
-        reason:         eligible ? null : `Average basic ₹${avgBasic.toLocaleString('en-IN')} exceeds ₹21,000 ceiling`,
-        bonus_wage:     eligible ? calcWage : 0,
-        min_bonus:      minBonus,
-        max_bonus:      maxBonus,
-        recommended_bonus: minBonus, // 8.33% minimum
+        employee_id: r.employee_id, employee_name: r.employee_name, emp_code: r.emp_code,
+        department: r.department, designation: r.designation,
+        months_worked: b.months_worked, worked_days: b.worked_days,
+        avg_basic: b.avg_wage, eligible: b.eligible, reason: b.eligible ? null : b.reasons.join('; '),
+        bonus_wages: b.eligible ? b.bonus_wages : 0,
+        min_bonus: b.min_bonus, max_bonus: b.max_bonus, recommended_bonus: b.min_bonus,
       };
     });
-
-    const eligibleCount  = result.filter(r => r.eligible).length;
-    const totalMinBonus  = result.reduce((s, r) => s + r.min_bonus, 0);
-    const totalMaxBonus  = result.reduce((s, r) => s + r.max_bonus, 0);
-
+    const minWageAtEnd = minWageOf(3, fyEnd);
     res.json({
       financial_year: `${fyStart}-${fyEnd}`,
       total_employees: result.length,
-      eligible_count:  eligibleCount,
-      total_min_bonus: totalMinBonus,
-      total_max_bonus: totalMaxBonus,
-      bonus_wage_ceiling: BONUS_WAGE_CEILING,
-      calc_wage_ceiling:  BONUS_CALC_CEILING,
+      eligible_count: result.filter(r => r.eligible).length,
+      total_min_bonus: result.reduce((s, r) => s + r.min_bonus, 0),
+      total_max_bonus: result.reduce((s, r) => s + r.max_bonus, 0),
+      bonus_wage_ceiling: bonusRule.wage_eligibility,
+      calc_wage_ceiling: Math.max(bonusRule.calc_ceiling, minWageAtEnd ?? 0),
+      calc_ceiling_basis: minWageAtEnd != null && minWageAtEnd > bonusRule.calc_ceiling
+        ? `the minimum wage (₹${Number(minWageAtEnd).toLocaleString('en-IN')}), higher than ₹${Number(bonusRule.calc_ceiling).toLocaleString('en-IN')}`
+        : `₹${Number(bonusRule.calc_ceiling).toLocaleString('en-IN')}${minWageAtEnd == null ? ' (no minimum wage recorded)' : ''}`,
       employees: result,
     });
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -603,7 +776,7 @@ async function computeArrearBreakdown({ company_id, employee_id, fm, fy, tm, ty,
     const item = ctx.items[0];
     if (!item) throw Object.assign(new Error('Employee not found'), { status: 404 });
     if (!item.config.structureComponents) throw Object.assign(new Error('No salary structure applies'), { status: 422 });
-    const cfg = { ...item.config, overtime_hours: 0, night_shift_days: 0, bonus: 0, recoveries: [], arrears: null, ytd: null, tds_auto_calculate: false };
+    const cfg = { ...item.config, overtime_hours: 0, night_shift_days: 0, bonus: 0, recoveries: [], adjustments: [], arrears: null, ytd: null, tds_auto_calculate: false };
     try {
       // Arrears compare two BASICS through the structure. An approved CTC
       // breakdown on the revision in force would otherwise override both
@@ -735,6 +908,40 @@ router.put('/arrears/:id/approve', verifyToken, perm('approve'), captureBefore('
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// PUT /payroll/arrears/:id/cancel {reason} — withdraw an arrear that has not been
+// paid. A pending one needs payroll:edit (who raised it); an approved, scheduled
+// one needs payroll:approve. A paid arrear is part of a finalised month and is
+// corrected in a later month instead. A draft that included it no longer matches
+// and is generated again (DRAFT_OUT_OF_DATE). §261.
+router.put('/arrears/:id/cancel', verifyToken, perm('edit'), captureBefore('payroll_arrears'), act(async (req, res) => {
+  const cid = companyOf(req);
+  if (cid == null) return res.status(400).json({ success: false, message: 'Company context required' });
+  const reason = String(req.body?.reason || '').trim();
+  if (reason.length < 5) return res.status(400).json({ success: false, message: 'Give the reason for cancelling this arrear (at least 5 characters)' });
+  const { rows: [a] } = await pool.query(
+    `SELECT a.id, a.status, a.employee_id, a.paid_in_month, a.paid_in_year FROM payroll_arrears a JOIN employees e ON e.id = a.employee_id
+      WHERE a.id = $1 AND e.company_id = $2 AND a.is_test = false`, [req.params.id, cid]);
+  if (!a) return res.status(404).json({ success: false, message: 'Arrear not found' });
+  if (a.status === 'paid') return res.status(409).json({ success: false, message: 'This arrear has been paid in an approved payroll. Correct it with a recovery in a later month.' });
+  if (a.status === 'cancelled') return res.status(409).json({ success: false, message: 'This arrear is already cancelled' });
+  if (a.status === 'approved' && !(await can(req, 'payroll', 'approve'))) {
+    return res.status(403).json({ success: false, message: 'This arrear is approved; cancelling it needs the payroll approval permission' });
+  }
+  if (a.status === 'approved' && a.paid_in_month) {
+    const { rows: [locked] } = await pool.query(
+      `SELECT status FROM payroll_runs WHERE employee_id = $1 AND month = $2 AND year = $3 AND status IN ('approved','paid') AND is_test = false`,
+      [a.employee_id, a.paid_in_month, a.paid_in_year]);
+    if (locked) return res.status(409).json({ success: false, message: 'The payroll month it is scheduled into is already approved. Reopen that month first, or correct it in a later month.' });
+  }
+  const { rows: [row] } = await pool.query(
+    `UPDATE payroll_arrears SET status = 'cancelled', cancelled_by = $2, cancelled_at = NOW(), cancel_reason = $3, updated_at = NOW()
+      WHERE id = $1 AND status IN ('pending', 'approved') RETURNING *`, [a.id, uidOf(req), reason]);
+  if (!row) return res.status(409).json({ success: false, message: 'The arrear changed meanwhile — reload and try again' });
+  logAudit({ userId: uidOf(req), module: 'payroll', recordId: row.id, recordType: 'payroll_arrear', action: 'cancel',
+    oldData: { status: a.status }, newData: { status: 'cancelled', reason }, req });
+  res.json(row);
+}));
+
 // ── Loan / Advance management ─────────────────────────────────────────────────
 // The month's recovery is loanSchedule.installmentFor() — the same function the
 // payroll draft and approval use. Run Payroll deducts it; APPROVAL records it in
@@ -744,6 +951,7 @@ router.put('/arrears/:id/approve', verifyToken, perm('approve'), captureBefore('
 const withRemaining = (l) => ({ ...l, remaining_installments: remainingInstallments(l), next_installment: installmentFor(l) });
 
 router.get('/loan-advances', verifyToken, perm('view'), async (req, res) => {
+  const status = ['active', 'closed', 'all'].includes(req.query.status) ? req.query.status : 'active';
   try {
     const { rows } = await pool.query(
       `SELECT l.*, TRIM(COALESCE(e.first_name,'') || ' ' || COALESCE(e.last_name,'')) AS employee_name,
@@ -751,8 +959,8 @@ router.get('/loan-advances', verifyToken, perm('view'), async (req, res) => {
               COALESCE((SELECT SUM(r.amount) FROM payroll_loan_repayments r WHERE r.loan_id = l.id), 0) AS repaid_amount,
               (SELECT COUNT(*)::int FROM payroll_loan_repayments r WHERE r.loan_id = l.id AND r.source = 'payroll') AS installments_paid
          FROM payroll_loans l JOIN employees e ON e.id = l.employee_id
-        WHERE e.company_id = $1 AND l.status = 'active' AND l.is_test = false
-        ORDER BY l.created_at DESC`, [companyOf(req)]);
+        WHERE e.company_id = $1 AND ($2 = 'all' OR l.status = $2) AND l.is_test = false
+        ORDER BY l.created_at DESC`, [companyOf(req), status]);
     res.json(rows.map(withRemaining));
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
@@ -766,12 +974,21 @@ router.get('/loan-advances/:id/repayments', verifyToken, perm('view'), async (re
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
+// Record the payout of a loan to the employee (Dr loan receivable / Cr bank).
+router.post('/loan-advances/:id/payout', verifyToken, requirePermission('payroll_payment', 'approve'), act(async (req, res) => {
+  const row = await compliance.recordLoanPayout({ ...req.body, loan_id: req.params.id, company_id: companyOf(req), userId: uidOf(req) });
+  logAudit({ userId: uidOf(req), module: 'payroll', recordId: row.id, recordType: 'payroll_loan', action: 'payout', newData: { reference: row.disbursement_reference, disbursed_on: row.disbursed_on }, req });
+  res.json({ success: true, data: row });
+}));
+
 // POST /payroll/loan-advances — principal, start_date, and EMI and/or
 // tenure_months; interest_rate (annual %, reducing balance) defaults to 0.
 // A one-month recovery needs single_installment: true.
 router.post('/loan-advances', verifyToken, perm('edit'), async (req, res) => {
-  const { employee_id, reason } = req.body || {};
+  const { employee_id, reason, purpose = 'general' } = req.body || {};
   if (!employee_id) return res.status(400).json({ message: 'employee_id is required' });
+  // A loan for treatment of a specified illness carries no perquisite (Income-tax Rules 2026, rule 15).
+  if (!['general', 'medical'].includes(purpose)) return res.status(400).json({ message: "purpose must be 'general' or 'medical'" });
   let plan;
   try { plan = planLoan(req.body); }
   catch (e) {
@@ -783,10 +1000,10 @@ router.post('/loan-advances', verifyToken, perm('edit'), async (req, res) => {
     if (!(await employeeInCompany(employee_id, cid))) return res.status(404).json({ message: 'Employee not found' });
     const { rows } = await pool.query(
       `INSERT INTO payroll_loans (employee_id, loan_type, principal_amount, emi_amount, outstanding_balance, start_date, reason,
-                                  emi_schedule, interest_rate, tenure_months, single_installment)
-       VALUES ($1,$2,$3,$4,$3,$5,$6,$7,$8,$9,$10) RETURNING *`,
+                                  emi_schedule, interest_rate, tenure_months, single_installment, purpose)
+       VALUES ($1,$2,$3,$4,$3,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
       [employee_id, plan.loan_type, plan.principal, plan.emi, plan.start_date, reason ?? null,
-       JSON.stringify(plan.schedule), plan.interest_rate, plan.tenure_months, req.body.single_installment === true]);
+       JSON.stringify(plan.schedule), plan.interest_rate, plan.tenure_months, req.body.single_installment === true, purpose]);
     res.status(201).json({ ...withRemaining(rows[0]), total_interest: plan.total_interest, total_repayable: plan.total_repayable });
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
@@ -884,5 +1101,54 @@ router.post('/loan-advances/:id/close', verifyToken, perm('edit'), async (req, r
     res.status(500).json({ message: err.message });
   } finally { client.release(); }
 });
+
+// ── Form No. 123 / 12BA helpers ───────────────────────────────────────────────
+async function getForm16StatusData(company_id, financial_year, employee_id) {
+  const s = await ops.getForm16Status({ company_id, financial_year, employee_id });
+  return s.employees[0] || null;
+}
+
+function streamForm123Pdf(res, f) {
+  const rs = (v) => (v == null ? 'Not provided through Pulse' : `Rs. ${Number(v).toLocaleString('en-IN', { minimumFractionDigits: 2 })}`);
+  const doc = new PDFDocument({ size: 'A4', margin: 40 });
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="${f.form.replace(/[^A-Za-z0-9]+/g, '')}_${f.employee.code || f.employee.id}_${f.financial_year}.pdf"`);
+  doc.pipe(res);
+  doc.fontSize(14).text(f.form_label, { align: 'center' });
+  doc.fontSize(9).fillColor('#555').text(`Statement showing particulars of perquisites, other fringe benefits or amenities and profits in lieu of salary (${f.basis})`, { align: 'center' });
+  doc.moveDown().fillColor('#111').fontSize(10);
+  [['1. Name and address of employer', `${f.employer.name || '—'}${f.employer.address ? `, ${f.employer.address}` : ''}`],
+   ['2. TAN', f.employer.tan || '—'],
+   ['3. TDS assessment range of the employer', '—'],
+   ['4. Name, designation and PAN of employee', `${f.employee.name}, ${f.employee.designation || '—'}, PAN ${f.employee.pan || '—'}`],
+   ['5. Is the employee a director or a person with substantial interest in the company?', 'Not recorded in Pulse'],
+   ['6. Income under the head "Salaries" of the employee (other than from perquisites)', rs(f.salary_excluding_perquisites)],
+   [`7. ${f.period_term}`, f.financial_year],
+   ['8. Valuation of perquisites', ''],
+  ].forEach(([k, v]) => doc.text(`${k}: ${v}`));
+  doc.moveDown(0.5).fontSize(8);
+  const x = { sl: 40, item: 62, value: 330, rec: 420, ch: 490 };
+  let y = doc.y;
+  doc.font('Helvetica-Bold').text('Sl.', x.sl, y).text('Nature of perquisite', x.item, y).text('Value as per rules', x.value, y).text('Recovered from employee', x.rec, y, { width: 65 }).text('Chargeable', x.ch, y);
+  doc.font('Helvetica');
+  y += 22;
+  for (const it of f.items) {
+    doc.text(String(it.sl), x.sl, y).text(it.label, x.item, y, { width: 260 });
+    if (it.value == null) doc.fillColor('#777').text('Not provided through Pulse', x.value, y, { width: 200 }).fillColor('#111');
+    else doc.text(rs(it.value), x.value, y, { width: 85 }).text(rs(it.recovered), x.rec, y, { width: 65 }).text(rs(it.chargeable), x.ch, y, { width: 70 });
+    y += 16;
+  }
+  doc.font('Helvetica-Bold').text(`Total value of perquisites: ${rs(f.total_perquisites)}`, x.sl, y + 4).font('Helvetica');
+  doc.text('Total value of profits in lieu of salary as per section 17(3) / its successor: Not provided through Pulse', x.sl, y + 18);
+  doc.moveDown(1.5).fontSize(10).text('9. Details of tax', x.sl);
+  doc.fontSize(9).text(`(a) Tax deducted from salary of the employee: ${rs(f.tax.deducted_from_salary)}`)
+    .text(`(b) Tax paid by employer on behalf of the employee: ${rs(f.tax.paid_by_employer)}`)
+    .text(`(c) Total tax paid: ${rs(f.tax.total)}`)
+    .text(`(d) Date of payment into Government treasury: ${f.tax.deposits.length ? f.tax.deposits.map(d => `${d.month}/${d.year}: challan ${d.challan_number}${d.challan_date ? ` on ${String(d.challan_date instanceof Date ? d.challan_date.toISOString() : d.challan_date).slice(0, 10)}` : ''}${d.bsr_code ? ` (BSR ${d.bsr_code})` : ''}`).join('; ') : 'No challan recorded in Finance → TDS'}`);
+  doc.moveDown().fontSize(8).fillColor('#b45309').text(`Note: ${f.note}`);
+  doc.moveDown().fillColor('#111').fontSize(9).text('DECLARATION BY EMPLOYER: I, ____________________, son/daughter of ____________________, working as ____________________ (designation), do hereby declare on behalf of the employer named above that the information given above is based on the books of account, documents and other relevant records or information available with us, and the details of value of each such perquisite are in accordance with the Act and the rules, and that it is true, correct and complete.');
+  doc.moveDown().text('Signature of the person responsible for deduction of tax: ____________________     Place: ____________     Date: ____________');
+  doc.end();
+}
 
 export default router;

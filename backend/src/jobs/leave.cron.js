@@ -30,6 +30,7 @@ import { logAudit } from '../services/AuditService.js';
 import {
   runMonthlyAccrual,
   runCarryForward,
+  catchUpAccruals,
 } from '../modules/leaves/services/leaveAccrual.service.js';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -261,3 +262,27 @@ cron.schedule('0 9 * * 1-5', async () => {
 }, { timezone: 'Asia/Kolkata' });
 
 log('init', 'Leave cron jobs registered: monthly-accrual, carry-forward, cf-expiry, compoff-expiry, sla-escalation');
+
+// ── 6. Accrual catch-up ───────────────────────────────────────────────────────
+// The 1st-of-month jobs above only fire if the server is up at that minute; a month
+// they missed was never credited (March–November 2026 were all missed). Daily at
+// 01:15, and once two minutes after start, bring every company up to date for this
+// year: the "Yearly credit" allowance and every monthly accrual so far. The accrual
+// log locks each period, so this never credits a period twice.
+async function accrualCatchUp(tag) {
+  const companies = await getAllCompanies();
+  for (const c of companies) {
+    try {
+      const r = await catchUpAccruals({ companyId: c.id });
+      if (r.yearly.credited || r.monthly.credited || r.yearly.failed || r.monthly.failed) {
+        log(tag, `Company ${c.id}: yearly ${r.yearly.credited} credited, monthly ${r.monthly.credited} credited, ${r.yearly.failed + r.monthly.failed} failed`);
+      }
+    } catch (err) {
+      log(tag, `Company ${c.id} error: ${err.message}`);
+    }
+  }
+}
+cron.schedule('15 1 * * *', () => { accrualCatchUp('accrual-catch-up').catch(() => {}); }, { timezone: 'Asia/Kolkata' });
+if (process.env.NODE_ENV !== 'test') {
+  setTimeout(() => { accrualCatchUp('accrual-catch-up-start').catch(() => {}); }, 120000).unref?.();
+}

@@ -1,194 +1,145 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
-import {
-  Clock, Play, Square, Plus, ChevronLeft, ChevronRight, RefreshCw, X,
-  Send, Check, CalendarClock,
-} from 'lucide-react';
+/**
+ * My Timesheet — pre-filled from attendance, submitted in one step (2026-11-11).
+ *
+ * Each day's hours come from attendance (punch, else a standard day; leave,
+ * holidays and weekends are 0) and are split across the employee's projects
+ * by allocation. The employee checks the figures, changes any they need to,
+ * and submits the week. A week nobody submits is submitted automatically the
+ * following Monday. See backend autoTimesheet.service.js.
+ *
+ * The old project × day grid with its own Clock In / Clock Out and "Add
+ * Entry" drawer is gone: attendance is the clock.
+ */
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { ChevronLeft, ChevronRight, RefreshCw, Send, Save, CalendarClock, Clock, Info } from 'lucide-react';
 import api from '@/services/api/client';
 import './MyTimesheet.css';
 import { PageHero, PageShell } from '@/components/pulse-ui';
 
-const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-
-const getWeekDates = (offset = 0) => {
-  const today = new Date();
-  const day = today.getDay();
-  const mon = new Date(today);
-  mon.setDate(today.getDate() - (day === 0 ? 6 : day - 1) + offset * 7);
-  return Array.from({ length: 7 }, (_, i) => {
-    const d = new Date(mon);
-    d.setDate(mon.getDate() + i);
-    return d;
-  });
+const SOURCE_LABEL = {
+  punch: 'Punched',
+  standard: 'Standard day',
+  leave: 'On leave',
+  half_leave: 'Half-day leave',
+  holiday: 'Holiday',
+  weekend: 'Weekend',
+  absent: 'Absent',
+  future: 'Not yet',
 };
 
-const fmtDate = d => d.toISOString().split('T')[0];
-const fmtD    = d => d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' });
+const STATUS_BANNER = {
+  not_started: { tone: 'info',    text: 'Pre-filled from your attendance. Check the hours and submit the week.' },
+  draft:       { tone: 'info',    text: 'Saved as a draft. Submit the week when it is right.' },
+  submitted:   { tone: 'warn',    text: 'Submitted — waiting for your manager to approve.' },
+  approved:    { tone: 'success', text: 'Approved.' },
+  part_approved: { tone: 'success', text: 'Partly approved.' },
+  rejected:    { tone: 'danger',  text: 'Sent back by your manager. Correct it and submit again.' },
+};
+const TONE = {
+  info:    { bg: 'var(--color-info-bg, #eff6ff)',    fg: 'var(--color-info, #1d4ed8)' },
+  warn:    { bg: 'var(--color-warning-bg, #fffbeb)', fg: 'var(--color-warning, #b45309)' },
+  success: { bg: 'var(--color-success-bg, #ecfdf5)', fg: 'var(--color-success, #047857)' },
+  danger:  { bg: 'var(--color-danger-bg, #fef2f2)',  fg: 'var(--color-danger, #b91c1c)' },
+};
 
-const emptyEntry = () => ({
-  project_id: '',
-  work_date: new Date().toISOString().split('T')[0],
-  hours_worked: '',
-  description: '',
-  is_billable: true,
-});
+const addDays = (ymd, n) => {
+  const [y, m, d] = ymd.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10);
+};
+const fmtDay = (ymd) => {
+  const [y, m, d] = ymd.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short', timeZone: 'UTC' });
+};
+const fmtHrs = (h) => (h > 0 ? `${Number.isInteger(h) ? h : h.toFixed(2).replace(/0$/, '')}h` : '—');
+const EDITABLE = new Set(['not_started', 'draft', 'rejected']);
+
+/** hours[date][projectId] from saved entries, else from the attendance split. */
+function initialHours(week) {
+  const out = {};
+  for (const d of week.days) out[d.date] = {};
+  // Hours saved on a day that has not happened yet are dropped: the box is
+  // locked ("Not yet") and the server refuses future hours, so keeping them
+  // would leave a week that can never be resubmitted.
+  const future = new Set(week.days.filter(d => d.source === 'future').map(d => d.date));
+  if (week.entries.length) {
+    for (const e of week.entries) {
+      if (!e.project_id || !out[e.work_date] || future.has(e.work_date)) continue;
+      out[e.work_date][e.project_id] = (out[e.work_date][e.project_id] || 0) + Number(e.hours_worked || 0);
+    }
+  } else {
+    for (const d of week.days) for (const [pid, h] of Object.entries(d.split || {})) out[d.date][pid] = h;
+  }
+  return out;
+}
 
 export default function MyTimesheet() {
-  const [weekOffset, setWeekOffset] = useState(0);
-  const [entries,    setEntries]    = useState({});
-  const [projects,   setProjects]   = useState([]);
-  const [loading,    setLoading]    = useState(false);
-  const [drawer,     setDrawer]     = useState(false);
-  const [form,       setForm]       = useState(emptyEntry());
-  const [submitting, setSubmitting] = useState(false);
-  const [toast,      setToast]      = useState(null);
-  const [clockedIn,  setClockedIn]  = useState(false);
-  const [clockTime,  setClockTime]  = useState(null);
-  const [clockTick,  setClockTick]  = useState(0);
-
-  const isMounted = useRef(true);
-  useEffect(() => {
-    isMounted.current = true;
-    return () => { isMounted.current = false; };
-  }, []);
-
-  // Running clock ticker
-  useEffect(() => {
-    if (!clockedIn) return;
-    const t = setInterval(() => setClockTick(n => n + 1), 1000);
-    return () => clearInterval(t);
-  }, [clockedIn]);
-
-  const weekDates   = getWeekDates(weekOffset);
-  const weekStart   = fmtDate(weekDates[0]);
-  const weekEnd     = fmtDate(weekDates[6]);
-  const isCurrentWeek = weekOffset === 0;
+  const [anchor, setAnchor] = useState(null);           // a date inside the week shown; null = this week
+  const [thisWeek, setThisWeek] = useState(null);
+  const [week, setWeek] = useState(null);
+  const [hours, setHours] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [toast, setToast] = useState(null);
+  const [error, setError] = useState(null);
+  const alive = useRef(true);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
 
   const showToast = (msg, type = 'success') => {
     setToast({ msg, type });
-    setTimeout(() => { if (isMounted.current) setToast(null); }, 3000);
+    setTimeout(() => { if (alive.current) setToast(null); }, 3500);
   };
+
+  const apply = useCallback((w) => {
+    setWeek(w);
+    setHours(initialHours(w));
+    setThisWeek(cur => cur || w.week_start);
+  }, []);
 
   const load = useCallback(async () => {
-    setLoading(true);
+    setLoading(true); setError(null);
     try {
-      const res = await api.get('/timesheets/timesheets/my-timesheet', {
-        params: { week_start: weekStart, week_end: weekEnd },
-      });
-      if (!isMounted.current) return;
-      const { projects: rawProj = [], entries: rawTs = [] } = res.data ?? {};
-      setProjects(Array.isArray(rawProj) ? rawProj : []);
-      const map = {};
-      if (Array.isArray(rawTs)) {
-        rawTs.forEach(e => {
-          const pid = String(e?.project_id);
-          const dt  = e?.work_date?.split('T')[0];
-          if (!pid || !dt) return;
-          if (!map[pid]) map[pid] = {};
-          map[pid][dt] = (map[pid][dt] || 0) + parseFloat(e?.hours_worked ?? 0);
-        });
-      }
-      setEntries(map);
-    } catch (err) {
-      if (!isMounted.current) return;
-      showToast(err.response?.data?.error || 'Failed to load timesheet', 'error');
-      setEntries({});
+      const r = await api.get('/timesheets/timesheets/my-week', { params: anchor ? { week_start: anchor } : {} });
+      if (alive.current) apply(r.data);
+    } catch (e) {
+      if (alive.current) { setWeek(null); setError(e.response?.data?.error || 'Could not load your timesheet'); }
     } finally {
-      if (isMounted.current) setLoading(false);
+      if (alive.current) setLoading(false);
     }
-  }, [weekStart, weekEnd]);
-
+  }, [anchor, apply]);
   useEffect(() => { load(); }, [load]);
 
-  const dayTotal  = d => projects.reduce((s, p) => s + (parseFloat(entries[String(p.id)]?.[fmtDate(d)]) || 0), 0);
-  const projTotal = p => weekDates.reduce((s, d) => s + (parseFloat(entries[String(p.id)]?.[fmtDate(d)]) || 0), 0);
-  // Weekdays only (Mon–Fri) for 40h target
-  const weekdayTotal = weekDates.slice(0, 5).reduce((sum, d) => sum + dayTotal(d), 0);
-  const totalHours   = weekDates.reduce((sum, d) => sum + dayTotal(d), 0);
+  const projects = useMemo(() => week?.projects || [], [week]);
+  const editable = !!week && EDITABLE.has(week.status);
+  const dayTotal = (date) => Object.values(hours[date] || {}).reduce((s, h) => s + (Number(h) || 0), 0);
+  const projTotal = (pid) => Object.values(hours).reduce((s, d) => s + (Number(d[pid]) || 0), 0);
+  const weekTotal = week ? week.days.reduce((s, d) => s + dayTotal(d.date), 0) : 0;
+  const attendanceTotal = week ? week.days.reduce((s, d) => s + (d.hours || 0), 0) : 0;
 
-  const handleAddEntry = async () => {
-    if (!form.project_id || !form.hours_worked) return showToast('Project and hours required', 'error');
-    setSubmitting(true);
-    const user = JSON.parse(localStorage.getItem('user') || '{}');
+  const setCell = (date, pid, value) => {
+    const n = value === '' ? 0 : Math.max(0, Math.min(24, Number(value)));
+    setHours(h => ({ ...h, [date]: { ...(h[date] || {}), [pid]: Number.isFinite(n) ? n : 0 } }));
+  };
+
+  const save = async (submit) => {
+    if (!week) return;
+    const rows = [];
+    for (const d of week.days) for (const [pid, h] of Object.entries(hours[d.date] || {})) {
+      if (Number(h) > 0) rows.push({ work_date: d.date, project_id: Number(pid), hours: Number(h) });
+    }
+    setSaving(true);
     try {
-      await api.post('/timesheets/timesheets', { ...form, employee_id: user.employee_id });
-    } catch (err) {
-      if (!isMounted.current) return;
-      showToast(err.response?.data?.error || 'Failed to add entry', 'error');
-      setSubmitting(false);
-      return;
-    }
-    if (!isMounted.current) return;
-    const pid = String(form.project_id);
-    const dt  = form.work_date;
-    setEntries(prev => ({
-      ...prev,
-      [pid]: { ...(prev[pid] || {}), [dt]: (parseFloat(prev[pid]?.[dt]) || 0) + parseFloat(form.hours_worked) },
-    }));
-    showToast('Entry added');
-    setDrawer(false);
-    setForm(emptyEntry());
-    setSubmitting(false);
-  };
-
-  const handleSubmitWeek = async () => {
-    const user = JSON.parse(localStorage.getItem('user') || '{}');
-    try {
-      await api.post('/timesheets/timesheets/submit-week', {
-        employee_id: user.employee_id, week_start: weekStart, week_end: weekEnd,
-      });
-    } catch (err) {
-      if (!isMounted.current) return;
-      showToast(err.response?.data?.error || 'Failed to submit week', 'error');
-      return;
-    }
-    if (!isMounted.current) return;
-    showToast('Week submitted for approval');
-  };
-
-  const toggleClock = async () => {
-    const user = JSON.parse(localStorage.getItem('user') || '{}');
-    if (!clockedIn) {
-      try {
-        const ts = new Date().toISOString();
-        await api.post('/timesheets/timesheets/clock-in', { employee_id: user.employee_id, timestamp: ts });
-        if (!isMounted.current) return;
-        setClockedIn(true);
-        setClockTime(new Date());
-        showToast('Clocked in');
-      } catch (err) {
-        if (isMounted.current) showToast(err.response?.data?.error || 'Clock-in failed', 'error');
-      }
-    } else {
-      try {
-        const ts = new Date().toISOString();
-        await api.post('/timesheets/timesheets/clock-out', {
-          employee_id: user.employee_id,
-          timestamp: ts,
-          clock_in_timestamp: clockTime?.toISOString(),
-          project_id: form.project_id || null,
-        });
-        if (!isMounted.current) return;
-        const elapsed = ((new Date() - clockTime) / 3600000).toFixed(1);
-        setClockedIn(false);
-        setClockTime(null);
-        showToast(`Clocked out — ${elapsed}h logged`);
-        load();
-      } catch (err) {
-        if (isMounted.current) showToast(err.response?.data?.error || 'Clock-out failed', 'error');
-      }
+      const r = await api.put('/timesheets/timesheets/my-week', { week_start: week.week_start, rows, submit });
+      apply(r.data);
+      showToast(submit ? 'Week submitted for approval' : 'Draft saved');
+    } catch (e) {
+      showToast(e.response?.data?.error || 'Could not save the week', 'error');
+    } finally {
+      setSaving(false);
     }
   };
 
-  const elapsedLabel = () => {
-    if (!clockedIn || !clockTime) return null;
-    const secs = Math.floor((Date.now() - clockTime.getTime()) / 1000);
-    const h = Math.floor(secs / 3600);
-    const m = Math.floor((secs % 3600) / 60);
-    const s = secs % 60;
-    return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
-  };
-
-  const today = fmtDate(new Date());
+  const banner = week ? STATUS_BANNER[week.status] || STATUS_BANNER.draft : null;
+  const tone = banner ? TONE[banner.tone] : null;
 
   return (
     <PageShell dock={
@@ -196,208 +147,112 @@ export default function MyTimesheet() {
         icon={CalendarClock}
         eyebrow="Timesheets"
         title="My Timesheet"
+        subtitle={week ? `Week of ${fmtDay(week.week_start)} – ${fmtDay(week.week_end)}` : undefined}
         actions={<>
-          {/* Week navigation is one control, not three — grouping it stops a
-              seven-button hero reading as seven equal-weight actions. */}
           <span className="plh-group">
-            <button className="plh-cta plh-cta--icon" onClick={() => setWeekOffset(o => o - 1)} title="Previous week">
-              <ChevronLeft size={14} />
+            <button className="plh-cta plh-cta--icon" title="Previous week" disabled={!week}
+              onClick={() => setAnchor(addDays(week.week_start, -7))}><ChevronLeft size={14} /></button>
+            <button className="plh-cta" onClick={() => setAnchor(null)}>
+              {week && week.week_start === thisWeek ? 'This Week' : 'Go to This Week'}
             </button>
-            <button className="plh-cta" onClick={() => setWeekOffset(0)}>
-              {isCurrentWeek ? 'This Week' : 'Go to Today'}
-            </button>
-            <button className="plh-cta plh-cta--icon" onClick={() => setWeekOffset(o => o + 1)} disabled={weekOffset >= 0} title="Next week">
-              <ChevronRight size={14} />
-            </button>
+            <button className="plh-cta plh-cta--icon" title="Next week"
+              disabled={!week || !thisWeek || week.week_start >= thisWeek}
+              onClick={() => setAnchor(addDays(week.week_start, 7))}><ChevronRight size={14} /></button>
           </span>
-          <button className="plh-cta plh-cta--ghost plh-cta--icon" onClick={load} title="Refresh">
-            <RefreshCw size={14} />
-          </button>
-          <button className="plh-cta plh-cta--ghost" onClick={toggleClock}>
-            {clockedIn
-              ? <><Square size={13} /> Clock Out {elapsedLabel() && <span className="mts-clock-timer">{elapsedLabel()}</span>}</>
-              : <><Play size={13} /> Clock In</>}
-          </button>
-          <button className="plh-cta plh-cta--ghost" onClick={handleSubmitWeek}><Send size={13} /> Submit Week</button>
-          <button className="plh-cta" onClick={() => { setForm(emptyEntry()); setDrawer(true); }}>
-            <Plus size={14} /> Add Entry
-          </button>
+          <button className="plh-cta plh-cta--ghost plh-cta--icon" onClick={load} title="Refresh"><RefreshCw size={14} /></button>
+          {editable && projects.length > 0 && <>
+            <button className="plh-cta plh-cta--ghost" onClick={() => save(false)} disabled={saving}><Save size={13} /> Save draft</button>
+            <button className="plh-cta" onClick={() => save(true)} disabled={saving || weekTotal <= 0}>
+              <Send size={13} /> {saving ? 'Submitting…' : 'Submit week'}
+            </button>
+          </>}
         </>}
       />
     }>
-
       {toast && <div className={`mts-toast mts-toast-${toast.type}`}>{toast.msg}</div>}
-
-      {/* header */}
-
 
       {loading ? (
         <div className="mts-loading"><div className="mts-spinner" /><p>Loading…</p></div>
-      ) : (
+      ) : error ? (
+        <div className="mts-empty" role="alert">{error}</div>
+      ) : projects.length === 0 ? (
+        <div className="mts-empty">
+          <Clock size={32} style={{ opacity: 0.4 }} />
+          <p style={{ margin: '8px 0 0', fontWeight: 600 }}>You are not on a project this week.</p>
+          <p style={{ margin: '4px 0 0' }}>Your timesheet starts filling itself once a project manager adds you to a project team.</p>
+        </div>
+      ) : (<>
+        <div className="mts-banner" style={{ background: tone.bg, color: tone.fg }}>
+          <Info size={14} />
+          <span>
+            {banner.text}
+            {week.status === 'rejected' && week.rejection_reason ? ` Reason: ${week.rejection_reason}` : ''}
+            {EDITABLE.has(week.status) && week.status !== 'rejected' ? ` If you don't, it is submitted automatically on ${fmtDay(week.auto_submit_on)}.` : ''}
+          </span>
+        </div>
+
         <div className="mts-table-wrap">
           <table className="mts-table">
             <thead>
               <tr>
-                <th className="mts-th-project">Project</th>
-                {weekDates.map((d, i) => {
-                  const isWeekend = i >= 5;
-                  return (
-                    <th key={i} className={
-                      `mts-th-day${fmtDate(d) === today ? ' mts-today' : ''}${isWeekend ? ' mts-weekend' : ''}`
-                    }>
-                      <div className="mts-day-name">{DAYS[i]}</div>
-                      <div className="mts-day-date">{fmtD(d)}</div>
-                      {isWeekend && <div className="mts-weekend-tag">OT</div>}
-                    </th>
-                  );
-                })}
+                <th className="mts-th-project">Day</th>
+                <th className="mts-th-day">Attendance</th>
+                {projects.map(p => (
+                  <th key={p.id} className="mts-th-day" title={p.project_name}>
+                    <div className="mts-day-name">{p.project_code || 'Project'}</div>
+                    <div className="mts-day-date">{p.project_name}</div>
+                  </th>
+                ))}
                 <th className="mts-th-total">Total</th>
               </tr>
             </thead>
             <tbody>
-              {projects.length === 0 ? (
-                <tr>
-                  <td colSpan={9} style={{ textAlign: 'center', padding: '3rem', color: 'var(--color-text-tertiary, #9ca3af)' }}>
-                    <Clock size={32} style={{ opacity: 0.4, marginBottom: '0.5rem', display: 'block', margin: '0 auto 0.5rem' }} />
-                    <p style={{ margin: 0 }}>No project assignments found for your account</p>
-                  </td>
-                </tr>
-              ) : projects.map(p => (
-                <tr key={p.id} className="mts-row">
-                  <td className="mts-td-project">
-                    <div className="mts-proj-code">{p.project_code}</div>
-                    <div className="mts-proj-name">{p.project_name}</div>
-                  </td>
-                  {weekDates.map((d, di) => {
-                    const dt      = fmtDate(d);
-                    const hrs     = parseFloat(entries[String(p.id)]?.[dt]) || 0;
-                    const isWeekend = di >= 5;
-                    return (
-                      <td key={di} className={
-                        `mts-td-hour${dt === today ? ' mts-today' : ''}${isWeekend ? ' mts-weekend' : ''}`
-                      }>
-                        {hrs > 0
-                          ? <span className={`mts-hrs${isWeekend ? ' mts-hrs-ot' : ''}`}>{hrs.toFixed(1)}h</span>
-                          : <span className="mts-hrs-empty">—</span>}
-                      </td>
-                    );
-                  })}
-                  <td className="mts-td-total">
-                    {projTotal(p) > 0 ? `${projTotal(p).toFixed(1)}h` : '—'}
-                  </td>
-                </tr>
-              ))}
+              {week.days.map(d => {
+                const off = ['weekend', 'holiday', 'leave', 'future'].includes(d.source);
+                const total = dayTotal(d.date);
+                const differs = Math.abs(total - (d.hours || 0)) >= 0.25;
+                return (
+                  <tr key={d.date} className={`mts-row${off ? ' mts-row-off' : ''}`}>
+                    <td className="mts-td-project"><div className="mts-proj-name">{fmtDay(d.date)}</div></td>
+                    <td className="mts-td-hour">
+                      <div className="mts-hrs">{fmtHrs(d.hours)}</div>
+                      <div className="mts-source">{d.source === 'holiday' && d.note ? d.note : SOURCE_LABEL[d.source] || d.source}</div>
+                    </td>
+                    {projects.map(p => {
+                      const v = hours[d.date]?.[p.id] || 0;
+                      return (
+                        <td key={p.id} className="mts-td-hour">
+                          {editable && d.source !== 'future' ? (
+                            <input className="mts-cell" type="number" min="0" max="24" step="0.25"
+                              aria-label={`${p.project_name} hours on ${d.date}`}
+                              value={v === 0 ? '' : v} placeholder="0"
+                              onChange={e => setCell(d.date, p.id, e.target.value)} />
+                          ) : <span className={v > 0 ? 'mts-hrs' : 'mts-hrs-empty'}>{fmtHrs(v)}</span>}
+                        </td>
+                      );
+                    })}
+                    <td className="mts-td-total" title={differs ? 'Differs from attendance' : undefined}>
+                      {fmtHrs(total)}{differs && total > 0 ? ' *' : ''}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
             <tfoot>
               <tr className="mts-foot-row">
-                <td className="mts-td-project mts-foot-label">Daily Total</td>
-                {weekDates.map((d, i) => {
-                  const tot = dayTotal(d);
-                  const isWeekend = i >= 5;
-                  return (
-                    <td key={i} className={
-                      `mts-td-hour mts-foot-total${fmtDate(d) === today ? ' mts-today' : ''}${isWeekend ? ' mts-weekend' : ''}`
-                    }>
-                      {tot > 0 ? `${tot.toFixed(1)}h` : '—'}
-                    </td>
-                  );
-                })}
-                <td className="mts-td-total mts-foot-total">{totalHours.toFixed(1)}h</td>
+                <td className="mts-td-project mts-foot-label">Week</td>
+                <td className="mts-td-hour mts-foot-total">{fmtHrs(attendanceTotal)}</td>
+                {projects.map(p => <td key={p.id} className="mts-td-hour mts-foot-total">{fmtHrs(projTotal(p.id))}</td>)}
+                <td className="mts-td-total mts-foot-total">{fmtHrs(weekTotal)}</td>
               </tr>
             </tfoot>
           </table>
         </div>
-      )}
-
-      {/* summary cards */}
-      <div className="mts-summary">
-        <div className="mts-summary-card">
-          <Clock size={16} color="#6366f1" />
-          <div>
-            <div className="mts-summary-label">Total This Week</div>
-            <div className="mts-summary-val">{totalHours.toFixed(1)}h</div>
-          </div>
-        </div>
-        <div className="mts-summary-card">
-          <Check size={16} color="#10b981" />
-          <div>
-            <div className="mts-summary-label">Weekday Hours (Mon–Fri)</div>
-            <div className="mts-summary-val">{weekdayTotal.toFixed(1)}h</div>
-          </div>
-        </div>
-        <div className="mts-summary-card" style={{ opacity: clockedIn ? 1 : 0.5 }}>
-          <Play size={16} color={clockedIn ? '#7c5cf0' : '#9ca3af'} />
-          <div>
-            <div className="mts-summary-label">Clock Status</div>
-            <div className="mts-summary-val" style={{ color: clockedIn ? '#7c5cf0' : '#9ca3af' }}>
-              {clockedIn ? `Clocked In${elapsedLabel() ? ` · ${elapsedLabel()}` : ''}` : 'Not Clocked'}
-            </div>
-          </div>
-        </div>
-        <div className="mts-summary-card">
-          <RefreshCw size={16} color="#3b82f6" />
-          <div>
-            <div className="mts-summary-label">Target (5d × 8h)</div>
-            <div className="mts-summary-val" style={{ color: weekdayTotal >= 40 ? '#10b981' : '#374151' }}>
-              {weekdayTotal.toFixed(1)}h / 40.0h
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Add Entry Drawer */}
-      {drawer && (
-        <div className="mts-overlay" onClick={() => setDrawer(false)}>
-          <div className="mts-drawer" onClick={e => e.stopPropagation()}>
-            <div className="mts-drawer-hd">
-              <h3>Add Time Entry</h3>
-              <button className="mts-icon-btn" onClick={() => setDrawer(false)}><X size={16} /></button>
-            </div>
-            <div className="mts-drawer-body">
-              <div className="mts-field">
-                <label>Project *</label>
-                <select value={form.project_id}
-                  onChange={e => setForm(f => ({ ...f, project_id: e.target.value }))}>
-                  <option value="">Select project…</option>
-                  {projects.map(p => <option key={p.id} value={p.id}>{p.project_name}</option>)}
-                </select>
-              </div>
-              <div className="mts-row2">
-                <div className="mts-field">
-                  <label>Date *</label>
-                  <input type="date" value={form.work_date}
-                    onChange={e => setForm(f => ({ ...f, work_date: e.target.value }))} />
-                </div>
-                <div className="mts-field">
-                  <label>Hours *</label>
-                  <input type="number" step="0.5" min="0.5" max="24" value={form.hours_worked}
-                    onChange={e => setForm(f => ({ ...f, hours_worked: e.target.value }))}
-                    placeholder="e.g. 2.5" />
-                </div>
-              </div>
-              <div className="mts-field">
-                <label>Description</label>
-                <textarea rows={3} value={form.description}
-                  onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
-                  placeholder="What did you work on…" />
-              </div>
-              <div className="mts-field mts-check-row">
-                <label className="mts-check-label">
-                  <input type="checkbox" checked={form.is_billable}
-                    onChange={e => setForm(f => ({ ...f, is_billable: e.target.checked }))} />
-                  Billable
-                </label>
-              </div>
-            </div>
-            <div className="mts-drawer-ft">
-              <button className="mts-btn-outline" onClick={() => setDrawer(false)}>Cancel</button>
-              <button className="mts-btn-primary" onClick={handleAddEntry} disabled={submitting}>
-                {submitting ? 'Saving…' : 'Add Entry'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+        <p className="mts-note">
+          * the day&apos;s total differs from attendance. Standard day = a working day with no punch, counted
+          as {week.full_day_hours}h. Hours are split across your projects by your allocation; change any figure before submitting.
+        </p>
+      </>)}
     </PageShell>
   );
 }

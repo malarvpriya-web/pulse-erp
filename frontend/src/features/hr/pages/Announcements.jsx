@@ -2,13 +2,15 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import DOMPurify from "dompurify";
 import {
   Megaphone, Plus, X, Pencil, Trash2, Eye, EyeOff, Clock, Pin, PinOff,
-  CalendarClock, Users, Search, CheckCircle, AlertTriangle, Info, Bell,
+  CalendarClock, Users, Search, CheckCircle, AlertTriangle, Info, Bell, RotateCcw,
 } from 'lucide-react';
 import api from "@/services/api/client";
+import VocabSelect from "@/components/core/VocabSelect";
 import "./Announcements.css";
 import ConfirmDialog from "@/components/core/ConfirmDialog";
 import { useAuth } from "@/context/AuthContext";
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import { isCurrent } from '@/features/employees/employeeStatus';
 
 /* ── constants ───────────────────────────────────────────────────────────────── */
 const TABS = ["All", "Active", "Scheduled", "Inactive", "Expired"];
@@ -20,7 +22,8 @@ const PRIORITIES = [
   { value: "low",    label: "Low",    cls: "ann-badge-pri-low"    },
 ];
 
-const CATEGORIES = ["General", "HR Policy", "Finance", "IT", "Operations", "Legal", "Urgent", "Other"];
+// Categories are the ANNOUNCEMENT_CATEGORY master (Settings → Master Data, or
+// "+ Add new…" in the picker), not a constant (HR audit 2026-11-16).
 
 /* ── date helpers ────────────────────────────────────────────────────────────── */
 const localDateStr = (d = new Date()) => {
@@ -68,18 +71,22 @@ const daysLeft = (ann) => {
   return Math.ceil((end - today) / 86400000);
 };
 
-const targetLabel = (type, value) => {
+// `name` is the server's target_name (the addressed employee's name, joined in
+// the management list). The raw id is only a fallback.
+const targetLabel = (type, value, name) => {
   if (type === "all")        return { label: "All Employees", cls: "ann-badge-all" };
   if (type === "department") return { label: `Dept: ${value || "—"}`, cls: "ann-badge-dept" };
-  if (type === "employee")   return { label: `Employee: ${value || "—"}`, cls: "ann-badge-emp" };
+  if (type === "employee")   return { label: `Employee: ${name || (value ? `#${value}` : "—")}`, cls: "ann-badge-emp" };
   return { label: type || "All", cls: "ann-badge-all" };
 };
 
+// Project date standard: DD Mon YY (e.g. 21 Oct 26).
+const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 const fmtDate = (val) => {
   const s = toDateStr(val);
-  if (!s) return "—";
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return "—";
   const [y, m, d] = s.split("-");
-  return `${d}/${m}/${y}`;
+  return `${d} ${MONTHS[Number(m) - 1]} ${y.slice(2)}`;
 };
 
 const fmtScheduledAt = (val) => {
@@ -87,7 +94,7 @@ const fmtScheduledAt = (val) => {
   const d = new Date(val);
   if (isNaN(d.getTime())) return "";
   const p = n => String(n).padStart(2, "0");
-  return `${p(d.getDate())}/${p(d.getMonth()+1)}/${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  return `${fmtDate(localDateStr(d))} ${p(d.getHours())}:${p(d.getMinutes())}`;
 };
 
 const safe = (html) => DOMPurify.sanitize(html || "", { USE_PROFILES: { html: true } });
@@ -246,6 +253,12 @@ export default function Announcements() {
   const { hasPermission } = useAuth();
   const canArchive = typeof hasPermission === 'function' && hasPermission('announcements', 'delete');
   const abortRef = useRef(null);
+  // The archive (deleted_at set) and its undo — same right as archiving.
+  const [archived,        setArchived]        = useState([]);
+  const [archivedLoading, setArchivedLoading] = useState(false);
+  const [archivedError,   setArchivedError]   = useState(null);
+  const [restoringId,     setRestoringId]     = useState(null);
+  const tabs = canArchive ? [...TABS, "Archived"] : TABS;
 
   const set = (k, v) => {
     setForm(f => ({ ...f, [k]: v }));
@@ -279,11 +292,12 @@ export default function Announcements() {
   }, []);
 
   const fetchEmployees = useCallback(async () => {
-    const EX = new Set(['left','terminated','resigned','ex-employee','notice_period','notice period','inactive']);
     try {
       const res = await api.get("/employees");
       const raw  = Array.isArray(res.data) ? res.data : (res.data?.employees ?? res.data?.data ?? []);
-      const list = raw.filter(e => !EX.has((e.status || '').toLowerCase()));
+      // Same "still employed" rule the server uses for the audience
+      // (shared/employeeStatus): someone serving notice can still be addressed.
+      const list = raw.filter(e => isCurrent(e.status));
       setEmployees(list);
       setDepartments([...new Set(list.map(e => e.department).filter(Boolean))].sort());
     } catch (e) { console.error("[Announcements] fetchEmployees failed:", e.message); }
@@ -294,6 +308,34 @@ export default function Announcements() {
     fetchEmployees();
     return () => abortRef.current?.abort();
   }, [fetchAnnouncements, fetchEmployees]);
+
+  const fetchArchived = useCallback(async () => {
+    setArchivedLoading(true); setArchivedError(null);
+    try {
+      const res = await api.get("/announcements/archived");
+      setArchived(Array.isArray(res.data) ? res.data : []);
+    } catch (err) {
+      setArchivedError(apiError(err, "Failed to load archived announcements"));
+    } finally { setArchivedLoading(false); }
+  }, []);
+
+  useEffect(() => {
+    if (tab === "Archived" && canArchive) fetchArchived();
+  }, [tab, canArchive, fetchArchived]);
+
+  const handleRestore = async (ann) => {
+    setRestoringId(ann.id);
+    try {
+      await api.put(`/announcements/${ann.id}/restore`);
+      setArchived(prev => prev.filter(a => a.id !== ann.id));
+      await fetchAnnouncements();
+      addToast(isExpired(ann)
+        ? "Announcement restored — it has expired, so update the end date to show it again"
+        : "Announcement restored");
+    } catch (err) {
+      addToast(apiError(err, "Error restoring"), "error");
+    } finally { setRestoringId(null); }
+  };
 
   /* ── drawer helpers ── */
   const openCreate = () => {
@@ -474,7 +516,7 @@ export default function Announcements() {
       {/* ── Tabs + Search row ── */}
       <div className="ann-toolbar">
         <div className="ann-tabs">
-          {TABS.map(t => {
+          {tabs.map(t => {
             const count =
               t === "Active"    ? activeCount :
               t === "Scheduled" ? scheduledCount :
@@ -485,7 +527,8 @@ export default function Announcements() {
               <button key={t}
                 className={`ann-tab${tab === t ? " active" : ""}`}
                 onClick={() => setTab(t)}>
-                {t}{t !== "All" ? ` (${count})` : ""}
+                {/* The archive is loaded only when opened, so it shows no count. */}
+                {t}{t !== "All" && t !== "Archived" ? ` (${count})` : ""}
               </button>
             );
           })}
@@ -506,8 +549,62 @@ export default function Announcements() {
         </div>
       </div>
 
+      {/* ── Archive ── */}
+      {tab === "Archived" && (
+        <div className="ann-list">
+          <p className="ann-archive-note">
+            Archived announcements are hidden from everyone. Restoring one puts it back as it was;
+            it is not sent to employees again if it already went out.
+          </p>
+          {archivedError && <div className="ann-error">{archivedError}</div>}
+          {archivedLoading ? (
+            <div className="ann-empty">Loading…</div>
+          ) : archived.filter(a => !search.trim() || a.title?.toLowerCase().includes(search.toLowerCase())).length === 0 ? (
+            <div className="ann-empty">{search ? `No archived announcements matching "${search}"` : "No archived announcements"}</div>
+          ) : archived
+              .filter(a => !search.trim() || a.title?.toLowerCase().includes(search.toLowerCase()))
+              .map(ann => {
+                const tgt = targetLabel(ann.target_type, ann.target_value, ann.target_name);
+                return (
+                  <div key={ann.id} className="ann-card inactive">
+                    <div className="ann-card-icon expired"><Megaphone size={16} /></div>
+                    <div className="ann-card-body">
+                      <div className="ann-card-top">
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div className="ann-card-title">{ann.title}</div>
+                          <div className="ann-meta-row">
+                            <span className="ann-badge ann-badge-inactive">Archived</span>
+                            <span className={`ann-badge ${tgt.cls}`}>{tgt.label}</span>
+                            {ann.from_date && (
+                              <span className="ann-badge ann-badge-date">
+                                {fmtDate(ann.from_date)} → {fmtDate(ann.to_date)}
+                              </span>
+                            )}
+                          </div>
+                          <div className="ann-author">
+                            Archived {ann.deleted_at ? fmtDate(ann.deleted_at) : ""}
+                            {ann.deleted_by_name ? ` by ${ann.deleted_by_name}` : ""}
+                          </div>
+                        </div>
+                        <div className="ann-card-actions">
+                          <button className="ann-action-btn edit"
+                            disabled={restoringId === ann.id}
+                            onClick={() => handleRestore(ann)}>
+                            <RotateCcw size={11} style={{ marginRight: 3 }} />
+                            {restoringId === ann.id ? "Restoring…" : "Restore"}
+                          </button>
+                        </div>
+                      </div>
+                      <div className="ann-card-msg" dangerouslySetInnerHTML={{ __html: safe(ann.message) }} />
+                    </div>
+                  </div>
+                );
+              })}
+        </div>
+      )}
+
       {/* ── List ── */}
-      <div className="ann-list">
+      {tab !== "Archived" && <div className="ann-list">
         {loading ? (
           <div className="ann-empty">Loading…</div>
         ) : filtered.length === 0 ? (
@@ -515,7 +612,7 @@ export default function Announcements() {
             {search ? `No announcements matching "${search}"` : "No announcements in this category"}
           </div>
         ) : filtered.map(ann => {
-          const tgt      = targetLabel(ann.target_type, ann.target_value);
+          const tgt      = targetLabel(ann.target_type, ann.target_value, ann.target_name);
           const expired  = isExpired(ann);
           const sched    = isScheduled(ann);
           const days     = daysLeft(ann);
@@ -635,7 +732,7 @@ export default function Announcements() {
             </div>
           );
         })}
-      </div>
+      </div>}
 
       {/* ── Delete confirm ── */}
       {pendingDeleteId && (
@@ -643,7 +740,7 @@ export default function Announcements() {
           <div className="ann-modal-box" onClick={e => e.stopPropagation()}>
             <h3 style={{ margin: "0 0 8px", fontSize: 16, fontWeight: 700 }}>Delete Announcement</h3>
             <p style={{ margin: "0 0 20px", color: "#6b7280", fontSize: 13 }}>
-              Employees will no longer see this announcement. It is archived, not erased: the record, its read receipts and its audit history are kept.
+              Employees will no longer see this announcement. It is archived, not erased: the record, its read receipts and its audit history are kept, and it can be restored from the Archived tab.
             </p>
             <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
               <button className="ann-btn-ghost" onClick={() => setPendingDeleteId(null)}>Cancel</button>
@@ -707,12 +804,10 @@ export default function Announcements() {
                 </div>
                 <div>
                   <label className="ann-label">Category</label>
-                  <select className="ann-input" value={form.category}
-                    onChange={e => set("category", e.target.value)}>
-                    {CATEGORIES.map(c => (
-                      <option key={c} value={c}>{c}</option>
-                    ))}
-                  </select>
+                  <VocabSelect vocab="announcement-categories" ariaLabel="Category"
+                    className="ann-input" selectStyle={{ width: '100%' }}
+                    value={form.category}
+                    onChange={v => set("category", v || "General")} />
                 </div>
               </div>
 

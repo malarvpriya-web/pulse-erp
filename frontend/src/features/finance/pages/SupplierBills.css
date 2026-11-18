@@ -98,9 +98,9 @@
 .sb-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:60px;color:#9ca3af;}
 
 /* overlay + drawers */
-.sb-overlay{position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:500;display:flex;justify-content:flex-end;}
+.sb-overlay{position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:500;display:flex;align-items: center; justify-content: center; padding: 24px;}
 .sb-modal-center{justify-content:center;align-items:center;}
-.sb-drawer{width:min(580px,95vw);background:#fff;height:100vh;display:flex;flex-direction:column;box-shadow:-4px 0 30px rgba(0,0,0,.12);overflow:hidden;}
+.sb-drawer{width:min(580px,95vw);background:#fff;max-width: 100%; max-height: calc(100vh - 48px); border-radius: 12px;display:flex;flex-direction:column;box-shadow: 0 20px 60px rgba(0,0,0,.18);overflow:hidden;}
 .sb-drawer-wide{width:min(720px,95vw);}
 .sb-drawer-hd{display:flex;justify-content:space-between;align-items:flex-start;padding:18px 22px;border-bottom:1px solid #f0f0f4;flex-shrink:0;}
 .sb-drawer-hd h3{font-size:16px;font-weight:600;color:#111827;margin:0;}

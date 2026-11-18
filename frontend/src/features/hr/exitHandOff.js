@@ -2,7 +2,12 @@
 // ?initiate=<employee id>&lwd=YYYY-MM-DD&reason=&name= (containment C6 / MD-14,
 // HR_P0_REMEDIATION_DESIGN_2026-11-03.md). Its reasons map to the separation
 // types Initiate Exit offers; anything else is left for HR to choose.
-const REASON_TO_TYPE = { Resignation: 'resignation', Termination: 'termination', Absconding: 'termination', Retirement: 'retirement' };
+// §274: absconding and contract end are exit types of their own now (the F&F
+// engine treats them differently from a termination).
+const REASON_TO_TYPE = {
+  Resignation: 'resignation', Termination: 'termination', Absconding: 'absconding',
+  Retirement: 'retirement', 'Contract End': 'contract_expiry',
+};
 
 /** The Initiate Exit pre-fill a hand-off URL carries, or null when there is none. */
 export function initiateHandOff(search) {

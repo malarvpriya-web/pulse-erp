@@ -6,8 +6,12 @@ import SalaryStructure from './SalaryStructure';
 import PayslipGenerator from './PayslipGenerator';
 import PayslipViewer from './PayslipViewer';
 import PayrollForm16 from './PayrollForm16';
+import StatutoryRulesPanel from '../components/payroll/StatutoryRulesPanel';
 import PayrollForm24Q from './PayrollForm24Q';
 import PayrollOverview from '../components/payroll/PayrollOverview';
+import StatutoryDuesPanel from '../components/payroll/StatutoryDuesPanel';
+import TaxSetupPanel from '../components/payroll/TaxSetupPanel';
+import ITDeclarationReview from './ITDeclarationReview';
 import { SECTIONS, resolvePayrollTab, visibleViews } from '../components/payroll/payrollCenterTabs';
 import { useAuth } from '@/context/AuthContext';
 import { PageHero, PageShell } from '@/components/pulse-ui';
@@ -21,7 +25,7 @@ import './PayrollCenter.css';
  * and every API call and server-side gate is the page's own. Two sections hold
  * two pages each, switched with `?view=`:
  *   Payslips  — Payslip Generator (preview / distribute) · Payslip Viewer
- *   Tax       — Form 16 / Form No. 130 · Form 138 / Form 24Q
+ *   Tax       — dues · IT declarations (§265) · Form 16 / Form No. 130 · Form 138 / Form 24Q
  *
  * Each page is rendered `embedded`: it drops its own hero, and `.plh-tabpanel`
  * un-freezes any nested dock so it cannot sit over this tab strip (§148).
@@ -52,10 +56,12 @@ export default function PayrollCenter({ setPage }) {
     switch (section) {
       case 'overview':   return <PayrollOverview go={go} />;
       case 'processing': return <Payroll embedded setPage={setPage} />;
-      case 'structures': return <SalaryStructure embedded />;
+      case 'structures': return view === 'tax' ? <TaxSetupPanel /> : <SalaryStructure embedded />;
       case 'payslips':   return view === 'viewer' ? <PayslipViewer embedded setPage={setPage} /> : <PayslipGenerator embedded />;
-      case 'statutory':  return view === 'form138' ? <PayrollForm24Q embedded setPage={setPage} /> : <PayrollForm16 embedded setPage={setPage} />;
-      case 'settings':   return <PayrollSettings embedded setPage={setPage} />;
+      case 'statutory':  return view === 'form138' ? <PayrollForm24Q embedded setPage={setPage} />
+        : view === 'form16' ? <PayrollForm16 embedded setPage={setPage} />
+        : view === 'declarations' ? <ITDeclarationReview embedded /> : <StatutoryDuesPanel />;
+      case 'settings':   return view === 'rules' ? <StatutoryRulesPanel /> : <PayrollSettings embedded setPage={setPage} />;
       default:           return null;
     }
   };
@@ -67,7 +73,7 @@ export default function PayrollCenter({ setPage }) {
           icon={Wallet}
           eyebrow="Human Resources"
           title="Payroll Center"
-          subtitle="Settings → structures → processing → payslips → statutory returns"
+          subtitle="Settings → salaries → attendance & processing → approval → payment → payslips → statutory dues"
         />
         <div className="pc-tabs" role="tablist" aria-label="Payroll Center sections">
           {SECTIONS.map(({ id, label, icon: Icon }) => (

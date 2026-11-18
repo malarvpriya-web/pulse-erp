@@ -1,12 +1,13 @@
 import * as service from './payroll.service.js';
 import { PayrollHttpError, FINAL_STATUSES } from './payroll.service.js';
 import pool from '../shared/db.js';
-import { getMonthName } from './payrollEngine.js';
+import { getMonthName, normalizeState } from './payrollEngine.js';
 import { logAudit } from '../../services/AuditService.js';
 import { sendPayslipEmail, isEmailConfigured } from '../../utils/mailer.js';
 import { companyOf } from '../../shared/scope.js';
 import { rolesOf } from '../../middlewares/auth.middleware.js';
-import { RULE_KEYS } from './statutoryRules.js';
+import { RULE_KEYS, STATE_RULE_GAPS, ruleValueProblems, sameValue } from './statutoryRules.js';
+import { SETTLEMENT_RULE_KEYS, settlementRuleProblem } from '../hr/settlementRules.js';
 import { POLICY_KEY, resolvePolicy } from './ctcService.js';
 import { ownEmployeeId } from './payrollAccess.js';
 
@@ -68,8 +69,11 @@ export function shapePayslip(slip, emp = {}) {
     : [['Basic Salary', slip.basic], ['HRA', slip.hra],
        ['Conveyance Allowance', slip.conveyance_allowance], ['Medical Allowance', slip.medical_allowance],
        ['Special Allowance', slip.special_allowance]];
+  // One-time amounts HR entered for the month (payroll_adjustments, §261), each on its own line.
+  const adj = Array.isArray(slip.adjustment_lines) ? slip.adjustment_lines : [];
   const oneTime = [['Overtime Pay', slip.overtime_pay], ['Night Shift Allowance', slip.night_shift_allowance],
-    ['Bonus', slip.bonus], ['Arrears', slip.arrears ?? slip.arrears_amount]];
+    ['Bonus', slip.bonus], ['Arrears', slip.arrears ?? slip.arrears_amount],
+    ...adj.filter(a => a.kind === 'earning').map(a => [a.label, a.amount])];
   const earnings = [...regular, ...oneTime]
     .map(([label, amount]) => ({ label, amount: n(amount) })).filter(e => e.amount > 0);
   const unexplained = Math.round(n(slip.gross) - earnings.reduce((t, e) => t + e.amount, 0));
@@ -78,10 +82,12 @@ export function shapePayslip(slip, emp = {}) {
     ['Provident Fund (Employee)', slip.employee_pf], ['ESI (Employee)', slip.employee_esi],
     ['Professional Tax', slip.professional_tax], ['Labour Welfare Fund (Employee)', slip.lwf_employee],
     ['TDS (Income Tax)', slip.tds], ['Loan EMI', slip.loan_deduction], ['Advance Recovery', slip.advance_deduction],
+    ...adj.filter(a => a.kind === 'deduction').map(a => [a.label, a.amount]),
   ].map(([label, amount]) => ({ label, amount: n(amount) })).filter(d => d.amount > 0);
   const employer = [
     ['Provident Fund (Employer) — EPS', slip.eps], ['Provident Fund (Employer) — EPF', slip.epf_employer],
     ['ESI (Employer)', slip.employer_esi], ['Labour Welfare Fund (Employer)', slip.lwf_employer],
+    ['EDLI and EPF administration (Employer)', Number(slip.edli_employer || 0) + Number(slip.pf_admin_employer || 0)],
   ].map(([label, amount]) => ({ label, amount: n(amount) })).filter(c => c.amount > 0);
   const code = slip.employee_code || emp.office_id || null;
   const acct = emp.account_number ?? emp.bank_account ?? slip.bank_account;
@@ -92,6 +98,9 @@ export function shapePayslip(slip, emp = {}) {
     deductions,
     employer_contributions_list: employer,
     employer_contributions_total: employer.reduce((s, c) => s + c.amount, 0),
+    // Taxed, never paid: shown so the payslip explains the tax.
+    taxable_perquisites: n(slip.perquisite_value) > 0 ? [{ label: 'Loan below the SBI rate (taxable perquisite, not paid)', amount: n(slip.perquisite_value) }] : [],
+    lop_note: n(slip.lop_carried_days) > 0 ? `includes ${n(slip.lop_carried_days)} day(s) of absence after last month's cutoff (₹${n(slip.lop_carried_amount).toLocaleString('en-IN')})` : null,
     employee: {
       id: slip.employee_id || emp.id,
       code,
@@ -121,12 +130,17 @@ export const getEligibility = wrap(async (req, res) => {
 });
 
 export const getReleaseReadiness = wrap(async (req, res) => {
-  const { releaseReadiness } = await import('./payrollReleaseGate.js');
   const cid = companyOf(req);
   if (cid == null) return res.status(400).json({ success: false, message: 'Payroll is per company — sign in to (or select) a company first' });
   const m = parseInt(req.query.month) || new Date().getMonth() + 1, y = parseInt(req.query.year) || new Date().getFullYear();
-  res.json({ success: true, data: await releaseReadiness({ company_id: cid, month: m, year: y }) });
+  const { rules: _rules, ...data } = await service.periodReadiness({ company_id: cid, month: m, year: y });
+  res.json({ success: true, data });
 });
+
+async function companyHeader(cid) {
+  const { rows: [co] } = await pool.query('SELECT name, address FROM companies WHERE id = $1', [cid]);
+  return { name: co?.name || null, address: co?.address || '' };
+}
 
 export const getPayrollCycle = wrap(async (req, res) => {
   res.json({ success: true, data: await service.getPayrollCycle({ ...req.query, company_id: companyOf(req) }) });
@@ -149,12 +163,12 @@ export const getPayslipByQuery = wrap(async (req, res) => {
     if (!saved || !FINAL_STATUSES.includes(saved.status)) {
       return res.status(404).json({ success: false, message: 'The payslip for this month has not been released yet' });
     }
-    return res.json({ success: true, data: shapePayslip(saved) });
+    return res.json({ success: true, data: { ...shapePayslip(saved), company: await companyHeader(cid) } });
   }
-  if (saved) return res.json({ success: true, data: shapePayslip(saved), message: `Payslip (${saved.status})` });
+  if (saved) return res.json({ success: true, data: { ...shapePayslip(saved), company: await companyHeader(cid) }, message: `Payslip (${saved.status})` });
   const pv = await service.previewEmployeePayslip({ employee_id, month, year, company_id: cid });
   if (!pv.slip) return res.status(422).json({ success: false, message: 'Employee is not payable for this period', reasons: pv.reasons });
-  res.json({ success: true, data: { ...shapePayslip(pv.slip, pv.emp), preview: true, status: 'not_generated' }, message: 'Preview — payroll not generated for this period' });
+  res.json({ success: true, data: { ...shapePayslip(pv.slip, pv.emp), preview: true, status: 'not_generated', company: await companyHeader(cid) }, message: 'Preview — payroll not generated for this period' });
 });
 
 export const getPayrollTrend = wrap(async (req, res) => {
@@ -324,11 +338,13 @@ export const generatePdfData = wrap(async (req, res) => {
       pan: (saved ? saved.pan_number : pv.emp.pan_number) || '—', bank_account: shaped.employee.bank || '—',
     },
     period: saved
-      ? { period_label: saved.period_label, working_days: '—', lop_days: saved.lop_days, paid_days: '—' }
-      : { period_label: pv.slip.payroll_period, working_days: pv.slip.working_days, lop_days: pv.slip.lop_days, paid_days: pv.slip.paid_days },
+      ? { period_label: saved.period_label, working_days: saved.working_days ?? '—', lop_days: saved.lop_days, paid_days: saved.paid_days ?? '—', days_in_month: saved.days_in_month ?? '—' }
+      : { period_label: pv.slip.payroll_period, working_days: pv.slip.working_days, lop_days: pv.slip.lop_days, paid_days: pv.slip.paid_days, days_in_month: pv.slip.days_in_month },
     earnings: shaped.earnings.map(e => ({ name: e.label, monthly: e.amount })),
     deductions: shaped.deductions.map(d => ({ name: d.label, monthly: d.amount })),
     employer_contributions: shaped.employer_contributions_list.map(c => ({ name: c.label, monthly: c.amount })),
+    taxable_perquisites: shaped.taxable_perquisites.map(c => ({ name: c.label, monthly: c.amount })),
+    lop_note: shaped.lop_note,
     gross: slip.gross,
     total_deductions: slip.total_deductions,
     net_pay: slip.net_pay,
@@ -362,6 +378,64 @@ export const bulkGenerateSlips = wrap(async (req, res) => {
 
 // ── Email: finalised payslips only ──────────────────────────────────────────
 
+/**
+ * Email one finalised payslip, with the PDF attached (§262). Used by the Email
+ * button, "Email all payslips" and the automatic send after payment. Returns
+ * { status: 'sent' | 'failed' | 'no_email' | 'not_final', sent_to?, error? };
+ * every attempt with an address is written to payslip_email_log.
+ */
+export async function sendPayslipFor({ company_id, employee_id, month, year }) {
+  const run = await service.getSavedRun({ employee_id, month, year, company_id });
+  if (!run || !FINAL_STATUSES.includes(run.status)) return { status: 'not_final', run_status: run?.status || null };
+  const { rows: [emp] } = await pool.query(
+    `SELECT first_name, last_name, company_email, personal_email FROM employees WHERE id = $1 AND company_id = $2`, [employee_id, company_id]);
+  // The old code read emp.work_email || emp.email — neither column exists on
+  // employees, so every send failed "no email address on file".
+  const recipient = emp?.company_email || emp?.personal_email;
+  const empName = `${emp?.first_name || ''} ${emp?.last_name || ''}`.trim();
+  if (!recipient) return { status: 'no_email', employee_name: empName };
+  const periodLabel = `${getMonthName(run.month)} ${run.year}`;
+  const log = (status, error = null) => pool.query(
+    `INSERT INTO payslip_email_log (employee_id, month, year, sent_to, sent_at, status, error)
+     VALUES ($1,$2,$3,$4,NOW(),$5,$6)
+     ON CONFLICT (employee_id, month, year) DO UPDATE SET sent_to=$4, sent_at=NOW(), status=$5, error=$6`,
+    [employee_id, run.month, run.year, recipient, status, error]).catch(() => null);
+  try {
+    const pdf = await payslipPdfBuffer(run, company_id);
+    await sendPayslipEmail(recipient, { empName, month: run.month, year: run.year, periodLabel, gross: run.gross, netPay: run.net_pay,
+      totalDeductions: run.total_deductions, companyId: company_id,
+      attachments: [{ filename: pdf.filename, content: pdf.buffer, contentType: 'application/pdf' }] });
+  } catch (mailErr) {
+    await log('failed', mailErr.message);
+    return { status: 'failed', sent_to: recipient, employee_name: empName, error: mailErr.message };
+  }
+  await log('sent');
+  return { status: 'sent', sent_to: recipient, employee_name: empName, period: periodLabel };
+}
+
+/**
+ * Email every finalised (or, with onlyPaid, paid) payslip of a month that has not
+ * been emailed yet, so running it twice sends nobody a second copy. Used by the
+ * morning job (jobs/payrollReminders.cron.js) when "Email payslips once paid" is on.
+ */
+export async function emailMonthPayslips({ company_id, month, year, onlyPaid = false }) {
+  const { rows } = await pool.query(`
+    SELECT pr.employee_id, e.office_id, (l.status = 'sent') AS already_sent
+      FROM payroll_runs pr JOIN employees e ON e.id = pr.employee_id
+      LEFT JOIN payslip_email_log l ON l.employee_id = pr.employee_id AND l.month = pr.month AND l.year = pr.year
+     WHERE e.company_id = $1 AND pr.month = $2 AND pr.year = $3 AND pr.is_test = false AND pr.status = ANY($4::text[])
+     ORDER BY e.office_id`, [company_id, parseInt(month), parseInt(year), onlyPaid ? ['paid'] : FINAL_STATUSES]);
+  const out = { sent: 0, skipped: 0, failed: [], no_email: [] };
+  for (const r of rows) {
+    if (r.already_sent) { out.skipped++; continue; }
+    const x = await sendPayslipFor({ company_id, employee_id: r.employee_id, month, year });
+    if (x.status === 'sent') out.sent++;
+    else if (x.status === 'no_email') out.no_email.push(r.office_id);
+    else if (x.status === 'failed') out.failed.push({ employee_code: r.office_id, error: x.error });
+  }
+  return { ...out, finalised: rows.length };
+}
+
 export const emailPayslip = wrap(async (req, res) => {
   const cid = companyOf(req);
   const { employee_id, month, year } = req.body;
@@ -373,27 +447,10 @@ export const emailPayslip = wrap(async (req, res) => {
   if (!(await isEmailConfigured(cid))) {
     return res.status(503).json({ success: false, error: 'Email service is not configured. Set SMTP_HOST, SMTP_USER, and SMTP_PASS environment variables.' });
   }
-  const { rows: [emp] } = await pool.query(
-    `SELECT first_name, last_name, company_email, personal_email FROM employees WHERE id = $1 AND company_id = $2`, [employee_id, cid]);
-  // The old code read emp.work_email || emp.email — neither column exists on
-  // employees, so every send failed "no email address on file".
-  const recipient = emp?.company_email || emp?.personal_email;
-  if (!recipient) return res.status(422).json({ error: 'Employee has no email address on file' });
-  const empName = `${emp.first_name || ''} ${emp.last_name || ''}`.trim();
-  const periodLabel = `${getMonthName(run.month)} ${run.year}`;
-  const log = (status, error = null) => pool.query(
-    `INSERT INTO payslip_email_log (employee_id, month, year, sent_to, sent_at, status, error)
-     VALUES ($1,$2,$3,$4,NOW(),$5,$6)
-     ON CONFLICT (employee_id, month, year) DO UPDATE SET sent_to=$4, sent_at=NOW(), status=$5, error=$6`,
-    [employee_id, run.month, run.year, recipient, status, error]).catch(() => null);
-  try {
-    await sendPayslipEmail(recipient, { empName, month: run.month, year: run.year, periodLabel, gross: run.gross, netPay: run.net_pay, totalDeductions: run.total_deductions, companyId: cid });
-  } catch (mailErr) {
-    await log('failed', mailErr.message);
-    return res.status(502).json({ success: false, error: `Failed to send email: ${mailErr.message}` });
-  }
-  await log('sent');
-  res.json({ success: true, sent_to: recipient, message: `Payslip for ${periodLabel} sent to ${empName} (${recipient})` });
+  const r = await sendPayslipFor({ company_id: cid, employee_id, month: run.month, year: run.year });
+  if (r.status === 'no_email') return res.status(422).json({ error: 'Employee has no email address on file' });
+  if (r.status === 'failed') return res.status(502).json({ success: false, error: `Failed to send email: ${r.error}` });
+  res.json({ success: true, sent_to: r.sent_to, message: `Payslip for ${r.period} sent to ${r.employee_name} (${r.sent_to}), with the PDF attached` });
 });
 
 export const getMyPayslips = wrap(async (req, res) => {
@@ -412,23 +469,33 @@ export const streamPayslipPdf = wrap(async (req, res) => {
   const { id } = req.params;
   let slip = await service.getSavedRun({ employee_id: id, month: req.query.month, year: req.query.year, company_id: cid });
   let watermark = null;
+  if (req.payslipSelfService && (!slip || !FINAL_STATUSES.includes(slip.status))) {
+    return res.status(404).json({ success: false, message: 'The payslip for this month has not been released yet' });
+  }
   if (!slip) {
     const pv = await service.previewEmployeePayslip({ employee_id: id, month: req.query.month, year: req.query.year, company_id: cid });
     if (!pv.slip) return res.status(422).json({ error: 'Employee is not payable for this period', reasons: pv.reasons });
     slip = { ...pv.slip, ...{ name: `${pv.emp.first_name || ''} ${pv.emp.last_name || ''}`.trim(), pan_number: pv.emp.pan_number, department: pv.emp.department, designation: pv.emp.designation } };
     watermark = 'PREVIEW — PAYROLL NOT GENERATED';
   } else if (!FINAL_STATUSES.includes(slip.status)) {
-    watermark = 'DRAFT — AWAITING APPROVAL';
+    watermark = slip.status === 'on_hold' ? 'ON HOLD — NOT AN ISSUED PAYSLIP' : 'DRAFT — AWAITING APPROVAL';
   }
   const shaped = shapePayslip(slip);
   const { rows: [co] } = await pool.query(`SELECT name, address FROM companies WHERE id = $1`, [cid]);
+  const doc = new PDFDocument({ size: 'A4', margin: 50 });
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="${payslipFileName(shaped, slip, id)}"`);
+  doc.pipe(res);
+  drawPayslip(doc, { slip, shaped, co, watermark });
+});
+
+const payslipFileName = (shaped, slip, id) => `payslip_${shaped.employee_code || id}_${slip.month}_${slip.year}.pdf`;
+
+/** The issued payslip, drawn once for the download and the email attachment (§262). */
+function drawPayslip(doc, { slip, shaped, co, watermark = null }) {
   const periodLabel = `${getMonthName(slip.month)} ${slip.year}`;
   const fmt = (n) => `Rs.${Number(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
-  const doc = new PDFDocument({ size: 'A4', margin: 50 });
-  res.setHeader('Content-Type', 'application/pdf');
-  res.setHeader('Content-Disposition', `attachment; filename="payslip_${shaped.employee_code || id}_${slip.month}_${slip.year}.pdf"`);
-  doc.pipe(res);
   doc.fontSize(18).fillColor('#6B3FDB').text(co?.name || '—', { align: 'center' });
   doc.fontSize(10).fillColor('#555').text(co?.address || '', { align: 'center' });
   doc.moveDown(0.5);
@@ -438,8 +505,9 @@ export const streamPayslipPdf = wrap(async (req, res) => {
 
   const detailY = doc.y;
   doc.fontSize(10).fillColor('#111');
-  const left = [['Employee Name', shaped.employee.name], ['Designation', shaped.employee.designation || '—'], ['Department', shaped.employee.department || '—']];
-  const right = [['Employee Code', shaped.employee_code || '—'], ['PAN', shaped.employee.pan || '—'], ['UAN', shaped.employee.uan || '—']];
+  const days = slip.days_in_month ? `${slip.paid_days ?? slip.days_in_month} of ${slip.days_in_month}` : '—';
+  const left = [['Employee Name', shaped.employee.name], ['Designation', shaped.employee.designation || '—'], ['Department', shaped.employee.department || '—'], ['Bank A/c', shaped.employee.bank || '—']];
+  const right = [['Employee Code', shaped.employee_code || '—'], ['PAN', shaped.employee.pan || '—'], ['UAN', shaped.employee.uan || '—'], ['Days paid / LOP', `${days} / ${Number(slip.lop_days || 0)}`]];
   left.forEach(([k, v], i) => doc.text(`${k}: ${v}`, 50, detailY + i * 18));
   right.forEach(([k, v], i) => doc.text(`${k}: ${v}`, 310, detailY + i * 18));
   doc.y = detailY + left.length * 18 + 12;
@@ -473,15 +541,46 @@ export const streamPayslipPdf = wrap(async (req, res) => {
   doc.fillColor('#fff').fontSize(12);
   doc.text('Net Pay', col.e_label, netY + 6, { width: 250 });
   doc.text(fmt(slip.net_pay), 310, netY + 6, { width: 235, align: 'right' });
-  doc.font('Helvetica').fontSize(10).fillColor('#111');
-  let y = netY + 36;
+  doc.font('Helvetica').fontSize(9).fillColor('#111').text(`(Rupees ${amountInWords(Math.round(Number(slip.net_pay || 0)))} only)`, 50, netY + 28, { width: 495, align: 'right' });
+  doc.fontSize(10);
+  let y = netY + 46;
+  if (shaped.lop_note) { doc.fillColor('#555').text(`Loss of pay ${shaped.lop_note}.`, 50, y); y += 16; }
+  for (const p of shaped.taxable_perquisites) { doc.fillColor('#555').text(`${p.label}: ${fmt(p.amount)}`, 50, y); y += 16; }
   if (shaped.employer_contributions_list.length) {
     doc.text('Employer contributions (not deducted from your pay)', 50, y); y += 16;
     for (const c of shaped.employer_contributions_list) { doc.fillColor('#555').text(`${c.label}: ${fmt(c.amount)}`, 60, y); y += 14; }
   }
   doc.fontSize(9).fillColor('#9ca3af').text('This is a computer-generated document and does not require a signature.', 50, y + 10, { align: 'center', width: 495 });
   doc.end();
-});
+}
+
+/** The payslip PDF as a Buffer, for an email attachment. Only finalised runs are emailed. */
+export async function payslipPdfBuffer(slip, company_id) {
+  const shaped = shapePayslip(slip);
+  const { rows: [co] } = await pool.query(`SELECT name, address FROM companies WHERE id = $1`, [company_id]);
+  const doc = new PDFDocument({ size: 'A4', margin: 50 });
+  const chunks = [];
+  const done = new Promise((resolve, reject) => { doc.on('data', c => chunks.push(c)); doc.on('end', resolve); doc.on('error', reject); });
+  drawPayslip(doc, { slip, shaped, co });
+  await done;
+  return { buffer: Buffer.concat(chunks), filename: payslipFileName(shaped, slip, slip.employee_id) };
+}
+
+/** Indian-system words for a whole rupee amount ("One Lakh Twenty Thousand"). */
+export function amountInWords(n) {
+  const ones = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten', 'Eleven', 'Twelve', 'Thirteen',
+    'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen'];
+  const tens = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
+  const w = (x) => {
+    if (x < 20) return ones[x];
+    if (x < 100) return tens[Math.floor(x / 10)] + (x % 10 ? ' ' + ones[x % 10] : '');
+    if (x < 1000) return ones[Math.floor(x / 100)] + ' Hundred' + (x % 100 ? ' ' + w(x % 100) : '');
+    if (x < 100000) return w(Math.floor(x / 1000)) + ' Thousand' + (x % 1000 ? ' ' + w(x % 1000) : '');
+    if (x < 10000000) return w(Math.floor(x / 100000)) + ' Lakh' + (x % 100000 ? ' ' + w(x % 100000) : '');
+    return w(Math.floor(x / 10000000)) + ' Crore' + (x % 10000000 ? ' ' + w(x % 10000000) : '');
+  };
+  return n === 0 ? 'Zero' : w(Math.abs(n));
+}
 
 // GET /payroll/history/:employeeId — last 12 months: saved runs only; a month
 // with no run says so instead of showing a computed figure.
@@ -514,28 +613,41 @@ export const getStatutoryRules = wrap(async (req, res) => {
   const { rows } = await pool.query(
     `SELECT id, company_id, rule_key, effective_from, value, source_reference, created_at
        FROM payroll_statutory_rules WHERE company_id IS NULL OR company_id = $1 ORDER BY rule_key, effective_from`, [cid]).catch(() => ({ rows: [] }));
-  res.json({ success: true, data: { on_date: onDate, resolved: resolved.values, applied: resolved.applied, built_in: BUILT_IN_RULES, custom_versions: rows } });
+  // PT and LWF are entered for the state the company has recorded, never a guessed one.
+  const { rows: [st] } = await pool.query(`SELECT settings->>'statutory_state' AS state FROM company_settings WHERE company_id = $1 AND module = 'payroll' LIMIT 1`, [cid ?? 0]);
+  res.json({ success: true, data: { on_date: onDate, resolved: resolved.values, applied: resolved.applied, built_in: BUILT_IN_RULES, custom_versions: rows, jurisdiction: normalizeState(st?.state), state_gaps: STATE_RULE_GAPS, ctc_policy: resolvePolicy(onDate, rows) } });
 });
 
-export const addStatutoryRule = wrap(async (req, res) => {
-  const cid = companyOf(req);
-  const { rule_key, effective_from, value, source_reference, scope = 'company' } = req.body || {};
-  if (!RULE_KEYS.includes(rule_key) && rule_key !== POLICY_KEY) return res.status(400).json({ success: false, message: `rule_key must be one of: ${[...RULE_KEYS, POLICY_KEY].join(', ')}` });
+/**
+ * Check a proposed rule version: the same checks whether it is written now or
+ * when a second person confirms it. Returns { error: {status, message} } or the
+ * normalised version.
+ */
+export const NO_SOURCE = 'No source given';
+
+async function checkRuleVersion(body, { cid, roles }) {
+  const { rule_key, effective_from, value, scope = 'company' } = body || {};
+  // The source is optional (owner decision, 9 Nov 2026). The column requires text,
+  // so a blank one says so plainly and is never made to look like a reference;
+  // payroll shows such a rule as "no source given" (readiness warning RULE_NO_SOURCE).
+  const source_reference = String(body?.source_reference || '').trim() || NO_SOURCE;
+  const bad = (status, message) => ({ error: { status, message } });
+  if (!RULE_KEYS.includes(rule_key) && !SETTLEMENT_RULE_KEYS.includes(rule_key) && rule_key !== POLICY_KEY) return bad(400, `rule_key must be one of: ${[...RULE_KEYS, POLICY_KEY].join(', ')}`);
+  if (SETTLEMENT_RULE_KEYS.includes(rule_key)) {
+    const problem = settlementRuleProblem(rule_key, value);
+    if (problem) return bad(400, problem);
+  }
   if (rule_key === POLICY_KEY) {
     const problems = ctcPolicyProblems(value);
-    if (problems.length) return res.status(400).json({ success: false, message: `Invalid CTC definition: ${problems.join('; ')}` });
+    if (problems.length) return bad(400, `Invalid CTC definition: ${problems.join('; ')}`);
   }
-  if (rule_key === 'pt.slabs') {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return res.status(400).json({ success: false, message: 'pt.slabs must be an object keyed by state code' });
-    const { halfYearPtProblems } = await import('./statutoryRules.js');
-    const bad = Object.entries(value).filter(([, e]) => e && !Array.isArray(e)).map(([k, e]) => [k, halfYearPtProblems(e)]).filter(([, p]) => p.length);
-    if (bad.length) return res.status(400).json({ success: false, message: `Invalid half-yearly PT table: ${bad.map(([k, p]) => `${k}: ${p.join('; ')}`).join(' | ')}` });
+  if (RULE_KEYS.includes(rule_key) && value !== undefined) {
+    const problems = ruleValueProblems(rule_key, value);
+    if (problems.length) return bad(400, `${rule_key} ${problems.join('; ')}`);
   }
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(effective_from || ''))) return res.status(400).json({ success: false, message: 'effective_from must be YYYY-MM-DD' });
-  if (value === undefined) return res.status(400).json({ success: false, message: 'value is required' });
-  const roles = (req.user?.roles || [req.user?.role]).map(r => String(r || '').toLowerCase());
-  if (scope === 'global' && !roles.includes('super_admin')) return res.status(403).json({ success: false, message: 'Only a super admin can add a rule version for all companies' });
-  if (!String(source_reference || '').trim()) return res.status(400).json({ success: false, message: 'source_reference (notification / circular) is required' });
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(effective_from || ''))) return bad(400, 'effective_from must be YYYY-MM-DD');
+  if (value === undefined) return bad(400, 'value is required');
+  if (scope === 'global' && !roles.includes('super_admin')) return bad(403, 'Only a super admin can add a rule version for all companies');
   // A version for a period that is already approved would rewrite history.
   const { rows: [locked] } = await pool.query(
     `SELECT 1 FROM payroll_runs pr JOIN employees e ON e.id = pr.employee_id
@@ -545,13 +657,105 @@ export const addStatutoryRule = wrap(async (req, res) => {
   // is a confirmation, so it is allowed even when later payroll is approved.
   const { resolveRule, loadRuleRows } = await import('./statutoryRules.js');
   const ruleRows = await loadRuleRows(pool, cid);
-  const inForce = rule_key === POLICY_KEY ? resolvePolicy(effective_from, ruleRows).value : resolveRule(rule_key, effective_from, ruleRows);
-  const unchanged = JSON.stringify(inForce) === JSON.stringify(value);
-  if (locked && !unchanged) return res.status(409).json({ success: false, message: 'Payroll on or after this date is already approved — a new version cannot apply to it. Use arrears for the difference.' });
+  // A settlement keeps the rules it was computed with, so a new settlement rule changes no
+  // approved payroll or settled figure.
+  const isSettlementRule = SETTLEMENT_RULE_KEYS.includes(rule_key);
+  const inForce = isSettlementRule ? null : rule_key === POLICY_KEY ? resolvePolicy(effective_from, ruleRows).value : resolveRule(rule_key, effective_from, ruleRows);
+  const unchanged = sameValue(inForce, value);
+  if (locked && !unchanged && !isSettlementRule) return bad(409, 'Payroll on or after this date is already approved — a new version cannot apply to it. Use arrears for the difference.');
+  return { rule_key, effective_from, value, source_reference: String(source_reference).trim(), scope };
+}
+
+/** Write a checked version. Saving on a date that already has one corrects it. */
+async function writeRuleVersion(v, { cid, userId, req }) {
+  // created_at moves too, so a draft computed from the old value reads as out of
+  // date; the audit log keeps what it replaced.
+  const company = v.scope === 'global' ? null : cid;
+  const { rows: [before] } = await pool.query(
+    `SELECT * FROM payroll_statutory_rules WHERE COALESCE(company_id, 0) = COALESCE($1::int, 0) AND rule_key = $2 AND effective_from = $3::date`,
+    [company, v.rule_key, v.effective_from]);
   const { rows: [row] } = await pool.query(
     `INSERT INTO payroll_statutory_rules (company_id, rule_key, effective_from, value, source_reference, created_by)
-     VALUES ($1,$2,$3,$4::jsonb,$5,$6) RETURNING *`,
-    [scope === 'global' ? null : cid, rule_key, effective_from, JSON.stringify(value), source_reference.trim(), uid(req)]);
-  logAudit({ userId: uid(req), module: 'payroll', recordId: row.id, recordType: 'payroll_statutory_rule', action: 'create', newData: row, req });
+     VALUES ($1,$2,$3,$4::jsonb,$5,$6)
+     ON CONFLICT (COALESCE(company_id, 0), rule_key, effective_from)
+     DO UPDATE SET value = EXCLUDED.value, source_reference = EXCLUDED.source_reference, created_by = EXCLUDED.created_by, created_at = NOW()
+     RETURNING *`,
+    [company, v.rule_key, v.effective_from, JSON.stringify(v.value), v.source_reference, userId]);
+  logAudit({ userId, module: 'payroll', recordId: row.id, recordType: 'payroll_statutory_rule', action: before ? 'update' : 'create', oldData: before, newData: row, req });
+  return row;
+}
+
+const rolesOfReq = (req) => (req.user?.roles || [req.user?.role]).map(r => String(r || '').toLowerCase());
+
+/**
+ * POST /payroll/statutory-rules. With "Rule changes need a second person" on
+ * (Payroll Settings, the default), a version is saved as a PROPOSAL (202) and is
+ * applied only when a different authorised person confirms it. A version that
+ * equals the value already in force is a confirmation, not a change, and is
+ * written at once.
+ */
+export const addStatutoryRule = wrap(async (req, res) => {
+  const cid = companyOf(req);
+  const v = await checkRuleVersion(req.body, { cid, roles: rolesOfReq(req) });
+  if (v.error) return res.status(v.error.status).json({ success: false, message: v.error.message });
+  const { settings } = await service.fetchPayrollSettings(cid);
+  const { loadRuleRows, resolveRule } = await import('./statutoryRules.js');
+  const rows = await loadRuleRows(pool, cid);
+  const inForce = SETTLEMENT_RULE_KEYS.includes(v.rule_key) ? undefined
+    : v.rule_key === POLICY_KEY ? resolvePolicy(v.effective_from, rows).value : resolveRule(v.rule_key, v.effective_from, rows);
+  if (settings.rules_two_person !== false && !sameValue(inForce, v.value)) {
+    const { rows: [change] } = await pool.query(
+      `INSERT INTO payroll_statutory_rule_changes (company_id, scope, rule_key, effective_from, value, source_reference, proposed_by)
+       VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7) RETURNING *`,
+      [cid, v.scope, v.rule_key, v.effective_from, JSON.stringify(v.value), v.source_reference, uid(req)]);
+    logAudit({ userId: uid(req), module: 'payroll', recordId: change.id, recordType: 'payroll_statutory_rule_change', action: 'propose', newData: change, req });
+    return res.status(202).json({ success: true, pending: true, data: change,
+      message: 'Saved as a proposal. It takes effect when a different authorised person confirms it (Settings → Statutory rules).' });
+  }
+  const row = await writeRuleVersion(v, { cid, userId: uid(req), req });
   res.status(201).json({ success: true, data: row });
+});
+
+export const listRuleChanges = wrap(async (req, res) => {
+  const { rows } = await pool.query(
+    `SELECT c.*, pu.name AS proposed_by_name, du.name AS decided_by_name
+       FROM payroll_statutory_rule_changes c
+       LEFT JOIN users pu ON pu.id = c.proposed_by LEFT JOIN users du ON du.id = c.decided_by
+      WHERE c.company_id = $1 OR c.scope = 'global'
+      ORDER BY (c.status = 'pending') DESC, c.proposed_at DESC LIMIT 100`, [companyOf(req)]);
+  res.json({ success: true, data: rows });
+});
+
+/**
+ * Confirm (apply) or reject a proposed rule version. Not by the person who proposed
+ * it, EXCEPT a super admin (owner decision, 10 Nov 2026: "superadmin have all
+ * approval"). A super admin deciding their own proposal is audited as 'self_confirm'
+ * / 'self_reject' and the decision note says so, so the record never claims a second person.
+ */
+export const decideRuleChange = wrap(async (req, res) => {
+  const cid = companyOf(req);
+  const confirm = req.params.decision === 'confirm';
+  const { rows: [c] } = await pool.query(
+    `SELECT * FROM payroll_statutory_rule_changes WHERE id = $1 AND status = 'pending' AND (company_id = $2 OR scope = 'global')`, [req.params.id, cid]);
+  if (!c) return res.status(404).json({ success: false, message: 'No pending rule change with that id' });
+  const self = Number(c.proposed_by) === Number(uid(req));
+  if (self && !rolesOfReq(req).includes('super_admin')) {
+    return res.status(403).json({ success: false, code: 'SAME_PERSON', message: 'You proposed this change, so a different authorised person must confirm or reject it.' });
+  }
+  if (c.scope === 'global' && !rolesOfReq(req).includes('super_admin')) return res.status(403).json({ success: false, message: 'Only a super admin can decide a change for all companies' });
+  const typed = String(req.body?.note || '').trim();
+  const note = self ? ['Decided by the super admin who proposed it (no second person).', typed].filter(Boolean).join(' ') : (typed || null);
+  let applied = null;
+  if (confirm) {
+    // Checked again now: payroll may have been approved since it was proposed.
+    const v = await checkRuleVersion({ rule_key: c.rule_key, effective_from: String(c.effective_from instanceof Date ? c.effective_from.toISOString() : c.effective_from).slice(0, 10),
+      value: c.value, source_reference: c.source_reference, scope: c.scope }, { cid, roles: ['super_admin'] });
+    if (v.error) return res.status(v.error.status).json({ success: false, message: v.error.message });
+    applied = await writeRuleVersion(v, { cid, userId: c.proposed_by, req });
+  }
+  const { rows: [done] } = await pool.query(
+    `UPDATE payroll_statutory_rule_changes SET status = $2, decided_by = $3, decided_at = NOW(), decision_note = $4, applied_rule_id = $5
+      WHERE id = $1 AND status = 'pending' RETURNING *`, [c.id, confirm ? 'confirmed' : 'rejected', uid(req), note, applied?.id ?? null]);
+  logAudit({ userId: uid(req), module: 'payroll', recordId: c.id, recordType: 'payroll_statutory_rule_change', action: (self ? 'self_' : '') + (confirm ? 'confirm' : 'reject'), oldData: c, newData: done, req });
+  res.json({ success: true, data: { change: done, applied } });
 });

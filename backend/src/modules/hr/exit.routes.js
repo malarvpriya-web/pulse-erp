@@ -2,11 +2,37 @@ import express from 'express';
 import pool from '../shared/db.js';
 import { logAudit } from '../../services/AuditService.js';
 import { notifyWorkflowEvent } from '../../services/WorkflowNotificationService.js';
-import { computeFnf } from './fnf.service.js';
+import { computeFnf, settlementHistory, approveSettlement, paySettlement, SettlementError } from './fnf.service.js';
+import { settlementRuleList } from './settlementRules.js';
+import { loadRuleRows } from '../payroll/statutoryRules.js';
+import { requirePermission, can } from '../../middlewares/auth.middleware.js';
 import { captureBefore } from '../../middlewares/captureBefore.js';
 import { EXIT_STATUS, NOTICE_STATUS, NOTICE_STATUSES, EXITED_STATUSES } from '../../shared/employeeStatus.js';
 import { readScope } from '../../shared/employeeAccess.js';
 import { fnfSettlementSuspended, fnfSuspendedBody, FNF_SUSPENDED_MESSAGE } from '../../shared/hrContainment.js';
+import { cleanExitFields, startExitChecks, freshClearance, sendExitError, notifyExitStarted, defaultNoticeDays, ExitInputError, CLOSED_EXIT_STATUSES } from './exitCase.js';
+import { fnfDueDates, daysLate } from './fnfDue.js';
+import { localTodayIso } from '../../shared/workforcePolicy.js';
+import { buildProbationLetterPdf as buildLetterPdf } from '../../utils/probationLetterPdf.js';
+import { buildFnfStatementPdf } from '../../utils/fnfStatementPdf.js';
+import { exitLetterContent, ExitLetterError } from './exitLetters.js';
+import { openChecklistItems } from './exitChecklist.js';
+import { vocabularyValues } from '../../shared/masterVocabulary.js';
+
+// Exit-interview reasons: the EXIT_REASON master (Settings → Master Data,
+// migration 20261117000001). Old keys are read as their names.
+const EXIT_REASON_SEED = ['Better Opportunity', 'Compensation', 'Work Environment', 'Personal', 'Relocation', 'Other'];
+const LEGACY_REASON = {
+  better_opportunity: 'Better Opportunity', compensation: 'Compensation', work_environment: 'Work Environment',
+  personal: 'Personal', relocation: 'Relocation', other: 'Other',
+};
+const RATING_FIELDS = ['rating_management', 'rating_culture', 'rating_work', 'rating_growth', 'overall_rating'];
+/** A rating is a whole number 1–5; null when absent; NaN when invalid. */
+function ratingOf(v) {
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  return Number.isInteger(n) && n >= 1 && n <= 5 ? n : NaN;
+}
 
 const router = express.Router();
 
@@ -19,22 +45,24 @@ const router = express.Router();
 // confidential HR + financial data with no employee self-service surface, and
 // exit-interview feedback is often about line managers — so this module is
 // HR-only. Managers / department heads are deliberately excluded (no read).
-// Role codes match the Phase 42 role matrix (migration 20260529000001);
-// 'hr' is the legacy coarse HR role kept for backward compatibility.
-const HR_WRITE_ROLES = new Set(['super_admin', 'admin', 'hr_manager', 'payroll_admin', 'hr']);
-const HR_READ_ROLES  = new Set(['super_admin', 'admin', 'hr_manager', 'hr_exec', 'payroll_admin', 'hr']);
+//
+// Access is the permission matrix (HR audit 2026-11-16, B4; migration
+// 20261116000005), so Roles Setup changes it and every role a user holds
+// counts. It used to be two role lists read from the single req.user.role.
+//   exit:view   every route here          exit:edit   every write
+//   fnf:view    the settlement steps only (rules, a settlement, approve, pay):
+//               how Finance reaches F&F without the rest of this module.
+//               Approve and pay still need payroll:approve / payroll_payment:approve.
+const FNF_PATH = /^\/fnf\/(rules|settlements\/[^/]+|review\/[^/]+(\/statement)?|[^/]+\/(approve|pay))$/;
 
-function requireHRRead(req, res, next) {
-  if (!HR_READ_ROLES.has(req.user?.role ?? '')) {
-    return res.status(403).json({ error: 'Exit data is confidential — HR access required' });
-  }
-  next();
+async function requireHRRead(req, res, next) {
+  if (await can(req, 'exit', 'view')) return next();
+  if (FNF_PATH.test(req.path) && await can(req, 'fnf', 'view')) return next();
+  return res.status(403).json({ error: 'Exit data is confidential — HR access required' });
 }
-function requireHRWrite(req, res, next) {
-  if (!HR_WRITE_ROLES.has(req.user?.role ?? '')) {
-    return res.status(403).json({ error: 'HR admin access required for this operation' });
-  }
-  next();
+async function requireHRWrite(req, res, next) {
+  if (await can(req, 'exit', 'edit')) return next();
+  return res.status(403).json({ error: 'HR admin access required for this operation' });
 }
 
 // Blanket read gate — blocks employees/non-HR roles from the entire module.
@@ -75,17 +103,8 @@ async function employeeInCompany(db, employeeId, companyId) {
   return rows.length > 0;
 }
 
-// Scoped employee check — ensures the employee belongs to the caller's company
-async function assertEmployeeScope(client, employeeId, companyId) {
-  if (!companyId) return; // single-tenant, no check needed
-  const { rows } = await client.query(
-    `SELECT 1 FROM employees WHERE id=$1 AND company_id=$2`, [employeeId, companyId]
-  );
-  if (!rows.length) throw Object.assign(new Error('Employee not found'), { status: 404 });
-}
-
 // ── Clearance blockers — Exit Clearance Engine ────────────────────────────────
-// Final settlement (fnf/:id/pay) is gated on all six of these clearing. The
+// Final settlement (fnf/:id/pay) is gated on all seven of these clearing (the company checklist items added 2026-11-17). The
 // first three are computed live from the actual source-of-truth tables (an
 // employee can't fake "assets returned" by ticking a checkbox that's
 // disconnected from employee_asset_allocations) — only the last three are
@@ -97,7 +116,7 @@ async function computeClearanceBlockers(employeeId) {
       // asset is written off, no longer anyone's responsibility, so it
       // doesn't block exit the way an unreturned/under-maintenance one does.
       `SELECT id, asset_name, asset_tag FROM employee_asset_allocations
-       WHERE employee_id=$1 AND status NOT IN ('returned', 'disposed')`,
+       WHERE employee_id=$1 AND status NOT IN ('returned', 'disposed', 'damaged')`,
       [employeeId]
     ),
     pool.query(
@@ -127,6 +146,7 @@ async function computeClearanceBlockers(employeeId) {
     ? parseFloat(advancesRes.value.rows[0]?.outstanding || 0) : 0;
   const activeLogins = accessRes.status === 'fulfilled' ? accessRes.value.rows : [];
   const clearance = clearanceRes.status === 'fulfilled' ? (clearanceRes.value.rows[0] || {}) : {};
+  const openItems = await openChecklistItems(pool, employeeId);
 
   const blockers = [
     {
@@ -147,6 +167,13 @@ async function computeClearanceBlockers(employeeId) {
     { key: 'finance', label: 'Finance clearance pending', cleared: !!clearance.noc_finance, detail: [] },
     { key: 'manager', label: 'Reporting manager approval pending', cleared: !!clearance.noc_manager, detail: [] },
     { key: 'hr', label: 'HR approval pending', cleared: !!clearance.noc_hr, detail: [] },
+    // The company's own exit-checklist items (one checklist, owner decision
+    // 2026-11-17): every item must be ticked before the F&F is paid.
+    {
+      key: 'checklist', label: 'Exit checklist items open',
+      cleared: openItems.length === 0,
+      detail: openItems.map(i => `${i.item_label} (${i.assignee})`),
+    },
   ];
 
   return { employee_id: employeeId, blockers, can_settle: blockers.every(b => b.cleared) };
@@ -155,14 +182,13 @@ async function computeClearanceBlockers(employeeId) {
 // ── GET /requests ─────────────────────────────────────────────────────────────
 router.get('/requests', async (req, res) => {
   try {
-    const companyId = cid(req);
-    const { rows } = companyId != null
-      ? await pool.query(
-          `SELECT er.* FROM exit_requests er
-           JOIN employees e ON e.id = er.employee_id
-           WHERE e.company_id = $1
-           ORDER BY er.created_at DESC`, [companyId])
-      : await pool.query(`SELECT * FROM exit_requests ORDER BY created_at DESC`);
+    // A deleted employee's exit is not shown (§274): it listed test rows whose
+    // employee had been removed as if they were people still leaving.
+    const { rows } = await pool.query(
+      `SELECT er.* FROM exit_requests er
+         JOIN employees e ON e.id = er.employee_id AND e.deleted_at IS NULL
+        WHERE ($1::int IS NULL OR e.company_id = $1::int)
+        ORDER BY er.created_at DESC`, [cid(req)]);
     res.json(rows);
   } catch (e) {
     if (e.message.includes('does not exist')) return res.json([]);
@@ -171,26 +197,29 @@ router.get('/requests', async (req, res) => {
 });
 
 // ── POST /requests ────────────────────────────────────────────────────────────
+// exit_requests has no company_id: the request belongs to whichever company the
+// employee does — startExitChecks() proves that, and refuses a deleted or
+// departed employee and a second open exit (§274).
 router.post('/requests', requireHRWrite, async (req, res) => {
+  const empId = intId(req.body?.employee_id);
+  if (!empId) return res.status(400).json({ error: 'A valid employee_id is required' });
+  const client = await pool.connect();
   try {
-    const { employee_id, reason, last_working_date, notice_period } = req.body;
-    // exit_requests has no company_id: the request belongs to whichever company
-    // the employee does. Verify that is the caller's before writing — this
-    // created a request against any company's employee id.
-    const empId = Number(employee_id);
-    if (!Number.isInteger(empId) || empId < 1) return res.status(400).json({ error: 'A valid employee_id is required' });
-    const { rows: own } = await pool.query(
-      `SELECT 1 FROM employees WHERE id = $1 AND deleted_at IS NULL AND ($2::int IS NULL OR company_id = $2::int)`,
-      [empId, cid(req)]
+    const f = cleanExitFields(req.body);
+    await client.query('BEGIN');
+    await startExitChecks(client, empId, cid(req));
+    const { rows } = await client.query(
+      `INSERT INTO exit_requests (employee_id, separation_type, reason, last_working_date, resignation_date, notice_period, status)
+       VALUES ($1,$2,$3,$4,$5,$6,'pending') RETURNING *`,
+      [empId, f.separation_type, f.reason ?? null, f.last_working_date, f.resignation_date ?? null, f.notice_period ?? null]
     );
-    if (!own.length) return res.status(404).json({ error: 'Employee not found' });
-    const { rows } = await pool.query(
-      `INSERT INTO exit_requests (employee_id, reason, last_working_date, notice_period, status)
-       VALUES ($1,$2,$3,$4,'pending') RETURNING *`,
-      [empId, reason, last_working_date, notice_period]
-    );
+    await freshClearance(client, empId);
+    await client.query('COMMIT');
     res.status(201).json(rows[0]);
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    sendExitError(res, e);
+  } finally { client.release(); }
 });
 
 // ── PUT /requests/:id ─────────────────────────────────────────────────────────
@@ -200,35 +229,83 @@ router.post('/requests', requireHRWrite, async (req, res) => {
 // completely bypassing computeClearanceBlockers and the F&F pay gate that
 // 'closed' is supposed to mean. Only POST /fnf/:id/pay may set 'closed' now;
 // other statuses (pending/active/rejected/cancelled) are untouched.
+//
+// §274: the exit's own details — exit type, last working day, resignation
+// date, notice days, reason — are editable while the exit is open and its F&F
+// is not yet approved. Before, only status and remarks could change, so a wrong
+// last working day could only be fixed by withdrawing (which restores the
+// employee and resets clearance) and starting again. 'cancelled' is refused
+// here: withdraw is the path that also restores the employee's status and login.
+const EDITABLE_EXIT_FIELDS = ['separation_type', 'last_working_date', 'resignation_date', 'notice_period', 'reason'];
 router.put('/requests/:id', requireHRWrite, captureBefore('exit_requests'), async (req, res) => {
+  const id = intId(req.params.id);
+  if (!id) return res.status(400).json({ error: 'Invalid exit request id' });
+  const body = req.body ?? {};
+  const { status, remarks } = body;
+  // Scoped through the employee (exit_requests has no company_id). Both the
+  // read and the write were `WHERE id=$n` alone, so HR of one company could
+  // change another company's exit request by id.
+  const companyId = cid(req);
+  const client = await pool.connect();
   try {
-    const { status, remarks } = req.body;
-    // Scoped through the employee (exit_requests has no company_id). Both the
-    // read and the write were `WHERE id=$n` alone, so HR of one company could
-    // change another company's exit request by id.
-    const companyId = cid(req);
-    if (status === 'closed') {
-      const { rows: cur } = await pool.query(
-        `SELECT er.fnf_status FROM exit_requests er JOIN employees e ON e.id = er.employee_id
-          WHERE er.id = $1 AND ($2::int IS NULL OR e.company_id = $2::int)`, [req.params.id, companyId]);
-      if (!cur.length) return res.status(404).json({ error: 'Not found' });
-      if (cur[0].fnf_status !== 'paid') {
-        return res.status(409).json({
-          error: "Cannot close an exit request until F&F is paid — use POST /fnf/:id/pay, which enforces exit clearance first",
-        });
-      }
+    await client.query('BEGIN');
+    const { rows: [cur] } = await client.query(
+      `SELECT er.id, er.status, er.fnf_status, er.separation_type, er.notice_period, er.reason,
+              to_char(er.last_working_date, 'YYYY-MM-DD') AS last_working_date,
+              to_char(er.resignation_date, 'YYYY-MM-DD') AS resignation_date
+         FROM exit_requests er JOIN employees e ON e.id = er.employee_id AND e.deleted_at IS NULL
+        WHERE er.id = $1 AND ($2::int IS NULL OR e.company_id = $2::int)
+        FOR UPDATE OF er`, [id, companyId]);
+    if (!cur) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Not found' }); }
+
+    if (status === 'closed' && cur.fnf_status !== 'paid') {
+      throw new ExitInputError(409, 'FNF_NOT_PAID',
+        'Cannot close an exit request until F&F is paid — use POST /fnf/:id/pay, which enforces exit clearance first');
     }
-    const { rows } = await pool.query(
-      `UPDATE exit_requests er SET status=COALESCE($1,er.status), remarks=COALESCE($2,er.remarks), updated_at=NOW()
-        WHERE er.id=$3
-          AND EXISTS (SELECT 1 FROM employees e WHERE e.id = er.employee_id
-                        AND ($4::int IS NULL OR e.company_id = $4::int))
-        RETURNING er.*`,
-      [status, remarks, req.params.id, companyId]
-    );
-    if (!rows.length) return res.status(404).json({ error: 'Not found' });
-    res.json(rows[0]);
-  } catch (e) { res.status(500).json({ error: e.message }); }
+    if (status === 'cancelled') {
+      throw new ExitInputError(409, 'USE_WITHDRAW', 'Use Withdraw to cancel an exit: it also restores the employee and their login.');
+    }
+
+    const editing = EDITABLE_EXIT_FIELDS.some((k) => Object.prototype.hasOwnProperty.call(body, k));
+    let f = {};
+    if (editing) {
+      if (CLOSED_EXIT_STATUSES.includes(cur.status)) {
+        throw new ExitInputError(409, 'EXIT_CLOSED', `This exit is ${cur.status}; its details can no longer be changed.`);
+      }
+      if (['approved', 'paid'].includes(String(cur.fnf_status ?? '').toLowerCase())) {
+        throw new ExitInputError(409, 'FNF_APPROVED',
+          `The F&F settlement is already ${cur.fnf_status}. Its figures depend on these details, so they can no longer be changed.`);
+      }
+      f = cleanExitFields(body, { partial: true, current: cur });
+    }
+
+    const sets = [];
+    const vals = [];
+    const put = (col, v) => { vals.push(v); sets.push(`${col} = $${vals.length}`); };
+    for (const k of EDITABLE_EXIT_FIELDS) if (k in f) put(k, f[k]);
+    if (status != null) put('status', status);
+    if (remarks != null) put('remarks', remarks);
+    if (!sets.length) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'Nothing to change' }); }
+    vals.push(id);
+    const { rows: [row] } = await client.query(
+      `UPDATE exit_requests SET ${sets.join(', ')}, updated_at = NOW() WHERE id = $${vals.length} RETURNING *`, vals);
+    const { rows: [{ n: settlements }] } = await client.query(
+      `SELECT COUNT(*)::int AS n FROM fnf_settlements WHERE exit_request_id = $1`, [id]);
+    await client.query('COMMIT');
+
+    const changed = Object.keys(f).filter((k) => String(f[k] ?? '') !== String(cur[k] ?? ''));
+    if (changed.length) {
+      logAudit({
+        userId: req.user?.userId ?? req.user?.id, module: 'hr', recordId: id, recordType: 'exit_request', action: 'edit_details',
+        oldData: Object.fromEntries(changed.map((k) => [k, cur[k]])), newData: Object.fromEntries(changed.map((k) => [k, f[k]])), req,
+      });
+    }
+    // A settlement already worked out from the old details must be recalculated.
+    res.json({ ...row, fnf_recompute_needed: changed.length > 0 && settlements > 0 });
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    sendExitError(res, e);
+  } finally { client.release(); }
 });
 
 // ── POST /requests/:id/withdraw — resignation withdrawn, employee retained ────
@@ -355,17 +432,40 @@ router.get('/active', async (req, res) => {
         e.designation,
         e.department,
         er.separation_type,
-        er.last_working_date,
+        to_char(er.last_working_date, 'YYYY-MM-DD') AS last_working_date,
+        to_char(er.resignation_date, 'YYYY-MM-DD')  AS resignation_date,
+        er.notice_period,
+        e.notice_period_days                         AS employee_notice_period_days,
+        er.reason,
+        e.status                                     AS employee_status,
+        e.company_id                                 AS employee_company_id,
+        e.zone_id                                    AS employee_zone_id,
         er.status,
         er.fnf_status,
         er.net_payable,
         er.interview_done,
-        GREATEST(0, (er.last_working_date::date - CURRENT_DATE)) AS days_remaining
+        -- Signed (was GREATEST(0, …)): 0 is the last day itself, which the
+        -- screen used to call "Overdue"; below 0 the last day has passed.
+        (er.last_working_date::date - CURRENT_DATE) AS days_remaining
       FROM exit_requests er
-      LEFT JOIN employees e ON e.id = er.employee_id
+      -- Inner join, live employees only (§274): a LEFT JOIN listed exits of
+      -- deleted test employees as people still leaving.
+      JOIN employees e ON e.id = er.employee_id AND e.deleted_at IS NULL
       WHERE er.status NOT IN ('closed','paid','cancelled','rejected') ${cidClause}
       ORDER BY er.last_working_date ASC NULLS LAST
     `, params);
+    // §276: when the F&F is due (wages: N working days after the last day; gratuity: 30 days).
+    const today = localTodayIso();
+    for (const r of rows) {
+      if (!r.last_working_date) continue;
+      try {
+        const d = await fnfDueDates(pool, { companyId: r.employee_company_id, lwd: r.last_working_date, zoneId: r.employee_zone_id });
+        r.fnf_due_date = d.wages_due;
+        r.gratuity_due_date = d.gratuity_due;
+        r.fnf_days_late = r.fnf_status === 'paid' ? 0 : daysLate(d.wages_due, today);
+      } catch { /* a due date is a hint; the list still loads without it */ }
+      delete r.employee_company_id; delete r.employee_zone_id;
+    }
     res.json(rows);
   } catch (e) {
     if (e.message.match(/relation .* does not exist/)) return res.json([]);
@@ -375,19 +475,23 @@ router.get('/active', async (req, res) => {
 
 // ── POST /initiate ────────────────────────────────────────────────────────────
 router.post('/initiate', requireHRWrite, async (req, res) => {
+  const employee_id = intId(req.body?.employee_id);
+  if (!employee_id) return res.status(400).json({ error: 'employee_id is required' });
   const client = await pool.connect();
   try {
-    const { employee_id, separation_type = 'resignation', last_working_date, notice_period, reason } = req.body;
-    if (!employee_id) return res.status(400).json({ error: 'employee_id is required' });
-
+    // §274: one shared rule set (exitCase.js) — valid type and dates, employee
+    // live and still employed, no second open exit. Notice days default to
+    // the employee's contractual notice when HR leaves the field empty.
+    const f = cleanExitFields(req.body);
     await client.query('BEGIN');
-    await assertEmployeeScope(client, employee_id, cid(req));
+    const emp = await startExitChecks(client, employee_id, cid(req));
+    const noticeDays = f.notice_period ?? await defaultNoticeDays(client, emp);
 
     const { rows } = await client.query(
       `INSERT INTO exit_requests
-         (employee_id, separation_type, last_working_date, notice_period, reason, status)
-       VALUES ($1,$2,$3,$4,$5,'active') RETURNING *`,
-      [employee_id, separation_type, last_working_date, notice_period, reason]
+         (employee_id, separation_type, last_working_date, resignation_date, notice_period, reason, status)
+       VALUES ($1,$2,$3,$4,$5,$6,'active') RETURNING *`,
+      [employee_id, f.separation_type, f.last_working_date, f.resignation_date ?? null, noticeDays, f.reason ?? null]
     );
 
     // Move employee into notice period — NOT straight to the terminal status
@@ -406,21 +510,50 @@ router.post('/initiate', requireHRWrite, async (req, res) => {
     // NOTICE_STATUS, not a hardcoded literal: this exact string is the reason
     // someone serving notice still counts in headcount everywhere else, so it has
     // to come from the same vocabulary those readers use.
-    // assertEmployeeScope above already proved ownership; the predicate is kept
+    // startExitChecks above already proved ownership; the predicate is kept
     // anyway so the statement is safe read in isolation.
     await client.query(
       `UPDATE employees SET status=$1, updated_at=NOW()
         WHERE id=$2 AND ($3::int IS NULL OR company_id=$3)`,
       [NOTICE_STATUS, employee_id, cid(req)]
     );
+    const prevClearance = await freshClearance(client, employee_id);
 
     await client.query('COMMIT');
-    res.status(201).json(rows[0]);
+    logAudit({
+      userId: req.user?.userId ?? req.user?.id, module: 'hr', recordId: rows[0].id, recordType: 'exit_request', action: 'initiate',
+      oldData: { employee_status: emp.status, ...(prevClearance ? { previous_clearance: prevClearance } : {}) },
+      newData: { employee_status: NOTICE_STATUS, separation_type: f.separation_type, last_working_date: f.last_working_date,
+                 resignation_date: f.resignation_date ?? null, notice_period: noticeDays },
+      req,
+    });
+    const notified = await notifyExitStarted({ employee: emp, exitRequest: rows[0], actorUserId: req.user?.userId ?? req.user?.id });
+    res.status(201).json({ ...rows[0], notified });
   } catch (e) {
-    await client.query('ROLLBACK');
-    res.status(e.status || 500).json({ error: e.message });
+    await client.query('ROLLBACK').catch(() => {});
+    sendExitError(res, e);
   } finally {
     client.release();
+  }
+});
+
+// ── GET /employee/:employee_id/letter/:kind — relieving / experience letter PDF (§276) ──
+// HR read roles (the module's blanket gate). Available once the employee has left.
+router.get('/employee/:employee_id/letter/:kind', async (req, res) => {
+  const empId = intId(req.params.employee_id);
+  if (!empId) return res.status(400).json({ error: 'Invalid employee id' });
+  try {
+    const actor = req.user?.userId ?? req.user?.id ?? null;
+    const content = await exitLetterContent(pool, { companyId: cid(req), employeeId: empId, kind: req.params.kind, signatoryUserId: actor, todayIso: localTodayIso() });
+    const pdf = await buildLetterPdf(content);
+    logAudit({ userId: actor, module: 'hr', recordId: empId, recordType: 'exit_letter', action: `issue_${content.kind}_letter`,
+      newData: { reference: content.reference, kind: content.kind }, req });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${content.filename}"`);
+    res.send(pdf);
+  } catch (e) {
+    if (e instanceof ExitLetterError) return res.status(e.status).json({ error: e.message, code: e.code });
+    res.status(500).json({ error: e.message });
   }
 });
 
@@ -430,6 +563,8 @@ router.get('/employee/:employee_id', async (req, res) => {
   if (!Number.isInteger(empId) || empId < 1) return res.status(400).json({ error: 'Invalid employee id' });
   const companyId = cid(req);
   try {
+    // The clearance read below keyed on the id alone (HR audit 2026-11-16).
+    if (!await employeeInCompany(pool, empId, companyId)) return res.status(404).json({ error: 'Employee not found' });
     const params = [empId];
     let cidClause = '';
     if (companyId != null) { params.push(companyId); cidClause = `AND e.company_id = $${params.length}`; }
@@ -453,22 +588,31 @@ router.get('/employee/:employee_id', async (req, res) => {
 });
 
 // ── GET /interviews ───────────────────────────────────────────────────────────
+// An exit interview counts only when it belongs to a real exit: the exit it
+// names is this employee's own, not cancelled or rejected, and the employee is
+// not deleted (HR audit 2026-11-16, B3). Seed rows pointed at other people's
+// exits or at no exit, and the analytics averaged them in. $1 = company (NULL =
+// global caller).
+const REAL_INTERVIEW_JOIN = `
+      JOIN exit_requests er ON er.id = ei.exit_request_id
+                           AND er.employee_id = ei.employee_id
+                           AND er.status NOT IN ('cancelled', 'rejected')
+      JOIN employees e ON e.id = ei.employee_id
+                      AND e.deleted_at IS NULL
+                      AND ($1::int IS NULL OR e.company_id = $1::int)`;
+
 router.get('/interviews', async (req, res) => {
   try {
     const companyId = cid(req);
-    const params = [];
-    let cidClause = '';
-    if (companyId != null) { params.push(companyId); cidClause = `AND e.company_id = $${params.length}`; }
     const { rows } = await pool.query(`
       SELECT
         ei.*,
         COALESCE(e.name, e.first_name || ' ' || e.last_name) AS employee_name,
         e.department
       FROM exit_interviews ei
-      LEFT JOIN employees e ON e.id = ei.employee_id
-      WHERE 1=1 ${cidClause}
+      ${REAL_INTERVIEW_JOIN}
       ORDER BY ei.created_at DESC
-    `, params);
+    `, [companyId]);
     res.json(rows);
   } catch (e) {
     if (e.message.includes('does not exist')) return res.json([]);
@@ -479,11 +623,8 @@ router.get('/interviews', async (req, res) => {
 // ── GET /interviews/analytics ─────────────────────────────────────────────────
 router.get('/interviews/analytics', async (req, res) => {
   try {
-    const companyId = cid(req);
-    const params = companyId != null ? [companyId] : [];
-    const cidJoin = companyId != null
-      ? `JOIN employees e ON e.id = ei.employee_id AND e.company_id = $1`
-      : '';
+    const params = [cid(req)];
+    const cidJoin = REAL_INTERVIEW_JOIN;
     const [reasons, ratings] = await Promise.allSettled([
       pool.query(
         `SELECT ei.reason_category, COUNT(*) AS count
@@ -518,7 +659,6 @@ router.get('/interviews/analytics', async (req, res) => {
 router.post('/interview', requireHRWrite, async (req, res) => {
   const {
     employee_id, interviewer_id, reason_category, reason_detail, would_rejoin,
-    rating_management, rating_culture, rating_work, rating_growth, overall_rating,
   } = req.body;
   const empId = intId(employee_id);
   if (empId == null) return res.status(400).json({ error: 'A valid employee_id is required' });
@@ -541,16 +681,49 @@ router.post('/interview', requireHRWrite, async (req, res) => {
     const { rows: [er] } = await client.query(
       `SELECT er.id FROM exit_requests er JOIN employees e ON e.id = er.employee_id
         WHERE er.employee_id = $1 AND ($2::int IS NULL OR e.company_id = $2::int)
+          AND er.status NOT IN ('cancelled', 'rejected')
         ORDER BY er.created_at DESC LIMIT 1`,
       [empId, companyId]
     );
+    // B3: an interview with no exit behind it is not an exit interview, and
+    // the analytics would never count it. A withdrawn exit is no exit either.
+    if (!er) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        code: 'NO_EXIT',
+        error: 'This employee has no exit in progress. Start the exit in Exit Management first.',
+      });
+    }
+    // One interview per exit (exit review 2026-11-17): a second submission was
+    // stored too, and the reason and rating charts counted the leaver twice.
+    const { rows: [already] } = await client.query(
+      `SELECT id FROM exit_interviews WHERE exit_request_id = $1 LIMIT 1`, [er.id]);
+    if (already) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ code: 'INTERVIEW_EXISTS', error: 'The exit interview for this exit is already recorded.' });
+    }
+    // Ratings were pre-filled on the form (4/4/4/3/4), so an untouched form
+    // stored scores nobody gave. The overall rating is now required; any other
+    // rating sent must be 1–5.
+    const ratings = Object.fromEntries(RATING_FIELDS.map(k => [k, ratingOf(req.body?.[k])]));
+    if (RATING_FIELDS.some(k => Number.isNaN(ratings[k])) || ratings.overall_rating == null) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ code: 'BAD_RATING', error: 'Give the overall rating, and every rating as a whole number from 1 to 5.' });
+    }
+    const reasons = await vocabularyValues('EXIT_REASON', companyId, EXIT_REASON_SEED);
+    const typed = String(reason_category ?? '').trim();
+    const reason = reasons.find(r => r.toLowerCase() === (LEGACY_REASON[typed] ?? typed).toLowerCase()) ?? null;
+    if (!reason) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ code: 'BAD_REASON', error: `Choose an exit reason from the list (${reasons.join(', ')}).` });
+    }
     const { rows } = await client.query(
       `INSERT INTO exit_interviews
          (exit_request_id, employee_id, interviewer_id, reason_category, reason_detail,
           would_rejoin, rating_management, rating_culture, rating_work, rating_growth, overall_rating)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
-      [er?.id ?? null, empId, interviewerId, reason_category, reason_detail,
-       would_rejoin, rating_management, rating_culture, rating_work, rating_growth, overall_rating]
+      [er.id, empId, interviewerId, reason, reason_detail,
+       would_rejoin, ratings.rating_management, ratings.rating_culture, ratings.rating_work, ratings.rating_growth, ratings.overall_rating]
     );
     if (er?.id) {
       await client.query(
@@ -578,6 +751,34 @@ router.post('/interview', requireHRWrite, async (req, res) => {
   }
 });
 
+/**
+ * HR decided a leaver's sales incentive in the settlement: tell the company's Finance
+ * users (holders of finance:edit by role), who pay the settlement. Never undoes the save.
+ */
+async function notifyFinanceOfIncentiveDecision(req, employeeId, d) {
+  try {
+    const { rows: [emp] } = await pool.query(
+      `SELECT id, company_id, office_id, first_name, last_name FROM employees WHERE id = $1`, [employeeId]);
+    if (!emp) return;
+    const { rows } = await pool.query(
+      `SELECT DISTINCT u.id FROM users u
+         JOIN user_roles ur ON ur.user_id = u.id
+         JOIN roles r ON r.id = ur.role_id
+         JOIN role_permissions rp ON rp.role_id = r.id AND rp.module = 'finance' AND rp.can_edit = true
+        WHERE u.is_active = true AND u.company_id = $1 AND u.id <> $2`,
+      [emp.company_id, req.user?.userId ?? req.user?.id ?? -1]);
+    if (!rows.length) return;
+    const name = `${emp.first_name || ''} ${emp.last_name || ''}`.trim();
+    notifyWorkflowEvent('fnf_sales_incentive_decided', {
+      module: 'Exit', recordId: emp.id, recipientUserIds: rows.map(r => r.id),
+      context: {
+        employeeLabel: [name, emp.office_id && `(${emp.office_id})`].filter(Boolean).join(' '),
+        decision: d.decision, amount: d.amount, reason: d.reason, suggested: d.suggested?.amount ?? null, fy: d.suggested?.fy_label ?? null,
+      },
+    });
+  } catch { /* a notification must never undo a saved settlement */ }
+}
+
 // ── POST /fnf/compute/:employee_id ────────────────────────────────────────────
 // Computation itself lives in fnf.service.js so the auto-trigger cron
 // (fnfAutoTrigger.cron.js, Automation Opportunity Audit §9.3) can call the
@@ -593,16 +794,53 @@ router.post('/fnf/compute/:employee_id', requireHRWrite, async (req, res) => {
   const empId = intId(req.params.employee_id);
   if (empId == null) return res.status(400).json({ error: 'Invalid employee id' });
   try {
-    const result = await computeFnf(pool, empId, { companyId: cid(req) });
+    const { lop_days, notice_start, waive_notice_days, waive_reason, forfeit_gratuity_reason, bonus_disqualified_reason, asset_recovery_amount, asset_recovery_reason,
+      sales_incentive_decision, sales_incentive_amount, sales_incentive_reason } = req.body || {};
+    const result = await computeFnf(pool, empId, {
+      companyId: cid(req), actorId: req.user?.userId ?? null,
+      options: { lop_days, notice_start, waive_notice_days, waive_reason, forfeit_gratuity_reason, bonus_disqualified_reason, asset_recovery_amount, asset_recovery_reason,
+        sales_incentive_decision, sales_incentive_amount, sales_incentive_reason },
+    });
     if (!result) return res.status(404).json({ error: 'Employee or exit request not found' });
-    // Containment C1: the calculation is known to be wrong (F-01..F-03), so its
-    // output is labelled provisional and the screen offers no approve / pay.
+    if (result.sales_incentive_decision_changed) {
+      const d = result.sales_incentive_decision_changed;
+      logAudit({ userId: req.user?.userId ?? null, module: 'hr', recordId: result.id, recordType: 'fnf_sales_incentive', action: 'decide', newData: { employee_id: empId, decision: d.decision, amount: d.amount, reason: d.reason, version: d.version }, req });
+      notifyFinanceOfIncentiveDecision(req, empId, d);
+    }
+    // Containment: the rules are not yet confirmed and Finance's payment steps are not
+    // built, so the output is labelled provisional and the screen offers no approve / pay.
     if (fnfSettlementSuspended()) {
       return res.json({ ...result, provisional: true, settlement_actions_suspended: true, containment_notice: FNF_SUSPENDED_MESSAGE });
     }
     res.json(result);
   } catch (e) {
-    if (e?.statusCode === 409) return res.status(409).json({ error: e.message });
+    if (e?.statusCode === 409 || e?.statusCode === 422) return res.status(e.statusCode).json({ error: e.message });
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── GET /fnf/rules — what each settlement rule is, and whether it is confirmed ──
+router.get('/fnf/rules', async (req, res) => {
+  try {
+    const onDate = new Date().toISOString().slice(0, 10);
+    // can_edit: saving goes through POST /payroll/statutory-rules, which needs
+    // payroll_statutory_config:edit; without it the tab is shown read-only.
+    res.json({
+      data: settlementRuleList(onDate, await loadRuleRows(pool, cid(req))),
+      can_edit: await can(req, 'payroll_statutory_config', 'edit'),
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── GET /fnf/settlements/:employee_id — every version computed ────────────────
+router.get('/fnf/settlements/:employee_id', async (req, res) => {
+  const empId = intId(req.params.employee_id);
+  if (empId == null) return res.status(400).json({ error: 'Invalid employee id' });
+  try {
+    res.json({ data: await settlementHistory(pool, empId, cid(req)) });
+  } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
@@ -615,51 +853,172 @@ router.post('/fnf/compute/:employee_id', requireHRWrite, async (req, res) => {
 // other-company ids are the same 404. A PAID settlement is never moved back to
 // 'approved' — the UPDATE itself refuses it, so a repeated or late approve
 // cannot undo a payment (409).
-router.put('/fnf/:id/approve', requireHRWrite, async (req, res) => {
-  // Containment C3: no settlement is approved on the current engine's figures.
-  if (fnfSettlementSuspended()) return res.status(423).json(fnfSuspendedBody());
+const contained = (req, res, next) => (fnfSettlementSuspended() ? res.status(423).json(fnfSuspendedBody()) : next());
+const settlementFailure = (res, e) => (e instanceof SettlementError
+  ? res.status(e.statusCode).json({ code: e.code, error: e.message, ...e.extra })
+  : res.status(500).json({ error: e.message }));
+
+// ── GET /fnf/review/:exit_id — the LATEST saved settlement, read-only ─────────
+// HR audit 2026-11-16: every way of seeing a settlement on screen recomputed
+// it (POST /fnf/compute), which wrote a new version with the VIEWER as
+// computed_by — so whoever opened it to approve it was then refused
+// (SELF_APPROVAL), and Finance (fnf:view, no exit:view) could not open Exit
+// Management at all. No settlement could be approved from the UI. This reads
+// what was computed, with its approval and payment state and what the caller
+// may do with it. Reached with fnf:view (FNF_PATH) as well as exit:view.
+router.get('/fnf/review/:exit_id', async (req, res) => {
+  const exitId = intId(req.params.exit_id);
+  if (exitId == null) return res.status(400).json({ error: 'Invalid exit request id' });
+  try {
+    const { rows: [er] } = await pool.query(
+      `SELECT er.id, er.employee_id, er.status, er.fnf_status, er.separation_type, er.last_working_date,
+              e.office_id, e.first_name, e.last_name, e.department, e.designation, e.company_id
+         FROM exit_requests er JOIN employees e ON e.id = er.employee_id
+        WHERE er.id = $1 AND e.deleted_at IS NULL AND ($2::int IS NULL OR e.company_id = $2::int)`,
+      [exitId, cid(req)]);
+    if (!er) return res.status(404).json({ error: 'Not found' });
+    const { rows: [s] } = await pool.query(
+      `SELECT s.*, cu.name AS computed_by_name
+         FROM fnf_settlements s LEFT JOIN users cu ON cu.id = s.computed_by
+        WHERE s.exit_request_id = $1 ORDER BY s.version DESC LIMIT 1`, [exitId]);
+    if (!s) return res.json({ exit: er, settlement: null });
+    const { rows: events } = await pool.query(
+      `SELECT ev.action, ev.actor_id, ev.amount, ev.utr, ev.value_date, ev.created_at, u.name AS actor_name
+         FROM fnf_settlement_events ev LEFT JOIN users u ON u.id = ev.actor_id
+        WHERE ev.settlement_id = $1 ORDER BY ev.created_at`, [s.id]);
+    const approval = events.find(e => e.action === 'approve') || null;
+    const payment = events.find(e => e.action === 'pay') || null;
+    const me = req.user?.userId ?? null;
+    const own = req.user?.employee_id != null && Number(req.user.employee_id) === Number(er.employee_id);
+    const suspended = fnfSettlementSuspended();
+    const blockers = payment ? [] : (await computeClearanceBlockers(er.employee_id)).blockers ?? [];
+    const notApprovable = s.rules_unconfirmed?.length ? 'Confirm the settlement rules, then HR recalculates.' : null;
+    res.json({
+      exit: er,
+      settlement: {
+        id: s.id, version: s.version, separation_type: s.separation_type, last_working_date: s.last_working_date,
+        total_payable: s.total_payable, total_recoverable: s.total_recoverable, net_payable: s.net_payable,
+        lines: s.lines, warnings: s.warnings, rules_unconfirmed: s.rules_unconfirmed,
+        computed_by: s.computed_by, computed_by_name: s.computed_by_name, computed_at: s.computed_at,
+        // What HR entered for this version, so Exit Management's calculator can
+        // show the saved settlement with its inputs instead of recomputing it.
+        options: s.inputs?.options ?? null,
+        sales_incentive: s.inputs?.salesIncentive ?? null,
+      },
+      approval, payment,
+      // Payment is refused until these clear (the pay route's own gate).
+      clearance_blockers: blockers.filter(b => !b.cleared).map(b => ({ key: b.key, label: b.label, detail: b.detail })),
+      suspended,
+      can_approve: !suspended && !approval && !own && !notApprovable
+        && await can(req, 'payroll', 'approve') && String(s.computed_by) !== String(me),
+      can_pay: !suspended && !!approval && !payment && !own
+        && await can(req, 'payroll_payment', 'approve') && String(approval.actor_id) !== String(me),
+      why_not: suspended ? 'F&F approval and payment are switched off (HR_CONTAINMENT_FNF).'
+        : own ? 'This is your own settlement.'
+        : (!approval && String(s.computed_by) === String(me)) ? 'You computed this version, so someone else must approve it.'
+        : (approval && !payment && String(approval.actor_id) === String(me)) ? 'You approved it, so someone else must record the payment.'
+        : notApprovable,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── GET /fnf/review/:exit_id/statement — the leaver's F&F statement (PDF) ────
+// Exit review 2026-11-17: there was no statement to hand the employee. It is
+// the LATEST saved version as computed (never recomputed), and says DRAFT on
+// its face until that version is approved. Reached with fnf:view like the review.
+// A DATE column arrives as 'YYYY-MM-DD'; a timestamptz (computed_at) as a Date,
+// shown on the business day (IST). String(Date).slice(0, 10) gave "Invalid Date".
+const fmtLong = (d) => {
+  if (!d) return null;
+  const opts = { day: '2-digit', month: 'short', year: 'numeric' };
+  if (d instanceof Date) return d.toLocaleDateString('en-GB', { ...opts, timeZone: 'Asia/Kolkata' });
+  return new Date(`${String(d).slice(0, 10)}T00:00:00Z`).toLocaleDateString('en-GB', { ...opts, timeZone: 'UTC' });
+};
+router.get('/fnf/review/:exit_id/statement', async (req, res) => {
+  const exitId = intId(req.params.exit_id);
+  if (exitId == null) return res.status(400).json({ error: 'Invalid exit request id' });
+  try {
+    const { rows: [er] } = await pool.query(
+      `SELECT er.id, er.employee_id, er.separation_type, er.last_working_date,
+              e.office_id, e.first_name, e.last_name, e.department, e.designation, e.joining_date,
+              c.name AS company_name, concat_ws(', ', NULLIF(c.address, ''), NULLIF(c.city, ''), NULLIF(c.state, ''), NULLIF(c.pincode::text, '')) AS company_address
+         FROM exit_requests er JOIN employees e ON e.id = er.employee_id
+         LEFT JOIN companies c ON c.id = e.company_id
+        WHERE er.id = $1 AND e.deleted_at IS NULL AND ($2::int IS NULL OR e.company_id = $2::int)`,
+      [exitId, cid(req)]);
+    if (!er) return res.status(404).json({ error: 'Not found' });
+    const { rows: [s] } = await pool.query(
+      `SELECT * FROM fnf_settlements WHERE exit_request_id = $1 ORDER BY version DESC LIMIT 1`, [exitId]);
+    if (!s) return res.status(409).json({ code: 'SETTLEMENT_NOT_COMPUTED', error: 'No settlement has been calculated for this exit yet.' });
+    const { rows: events } = await pool.query(
+      `SELECT action, utr, value_date FROM fnf_settlement_events WHERE settlement_id = $1 ORDER BY created_at`, [s.id]);
+    const payment = events.find(e => e.action === 'pay') || null;
+    const approved = events.some(e => e.action === 'approve');
+    const state = payment ? 'paid' : approved ? 'approved' : 'draft';
+    const pdf = await buildFnfStatementPdf({
+      company: { name: er.company_name, address: er.company_address },
+      employee: {
+        name: `${er.first_name || ''} ${er.last_name || ''}`.trim(), office_id: er.office_id,
+        designation: er.designation, department: er.department,
+        joining_date: fmtLong(er.joining_date), last_working_date: fmtLong(s.last_working_date ?? er.last_working_date),
+        separation: String(s.separation_type || er.separation_type || '').replace(/_/g, ' '),
+      },
+      settlement: {
+        version: s.version, computed_on: fmtLong(s.computed_at), lines: s.lines,
+        total_payable: s.total_payable, total_recoverable: s.total_recoverable, net_payable: s.net_payable,
+      },
+      state,
+      payment: payment ? { utr: payment.utr, value_date: fmtLong(payment.value_date) } : null,
+      issuedOn: fmtLong(localTodayIso()),
+    });
+    logAudit({ userId: req.user?.userId ?? req.user?.id ?? null, module: 'hr', recordId: er.employee_id, recordType: 'fnf_statement',
+      action: 'issue_fnf_statement', newData: { exit_request_id: exitId, settlement_id: s.id, version: s.version, state }, req });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="FnF_${String(er.office_id || er.employee_id).replace(/[^A-Za-z0-9_-]/g, '')}_v${s.version}${state === 'draft' ? '_DRAFT' : ''}.pdf"`);
+    res.send(pdf);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.put('/fnf/:id/approve', contained, requirePermission('payroll', 'approve'), async (req, res) => {
   const exitId = intId(req.params.id);
   if (exitId == null) return res.status(400).json({ error: 'Invalid exit request id' });
   const companyId = cid(req);
+  const client = await pool.connect();
   try {
-    const { rows: [oldRecord] } = await pool.query(
+    await client.query('BEGIN');
+    const { rows: [oldRecord] } = await client.query(
       `SELECT er.* FROM exit_requests er JOIN employees e ON e.id = er.employee_id
-        WHERE er.id = $1 AND ($2::int IS NULL OR e.company_id = $2::int)`, [exitId, companyId]
+        WHERE er.id = $1 AND ($2::int IS NULL OR e.company_id = $2::int) FOR UPDATE OF er`, [exitId, companyId]
     );
-    if (!oldRecord) return res.status(404).json({ error: 'Not found' });
-    const { rows } = await pool.query(
-      `UPDATE exit_requests er SET fnf_status='approved', updated_at=NOW()
-        WHERE er.id = $1
-          AND er.fnf_status IS DISTINCT FROM 'paid'
-          AND EXISTS (SELECT 1 FROM employees e WHERE e.id = er.employee_id
-                        AND ($2::int IS NULL OR e.company_id = $2::int))
-        RETURNING er.*`,
-      [exitId, companyId]
-    );
-    if (!rows.length) {
-      return oldRecord.fnf_status === 'paid'
-        ? res.status(409).json({ error: 'F&F is already paid' })
-        : res.status(404).json({ error: 'Not found' });
-    }
-    const updatedRecord = rows[0];
+    if (!oldRecord) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Not found' }); }
+    if (oldRecord.fnf_status === 'paid') { await client.query('ROLLBACK'); return res.status(409).json({ error: 'F&F is already paid' }); }
+    const s = await approveSettlement(client, { exitId, settlementId: req.body?.settlement_id, userId: req.user?.userId ?? null, companyId });
+    const { rows: [updatedRecord] } = await client.query(
+      `UPDATE exit_requests SET fnf_status = 'approved', updated_at = NOW() WHERE id = $1 RETURNING *`, [exitId]);
+    await client.query('COMMIT');
     logAudit({ userId: req.user?.userId, module: 'HR', recordId: exitId, recordType: 'fnf_settlement', action: 'approve', oldData: oldRecord, newData: updatedRecord, req });
-    // Look up the employee's userId for workflow notification. employees has
-    // no user_id column (this always 500'd silently into the .catch below,
-    // so the F&F-approval notification never fired) — resolve via the
-    // reverse FK instead, same fix as promotions.routes.js/increments.routes.js.
+    // Look up the employee's userId for workflow notification, through the reverse FK.
     pool.query(`SELECT id AS user_id FROM users WHERE employee_id=$1`, [updatedRecord.employee_id])
       .then(({ rows: empRows }) => {
-        notifyWorkflowEvent('approved', { module: 'HR', recordId: exitId, submitterUserId: empRows[0]?.user_id ?? null });
+        notifyWorkflowEvent('approved', { module: 'HR', recordId: exitId, submitterUserId: empRows[0]?.user_id, actorId: req.user?.userId, companyId: cid(req) });
       }).catch(() => {});
-    res.json(updatedRecord);
-  } catch (e) { res.status(500).json({ error: e.message }); }
+    res.json({ ...updatedRecord, settlement_id: s.id, version: s.version });
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    settlementFailure(res, e);
+  } finally {
+    client.release();
+  }
 });
 
 // ── POST /fnf/:id/pay — marks F&F paid and bridges employee to 'left' ─────────
-router.post('/fnf/:id/pay', requireHRWrite, async (req, res) => {
-  // Containment C3: HR may not mark a settlement paid (no journal, no payment
-  // record, no Finance step — F-05). Checked before a connection is taken.
-  if (fnfSettlementSuspended()) return res.status(423).json(fnfSuspendedBody());
+router.post('/fnf/:id/pay', contained, requirePermission('payroll_payment', 'approve'), async (req, res) => {
+  const exitId = intId(req.params.id);
+  if (exitId == null) return res.status(400).json({ error: 'Invalid exit request id' });
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -690,9 +1049,14 @@ router.post('/fnf/:id/pay', requireHRWrite, async (req, res) => {
       });
     }
 
+    // The bank evidence, the journal and the closed recoveries, or nothing at all.
+    const payment = await paySettlement(client, {
+      exitId, employeeId: erRows[0].employee_id, companyId: cid(req), userId: req.user?.userId ?? null,
+      settlementId: req.body?.settlement_id, utr: req.body?.utr, value_date: req.body?.value_date, bank_account_id: req.body?.bank_account_id,
+    });
     const { rows } = await client.query(
       `UPDATE exit_requests SET fnf_status='paid', status='closed', updated_at=NOW() WHERE id=$1 RETURNING *`,
-      [req.params.id]
+      [exitId]
     );
     if (!rows.length) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Not found' }); }
     const er = rows[0];
@@ -711,10 +1075,10 @@ router.post('/fnf/:id/pay', requireHRWrite, async (req, res) => {
       [EXIT_STATUS, er.last_working_date || null, er.employee_id, cid(req)]
     );
     await client.query('COMMIT');
-    res.json(er);
+    res.json({ ...er, utr: payment.utr, journal_entry_id: payment.journal_entry_id });
   } catch (e) {
-    await client.query('ROLLBACK');
-    res.status(500).json({ error: e.message });
+    await client.query('ROLLBACK').catch(() => {});
+    settlementFailure(res, e);
   } finally {
     client.release();
   }
@@ -727,14 +1091,36 @@ const EMPTY_CLEARANCE = {
   noc_finance: false, noc_hr: false, noc_manager: false,
 };
 
+// The three clearance reads are company-scoped (HR audit 2026-11-16): they read
+// another company's employee's clearance by id alone. Same 404 as the PUT.
 router.get('/clearance/:employee_id', async (req, res) => {
+  const empId = intId(req.params.employee_id);
+  if (empId == null) return res.status(400).json({ error: 'Invalid employee id' });
   try {
-    const { rows } = await pool.query(
-      `SELECT * FROM exit_clearance WHERE employee_id=$1`, [req.params.employee_id]
-    );
-    res.json(rows.length ? rows[0] : { employee_id: req.params.employee_id, ...EMPTY_CLEARANCE });
+    if (!await employeeInCompany(pool, empId, cid(req))) return res.status(404).json({ error: 'Employee not found' });
+    const { rows } = await pool.query(`SELECT * FROM exit_clearance WHERE employee_id=$1`, [empId]);
+    res.json(rows.length ? rows[0] : { employee_id: empId, ...EMPTY_CLEARANCE });
   } catch (e) {
-    if (e.message.includes('does not exist')) return res.json({ employee_id: req.params.employee_id, ...EMPTY_CLEARANCE });
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── GET /clearance/:employee_id/history — earlier exits' clearance (B7) ──────
+// freshClearance() archives the row before a new exit clears it.
+router.get('/clearance/:employee_id/history', async (req, res) => {
+  const empId = intId(req.params.employee_id);
+  if (empId == null) return res.status(400).json({ error: 'Invalid employee id' });
+  try {
+    if (!await employeeInCompany(pool, empId, cid(req))) return res.status(404).json({ error: 'Employee not found' });
+    const { rows } = await pool.query(
+      `SELECT h.id, h.exit_request_id, h.clearance, h.archived_at,
+              er.separation_type, er.last_working_date, er.status AS exit_status
+         FROM exit_clearance_history h
+         LEFT JOIN exit_requests er ON er.id = h.exit_request_id
+        WHERE h.employee_id = $1
+        ORDER BY h.archived_at DESC, h.id DESC`, [empId]);
+    res.json(rows);
+  } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
@@ -747,6 +1133,7 @@ router.get('/clearance/:employee_id/status', async (req, res) => {
   const empId = Number(req.params.employee_id);
   if (!Number.isInteger(empId) || empId < 1) return res.status(400).json({ error: 'Invalid employee id' });
   try {
+    if (!await employeeInCompany(pool, empId, cid(req))) return res.status(404).json({ error: 'Employee not found' });
     res.json(await computeClearanceBlockers(empId));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });

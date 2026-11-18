@@ -30,14 +30,6 @@ import { captureBefore } from '../../../middlewares/captureBefore.js';
 
 const router = express.Router();
 
-// Bootstrap missing bank_accounts columns
-pool.query(`
-  ALTER TABLE bank_accounts ADD COLUMN IF NOT EXISTS current_balance NUMERIC(14,2) DEFAULT 0;
-  ALTER TABLE bank_accounts ADD COLUMN IF NOT EXISTS last_reconciled_at TIMESTAMPTZ;
-  ALTER TABLE bank_accounts ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
-  ALTER TABLE bank_accounts ADD COLUMN IF NOT EXISTS company_id INTEGER;
-`).catch(() => {});
-
 // =====================================================
 // BANK ACCOUNTS
 // =====================================================

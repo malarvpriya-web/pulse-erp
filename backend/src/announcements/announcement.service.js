@@ -1,14 +1,6 @@
 import pool from "../config/db.js";
 import { countsSql } from "./announcement.visibility.js";
 
-// ── schema self-heal ──────────────────────────────────────────────────────────
-pool.query(`
-  ALTER TABLE announcements ADD COLUMN IF NOT EXISTS priority  VARCHAR(10)  DEFAULT 'medium';
-  ALTER TABLE announcements ADD COLUMN IF NOT EXISTS category  VARCHAR(50)  DEFAULT 'General';
-  ALTER TABLE announcements ADD COLUMN IF NOT EXISTS created_by INTEGER;
-  ALTER TABLE announcements ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
-`).catch(e => console.error('[announcements] schema bootstrap failed:', e.message));
-
 // Every function here takes a concrete companyId. The old `($1::int IS NULL OR
 // company_id = $1)` predicate meant a request with no company — including the
 // unauthenticated /active route — read, and deleted, every tenant's rows. The
@@ -43,10 +35,15 @@ export const listForManagement = async (companyId, { createdBy = null } = {}) =>
     SELECT a.*,
            ${countsSql('a')},
            ${LIFECYCLE_SQL},
-           ${AUTHOR_SQL}
+           ${AUTHOR_SQL},
+           -- The addressed employee's name, so the HR page need not show a raw id.
+           NULLIF(TRIM(COALESCE(te.first_name,'') || ' ' || COALESCE(te.last_name,'')), '') AS target_name
       FROM announcements a
       LEFT JOIN users cu     ON cu.id = a.created_by
       LEFT JOIN employees ce ON ce.id = cu.employee_id
+      LEFT JOIN employees te ON a.target_type = 'employee'
+                            AND te.id::text = BTRIM(a.target_value)
+                            AND te.company_id = a.company_id
      WHERE a.company_id = $1::int
        AND a.deleted_at IS NULL
        AND ($2::int IS NULL OR a.created_by = $2::int)
@@ -121,6 +118,53 @@ export const archiveAnnouncement = async (id, companyId, deletedBy) => {
       WHERE id = $1 AND company_id = $2::int AND deleted_at IS NULL
       RETURNING *`,
     [Number(id), companyId, deletedBy]);
+  return rows[0];
+};
+
+/** Archived rows of the company, newest archive first, with who archived them. */
+export const listArchived = async (companyId) => {
+  const { rows } = await pool.query(`
+    SELECT a.*,
+           ${LIFECYCLE_SQL},
+           ${AUTHOR_SQL},
+           COALESCE(NULLIF(TRIM(COALESCE(de.first_name,'') || ' ' || COALESCE(de.last_name,'')), ''), du.name) AS deleted_by_name,
+           NULLIF(TRIM(COALESCE(te.first_name,'') || ' ' || COALESCE(te.last_name,'')), '') AS target_name
+      FROM announcements a
+      LEFT JOIN users cu     ON cu.id = a.created_by
+      LEFT JOIN employees ce ON ce.id = cu.employee_id
+      LEFT JOIN users du     ON du.id = a.deleted_by
+      LEFT JOIN employees de ON de.id = du.employee_id
+      LEFT JOIN employees te ON a.target_type = 'employee'
+                            AND te.id::text = BTRIM(a.target_value)
+                            AND te.company_id = a.company_id
+     WHERE a.company_id = $1::int
+       AND a.deleted_at IS NOT NULL
+     ORDER BY a.deleted_at DESC, a.id DESC
+  `, [companyId]);
+  return rows;
+};
+
+/** One archived row in the company, or undefined (the restore before-image). */
+export const findArchivedInCompany = async (id, companyId) => {
+  if (!/^\d+$/.test(String(id))) return undefined;
+  const { rows } = await pool.query(
+    `SELECT * FROM announcements WHERE id = $1 AND company_id = $2::int AND deleted_at IS NOT NULL`,
+    [Number(id), companyId]);
+  return rows[0];
+};
+
+/**
+ * Undo an archive. notified_at is left alone: an announcement that already went
+ * out is not sent again, and one that never did is sent by the normal publish
+ * path once it is live.
+ */
+export const restoreAnnouncement = async (id, companyId, restoredBy) => {
+  const { rows } = await pool.query(
+    `UPDATE announcements
+        SET deleted_at = NULL, deleted_by = NULL, updated_by = $3, updated_at = NOW()
+      WHERE id = $1 AND company_id = $2::int AND deleted_at IS NOT NULL
+      RETURNING *`,
+    [Number(id), companyId, restoredBy]);
   return rows[0];
 };
 

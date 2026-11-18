@@ -96,8 +96,8 @@ function InspectionDetail({ id, onClose, onRefresh }) {
   if (!detail) return null;
 
   return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'flex-start', justifyContent: 'flex-end' }}>
-      <div style={{ background: '#fff', width: 580, height: '100vh', overflowY: 'auto', padding: 24, display: 'flex', flexDirection: 'column', gap: 16 }}>
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+      <div style={{ background: '#fff', width: 580, maxWidth: '100%', maxHeight: 'calc(100vh - 48px)', borderRadius: 12, boxShadow: '0 20px 60px rgba(0,0,0,.18)', overflowY: 'auto', padding: 24, display: 'flex', flexDirection: 'column', gap: 16 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <div>
             <h3 style={{ margin: 0 }}>{detail.checklist_name || 'Inspection'}</h3>

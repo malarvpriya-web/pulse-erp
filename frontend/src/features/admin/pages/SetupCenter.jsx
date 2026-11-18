@@ -1,15 +1,14 @@
 import { useState, useEffect } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { Navigate, useSearchParams } from 'react-router-dom';
 import {
   LayoutDashboard, PlayCircle, CalendarCheck, Package, Wrench,
-  IndianRupee, SlidersHorizontal,
+  SlidersHorizontal,
 } from 'lucide-react';
 import SetupDashboard from '@/features/settings/pages/SetupDashboard';
 import SetupWizard from '@/features/settings/pages/SetupWizard';
 import AttendanceSetupWizard from './AttendanceSetupWizard';
 import InventorySetupWizard from './InventorySetupWizard';
 import EngineeringSetupWizard from './EngineeringSetupWizard';
-import PayrollSetupWizard from './PayrollSetupWizard';
 import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const TABS = [
@@ -18,7 +17,6 @@ const TABS = [
   { id: 'attendance',   label: 'Attendance Setup',  icon: CalendarCheck   },
   { id: 'inventory',    label: 'Inventory Setup',   icon: Package         },
   { id: 'engineering',  label: 'Engineering Setup', icon: Wrench          },
-  { id: 'payroll',      label: 'Payroll Setup',     icon: IndianRupee     },
 ];
 const IDS = TABS.map(t => t.id);
 
@@ -32,6 +30,9 @@ export default function SetupCenter({ setPage }) {
   }, [urlTab]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const go = id => { setActive(id); setSp({ tab: id }, { replace: true }); };
+
+  // Payroll is configured in one place, Payroll Center → Settings.
+  if (urlTab === 'payroll') return <Navigate to="/PayrollCenter?tab=settings" replace />;
 
   return (
     <PageShell dock={
@@ -57,7 +58,6 @@ export default function SetupCenter({ setPage }) {
         {active === 'attendance'  && <AttendanceSetupWizard setPage={setPage} />}
         {active === 'inventory'   && <InventorySetupWizard setPage={setPage} />}
         {active === 'engineering' && <EngineeringSetupWizard setPage={setPage} />}
-        {active === 'payroll'     && <PayrollSetupWizard setPage={setPage} />}
       </div>
     </PageShell>
   );

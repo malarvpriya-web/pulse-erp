@@ -20,6 +20,7 @@
     "migrate": "node -e \"import('./src/config/migrations.js').then(m=>m.runMigrations())\"",
     "migrate:rollback": "node -e \"import('./src/config/migrations.js').then(m=>m.rollbackLast())\"",
     "migrate:status": "node -e \"import('./src/config/migrations.js').then(m=>m.migrationStatus())\"",
+    "migrate:backfill-checksums": "node -e \"import('./src/config/migrations.js').then(m=>m.backfillChecksums())\"",
     "migrate:repair-checksums": "node -e \"import('./src/config/migrations.js').then(m=>m.repairChecksums())\"",
     "generate-baseline": "node scripts/generate-baseline.js",
     "pre-deploy": "node scripts/pre-deploy.js",

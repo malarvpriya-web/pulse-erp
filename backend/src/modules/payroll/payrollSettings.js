@@ -36,7 +36,24 @@ export const PAYROLL_SETTING_DEFAULTS = {
   payroll_cutoff_day: 20,
   pay_in_following_month: false,
   working_days: 26,
+  // Rupees paid per night shift worked (attendance counts the nights). §261.
+  night_shift_rate: 200,
   regime: 'new',
+  // Payroll normally reads attendance. A company that keeps no attendance in
+  // Pulse turns this off and every employee is paid without loss of pay.
+  require_attendance_sync: true,
+  // A statutory rule change by one person takes effect only when another confirms it.
+  rules_two_person: true,
+  // §262: daily reminders to payroll (attendance cutoff, approval and payment by
+  // the pay date, statutory dues), and emailing each payslip once it is paid.
+  payroll_reminders: true,
+  email_payslips_on_payment: false,
+  hra_metro_city: false,
+  // IT declarations (§264, decision paper C7 option C): until this payroll month
+  // of the tax year, declarations waiting for HR review reduce TDS as well as
+  // approved ones; from it on (and at year end) only approved ones do.
+  // 4 (April) = approved only all year (option B); 0 = never (option A).
+  declaration_proof_cutoff_month: 1,
   pf_enabled: true,
   pf_restrict_to_ceiling: true,
   esi_enabled: true,
@@ -62,13 +79,16 @@ export const PAYROLL_SETTING_DEFAULTS = {
 
 const BOOL_KEYS = new Set(['pf_enabled', 'esi_enabled', 'professional_tax', 'tds_auto_calculate',
   'pf_restrict_to_ceiling', 'pay_in_following_month', 'enable_hra', 'enable_conveyance',
-  'enable_medical_allowance', 'enable_special_allowance', 'ctc_mode']);
-const INT_KEYS = new Set(['pay_day_of_month', 'payroll_cutoff_day', 'working_days', 'round_net_pay']);
+  'enable_medical_allowance', 'enable_special_allowance', 'ctc_mode', 'require_attendance_sync', 'hra_metro_city', 'rules_two_person',
+  'payroll_reminders', 'email_payslips_on_payment']);
+const INT_KEYS = new Set(['pay_day_of_month', 'payroll_cutoff_day', 'working_days', 'round_net_pay', 'declaration_proof_cutoff_month']);
+const NUM_KEYS = new Set(['night_shift_rate']);
 
 function coerce(key, v) {
   if (v === undefined || v === null || v === '') return undefined;
   if (BOOL_KEYS.has(key)) return v === true || v === 'true' || v === 1 || v === '1';
   if (INT_KEYS.has(key)) { const n = parseInt(v, 10); return Number.isFinite(n) ? n : undefined; }
+  if (NUM_KEYS.has(key)) { const n = parseFloat(v); return Number.isFinite(n) ? n : undefined; }
   return v;
 }
 
@@ -92,6 +112,18 @@ export function normalizePayrollSettings(raw = {}) {
   return { settings, conflicts };
 }
 
+/** 0 = April … 11 = March. */
+export const fyMonthIndex = (m) => (Number(m) + 8) % 12;
+/**
+ * Which IT declarations a payroll month counts (§264). Before the proof cut-off
+ * month: submitted and approved; from it on: approved only. A cut-off of 0 (or
+ * none) never switches.
+ */
+export function declarationStatusesFor(month, cutoffMonth) {
+  const c = Number(cutoffMonth);
+  return c >= 1 && c <= 12 && fyMonthIndex(month) >= fyMonthIndex(c) ? ['approved'] : ['approved', 'submitted'];
+}
+
 /** Validation of the pay cycle. Returns a list of error strings (empty = valid). */
 export function validatePayCycle(s) {
   const errors = [];
@@ -103,6 +135,13 @@ export function validatePayCycle(s) {
     errors.push(`Cutoff day (${cut}) must be before pay day (${pay}) when salary is paid in the same month — ` +
       'attendance has to be frozen before the payroll it feeds. Move the cutoff earlier, or set ' +
       '"Pay in following month".');
+  }
+  if (s.night_shift_rate != null && !(Number(s.night_shift_rate) >= 0 && Number(s.night_shift_rate) <= 10000)) {
+    errors.push('Night shift allowance must be between ₹0 and ₹10,000 per night');
+  }
+  if (s.declaration_proof_cutoff_month != null && !(Number.isInteger(Number(s.declaration_proof_cutoff_month))
+      && Number(s.declaration_proof_cutoff_month) >= 0 && Number(s.declaration_proof_cutoff_month) <= 12)) {
+    errors.push('IT declaration proof cut-off must be a month (1–12), or 0 for never');
   }
   if (s.pay_in_following_month && pay > 7) {
     // Code on Wages 2019 s.17: monthly wages are due before the expiry of the

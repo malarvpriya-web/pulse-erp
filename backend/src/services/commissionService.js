@@ -5,10 +5,18 @@ import pool from '../config/db.js';
 export async function calculateCommission(orderId, companyId) {
   try {
     const orderRes = await pool.query(
-      `SELECT order_number, customer_name, total_amount,
-              salesperson_id, salesperson_name
-       FROM sales_orders
-       WHERE id = $1 AND company_id = $2 AND deleted_at IS NULL`,
+      // sales_orders has no salesperson column: the salesperson is the employee
+      // linked to the login that created the order (the same reading the yearly
+      // target uses, salesIncentive.service.js). The old query named
+      // salesperson_id / salesperson_name, failed on every order, and the catch
+      // below hid it, so no commission was ever recorded.
+      `SELECT so.order_number, so.customer_name, so.total_amount,
+              u.employee_id AS salesperson_id,
+              COALESCE(NULLIF(TRIM(COALESCE(e.first_name,'') || ' ' || COALESCE(e.last_name,'')), ''), e.name) AS salesperson_name
+       FROM sales_orders so
+       LEFT JOIN users u ON u.id = so.created_by
+       LEFT JOIN employees e ON e.id = u.employee_id
+       WHERE so.id = $1 AND so.company_id = $2 AND so.deleted_at IS NULL`,
       [orderId, companyId]
     );
     if (!orderRes.rows.length) return;

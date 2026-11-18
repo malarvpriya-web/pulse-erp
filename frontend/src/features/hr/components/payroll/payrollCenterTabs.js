@@ -9,7 +9,11 @@ import {
 export const SECTIONS = [
   { id: 'overview',   label: 'Overview',                   icon: LayoutDashboard },
   { id: 'processing', label: 'Payroll Processing',         icon: PlayCircle },
-  { id: 'structures', label: 'Salary Structures & Loans',  icon: IndianRupee },
+  { id: 'structures', label: 'Salary Structures & Loans',  icon: IndianRupee,
+    views: [
+      { id: 'salaries', label: 'Structures, salaries, arrears & loans' },
+      { id: 'tax',      label: 'Tax regime & opening balances' },
+    ] },
   { id: 'payslips',   label: 'Payslips',                   icon: FileText,
     views: [
       { id: 'generator', label: 'Preview & distribute' },
@@ -17,12 +21,21 @@ export const SECTIONS = [
     ] },
   { id: 'statutory',  label: 'Tax & Statutory',            icon: Receipt,
     views: [
+      { id: 'dues',    label: 'Dues, payments & files' },
+      // Employees' tax-saving claims (80C, HRA, 80D…) that lower their TDS. Moved
+      // here from HR → IT Declaration Review (§265); it_declarations:view only.
+      { id: 'declarations', label: 'IT declarations (tax-saving claims)', grant: ['it_declarations', 'view'] },
       { id: 'form16',  label: 'Form 16 / Form 130 (annual certificate)' },
       // Its API is payroll_tds_extract:export (PC-01 D6/Q4), which payroll_admin,
       // hr and hr_manager do not hold although they can open Payroll Center.
       { id: 'form138', label: 'Form 138 / Form 24Q (quarterly statement)', grant: ['payroll_tds_extract', 'export'] },
     ] },
-  { id: 'settings',   label: 'Settings',                   icon: Settings2 },
+  // The one place payroll is configured (Setup Center and First-Time Setup link here).
+  { id: 'settings',   label: 'Settings',                   icon: Settings2,
+    views: [
+      { id: 'general', label: 'Pay cycle & switches' },
+      { id: 'rules',   label: 'Statutory rules & bonus' },
+    ] },
 ];
 
 // Tab ids used before the 2026-10-28 consolidation → [section, view].
@@ -42,6 +55,8 @@ export function visibleViews(section, allowed = () => true) {
 
 /** `?tab=&view=` → { section, view }. Unknown or not-permitted values fall back to the defaults. */
 export function resolvePayrollTab(tab, view, allowed = () => true) {
+  // Statutory rules lived under Tax & Statutory before they joined Settings.
+  if (tab === 'statutory' && view === 'rules') return { section: 'settings', view: 'rules' };
   const [legacySection, legacyView] = LEGACY_TABS[tab] || [];
   const section = SECTIONS.find(s => s.id === (legacySection || tab)) || SECTIONS[0];
   const views = visibleViews(section, allowed);

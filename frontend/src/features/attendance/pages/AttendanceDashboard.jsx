@@ -651,23 +651,9 @@ const AttendanceDashboard = () => {
               </div>
             )}
 
-            {/* work mode selector — only before first clock-in */}
-            {!todayStatus?.check_in && (
-              <div className="atd-workmode">
-                <button
-                  className={`atd-workmode-btn${workMode === 'office' ? ' atd-workmode-active' : ''}`}
-                  onClick={() => setWorkMode('office')}
-                >
-                  Office
-                </button>
-                <button
-                  className={`atd-workmode-btn${workMode === 'wfh' ? ' atd-workmode-active' : ''}`}
-                  onClick={() => setWorkMode('wfh')}
-                >
-                  <MapPin size={12} /> WFH
-                </button>
-              </div>
-            )}
+            {/* The Office / WFH selector was removed 2026-11-11 (owner: WFH is not
+                offered). A punch is recorded as 'office'; an older WFH day still
+                shows its WFH chip above. */}
 
             {/* selfie preview — captured inside the camera modal, mandatory for
                 a field clock-in (the server rejects a punch without one) */}

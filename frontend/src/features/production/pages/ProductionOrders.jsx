@@ -534,9 +534,9 @@ export default function ProductionOrders({ setPage, setSelectedProduction }) {
 
       {/* Create/Edit Drawer */}
       {drawer !== null && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.3)', zIndex: 1000, display: 'flex', justifyContent: 'flex-end' }}
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.3)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}
           onClick={() => setDrawer(null)}>
-          <div style={{ width: 460, background: '#fff', height: '100%', overflowY: 'auto', padding: 24, boxShadow: '-4px 0 20px rgba(0,0,0,0.1)' }}
+          <div style={{ width: 460, background: '#fff', maxWidth: '100%', maxHeight: 'calc(100vh - 48px)', borderRadius: 12, overflowY: 'auto', padding: 24, boxShadow: '0 20px 60px rgba(0,0,0,.18)' }}
             onClick={e => e.stopPropagation()}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
               <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: '#111827' }}>

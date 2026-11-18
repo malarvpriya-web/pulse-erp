@@ -15,7 +15,11 @@ const safeNum = (n) => Number(n || 0);
  * @param {Function} setPage - navigate to another page key
  */
 export default function PayslipViewer({ setPage: _setPage, embedded = false }) {
-  const { user } = useAuth();
+  const { user, hasPermission } = useAuth();
+  // HR / payroll can look up any employee here; everyone else sees their own.
+  const canPick = typeof hasPermission === 'function' && hasPermission('payroll', 'view');
+  const [people, setPeople] = useState([]);
+  const [picked, setPicked] = useState(null);
   const now = new Date();
   const [year, setYear] = useState(now.getFullYear());
   const [month, setMonth] = useState(now.getMonth());
@@ -33,7 +37,13 @@ export default function PayslipViewer({ setPage: _setPage, embedded = false }) {
     catch { return {}; }
   })();
 
+  useEffect(() => {
+    if (!canPick) return;
+    api.get('/employees').then(r => setPeople(Array.isArray(r.data) ? r.data : [])).catch(() => setPeople([]));
+  }, [canPick]);
+
   const resolvedEmployee = useMemo(() => {
+    if (picked) return picked;
     if (selectedEmployee?.id) return selectedEmployee;
     const userId = user?.employee_id || null;
     if (!userId) return null;
@@ -43,11 +53,9 @@ export default function PayslipViewer({ setPage: _setPage, embedded = false }) {
       designation: user?.designation || '',
       department: user?.department || '',
     };
-  }, [selectedEmployee, user]);
+  }, [picked, selectedEmployee, user]);
 
-  // Build a rolling 12-month list (current month going back 11 months).
-  // Payslips are computed on-the-fly for any month, so every month in this
-  // window is always "available". No API call needed here.
+  // The last 12 months. A month with no released payslip says so when chosen.
   const fetchAvailableMonths = useCallback((_employeeId) => {
     const today = new Date();
     const list = [];
@@ -64,7 +72,7 @@ export default function PayslipViewer({ setPage: _setPage, embedded = false }) {
 
   const fetchPayslip = useCallback(async () => {
     if (!resolvedEmployee?.id) {
-      setError('No employee context found. Please open from self-service or select an employee first.');
+      setError(canPick ? 'Choose an employee above.' : 'No employee record is linked to your login, so there is no payslip to show.');
       setPayslip(null);
       setLoading(false);
       return;
@@ -141,53 +149,20 @@ export default function PayslipViewer({ setPage: _setPage, embedded = false }) {
 
   const handlePrint = () => window.print();
 
+  const released = !!data && !data.preview && ['approved', 'paid'].includes(data.status);
+  const companyName = data?.company?.name || '';
+
   const handleDownloadPdf = async () => {
     if (!data) return;
     setPdfBusy(true);
     try {
-      const { jsPDF } = await import('jspdf');
-      const dobPassword = employeeInfo.dob
-        ? String(employeeInfo.dob).replaceAll('-', '')
-        : null;
-      const doc = new jsPDF({
-        encryption: dobPassword
-          ? {
-              userPassword: dobPassword,
-              ownerPassword: dobPassword,
-              userPermissions: ['print'],
-            }
-          : undefined,
-      });
-      doc.setFontSize(16);
-      doc.text('Manifest Technologies - Payslip', 14, 16);
-      doc.setFontSize(11);
-      doc.text(`${MONTHS[month]} ${year}`, 14, 24);
-      doc.text(`Employee: ${displayName}`, 14, 32);
-      doc.text(`Employee Code: ${employeeInfo.id}`, 14, 38);
-      doc.text(`Designation: ${employeeInfo.designation}`, 14, 44);
-      doc.text(`Department: ${employeeInfo.department}`, 14, 50);
-
-      let y = 60;
-      doc.text('Earnings', 14, y); y += 6;
-      (data.earnings || []).forEach((e) => { doc.text(`${e.label}: ${fmt(e.amount)}`, 14, y); y += 6; });
-      y += 4;
-      doc.text(`Total Earnings: ${fmt(totalEarnings)}`, 14, y);
-      y += 10;
-      doc.text('Deductions', 14, y); y += 6;
-      (data.deductions || []).forEach((d) => { doc.text(`${d.label}: ${fmt(d.amount)}`, 14, y); y += 6; });
-      y += 4;
-      doc.text(`Total Deductions: ${fmt(totalDeductions)}`, 14, y);
-      y += 10;
-      doc.setFontSize(13);
-      doc.text(`Net Pay: ${fmt(netPay)}`, 14, y);
-      if (dobPassword) {
-        y += 10;
-        doc.setFontSize(9);
-        doc.text('Password: Your DOB in YYYYMMDD format', 14, y);
-      }
-      doc.save(`Payslip_${employeeInfo.id}_${year}_${String(month + 1).padStart(2, '0')}.pdf`);
+      const r = await api.get(`/payroll/payslip-pdf/${resolvedEmployee?.id}`, { params: { month: month + 1, year }, responseType: 'blob' });
+      const url = URL.createObjectURL(r.data);
+      const a = document.createElement('a');
+      a.href = url; a.download = `Payslip_${employeeInfo.id}_${year}_${String(month + 1).padStart(2, '0')}.pdf`; a.click();
+      URL.revokeObjectURL(url);
     } catch {
-      setError('PDF generation failed. Please try again.');
+      setError('PDF download failed. Please try again.');
     } finally {
       setPdfBusy(false);
     }
@@ -207,9 +182,8 @@ export default function PayslipViewer({ setPage: _setPage, embedded = false }) {
         employee_id: resolvedEmployee?.id,
         month: month + 1,
         year,
-        email: employeeInfo.email,
       });
-      setNotice('Payslip emailed successfully.');
+      setNotice('Payslip emailed to the address on the employee record.');
     } catch (err) {
       setError(err?.response?.data?.error || err?.message || 'Failed to email payslip.');
     } finally {
@@ -252,12 +226,14 @@ export default function PayslipViewer({ setPage: _setPage, embedded = false }) {
       </button>
       <button className="plh-cta plh-cta--ghost"
         onClick={handleEmailSelf}
-        disabled={!data || emailBusy}>
-        <Mail size={14} /> {emailBusy ? 'Emailing...' : 'Email My Payslip'}
+        disabled={!released || emailBusy}
+        title={released ? 'Email this payslip' : 'Only a released (approved) payslip can be sent'}>
+        <Mail size={14} /> {emailBusy ? 'Emailing...' : 'Email payslip'}
       </button>
       <button className="plh-cta"
         onClick={handleWhatsAppShare}
-        disabled={!data || waBusy}>
+        disabled={!released || waBusy}
+        title={released ? 'Tell the employee the payslip is ready' : 'Only a released (approved) payslip can be shared'}>
         <MessageCircle size={14} /> {waBusy ? 'Sharing...' : 'WhatsApp Share'}
       </button>
     </>
@@ -269,14 +245,24 @@ export default function PayslipViewer({ setPage: _setPage, embedded = false }) {
         icon={Wallet}
         eyebrow="Human Resources"
         title="Payslip Viewer"
-        subtitle="PDF password: DOB YYYYMMDD"
+        subtitle="Released payslips, month by month"
         actions={actions}
       />
     }>
       {embedded && (
         <div className="pc-toolbar no-print">
           <span className="pc-toolbar-who">
-            Showing <strong>{displayName}</strong>{selectedEmployee?.id ? ' (the employee last selected in Pulse)' : ' (your own payslip)'} · PDF password: DOB YYYYMMDD
+            {canPick ? (
+              <label>Employee{' '}
+                <select aria-label="Employee" value={resolvedEmployee?.id || ''} onChange={e => {
+                  const p = people.find(x => String(x.id) === e.target.value);
+                  if (p) setPicked({ id: p.id, name: `${p.first_name || ''} ${p.last_name || ''}`.trim(), designation: p.designation, department: p.department, office_id: p.office_id });
+                }} style={{ padding: '4px 8px', border: '1px solid #e5e7eb', borderRadius: 6 }}>
+                  {!resolvedEmployee?.id && <option value="">— choose —</option>}
+                  {people.map(p => <option key={p.id} value={p.id}>{p.office_id ? `[${p.office_id}] ` : ''}{`${p.first_name || ''} ${p.last_name || ''}`.trim()}</option>)}
+                </select>
+              </label>
+            ) : <>Showing <strong>{displayName}</strong> (your own payslip)</>}
           </span>
           <div className="pc-toolbar-actions">{actions}</div>
         </div>
@@ -334,11 +320,12 @@ export default function PayslipViewer({ setPage: _setPage, embedded = false }) {
           <div style={{ background: '#6366f1', color: '#fff', padding: '20px 24px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
               <div>
-                <div style={{ fontSize: '20px', fontWeight: 800 }}>Manifest Technologies</div>
+                <div style={{ fontSize: '20px', fontWeight: 800 }}>{companyName}</div>
                 <div style={{ fontSize: '12px', opacity: 0.8, marginTop: '4px' }}>Payslip for {MONTHS[month]} {year}</div>
               </div>
               <div style={{ textAlign: 'right', fontSize: '13px', opacity: 0.9 }}>
-                <div>Generated: {new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' })}</div>
+                {data.generated_at && <div>Prepared: {new Date(data.generated_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' })}</div>}
+                {data.days_in_month && <div>Days paid: {data.paid_days ?? data.days_in_month} of {data.days_in_month} · LOP {Number(data.lop_days || 0)}</div>}
               </div>
             </div>
           </div>
@@ -391,6 +378,12 @@ export default function PayslipViewer({ setPage: _setPage, embedded = false }) {
             <span style={{ fontWeight: 700, fontSize: '16px' }}>Net Pay (Take Home)</span>
             <span style={{ fontWeight: 800, fontSize: '22px' }}>{fmt(netPay)}</span>
           </div>
+          {(data?.lop_note || (data?.taxable_perquisites || []).length > 0) && (
+            <div style={{ margin: '0 24px 16px', fontSize: '12px', color: '#4b5563' }}>
+              {data.lop_note && <div>Loss of pay {data.lop_note}.</div>}
+              {(data.taxable_perquisites || []).map(p => <div key={p.label}>{p.label}: {fmt(p.amount)}</div>)}
+            </div>
+          )}
           {(data?.employer_contributions_list || []).length > 0 && (
             <div style={{ margin: '0 24px 24px', fontSize: '13px' }}>
               <div style={{ fontWeight: 700, color: '#374151', marginBottom: '8px' }}>

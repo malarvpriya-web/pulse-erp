@@ -4,9 +4,13 @@ import api from "@/services/api/client";
 import { useAuth } from "@/context/AuthContext";
 
 /**
- * Department Heads — who reviews probations for each department, per company.
+ * Department Heads — the current head of each department, per company.
  *
- * Lives on HR → Exit & Probation → Probation; no menu entry of its own.
+ * The head reviews the department's probations, is the first approver of its
+ * gate passes, and gets manager access to its employees' records (onboarding,
+ * performance goals, notes — shared/employeeAccess.js managesEmployee). So it is
+ * an organisation setting with its own page, HR › Department Heads
+ * (pages/DepartmentHeads.jsx); it used to sit inside Probation Management.
  * Reading needs `hr:view` and changing needs `hr:edit` — the server enforces
  * both (GET/PUT/DELETE /department-heads); this panel only hides the controls
  * a viewer could not use. Department heads hold no `hr` permission, so they
@@ -105,7 +109,7 @@ export default function DepartmentHeadsPanel() {
       {open && (
         <div className="prob-dh-body">
           <p className="prob-dh-help">
-            The head of each department reviews its probations. Only current employees with an active Pulse login can be chosen.
+            The head of each department reviews its probations, approves its gate passes first, and can see its employees&apos; records as their manager. Only current employees with an active Pulse login can be chosen.
           </p>
           {message && <div role={message.type === 'error' ? 'alert' : 'status'} className={`prob-dh-msg is-${message.type}`}>{message.text}</div>}
           {error ? (
@@ -124,7 +128,14 @@ export default function DepartmentHeadsPanel() {
                   return (
                     <Fragment key={d.department_id}>
                       <tr data-department={d.department}>
-                        <td>{d.department}</td>
+                        <td>
+                          {d.department}
+                          {d.department_active === false && (
+                            <span className="prob-dh-flag" title="Retired in Settings › Master Data. Its head has no role until it is reactivated — remove the head.">
+                              Retired in Master Data
+                            </span>
+                          )}
+                        </td>
                         <td>
                           {d.head ? (
                             <>
@@ -143,10 +154,10 @@ export default function DepartmentHeadsPanel() {
                           </button>
                           {canEdit && !isEditing && (
                             <>
-                              <button type="button" className="prob-hist-action-btn"
+                              {d.department_active !== false && <button type="button" className="prob-hist-action-btn"
                                 onClick={() => { setMessage(null); setEditing({ departmentId: d.department_id, mode: 'assign', headId: d.head ? String(d.head.employee_id) : '', reason: '' }); }}>
                                 {d.head ? 'Change' : 'Assign'}
-                              </button>
+                              </button>}
                               {d.head && (
                                 <button type="button" className="prob-hist-action-btn"
                                   onClick={() => { setMessage(null); setEditing({ departmentId: d.department_id, mode: 'remove', headId: '', reason: '' }); }}>

@@ -121,6 +121,45 @@ export const EVENT_MAP = {
       : `HR updated the bank details of ${ctx.context?.employeeLabel || `employee #${ctx.recordId}`}. Update the bank / payee records before the next payment. Open the employee record in Pulse to see the new details.`),
     notify: 'submitter',
   },
+  // HR decided a leaver's yearly sales incentive in the Full & Final settlement.
+  // Finance pays the settlement, so it is told the decision and the amount.
+  fnf_sales_incentive_decided: {
+    notification_type: 'info',
+    title: () => 'Sales incentive decided in a final settlement',
+    message: (ctx) => {
+      const c = ctx.context || {};
+      const who = c.employeeLabel || `employee #${ctx.recordId}`;
+      const rs = (n) => `₹${Math.round(Number(n) || 0).toLocaleString('en-IN')}`;
+      const earned = c.suggested != null ? ` The slabs gave ${rs(c.suggested)}${c.fy ? ` for ${c.fy}` : ''}.` : '';
+      return c.decision === 'pay'
+        ? `HR decided to pay ${who} a sales incentive of ${rs(c.amount)} in the final settlement. Reason: ${c.reason}.${earned}`
+        : `HR decided not to pay ${who} a sales incentive in the final settlement. Reason: ${c.reason}.${earned}`;
+    },
+    notify: 'submitter',
+  },
+  // HR → Policies → Send reminder (HR audit 2026-11-16): staff who have not
+  // accepted the policy's current version. Was a stub that sent nothing.
+  policy_ack_reminder: {
+    notification_type: 'warning',
+    title: (ctx) => `Please acknowledge: ${ctx.context?.title || 'company policy'}`,
+    message: (ctx) => {
+      const c = ctx.context || {};
+      return `HR asks you to read and acknowledge "${c.title || 'a company policy'}"${c.version ? ` (version ${c.version})` : ''}. Open it from Home → Policies and press Acknowledge.`;
+    },
+    notify: 'submitter',
+  },
+  // HR → Exit Management → Offboarding checklist → Notify (HR audit 2026-11-16):
+  // tells the owner of the leaver's open checklist items. Was a stub.
+  offboarding_items_assigned: {
+    notification_type: 'info',
+    title: (ctx) => `Offboarding tasks for ${ctx.context?.employeeLabel || `employee #${ctx.recordId}`}`,
+    message: (ctx) => {
+      const c = ctx.context || {};
+      const items = (c.items || []).slice(0, 8).join('; ');
+      return `${c.count || 0} offboarding item(s) for ${c.employeeLabel || `employee #${ctx.recordId}`} are with ${c.assignee}${c.lastDay ? ` (last working day ${c.lastDay})` : ''}: ${items}${(c.items || []).length > 8 ? '; …' : ''}.`;
+    },
+    notify: 'submitter',
+  },
   goods_received: {
     notification_type: 'info',
     title: () => 'Goods Received',

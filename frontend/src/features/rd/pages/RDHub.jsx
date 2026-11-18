@@ -37,8 +37,8 @@ function Kpi({ icon: Icon, label, value, color }) {
 
 function Drawer({ title, onClose, children }) {
   return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(17,24,39,.35)', zIndex: 50, display: 'flex', justifyContent: 'flex-end' }} onClick={onClose}>
-      <div style={{ width: 440, maxWidth: '92vw', height: '100%', background: '#fff', padding: 20, overflowY: 'auto', boxShadow: '-4px 0 24px rgba(0,0,0,.12)' }} onClick={(e) => e.stopPropagation()}>
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(17,24,39,.35)', zIndex: 50, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }} onClick={onClose}>
+      <div style={{ width: 440, maxWidth: '92vw', maxHeight: 'calc(100vh - 48px)', borderRadius: 12, background: '#fff', padding: 20, overflowY: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,.18)' }} onClick={(e) => e.stopPropagation()}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
           <h2 style={{ margin: 0, fontSize: 17, fontWeight: 700 }}>{title}</h2>
           <button onClick={onClose} style={{ ...btn, padding: 6 }}><X size={16} /></button>

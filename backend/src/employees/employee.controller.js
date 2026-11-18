@@ -63,7 +63,28 @@ export function withoutCredentials(value, depth = 0) {
 // (name and code only; nothing changes in another system, no payment).
 // Unmasked account numbers are shown only to employee_bank:view holders and to
 // the employee themself.
-const BANK_KEYS = ["account_number", "ifsc_code", "bank_name", "branch_name"];
+const BANK_KEYS = ["account_number", "ifsc_code", "bank_name", "branch_name", "account_holder_name"];
+
+// §267: the cancelled cheque / bank statement uploaded in the SAME save as a
+// bank change is the proof for the PROPOSED account. It stays on the request
+// (the second HR person sees it) and reaches the employee row only on approval.
+const BANK_PROOF_FIELDS = ["cancelled_cheque_file", "bank_statement_file"];
+function splitBankProof(reqFiles, bankChanging) {
+  const proof = {}, rest = {};
+  for (const [k, v] of Object.entries(reqFiles && typeof reqFiles === "object" ? reqFiles : {})) {
+    (bankChanging && BANK_PROOF_FIELDS.includes(k) ? proof : rest)[k] = v;
+  }
+  return { proof, rest };
+}
+/** 400 body when a new account lacks its holder name or proof; null when it may be recorded. */
+function bankProofRefusal(changes, holderName, proofFiles) {
+  const errs = bankChange.proofAndHolderErrors({
+    changes, proposed: { account_holder_name: holderName },
+    proof: { cheque: !!proofFiles.cancelled_cheque_file?.length, statement: !!proofFiles.bank_statement_file?.length },
+  });
+  return errs.length ? { code: errs[0].code, error: `${errs.map(e => e.message).join("; ")}. Nothing was saved.`, missing: errs.map(e => e.code) } : null;
+}
+const proofOf = (uploaded) => ({ cheque: uploaded.cancelled_cheque_file || null, statement: uploaded.bank_statement_file || null });
 const norm = (v) => String(v ?? "").trim().replace(/\s+/g, "").toUpperCase();
 const isMaskedAccount = (v) => /^X{4}\S{1,4}$/.test(String(v ?? "").trim());
 
@@ -117,6 +138,29 @@ async function notifyAccountsOfBankChange(req, emp, { verifiedOnly = false } = {
       context: { employeeLabel: [name, emp.office_id && `(${emp.office_id})`].filter(Boolean).join(" "), action: verifiedOnly ? "verified" : "changed" },
     });
   } catch { /* a notification must never undo a saved change */ }
+}
+
+// A super admin's own bank entry needs no second person (owner instruction
+// 2026-11-10, §261): the request they create is approved at once, stamped with
+// a note that nobody else checked it, and audited as self_approve. Every other
+// role still needs a different HR reviewer (SAME_PERSON).
+const isSuperAdmin = (req) => rolesOf(req).includes("super_admin");
+
+/** For a super admin, approve the request they just made; otherwise return it unchanged. */
+async function settleOwnBankRequest(req, request, companyId) {
+  if (!request?.id || request.status !== "pending" || !isSuperAdmin(req)) return request;
+  const uid = req.user?.userId ?? req.user?.id ?? null;
+  let done, employee;
+  try {
+    ({ request: done, employee } = await bankChange.approve({ id: request.id, companyId, reviewerUserId: uid, selfApprovalAllowed: true }));
+  } catch (e) {
+    // The request stays pending and can be approved in the Approval Center.
+    return { ...request, self_approval_error: e.message };
+  }
+  logAudit({ userId: uid, module: 'employees', recordId: employee.id, recordType: 'employee_bank_details', action: 'self_approve',
+    newData: { request_id: done.id, source: done.source, fields_changed: done.fields_changed, verified_by: uid, note: bankChange.SELF_APPROVAL_NOTE } });
+  await notifyAccountsOfBankChange(req, employee, { verifiedOnly: done.source === "verify" });
+  return { ...request, status: "approved", self_approved: true };
 }
 
 /** Mask the account number unless the caller holds employee_bank:view or it is their own row. */
@@ -184,7 +228,11 @@ export const addEmployee = async (req, res) => {
     }
     const formatErrors = bankFormatErrors(req.body);
     if (formatErrors.length) return res.status(400).json({ code: "BANK_DETAILS_INVALID", error: formatErrors.join("; ") });
-    const fileFields = await processUploadedFiles(req.files);
+    const { proof: proofFiles, rest: otherFiles } = splitBankProof(req.files, newBank.length > 0);
+    const proofRefusal = newBank.length ? bankProofRefusal(newBank, req.body?.account_holder_name, proofFiles) : null;
+    if (proofRefusal) return res.status(400).json(proofRefusal);
+    const fileFields = await processUploadedFiles(otherFiles);
+    const bankProof = proofOf(await processUploadedFiles(proofFiles));
     // The bank details go to a pending request, not onto the new row.
     const emp = await service.addEmployee({
       ...withoutBankKeys(req.body),
@@ -201,10 +249,11 @@ export const addEmployee = async (req, res) => {
       try {
         bankRequest = await bankChange.propose({
           employeeId: emp.id, companyId: emp.company_id ?? companyOf(req), current: {},
-          changes: pickBank(req.body, newBank), requestedBy: req.user?.userId ?? req.user?.id ?? null, source: "create",
+          changes: pickBank(req.body, newBank), requestedBy: req.user?.userId ?? req.user?.id ?? null, source: "create", proof: bankProof,
         });
         logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'employees', recordId: emp.id, recordType: 'employee_bank_details',
           action: 'propose', newData: { request_id: bankRequest.id, fields_changed: newBank } });
+        bankRequest = await settleOwnBankRequest(req, bankRequest, emp.company_id ?? companyOf(req));
       } catch (e) {
         bankRequest = { status: "failed", error: e.message };
       }
@@ -315,10 +364,17 @@ export const updateEmployee = async (req, res) => {
       if (formatErrors.length) return res.status(400).json({ code: "BANK_DETAILS_INVALID", error: formatErrors.join("; ") });
       // One pending change at a time — refused before anything else is saved.
       if (await bankChange.pendingFor(oldEmp.id)) {
-        return res.status(409).json({ code: "BANK_CHANGE_PENDING", error: "A bank-detail change for this employee is already awaiting approval. Nothing was saved — approve, reject or withdraw it first (HR → Bank Detail Approvals)." });
+        return res.status(409).json({ code: "BANK_CHANGE_PENDING", error: "A bank-detail change for this employee is already awaiting approval. Nothing was saved — approve, reject or withdraw it first (on this employee's Edit page, or in the Approval Center)." });
       }
     }
-    const fileFields = await processUploadedFiles(req.files);
+    const { proof: proofFiles, rest: otherFiles } = splitBankProof(req.files, changedBank.length > 0);
+    if (changedBank.length) {
+      const holder = "account_holder_name" in (req.body || {}) ? req.body.account_holder_name : oldEmp.account_holder_name;
+      const proofRefusal = bankProofRefusal(changedBank, holder, proofFiles);
+      if (proofRefusal) return res.status(400).json(proofRefusal);
+    }
+    const fileFields = await processUploadedFiles(otherFiles);
+    const bankProof = proofOf(await processUploadedFiles(proofFiles));
     // Bank keys never reach the row here: a change becomes a pending request.
     const { salary_correction: salaryCorrection, ...emp } =
       await service.updateEmployee(req.params.id, { ...withoutBankKeys(req.body), ...fileFields }, companyId);
@@ -349,11 +405,12 @@ export const updateEmployee = async (req, res) => {
       try {
         bankRequest = await bankChange.propose({
           employeeId: oldEmp.id, companyId: oldEmp.company_id, current: oldEmp,
-          changes: pickBank(req.body, changedBank), requestedBy: req.user?.userId ?? req.user?.id ?? null, source: "edit",
+          changes: pickBank(req.body, changedBank), requestedBy: req.user?.userId ?? req.user?.id ?? null, source: "edit", proof: bankProof,
         });
         // Which fields changed and who proposed them; values are masked by logAudit.
         logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'employees', recordId: req.params.id, recordType: 'employee_bank_details',
           action: 'propose', newData: { request_id: bankRequest.id, fields_changed: changedBank } });
+        bankRequest = await settleOwnBankRequest(req, bankRequest, oldEmp.company_id);
       } catch (e) {
         bankRequest = { status: "failed", error: e.message };
       }
@@ -375,6 +432,8 @@ export const deleteEmployee = async (req, res) => {
     logAudit({ userId: req.user?.id, module: 'employees', recordId: req.params.id, recordType: 'employee', action: 'delete', oldData: oldEmp });
     res.json({ message: "Deleted" });
   } catch (err) {
+    // 409 = still holds assets (service guard); say it plainly, not a 500.
+    if (err?.status === 409) return res.status(409).json({ error: err.message, message: err.message });
     respondError(res, err);
   }
 };
@@ -426,7 +485,7 @@ const bankErr = (res, err) => (err instanceof bankChange.BankChangeError
   ? res.status(err.status).json({ error: err.message, ...(err.code ? { code: err.code } : {}) })
   : respondError(res, err));
 
-/** GET /employees/bank-change-requests?status=pending|approved|rejected|withdrawn|all */
+/** GET /employees/bank-change-requests?status=pending|approved|rejected|withdrawn|all[&employee_id=] */
 export const listBankChangeRequests = async (req, res) => {
   try {
     const companyId = companyOf(req);
@@ -434,6 +493,8 @@ export const listBankChangeRequests = async (req, res) => {
     if (!(await canProposeBank(req))) return res.status(403).json({ error: "Bank-detail approvals need the HR bank-details permission" });
     const status = String(req.query.status || "pending");
     if (!["pending", "approved", "rejected", "withdrawn", "all"].includes(status)) return res.status(400).json({ error: "Invalid status" });
+    const employeeId = req.query.employee_id == null || req.query.employee_id === '' ? null : String(req.query.employee_id);
+    if (employeeId != null && !/^\d+$/.test(employeeId)) return res.status(400).json({ error: "Invalid employee id" });
     const uid = req.user?.userId ?? req.user?.id ?? null;
     const reviewer = await can(req, "employee_bank", "edit");
     // A propose-only holder (employee_bank:add without :edit) sees ONLY the
@@ -442,10 +503,11 @@ export const listBankChangeRequests = async (req, res) => {
       companyId, status,
       showFull: reviewer && await can(req, "employee_bank", "view"),
       onlyRequestedBy: reviewer ? null : uid,
+      employeeId: employeeId == null ? null : Number(employeeId),
     });
     res.json(rows.map(r => ({
       ...r,
-      can_decide: reviewer && r.status === "pending" && Number(r.requested_by) !== Number(uid),
+      can_decide: reviewer && r.status === "pending" && (Number(r.requested_by) !== Number(uid) || isSuperAdmin(req)),
       can_withdraw: r.status === "pending" && (reviewer || Number(r.requested_by) === Number(uid)),
     })));
   } catch (err) { bankErr(res, err); }
@@ -459,9 +521,10 @@ export const approveBankChangeRequest = async (req, res) => {
     if (!/^\d+$/.test(String(req.params.id))) return res.status(400).json({ error: "Invalid request id" });
     if (!(await can(req, "employee_bank", "edit"))) return res.status(403).json({ error: "Approving bank details needs the HR bank-details permission" });
     const uid = req.user?.userId ?? req.user?.id ?? null;
-    const { request, employee } = await bankChange.approve({ id: Number(req.params.id), companyId, reviewerUserId: uid });
-    logAudit({ userId: uid, module: 'employees', recordId: employee.id, recordType: 'employee_bank_details', action: 'approve',
-      newData: { request_id: request.id, fields_changed: request.fields_changed, requested_by: request.requested_by, verified_by: uid } });
+    const { request, employee } = await bankChange.approve({ id: Number(req.params.id), companyId, reviewerUserId: uid, selfApprovalAllowed: isSuperAdmin(req) });
+    logAudit({ userId: uid, module: 'employees', recordId: employee.id, recordType: 'employee_bank_details', action: request.self_approved ? 'self_approve' : 'approve',
+      newData: { request_id: request.id, fields_changed: request.fields_changed, requested_by: request.requested_by, verified_by: uid,
+        ...(request.self_approved ? { note: bankChange.SELF_APPROVAL_NOTE } : {}) } });
     await notifyAccountsOfBankChange(req, employee, { verifiedOnly: request.source === "verify" });
     res.json({ id: request.id, status: "approved", employee_id: employee.id, source: request.source });
   } catch (err) { bankErr(res, err); }
@@ -475,7 +538,7 @@ export const rejectBankChangeRequest = async (req, res) => {
     if (!/^\d+$/.test(String(req.params.id))) return res.status(400).json({ error: "Invalid request id" });
     const uid = req.user?.userId ?? req.user?.id ?? null;
     const r = await bankChange.close({ id: Number(req.params.id), companyId, userId: uid, status: "rejected",
-      reason: req.body?.reason, isReviewer: await can(req, "employee_bank", "edit") });
+      reason: req.body?.reason, isReviewer: await can(req, "employee_bank", "edit"), selfDecisionAllowed: isSuperAdmin(req) });
     logAudit({ userId: uid, module: 'employees', recordId: r.employee_id, recordType: 'employee_bank_details', action: 'reject',
       newData: { request_id: r.id, reason: req.body?.reason ?? null } });
     res.json({ id: r.id, status: "rejected" });
@@ -508,9 +571,11 @@ export const requestBankVerification = async (req, res) => {
     if (!/^\d+$/.test(String(req.params.id))) return res.status(400).json({ error: "Invalid employee id" });
     if (!(await canProposeBank(req))) return res.status(403).json({ error: "Requesting verification needs the HR bank-details permission" });
     const uid = req.user?.userId ?? req.user?.id ?? null;
-    const r = await bankChange.requestVerification({ employeeId: Number(req.params.id), companyId, requestedBy: uid });
+    const made = await bankChange.requestVerification({ employeeId: Number(req.params.id), companyId, requestedBy: uid });
     logAudit({ userId: uid, module: 'employees', recordId: req.params.id, recordType: 'employee_bank_details', action: 'request_verification',
-      newData: { request_id: r.id } });
+      newData: { request_id: made.id } });
+    // A super admin's request verifies the details at once (§261).
+    const r = await settleOwnBankRequest(req, made, companyId);
     res.status(201).json({ bank_change_request: r });
   } catch (err) { bankErr(res, err); }
 };

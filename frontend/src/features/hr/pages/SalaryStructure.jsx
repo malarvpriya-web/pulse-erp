@@ -4,13 +4,16 @@ import { Wallet } from 'lucide-react';
 import api from '@/services/api/client';
 import { PageHero, PageShell } from '@/components/pulse-ui';
 import { localDay } from '@/utils/dateFormatter';
+import { useAuth } from '@/context/AuthContext';
+import { heldGrant } from '@/config/menuCatalog';
+
+// Salary is exact rupees everywhere on this page.
+const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+const firstOfMonth = () => `${localDay().slice(0, 7)}-01`;
 
 /* ─── helpers ─────────────────────────────────────────────────── */
 function fmtINR(n) {
-  const v = Math.abs(parseFloat(n) || 0);
-  if (v >= 10000000) return `₹${(v / 10000000).toFixed(2)} Cr`;
-  if (v >= 100000)   return `₹${(v / 100000).toFixed(2)} L`;
-  return `₹${Math.round(v).toLocaleString('en-IN')}`;
+  return `₹${Math.round(parseFloat(n) || 0).toLocaleString('en-IN')}`;
 }
 
 // EMI = P × r × (1+r)^n / ((1+r)^n − 1); interest-free: P / n — same as backend loanSchedule.standardEmi
@@ -72,28 +75,8 @@ function computePreview(components, ctc) {
   return { lines, gross, deductions, net: gross - deductions };
 }
 
-/* ─── arrears computation ──────────────────────────────────────── */
-function computeArrears(oldBasic, newBasic, fromDate, toDate) {
-  const P = parseFloat(oldBasic) || 0;
-  const N = parseFloat(newBasic) || 0;
-  if (!P || !N || !fromDate || !toDate) return [];
-  const from = new Date(fromDate);
-  const to   = new Date(toDate);
-  if (from > to) return [];
-  const diff = N - P;
-  const rows = [];
-  const cur  = new Date(from.getFullYear(), from.getMonth(), 1);
-  while (cur <= to) {
-    rows.push({
-      month:     cur.toLocaleString('default', { month: 'long', year: 'numeric' }),
-      old_basic: P,
-      new_basic: N,
-      arrears:   diff,
-    });
-    cur.setMonth(cur.getMonth() + 1);
-  }
-  return rows;
-}
+// Arrears are computed by the server with the payroll engine (every component,
+// PF and ESI for each past month) — never estimated here from Basic alone.
 
 /* ─── shared styles ─────────────────────────────────────────────── */
 const tabStyle = (active) => ({
@@ -107,6 +90,11 @@ const lbl = { fontSize: 12, fontWeight: 600, color: '#4c1d95', display: 'block',
 
 /* ─── component ─────────────────────────────────────────────────── */
 export default function SalaryStructure({ embedded = false } = {}) {
+  const { hasPermission, permissions } = useAuth();
+  const may = (m, a) => typeof hasPermission === 'function' && hasPermission(m, a);
+  const canEdit = may('payroll', 'edit');
+  const canApproveArrears = may('payroll', 'approve');
+  const canPay = heldGrant(permissions, 'payroll_payment', 'approve');
   const [tab, setTab]               = useState('structures');
   const [structures, setStructures] = useState([]);
   const [assignments, setAssignments] = useState([]);
@@ -137,7 +125,7 @@ export default function SalaryStructure({ embedded = false } = {}) {
 
   // bulk assign modal
   const [bulkModal, setBulkModal]   = useState(false);
-  const [bulkForm, setBulkForm]     = useState({ structure_id:'', effective_from:localDay() });
+  const [bulkForm, setBulkForm]     = useState({ structure_id:'', effective_from:firstOfMonth() });
   const [bulkLoading, setBulkLoading] = useState(false);
 
   // search / filter
@@ -151,12 +139,15 @@ export default function SalaryStructure({ embedded = false } = {}) {
 
   // arrears calculator
   const [showArrears, setShowArrears] = useState(false);
-  const [arrearsForm, setArrearsForm] = useState({ employee_id:'', old_basic:'', new_basic:'', from_date:'', to_date:'' });
-  const [arrearsRows, setArrearsRows] = useState([]);
+  const [arrearsForm, setArrearsForm] = useState({ employee_id:'', arrear_type:'salary_revision', old_basic:'', new_basic:'', from:'', to:'', amount:'', reason:'' });
+  const [arrearsCalc, setArrearsCalc] = useState(null);
+  const [arrearsList, setArrearsList] = useState([]);
+  const [loanStatus, setLoanStatus]   = useState('active');
+  const [loanAction, setLoanAction]   = useState(null);   // { kind: 'history'|'prepay'|'waive'|'payout', loan, ... }
 
   // loan form + EMI calculator
   const [showLoanForm, setShowLoanForm] = useState(false);
-  const [loanForm, setLoanForm]         = useState({ employee_id:'', loan_type:'loan', principal_amount:'', emi_amount:'', start_date:'', reason:'' });
+  const [loanForm, setLoanForm]         = useState({ employee_id:'', loan_type:'loan', purpose:'general', principal_amount:'', emi_amount:'', start_date:firstOfMonth(), reason:'' });
   const [loanCalc, setLoanCalc]         = useState({ interest_rate:'', tenure:'' });
 
   const flash = (text, type = 'success') => {
@@ -166,13 +157,15 @@ export default function SalaryStructure({ embedded = false } = {}) {
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [sRes, aRes, lRes, pRes, setRes] = await Promise.allSettled([
+    const [sRes, aRes, lRes, pRes, setRes, arRes] = await Promise.allSettled([
       api.get('/salary-structures'),
       api.get('/salary-structures/assignments'),
-      api.get('/payroll/loan-advances'),
+      api.get('/payroll/loan-advances', { params: { status: loanStatus } }),
       api.get('/salary-structures/proposals', { params: { status: 'draft' } }),
       api.get('/settings/payroll'),
+      api.get('/payroll/arrears'),
     ]);
+    if (arRes.status === 'fulfilled') setArrearsList(Array.isArray(arRes.value.data) ? arRes.value.data : []);
     if (pRes.status === 'fulfilled') setProposals(Array.isArray(pRes.value.data) ? pRes.value.data : []);
     if (setRes.status === 'fulfilled') {
       const v = setRes.value.data?.ctc_mode;
@@ -195,6 +188,9 @@ export default function SalaryStructure({ embedded = false } = {}) {
           structure_id:   a.structure_id,
           structure_name: a.structure_name ? `${a.structure_name}${a.uses_default_structure && a.has_revision ? ' (default)' : ''}` : '—',
           basic_salary:   basic,
+          // Carried forward unchanged: payroll does not read it (the structure
+          // decides every line), but View Employee shows it, and sending
+          // nothing would reset it to 0 on every new revision.
           special_allowance: a.special_allowance,
           has_revision:   !!a.has_revision,
           gross:          a.gross_estimate,
@@ -205,7 +201,7 @@ export default function SalaryStructure({ embedded = false } = {}) {
     }
     if (lRes.status === 'fulfilled') setLoans(Array.isArray(lRes.value.data) ? lRes.value.data : []);
     setLoading(false);
-  }, []);
+  }, [loanStatus]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -245,6 +241,65 @@ export default function SalaryStructure({ embedded = false } = {}) {
   };
 
   const computedEMI = calcEMI(loanForm.principal_amount, loanCalc.interest_rate, loanCalc.tenure);
+
+  const ym = (d) => (d ? { m: parseInt(d.slice(5, 7), 10), y: parseInt(d.slice(0, 4), 10) } : null);
+  const arrearsBody = () => {
+    const f = ym(arrearsForm.from), t = ym(arrearsForm.to) || f;
+    return { employee_id: arrearsForm.employee_id, arrear_type: arrearsForm.arrear_type, from_month: f?.m, from_year: f?.y, to_month: t?.m, to_year: t?.y,
+      old_basic: arrearsForm.old_basic, new_basic: arrearsForm.new_basic, arrear_amount: arrearsForm.amount, reason: arrearsForm.reason };
+  };
+  const computeArrears = async () => {
+    const b = arrearsBody();
+    if (!b.employee_id || !b.from_month) return flash('Choose the employee and the months', 'error');
+    try {
+      const r = await api.get('/payroll/arrears/compute', { params: { employee_id: b.employee_id, from_month: b.from_month, from_year: b.from_year, to_month: b.to_month, to_year: b.to_year, old_basic: b.old_basic, new_basic: b.new_basic } });
+      setArrearsCalc(r.data);
+    } catch (err) { flash(err.response?.data?.message || 'Could not compute the arrears', 'error'); }
+  };
+  const raiseArrear = async () => {
+    try {
+      await api.post('/payroll/arrears', arrearsBody());
+      flash('Arrear raised — it is paid once approved and scheduled into a payroll month');
+      setArrearsCalc(null); load();
+    } catch (err) { flash(err.response?.data?.message || err.response?.data?.error || 'Could not raise the arrear', 'error'); }
+  };
+  const approveArrear = async (a) => {
+    const when = window.prompt(`Pay ₹${Math.round(a.arrear_amount).toLocaleString('en-IN')} to ${a.employee_name} in which payroll month? (YYYY-MM)`, localDay().slice(0, 7));
+    if (!when || !/^\d{4}-\d{2}$/.test(when)) return;
+    try {
+      await api.put(`/payroll/arrears/${a.id}/approve`, { paid_in_month: parseInt(when.slice(5, 7), 10), paid_in_year: parseInt(when.slice(0, 4), 10) });
+      flash('Arrear approved; it is added to that month\'s payroll when it is generated'); load();
+    } catch (err) { flash(err.response?.data?.message || 'Could not approve', 'error'); }
+  };
+
+  // Withdraw an arrear that has not been paid (§261). A pending one: payroll:edit;
+  // an approved, scheduled one: payroll:approve (the server checks both).
+  const cancelArrear = async (a) => {
+    const reason = window.prompt(`Cancel the arrear of ₹${Math.round(a.arrear_amount).toLocaleString('en-IN')} for ${a.employee_name}? Give the reason:`, '');
+    if (reason == null) return;
+    if (reason.trim().length < 5) { flash('Give the reason for cancelling (at least 5 characters)', 'error'); return; }
+    try {
+      await api.put(`/payroll/arrears/${a.id}/cancel`, { reason: reason.trim() });
+      flash(a.status === 'approved'
+        ? "Arrear cancelled. If that month's payroll was already generated, generate it again."
+        : 'Arrear cancelled'); load();
+    } catch (err) { flash(err.response?.data?.message || 'Could not cancel the arrear', 'error'); }
+  };
+
+  const loanDo = async () => {
+    const a = loanAction;
+    try {
+      if (a.kind === 'prepay') await api.post(`/payroll/loan-advances/${a.loan.id}/prepay`, { amount: Number(a.amount), payment_date: a.date, reference: a.reference });
+      else if (a.kind === 'waive') await api.post(`/payroll/loan-advances/${a.loan.id}/close`, { waive: true, reason: a.reason });
+      else if (a.kind === 'payout') await api.post(`/payroll/loan-advances/${a.loan.id}/payout`, { reference: a.reference, paid_on: a.date });
+      setLoanAction(null); flash('Saved'); load();
+    } catch (err) { setLoanAction(x => ({ ...x, error: err.response?.data?.message || 'Not saved' })); }
+  };
+  const openHistoryOf = async (l) => {
+    setLoanAction({ kind: 'history', loan: l, rows: null });
+    try { const r = await api.get(`/payroll/loan-advances/${l.id}/repayments`); setLoanAction(x => x && ({ ...x, rows: r.data || [] })); }
+    catch { setLoanAction(x => x && ({ ...x, rows: [] })); }
+  };
 
   const resetForm = () => {
     setShowForm(false); setEditId(null); setFormName(''); setFormDesc('');
@@ -344,7 +399,7 @@ export default function SalaryStructure({ embedded = false } = {}) {
           })
         )
       );
-      flash(`Bulk assigned ${withSalary.length} employees${withSalary.length < filteredAssignments.length ? ` (${filteredAssignments.length - withSalary.length} without a salary skipped)` : ''}`);
+      flash(`Bulk assigned ${withSalary.length} employees from ${bulkForm.effective_from}${withSalary.length < filteredAssignments.length ? ` (${filteredAssignments.length - withSalary.length} without a salary skipped)` : ''}`);
       setBulkModal(false); load();
     } catch (err) { flash(err.response?.data?.message || 'Bulk assign failed', 'error'); }
     finally { setBulkLoading(false); }
@@ -377,7 +432,7 @@ export default function SalaryStructure({ embedded = false } = {}) {
 
   const closeLoanForm = () => {
     setShowLoanForm(false);
-    setLoanForm({ employee_id:'', loan_type:'loan', principal_amount:'', emi_amount:'', start_date:'', reason:'' });
+    setLoanForm({ employee_id:'', loan_type:'loan', purpose:'general', principal_amount:'', emi_amount:'', start_date:firstOfMonth(), reason:'' });
     setLoanCalc({ interest_rate:'', tenure:'' });
   };
 
@@ -408,7 +463,9 @@ export default function SalaryStructure({ embedded = false } = {}) {
     { v:'percentage_of_gross', l:'% of Gross'           },
     { v:'balancing',           l:'Balancing (gross − rest)' },
   ];
-  const COMP_TYPES = [{ v:'earning', l:'Earning' }, { v:'deduction', l:'Deduction' }, { v:'statutory', l:'Statutory' }];
+  // No "Deduction" type: payroll does not take structure deductions from pay (loans and
+  // advances have their own tab; PF, ESI, PT, LWF and TDS are calculated automatically).
+  const COMP_TYPES = [{ v:'earning', l:'Earning' }, { v:'statutory', l:'Statutory (automatic)' }];
 
   const filteredAssignments = assignments.filter(a =>
     !assignSearch || [a.employee_name, a.employee_code, a.structure_name, a.department]
@@ -416,7 +473,7 @@ export default function SalaryStructure({ embedded = false } = {}) {
   );
 
   const filteredLoans = loans.filter(l =>
-    !loanSearch || [l.employee_name, l.loan_type, l.employee_id]
+    !loanSearch || [l.employee_name, l.employee_code, l.loan_type, l.employee_id]
       .some(v => String(v||'').toLowerCase().includes(loanSearch.toLowerCase()))
   );
 
@@ -545,11 +602,14 @@ export default function SalaryStructure({ embedded = false } = {}) {
                         + Add
                       </button>
                     </div>
+                    <p style={{ fontSize: 11, color: '#6b7280', margin: '0 0 8px' }}>
+                      One earning must be named exactly <strong>Basic</strong>. All earnings are taxable; PF is on Basic (raised to half of pay under the Code on Social Security).
+                    </p>
                     <div style={{ overflowX: 'auto' }}>
                       <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
                         <thead>
                           <tr style={{ background: '#f5f3ff' }}>
-                            {['Name','Type','Calc','Value','Taxable','PF',''].map(h => (
+                            {['Name','Type','Calc','Value',''].map(h => (
                               <th key={h} style={{ padding: '6px 8px', textAlign: 'left', borderBottom: '1px solid #e9e4ff', color: '#4c1d95', fontWeight: 600, whiteSpace: 'nowrap' }}>{h}</th>
                             ))}
                           </tr>
@@ -577,12 +637,7 @@ export default function SalaryStructure({ embedded = false } = {}) {
                                 <input type="number" value={c.value} onChange={e => updateComponent(i, 'value', e.target.value)}
                                   style={{ width: 70, padding: '3px 6px', border: '1px solid #e9e4ff', borderRadius: 5, fontSize: 12 }} />
                               </td>
-                              <td style={{ padding: '4px 6px', textAlign: 'center' }}>
-                                <input type="checkbox" checked={c.is_taxable} onChange={e => updateComponent(i, 'is_taxable', e.target.checked)} />
-                              </td>
-                              <td style={{ padding: '4px 6px', textAlign: 'center' }}>
-                                <input type="checkbox" checked={c.is_pf_applicable} onChange={e => updateComponent(i, 'is_pf_applicable', e.target.checked)} />
-                              </td>
+
                               <td style={{ padding: '4px 6px' }}>
                                 <button type="button" onClick={() => removeComponent(i)}
                                   style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#dc2626', fontSize: 14 }}>✕</button>
@@ -616,14 +671,11 @@ export default function SalaryStructure({ embedded = false } = {}) {
                     {preview.lines.filter(l => l.type !== 'earning').map((l, i) => (
                       <div key={i} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 4 }}>
                         <span style={{ color: '#6b7280' }}>{l.name || '(unnamed)'}</span>
-                        {l.type === 'statutory'
-                          ? <span style={{ color: '#6b7280', fontStyle: 'italic', fontSize: 12 }}>per Payroll Settings at payroll</span>
-                          : <span style={{ color: '#dc2626' }}>− {fmtINR(l.computed_amount)}</span>}
+                        {l.type === 'deduction'
+                          ? <span style={{ color: '#b91c1c', fontSize: 12 }}>not deducted by payroll — remove this line</span>
+                          : <span style={{ color: '#6b7280', fontStyle: 'italic', fontSize: 12 }}>calculated at payroll from Settings and the statutory rules</span>}
                       </div>
                     ))}
-                    <div style={{ borderTop: '2px solid #6B3FDB', marginTop: 8, paddingTop: 8, display: 'flex', justifyContent: 'space-between', fontWeight: 700, color: '#6B3FDB', fontSize: 16 }}>
-                      <span>Net before statutory deductions</span><span>{fmtINR(preview.net)}</span>
-                    </div>
                   </div>
                 </div>
 
@@ -648,15 +700,15 @@ export default function SalaryStructure({ embedded = false } = {}) {
             {/* Toolbar */}
             <div style={{ marginBottom: 14, display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
               <div style={{ display: 'flex', gap: 8, flex: 1, flexWrap: 'wrap' }}>
-                <button onClick={() => { setShowArrears(a => !a); setArrearsRows([]); }}
+                <button onClick={() => { setShowArrears(a => !a); setArrearsCalc(null); }}
                   style={{ background: showArrears ? '#ede9fe' : '#ede9fe', color: showArrears ? '#5b21b6' : '#6B3FDB',
                     border: 'none', borderRadius: 8, padding: '8px 16px', cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>
-                  {showArrears ? '✕ Close Arrears Calc' : '⊕ Arrears Calculator'}
+                  {showArrears ? '✕ Close Arrears' : '⊕ Arrears'}
                 </button>
-                <button onClick={() => setBulkModal(true)}
+                {!ctcMode && canEdit && <button onClick={() => setBulkModal(true)}
                   style={{ background: '#e9e4ff', color: '#6B3FDB', border: 'none', borderRadius: 8, padding: '8px 16px', cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>
                   Bulk Assign Structure
-                </button>
+                </button>}
               </div>
               {/* Search */}
               <input
@@ -667,77 +719,81 @@ export default function SalaryStructure({ embedded = false } = {}) {
               />
             </div>
 
-            {/* Arrears Calculator panel */}
+            {/* Arrears — computed by the payroll engine month by month, then approved and paid in a payroll month */}
             {showArrears && (
               <div style={{ background: '#f5f3ff', border: '1px solid #ddd6fe', borderRadius: 10, padding: 16, marginBottom: 16 }}>
-                <h4 style={{ margin: '0 0 14px', color: '#5b21b6' }}>Backdated Arrears Calculator</h4>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(155px,1fr))', gap: 12, marginBottom: 12 }}>
+                <h4 style={{ margin: '0 0 6px', color: '#5b21b6' }}>Arrears</h4>
+                <p style={{ margin: '0 0 12px', fontSize: 12, color: '#6b7280' }}>
+                  A backdated raise is recomputed for each past month with the same structure, PF and ESI rules that month used. Once approved, it is added to the payroll month you choose and taxed there.
+                </p>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: 12, marginBottom: 12 }}>
                   <div>
                     <label style={{ ...lbl, color: '#5b21b6' }}>Employee</label>
-                    <select value={arrearsForm.employee_id} onChange={e => setArrearsForm(f => ({ ...f, employee_id: e.target.value }))}
-                      style={{ ...inp, borderColor: '#ddd6fe' }}>
+                    <select value={arrearsForm.employee_id} onChange={e => setArrearsForm(f => ({ ...f, employee_id: e.target.value }))} style={{ ...inp, borderColor: '#ddd6fe' }}>
                       <option value="">— Select —</option>
-                      {assignments.map(a => <option key={a.employee_id} value={a.employee_id}>{a.employee_name}</option>)}
+                      {assignments.map(x => <option key={x.employee_id} value={x.employee_id}>{x.employee_name} ({x.employee_code})</option>)}
                     </select>
                   </div>
                   <div>
-                    <label style={{ ...lbl, color: '#5b21b6' }}>Old Basic (₹ per month)</label>
-                    <input type="number" value={arrearsForm.old_basic} onChange={e => setArrearsForm(f => ({ ...f, old_basic: e.target.value }))} style={{ ...inp, borderColor: '#ddd6fe' }} />
+                    <label style={{ ...lbl, color: '#5b21b6' }}>Type</label>
+                    <select value={arrearsForm.arrear_type} onChange={e => setArrearsForm(f => ({ ...f, arrear_type: e.target.value }))} style={{ ...inp, borderColor: '#ddd6fe' }}>
+                      <option value="salary_revision">Backdated salary revision</option>
+                      <option value="other">Other amount owed</option>
+                    </select>
                   </div>
-                  <div>
-                    <label style={{ ...lbl, color: '#5b21b6' }}>New Basic (₹ per month)</label>
-                    <input type="number" value={arrearsForm.new_basic} onChange={e => setArrearsForm(f => ({ ...f, new_basic: e.target.value }))} style={{ ...inp, borderColor: '#ddd6fe' }} />
-                  </div>
-                  <div>
-                    <label style={{ ...lbl, color: '#5b21b6' }}>Arrears From</label>
-                    <input type="date" value={arrearsForm.from_date} onChange={e => setArrearsForm(f => ({ ...f, from_date: e.target.value }))} style={{ ...inp, borderColor: '#ddd6fe' }} />
-                  </div>
-                  <div>
-                    <label style={{ ...lbl, color: '#5b21b6' }}>Arrears To</label>
-                    <input type="date" value={arrearsForm.to_date} onChange={e => setArrearsForm(f => ({ ...f, to_date: e.target.value }))} style={{ ...inp, borderColor: '#ddd6fe' }} />
-                  </div>
+                  {arrearsForm.arrear_type === 'salary_revision' ? (<>
+                    <div><label style={{ ...lbl, color: '#5b21b6' }}>Old Basic (₹ per month)</label>
+                      <input type="number" value={arrearsForm.old_basic} onChange={e => setArrearsForm(f => ({ ...f, old_basic: e.target.value }))} style={{ ...inp, borderColor: '#ddd6fe' }} /></div>
+                    <div><label style={{ ...lbl, color: '#5b21b6' }}>New Basic (₹ per month)</label>
+                      <input type="number" value={arrearsForm.new_basic} onChange={e => setArrearsForm(f => ({ ...f, new_basic: e.target.value }))} style={{ ...inp, borderColor: '#ddd6fe' }} /></div>
+                  </>) : (<>
+                    <div><label style={{ ...lbl, color: '#5b21b6' }}>Amount (₹)</label>
+                      <input type="number" value={arrearsForm.amount} onChange={e => setArrearsForm(f => ({ ...f, amount: e.target.value }))} style={{ ...inp, borderColor: '#ddd6fe' }} /></div>
+                    <div><label style={{ ...lbl, color: '#5b21b6' }}>Reason *</label>
+                      <input value={arrearsForm.reason} onChange={e => setArrearsForm(f => ({ ...f, reason: e.target.value }))} style={{ ...inp, borderColor: '#ddd6fe' }} /></div>
+                  </>)}
+                  <div><label style={{ ...lbl, color: '#5b21b6' }}>From month</label>
+                    <input type="month" value={arrearsForm.from} onChange={e => setArrearsForm(f => ({ ...f, from: e.target.value }))} style={{ ...inp, borderColor: '#ddd6fe' }} /></div>
+                  <div><label style={{ ...lbl, color: '#5b21b6' }}>To month</label>
+                    <input type="month" value={arrearsForm.to} onChange={e => setArrearsForm(f => ({ ...f, to: e.target.value }))} style={{ ...inp, borderColor: '#ddd6fe' }} /></div>
                 </div>
-                <button onClick={() => {
-                  if (arrearsForm.from_date && arrearsForm.to_date && arrearsForm.from_date > arrearsForm.to_date) {
-                    flash('"From" date must be before "To" date', 'error'); return;
-                  }
-                  setArrearsRows(computeArrears(arrearsForm.old_basic, arrearsForm.new_basic, arrearsForm.from_date, arrearsForm.to_date));
-                }} style={{ background: '#6d28d9', color: '#fff', border: 'none', borderRadius: 8, padding: '8px 18px', cursor: 'pointer', fontWeight: 600 }}>
-                  Compute Arrears
-                </button>
-
-                {arrearsRows.length > 0 && (
+                <div style={{ display: 'flex', gap: 8 }}>
+                  {arrearsForm.arrear_type === 'salary_revision' && <button className="pulse-btn-secondary" onClick={computeArrears}>Compute</button>}
+                  {canEdit && <button className="pulse-btn-primary" onClick={raiseArrear}
+                    disabled={arrearsForm.arrear_type === 'salary_revision' ? !arrearsCalc : !(Number(arrearsForm.amount) > 0 && arrearsForm.reason.trim())}>Raise arrear</button>}
+                </div>
+                {arrearsCalc && (
                   <div style={{ marginTop: 14, overflowX: 'auto' }}>
                     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-                      <thead>
-                        <tr style={{ background: '#ede9fe' }}>
-                          {['Month','Old Basic','New Basic','Arrears'].map(h => (
-                            <th key={h} style={{ padding: '7px 12px', textAlign: 'left', color: '#5b21b6', fontWeight: 600 }}>{h}</th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {arrearsRows.map((r, i) => (
-                          <tr key={i} style={{ borderBottom: '1px solid #ddd6fe' }}>
-                            <td style={{ padding: '7px 12px' }}>{r.month}</td>
-                            <td style={{ padding: '7px 12px' }}>{fmtINR(r.old_basic)}</td>
-                            <td style={{ padding: '7px 12px' }}>{fmtINR(r.new_basic)}</td>
-                            <td style={{ padding: '7px 12px', fontWeight: 700, color: r.arrears >= 0 ? '#16a34a' : '#dc2626' }}>
-                              {r.arrears >= 0 ? '+' : ''}{fmtINR(r.arrears)}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                      <tfoot>
-                        <tr style={{ background: '#ede9fe', fontWeight: 700 }}>
-                          <td colSpan={3} style={{ padding: '7px 12px', color: '#5b21b6' }}>
-                            Total Arrears ({arrearsRows.length} month{arrearsRows.length !== 1 ? 's' : ''})
+                      <thead><tr style={{ background: '#ede9fe' }}>{['Month', 'Extra gross', 'Employee PF', 'Employer PF', 'Note'].map(h => <th key={h} style={{ padding: '7px 12px', textAlign: 'left', color: '#5b21b6' }}>{h}</th>)}</tr></thead>
+                      <tbody>{arrearsCalc.month_breakdown.map((r, i) => (
+                        <tr key={i} style={{ borderBottom: '1px solid #ddd6fe' }}>
+                          <td style={{ padding: '7px 12px' }}>{MONTH_NAMES[r.month - 1]} {r.year}</td><td style={{ padding: '7px 12px' }}>{fmtINR(r.gross_diff)}</td>
+                          <td style={{ padding: '7px 12px' }}>{fmtINR(r.employee_pf_diff)}</td><td style={{ padding: '7px 12px' }}>{fmtINR(r.employer_pf_diff)}</td><td style={{ padding: '7px 12px', fontSize: 11, color: '#6b7280' }}>{r.note || ''}</td>
+                        </tr>))}</tbody>
+                      <tfoot><tr style={{ background: '#ede9fe', fontWeight: 700 }}><td style={{ padding: '7px 12px' }}>Total ({arrearsCalc.months_count} months)</td><td style={{ padding: '7px 12px' }}>{fmtINR(arrearsCalc.total_arrear)}</td>
+                        <td style={{ padding: '7px 12px' }}>{fmtINR(arrearsCalc.employee_pf_diff)}</td><td style={{ padding: '7px 12px' }}>{fmtINR(arrearsCalc.employer_pf_diff)}</td><td style={{ padding: '7px 12px', fontSize: 11 }}>{arrearsCalc.tds_note}</td></tr></tfoot>
+                    </table>
+                  </div>
+                )}
+                {arrearsList.length > 0 && (
+                  <div style={{ marginTop: 16 }}>
+                    <h5 style={{ margin: '0 0 6px', color: '#5b21b6' }}>Arrears on record</h5>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                      <thead><tr>{['Employee', 'Months', 'Amount', 'Status', 'Paid in', ''].map(h => <th key={h} style={{ textAlign: 'left', padding: 6 }}>{h}</th>)}</tr></thead>
+                      <tbody>{arrearsList.map(x => (
+                        <tr key={x.id} style={{ borderTop: '1px solid #ddd6fe' }}>
+                          <td style={{ padding: 6 }}>{x.employee_name} <span style={{ color: '#9ca3af' }}>{x.employee_code}</span></td>
+                          <td style={{ padding: 6 }}>{x.from_month}/{x.from_year} – {x.to_month}/{x.to_year}</td>
+                          <td style={{ padding: 6 }}>{fmtINR(x.arrear_amount)}</td><td style={{ padding: 6 }}>{x.status}</td>
+                          <td style={{ padding: 6 }}>{x.paid_in_month ? `${x.paid_in_month}/${x.paid_in_year}` : '—'}</td>
+                          <td style={{ padding: 6, whiteSpace: 'nowrap' }}>
+                            {x.status === 'pending' && canApproveArrears && <button className="pulse-btn-secondary" onClick={() => approveArrear(x)}>Approve</button>}
+                            {((x.status === 'pending' && canEdit) || (x.status === 'approved' && canApproveArrears)) &&
+                              <button className="pulse-btn-secondary" style={{ marginLeft: 6 }} title={x.cancel_reason || 'Withdraw this arrear before it is paid'} onClick={() => cancelArrear(x)}>Cancel</button>}
+                            {x.status === 'cancelled' && x.cancel_reason && <span style={{ color: '#6b7280', fontSize: 11 }}>{x.cancel_reason}</span>}
                           </td>
-                          <td style={{ padding: '7px 12px', color: '#16a34a', fontSize: 15 }}>
-                            {fmtINR(arrearsRows.reduce((s, r) => s + r.arrears, 0))}
-                          </td>
-                        </tr>
-                      </tfoot>
+                        </tr>))}</tbody>
                     </table>
                   </div>
                 )}
@@ -862,13 +918,13 @@ export default function SalaryStructure({ embedded = false } = {}) {
                         <input type="number" required value={assignForm.basic_salary} onChange={e => { setAssignForm(f => ({ ...f, basic_salary: e.target.value })); setCtcPreview(null); }} style={inp} />
                       </div>
                     )}
-                    {!ctcMode && (
-                      <div style={{ marginBottom: 12 }}>
-                        <label style={lbl}>Special Allowance (₹ per month)</label>
-                        <input type="number" min="0" value={assignForm.special_allowance}
-                          onChange={e => setAssignForm(f => ({ ...f, special_allowance: e.target.value }))} style={inp} />
-                      </div>
-                    )}
+                    {!ctcMode && assignForm.structure_id && (() => {
+                      // What payroll will pay for this Basic: the structure decides every other line.
+                      const st = structures.find(x => String(x.id) === String(assignForm.structure_id));
+                      return st ? <p style={{ margin: '-4px 0 12px', fontSize: 11, color: '#6b7280' }}>
+                        Every other pay line (HRA, allowances, balancing Special Allowance) comes from "{st.name}". Payroll pays exactly that structure for this Basic.
+                      </p> : null;
+                    })()}
                     <div style={{ marginBottom: 8 }}>
                       <label style={lbl}>Effective From</label>
                       <input type="date" value={assignForm.effective_from} onChange={e => setAssignForm(f => ({ ...f, effective_from: e.target.value }))} style={inp} />
@@ -879,6 +935,7 @@ export default function SalaryStructure({ embedded = false } = {}) {
                     <p style={{ margin: '0 0 16px', fontSize: 11, color: '#6b7280', lineHeight: 1.5 }}>
                       A new date adds a revision and leaves the previous one in the employee's
                       salary history. Re-using a date already on record corrects that revision instead.
+                      A date inside a month pays that month day by day: the old salary before it, the new one from it.
                     </p>
                     {ctcMode && ctcPreview && (
                       <div data-testid="ctc-preview" style={{ background: '#f9fafb', borderRadius: 8, padding: 12, marginBottom: 12, fontSize: 12 }}>
@@ -1026,6 +1083,10 @@ export default function SalaryStructure({ embedded = false } = {}) {
                 style={{ background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 8, padding: '8px 18px', cursor: 'pointer', fontWeight: 600 }}>
                 {showLoanForm ? '✕ Cancel' : '+ New Loan / Advance'}
               </button>
+              <select aria-label="Loan status" value={loanStatus} onChange={e => setLoanStatus(e.target.value)}
+                style={{ padding: '8px 10px', border: '1px solid #e9e4ff', borderRadius: 8, fontSize: 13 }}>
+                <option value="active">Active</option><option value="closed">Closed</option><option value="all">All</option>
+              </select>
               <input
                 value={loanSearch}
                 onChange={e => setLoanSearch(e.target.value)}
@@ -1105,6 +1166,14 @@ export default function SalaryStructure({ embedded = false } = {}) {
                     </select>
                   </div>
                   <div>
+                    <label style={lbl}>Purpose</label>
+                    <select aria-label="Purpose" value={loanForm.purpose} onChange={e => setLoanForm(lf => ({ ...lf, purpose: e.target.value }))}
+                      style={{ width: '100%', padding: '7px 10px', border: '1px solid #e9e4ff', borderRadius: 7, fontSize: 13 }}>
+                      <option value="general">General</option>
+                      <option value="medical">Medical treatment (no taxable perquisite)</option>
+                    </select>
+                  </div>
+                  <div>
                     <label style={lbl}>Reason</label>
                     <input value={loanForm.reason} onChange={e => setLoanForm(lf => ({ ...lf, reason: e.target.value }))} style={inp} />
                   </div>
@@ -1128,7 +1197,7 @@ export default function SalaryStructure({ embedded = false } = {}) {
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
                 <thead>
                   <tr style={{ background: '#f5f3ff' }}>
-                    {['Employee','Type','Principal','EMI','Outstanding','Progress','Start Date','Actions'].map(h => (
+                    {['Employee','Type','Principal','EMI','Outstanding','Progress','Start Date','Paid out','Actions'].map(h => (
                       <th key={h} style={{ padding: '9px 12px', textAlign: 'left', borderBottom: '1px solid #e9e4ff', color: '#4c1d95', fontWeight: 600 }}>{h}</th>
                     ))}
                   </tr>
@@ -1168,14 +1237,15 @@ export default function SalaryStructure({ embedded = false } = {}) {
                           </div>
                         </td>
                         <td style={{ padding: '9px 12px', color: '#6b7280' }}>{l.start_date?.split('T')[0]}</td>
+                        <td style={{ padding: '9px 12px', fontSize: 12 }}>{l.disbursed_on ? `${String(l.disbursed_on).slice(0, 10)} · ${l.disbursement_reference}` : <span style={{ color: '#b45309' }}>not recorded</span>}</td>
                         <td style={{ padding: '9px 12px' }}>
-                          {!isClosed && (
-                            <button onClick={() => closeLoan(l.id)}
-                              style={{ background: '#f0fdf4', color: '#16a34a', border: '1px solid #bbf7d0', borderRadius: 6,
-                                padding: '4px 10px', cursor: 'pointer', fontWeight: 600, fontSize: 12 }}>
-                              Close
-                            </button>
-                          )}
+                          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                            <button className="pulse-btn-secondary" onClick={() => openHistoryOf(l)}>History</button>
+                            {!isClosed && canEdit && <button className="pulse-btn-secondary" onClick={() => setLoanAction({ kind: 'prepay', loan: l, amount: '', date: localDay(), reference: '' })}>Prepayment</button>}
+                            {!isClosed && canEdit && <button className="pulse-btn-secondary" onClick={() => setLoanAction({ kind: 'waive', loan: l, reason: '' })}>Waive</button>}
+                            {!isClosed && canEdit && outstanding <= 0 && <button onClick={() => closeLoan(l.id)} className="pulse-btn-secondary">Close</button>}
+                            {!l.disbursed_on && canPay && <button className="pulse-btn-secondary" onClick={() => setLoanAction({ kind: 'payout', loan: l, reference: '', date: localDay() })}>Record payout</button>}
+                          </div>
                         </td>
                       </tr>
                     );
@@ -1183,6 +1253,37 @@ export default function SalaryStructure({ embedded = false } = {}) {
                 </tbody>
               </table>
             </div>
+
+            {loanAction && (
+              <div role="dialog" aria-label="Loan action" style={{ background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: 10, padding: 16, marginTop: 16 }}>
+                <strong>{{ history: 'Repayments', prepay: 'Prepayment received from the employee', waive: 'Waive the outstanding balance', payout: 'Record the payout to the employee' }[loanAction.kind]} — {loanAction.loan.employee_name}, {loanAction.loan.loan_type} of {fmtINR(loanAction.loan.principal_amount)}</strong>
+                {loanAction.kind === 'history' && (loanAction.rows == null ? <p>Loading…</p> : loanAction.rows.length === 0 ? <p style={{ fontSize: 13 }}>No repayments yet.</p> : (
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, marginTop: 8 }}>
+                    <thead><tr>{['Month', 'Source', 'Amount', 'Interest', 'Principal', 'Balance after', 'Reference'].map(h => <th key={h} style={{ textAlign: 'left', padding: 6 }}>{h}</th>)}</tr></thead>
+                    <tbody>{loanAction.rows.map(r => <tr key={r.id}><td style={{ padding: 6 }}>{r.month}/{r.year}</td><td style={{ padding: 6 }}>{r.source}</td><td style={{ padding: 6 }}>{fmtINR(r.amount)}</td>
+                      <td style={{ padding: 6 }}>{fmtINR(r.interest_component)}</td><td style={{ padding: 6 }}>{fmtINR(r.principal_component)}</td><td style={{ padding: 6 }}>{fmtINR(r.balance_after)}</td><td style={{ padding: 6 }}>{r.reference || ''}</td></tr>)}</tbody>
+                  </table>))}
+                {loanAction.kind === 'prepay' && (
+                  <div style={{ display: 'flex', gap: 10, marginTop: 10, flexWrap: 'wrap' }}>
+                    <label style={{ fontSize: 12 }}>Amount (₹, whole rupees; up to {fmtINR(loanAction.loan.outstanding_balance)})<br /><input type="number" value={loanAction.amount} onChange={e => setLoanAction(x => ({ ...x, amount: e.target.value, error: null }))} style={inp} /></label>
+                    <label style={{ fontSize: 12 }}>Received on<br /><input type="date" max={localDay()} value={loanAction.date} onChange={e => setLoanAction(x => ({ ...x, date: e.target.value }))} style={inp} /></label>
+                    <label style={{ fontSize: 12 }}>Reference<br /><input value={loanAction.reference} onChange={e => setLoanAction(x => ({ ...x, reference: e.target.value }))} style={inp} /></label>
+                  </div>)}
+                {loanAction.kind === 'waive' && (
+                  <label style={{ fontSize: 12, display: 'block', marginTop: 10 }}>Reason for waiving {fmtINR(loanAction.loan.outstanding_balance)} *<br /><input value={loanAction.reason} onChange={e => setLoanAction(x => ({ ...x, reason: e.target.value, error: null }))} style={inp} /></label>)}
+                {loanAction.kind === 'payout' && (
+                  <div style={{ display: 'flex', gap: 10, marginTop: 10, flexWrap: 'wrap' }}>
+                    <label style={{ fontSize: 12 }}>Bank reference *<br /><input value={loanAction.reference} onChange={e => setLoanAction(x => ({ ...x, reference: e.target.value, error: null }))} style={inp} /></label>
+                    <label style={{ fontSize: 12 }}>Paid on<br /><input type="date" max={localDay()} value={loanAction.date} onChange={e => setLoanAction(x => ({ ...x, date: e.target.value }))} style={inp} /></label>
+                    <p style={{ fontSize: 11, color: '#6b7280', width: '100%', margin: 0 }}>Posts Dr loan receivable / Cr bank using Finance's loan account mapping.</p>
+                  </div>)}
+                {loanAction.error && <p role="alert" style={{ color: '#b91c1c', fontSize: 12 }}>{loanAction.error}</p>}
+                <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                  {loanAction.kind !== 'history' && <button className="pulse-btn-primary" onClick={loanDo}>Save</button>}
+                  <button className="pulse-btn-secondary" onClick={() => setLoanAction(null)}>Close</button>
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>

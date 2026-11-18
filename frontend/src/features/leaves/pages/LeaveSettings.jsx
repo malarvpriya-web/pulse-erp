@@ -92,13 +92,19 @@ function LeaveTypeModal({ mode, initial, onSave, onClose }) {
             <Field label="Accrual Type">
               <select style={inputStyle} value={form.accrual_type} onChange={e => setF('accrual_type', e.target.value)}>
                 <option value="manual">Manual (HR allocates)</option>
-                <option value="monthly">Monthly accrual</option>
-                <option value="quarterly">Quarterly accrual</option>
-                <option value="yearly">Yearly credit</option>
-                <option value="joining_date">Pro-rated from joining</option>
+                <option value="monthly">Monthly accrual (days per month, on the 1st)</option>
+                <option value="yearly">Yearly credit (whole year in January)</option>
+                <option value="joining_date">Yearly credit, pro-rated from joining</option>
+                {form.accrual_type === 'quarterly' && <option value="quarterly">Quarterly (not applied automatically)</option>}
               </select>
+              <div style={{ fontSize: 11, color: '#6b7280', marginTop: 4 }}>
+                {form.accrual_type === 'monthly' && 'Credited automatically on the 1st of each month. A month missed while the server was off is caught up.'}
+                {(form.accrual_type === 'yearly' || form.accrual_type === 'joining_date') && 'Default Days / Year is credited once a year in January. Someone joining mid-year gets the share for the months left.'}
+                {form.accrual_type === 'manual' && 'New balances start at Default Days / Year; HR changes them by hand.'}
+                {' '}A change applies to balances not yet credited this year.
+              </div>
             </Field>
-            {form.accrual_type !== 'manual' && (
+            {form.accrual_type === 'monthly' && (
               <Field label="Days per Month (accrual)"><input type="number" min="0" step="0.25" style={inputStyle} value={form.accrual_days_per_month} onChange={e => setF('accrual_days_per_month', e.target.value)} placeholder="e.g. 1.0" /></Field>
             )}
             <Field label="Min Notice Days"><input type="number" min="0" style={inputStyle} value={form.min_notice_days} onChange={e => setF('min_notice_days', e.target.value)} placeholder="0 = no requirement" /></Field>

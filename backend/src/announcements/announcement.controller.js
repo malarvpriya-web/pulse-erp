@@ -139,7 +139,11 @@ async function notifyIfLive(id) {
   catch (err) { console.error('[Announcements] publish failed for', id, '—', err.message); }
 }
 
-const fail = (res, err) => res.status(500).json({ message: err.message });
+// Database error text (table, column, constraint names) stays in the server log.
+const fail = (res, err) => {
+  console.error('[Announcements]', err);
+  res.status(500).json({ message: 'Something went wrong with announcements. Please try again.' });
+};
 
 /** Load the row for a mutation, enforcing company + authorship. Sends the response on failure. */
 async function loadForChange(req, res, cid, scope) {
@@ -254,6 +258,36 @@ export const markRead = async (req, res) => {
       return res.status(404).json({ message: 'Announcement not found' });
     const readAt = await announcementService.markAnnouncementRead(req.params.id, userId);
     res.json({ success: true, read_at: readAt });
+  } catch (err) { fail(res, err); }
+};
+
+/**
+ * The archive. Same permission as archiving (announcements:delete), since restore
+ * is its undo. Company-wide publishers only — the matrix gives manager-tier no
+ * delete anyway, so this is belt and braces.
+ */
+export const getArchivedAnnouncements = async (req, res) => {
+  try {
+    const cid = companyOrRefuse(req, res); if (cid == null) return;
+    const scope = await publisherScope(req, cid);
+    if (!scope.companyWide) return res.status(403).json({ message: 'Only HR or admin can view archived announcements' });
+    res.json(await announcementService.listArchived(cid));
+  } catch (err) { fail(res, err); }
+};
+
+export const restoreAnnouncement = async (req, res) => {
+  try {
+    const cid = companyOrRefuse(req, res); if (cid == null) return;
+    const scope = await publisherScope(req, cid);
+    if (!scope.companyWide) return res.status(403).json({ message: 'Only HR or admin can restore announcements' });
+    const before = await announcementService.findArchivedInCompany(req.params.id, cid);
+    if (!before) return res.status(404).json({ message: 'Archived announcement not found' });
+    const after = await announcementService.restoreAnnouncement(before.id, cid, userIdOf(req));
+    if (!after) return res.status(404).json({ message: 'Archived announcement not found' });
+    audit(req, cid, 'restore', after.id, before, after);
+    // Never sent before (archived while scheduled or hidden) and live now → send once.
+    await notifyIfLive(after.id);
+    res.json(after);
   } catch (err) { fail(res, err); }
 };
 

@@ -205,18 +205,6 @@ router.post('/runs/:id/complete', requirePermission('engineering', 'add'), async
   }
 });
 
-/* ── Schema migration: extend test_runs with Phase 29 columns ────────────────
-   Runs on startup; ADD COLUMN IF NOT EXISTS is safe and idempotent.         */
-(async () => {
-  for (const sql of [
-    `ALTER TABLE test_runs ADD COLUMN IF NOT EXISTS compliance_class TEXT DEFAULT 'class_a'`,
-    `ALTER TABLE test_runs ADD COLUMN IF NOT EXISTS bom_header_id INT`,
-    `ALTER TABLE test_runs ADD COLUMN IF NOT EXISTS bom_revision INT`,
-    `ALTER TABLE test_runs ADD COLUMN IF NOT EXISTS report_generated_at TIMESTAMPTZ`,
-    `ALTER TABLE test_runs ADD COLUMN IF NOT EXISTS report_hash TEXT`,
-  ]) { await pool.query(sql).catch(() => {}); }
-})();
-
 /* ── GET /runs/:id/compliance-score ──────────────────────────────────────────
    IEC 61000-3-2:2018 compliance check derived entirely from persisted DB
    measurements. Compares THD-I, THD-V, and per-harmonic values (H3, H5 …)

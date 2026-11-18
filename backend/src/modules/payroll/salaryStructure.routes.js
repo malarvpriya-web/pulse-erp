@@ -121,10 +121,33 @@ router.get('/salary-structures', verifyToken, perm('view'), listStructures);
 /* ─── GET / ── templates + this company's structures ─────────── */
 router.get('/', verifyToken, perm('view'), listStructures);
 
+/**
+ * What payroll would silently ignore or misread in a structure. Payroll pays
+ * the earning named exactly "Basic" as the employee's Basic; deductions other
+ * than the statutory ones are not taken from pay, so a structure must not
+ * promise one; percentages and amounts must be numbers.
+ */
+export function structureProblems(components) {
+  if (!Array.isArray(components) || !components.length) return ['add at least the Basic component'];
+  const p = [];
+  const basics = components.filter(c => c?.type === 'earning' && String(c?.name || '').trim() === 'Basic');
+  if (basics.length !== 1) p.push('exactly one earning must be named "Basic" (payroll pays it as the employee Basic)');
+  components.forEach((c, i) => {
+    const at = `component ${i + 1}${c?.name ? ` (${c.name})` : ''}`;
+    if (!String(c?.name || '').trim()) p.push(`${at}: name is required`);
+    if (c?.type === 'deduction') p.push(`${at}: payroll does not deduct structure deductions — record loans and advances in Loans & Advances; PF, ESI, PT, LWF and TDS are calculated automatically`);
+    if (c?.type === 'earning' && c.calculation_type !== 'balancing' && !(Number.isFinite(Number(c.value)) && Number(c.value) >= 0)) p.push(`${at}: value must be a number of 0 or more`);
+  });
+  if (components.filter(c => c?.type === 'earning' && c.calculation_type === 'balancing').length > 1) p.push('only one earning can be the balancing component');
+  return p;
+}
+
 /* ─── POST / ── create a structure (this company's; shared only for super admin) ── */
 router.post('/', verifyToken, perm('add'), async (req, res) => {
   const { name, description, is_default = false, components = [], scope = 'company' } = req.body;
   if (!name) return res.status(400).json({ message: 'name is required' });
+  const problems = structureProblems(components);
+  if (problems.length) return res.status(400).json({ message: `This structure cannot be saved: ${problems.join('; ')}`, problems });
   const cid = companyOf(req);
   const shared = scope === 'shared';
   if (shared && !isSuperAdmin(req)) return res.status(403).json({ message: 'Only a super admin can create a shared template' });
@@ -266,6 +289,10 @@ router.get('/:id', verifyToken, perm('view'), async (req, res) => {
 router.put('/:id', verifyToken, perm('edit'), captureBefore('salary_structures'), async (req, res) => {
   const { name, description, is_default, components } = req.body;
   const cid = companyOf(req);
+  if (components !== undefined) {
+    const problems = structureProblems(components);
+    if (problems.length) return res.status(400).json({ message: `This structure cannot be saved: ${problems.join('; ')}`, problems });
+  }
   try {
     const { rows: [cur] } = await pool.query('SELECT id, company_id FROM salary_structures WHERE id = $1', [req.params.id]);
     if (!cur || (cur.company_id != null && cur.company_id !== cid)) return res.status(404).json({ message: 'Not found' });

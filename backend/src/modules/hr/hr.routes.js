@@ -1,65 +1,24 @@
 ﻿import { Router } from 'express';
-import { verifyToken, requirePermission, permissionFor } from '../../middlewares/auth.middleware.js';
+import { verifyToken, requirePermission, permissionFor, can, rolesOf } from '../../middlewares/auth.middleware.js';
 import { validateDocumentUrl } from '../../home/documentDownload.js';
 import pool from '../shared/db.js';
 import { captureBefore } from '../../middlewares/captureBefore.js';
-import { EXIT_STATUS } from '../../shared/employeeStatus.js';
+import { EXIT_STATUS, isCurrentSql } from '../../shared/employeeStatus.js';
 import { companyOf, employeeOf } from '../../shared/scope.js';
-import { exitStatusWorkflowOnly } from '../../shared/hrContainment.js';
+import { notifyWorkflowEvent } from '../../services/WorkflowNotificationService.js';
+import { offboardingTemplates } from './exitChecklist.js';
 
 const router = Router();
 
-// Bootstrap extra columns and tables if they don't exist yet
-pool.query(`
-  ALTER TABLE hr_policies ADD COLUMN IF NOT EXISTS version VARCHAR(20) DEFAULT 'v1.0';
-  ALTER TABLE hr_policies ADD COLUMN IF NOT EXISTS effective_date DATE;
-  ALTER TABLE hr_policies ADD COLUMN IF NOT EXISTS review_date DATE;
-  ALTER TABLE hr_policies ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
-  ALTER TABLE hr_policies ADD COLUMN IF NOT EXISTS company_id INTEGER;
-  ALTER TABLE hr_policies ADD COLUMN IF NOT EXISTS drive_url TEXT;
-  ALTER TABLE hr_policies ADD COLUMN IF NOT EXISTS requires_acknowledgement BOOLEAN DEFAULT false;
-  ALTER TABLE hr_policies ADD COLUMN IF NOT EXISTS applicable_to VARCHAR(50) DEFAULT 'all';
-  ALTER TABLE hr_policies ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT true;
-  ALTER TABLE hr_downloads ADD COLUMN IF NOT EXISTS company_id INTEGER;
-  ALTER TABLE hr_downloads ADD COLUMN IF NOT EXISTS description TEXT DEFAULT '';
-  ALTER TABLE hr_downloads ADD COLUMN IF NOT EXISTS download_count INTEGER DEFAULT 0;
-  ALTER TABLE hr_downloads ADD COLUMN IF NOT EXISTS visible_to VARCHAR(50) NOT NULL DEFAULT 'all';
-  ALTER TABLE hr_downloads ADD COLUMN IF NOT EXISTS file_type VARCHAR(20);
-  CREATE TABLE IF NOT EXISTS hr_policy_acknowledgements (
-    id SERIAL PRIMARY KEY,
-    policy_id INTEGER NOT NULL REFERENCES hr_policies(id) ON DELETE CASCADE,
-    employee_id INTEGER NOT NULL,
-    acknowledged_at TIMESTAMPTZ DEFAULT NOW(),
-    ip_address INET,
-    UNIQUE(policy_id, employee_id)
-  );
-  ALTER TABLE hr_policy_acknowledgements ADD COLUMN IF NOT EXISTS ip_address INET;
-  ALTER TABLE employees ADD COLUMN IF NOT EXISTS default_shift_id INTEGER REFERENCES hr_shifts(id) ON DELETE SET NULL;
-`).catch(e => console.error('[hr] schema bootstrap failed:', e.message));
-
-// Bootstrap shift date-overrides table
-pool.query(`
-  CREATE TABLE IF NOT EXISTS hr_shift_date_overrides (
-    id            SERIAL PRIMARY KEY,
-    employee_id   INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
-    shift_id      INTEGER NOT NULL REFERENCES hr_shifts(id) ON DELETE CASCADE,
-    override_date DATE NOT NULL,
-    reason        TEXT,
-    is_active     BOOLEAN NOT NULL DEFAULT TRUE,
-    company_id    INTEGER,
-    created_by    INTEGER,
-    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE (employee_id, override_date)
-  );
-  CREATE INDEX IF NOT EXISTS idx_hr_shift_date_overrides_emp_date
-    ON hr_shift_date_overrides(employee_id, override_date);
-`).catch(e => console.error('[hr] shift-overrides bootstrap failed:', e.message));
-
 // â”€â”€ DOWNLOADS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-function visibleToClause(role) {
-  const r = String(role || '').toLowerCase();
-  if (['admin', 'super_admin', 'hr_admin', 'hr'].includes(r)) return `'all','hr_only','managers'`;
-  if (r === 'manager') return `'all','managers'`;
+// Which audiences of HR Documents the caller sees. Every role held counts
+// (HR audit 2026-11-16, B4: this read the single req.user.role, so hr_manager
+// and hr_exec saw only 'all'). hr:view → every audience; a manager or
+// department head → 'all' + 'managers'; everyone else → 'all'.
+async function visibleToClause(req) {
+  if (await can(req, 'hr', 'view')) return `'all','hr_only','managers'`;
+  const roles = rolesOf(req);
+  if (roles.some(r => ['manager', 'department_head', 'l2_approver'].includes(r))) return `'all','managers'`;
   return `'all'`;
 }
 
@@ -78,12 +37,15 @@ function downloadsCompany(req, res) {
   return cid;
 }
 
-router.get('/downloads', requirePermission('hr', 'view'), async (req, res) => {
+// Readable by every signed-in user of the company (HR audit 2026-11-16):
+// employees could not reach a single company form (403). What each sees is
+// limited by the document's audience (visible_to); writing still needs hr.
+router.get('/downloads', async (req, res) => {
   try {
     const cid = downloadsCompany(req, res);
     if (cid == null) return;
     const { search = '', category = '' } = req.query;
-    const allowed = visibleToClause(req.user?.role);
+    const allowed = await visibleToClause(req);
     const r = await pool.query(
       `SELECT * FROM hr_downloads
         WHERE company_id = $1
@@ -209,7 +171,11 @@ router.get('/policies/my-acknowledgements', async (req, res) => {
     if (me.error) return res.json([]);
     const employeeId = me.employeeId;
     const r = await pool.query(
-      `SELECT policy_id FROM hr_policy_acknowledgements WHERE employee_id = $1`,
+      // Only an acknowledgement of the policy's CURRENT version counts (B6):
+      // a new version asks again.
+      `SELECT a.policy_id FROM hr_policy_acknowledgements a
+         JOIN hr_policies p ON p.id = a.policy_id AND a.policy_version IS NOT DISTINCT FROM p.version
+        WHERE a.employee_id = $1`,
       [employeeId]
     );
     res.json(r.rows.map(row => row.policy_id));
@@ -226,14 +192,17 @@ router.get('/policies/acknowledgement-counts', requirePermission('hr', 'view'), 
       pool.query(
         `SELECT pa.policy_id, COUNT(*) AS ack_count
          FROM hr_policy_acknowledgements pa
-         JOIN hr_policies p ON p.id = pa.policy_id
+         JOIN hr_policies p ON p.id = pa.policy_id AND pa.policy_version IS NOT DISTINCT FROM p.version
+         JOIN employees e ON e.id = pa.employee_id AND e.deleted_at IS NULL AND ${isCurrentSql('e.status')}
+                         AND ($1::int IS NULL OR e.company_id = $1)
          WHERE ($1::int IS NULL OR p.company_id = $1 OR p.company_id IS NULL)
          GROUP BY pa.policy_id`,
         [cid]
       ),
       pool.query(
+        // Everyone still employed (active, probation, notice), not deleted.
         `SELECT COUNT(*) AS total FROM employees
-         WHERE LOWER(status) = 'active' AND ($1::int IS NULL OR company_id = $1)`,
+         WHERE deleted_at IS NULL AND ${isCurrentSql('status')} AND ($1::int IS NULL OR company_id = $1)`,
         [cid]
       ),
     ]);
@@ -367,17 +336,18 @@ router.post('/policies/:id/acknowledge', async (req, res) => {
     const employeeId = me.employeeId;
     // The same policies GET /policies shows this company: its own and global ones.
     const { rows: [policy] } = await pool.query(
-      `SELECT id, is_active FROM hr_policies WHERE id = $1 AND (company_id = $2 OR company_id IS NULL)`,
+      `SELECT id, is_active, version FROM hr_policies WHERE id = $1 AND (company_id = $2 OR company_id IS NULL)`,
       [policyId, me.cid]);
     if (!policy) return res.status(404).json({ error: 'Policy not found' });
     if (policy.is_active === false) return res.status(409).json({ error: 'This policy has been retired and can no longer be acknowledged' });
-    // DO NOTHING — acknowledgements are immutable; first timestamp is the legal record
+    // DO NOTHING — acknowledgements are immutable; the first timestamp for a
+    // version is the legal record. Each version is acknowledged separately (B6).
     const r = await pool.query(
-      `INSERT INTO hr_policy_acknowledgements (policy_id, employee_id, ip_address)
-       VALUES ($1,$2,$3)
-       ON CONFLICT (policy_id, employee_id) DO NOTHING
+      `INSERT INTO hr_policy_acknowledgements (policy_id, employee_id, ip_address, policy_version)
+       VALUES ($1,$2,$3,$4)
+       ON CONFLICT (policy_id, employee_id, policy_version) DO NOTHING
        RETURNING *`,
-      [policyId, employeeId, req.ip || null]
+      [policyId, employeeId, req.ip || null, policy.version ?? null]
     );
     res.json(r.rows[0] || { policy_id: policyId, employee_id: employeeId, already_acknowledged: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -388,11 +358,16 @@ router.get('/policies/:id/acknowledgements', requirePermission('hr', 'view'), as
   if (!Number.isInteger(policyId) || policyId < 1) return res.status(400).json({ error: 'Invalid policy id' });
   try {
     const r = await pool.query(
-      `SELECT a.*, TRIM(COALESCE(e.first_name,'') || ' ' || COALESCE(e.last_name,'')) AS employee_name
+      // Every version's acknowledgements, newest first; is_current marks the
+      // ones that count for the version in force (B6). Company-scoped.
+      `SELECT a.*, TRIM(COALESCE(e.first_name,'') || ' ' || COALESCE(e.last_name,'')) AS employee_name,
+              (a.policy_version IS NOT DISTINCT FROM p.version) AS is_current
        FROM hr_policy_acknowledgements a
-       LEFT JOIN employees e ON e.id = a.employee_id
-       WHERE a.policy_id=$1 ORDER BY a.acknowledged_at DESC`,
-      [policyId]
+       JOIN hr_policies p ON p.id = a.policy_id
+       JOIN employees e ON e.id = a.employee_id AND ($2::int IS NULL OR e.company_id = $2)
+       WHERE a.policy_id=$1 AND ($2::int IS NULL OR p.company_id = $2 OR p.company_id IS NULL)
+       ORDER BY a.acknowledged_at DESC`,
+      [policyId, companyOf(req)]
     );
     res.json(r.rows);
   } catch (e) {
@@ -404,23 +379,43 @@ router.get('/policies/:id/acknowledgements', requirePermission('hr', 'view'), as
 router.post('/policies/:id/send-reminder', requirePermission('hr', 'edit'), async (req, res) => {
   const policyId = Number(req.params.id);
   if (!Number.isInteger(policyId) || policyId < 1) return res.status(400).json({ error: 'Invalid policy id' });
+  // HR audit 2026-11-16: this was a stub ("Reminder queued", nothing sent) and
+  // counted active employees of EVERY company. It now notifies the caller's
+  // company's current staff who have not accepted the CURRENT version (B6).
+  const cid = companyOf(req);
   try {
-    const r = await pool.query(
-      `SELECT COUNT(*) AS pending_count
-       FROM employees
-       WHERE LOWER(status) = 'active'
-         AND NOT EXISTS (
-           SELECT 1 FROM hr_policy_acknowledgements
-           WHERE policy_id = $1 AND employee_id = employees.id
-         )`,
-      [policyId]
-    );
-    const pendingCount = parseInt(r.rows[0]?.pending_count || 0, 10);
-    // Stub: wire to email/notification service in Phase 50
-    res.json({ success: true, pending_count: pendingCount,
-      message: `Reminder queued for ${pendingCount} employee(s) who have not yet acknowledged.` });
+    const { rows: [policy] } = await pool.query(
+      `SELECT id, title, version, is_active, applicable_to, COALESCE(requires_acknowledgement, false) AS ack
+         FROM hr_policies WHERE id = $1 AND ($2::int IS NULL OR company_id = $2 OR company_id IS NULL)`,
+      [policyId, cid]);
+    if (!policy) return res.status(404).json({ error: 'Policy not found' });
+    if (policy.is_active === false) return res.status(409).json({ error: 'This policy is retired; there is nothing to acknowledge.' });
+    if (!policy.ack) return res.status(409).json({ error: 'This policy does not ask for an acknowledgement.' });
+    if (policy.applicable_to === 'internal') {
+      return res.status(409).json({ error: 'This policy is internal (HR and admin only), so employees cannot see it to acknowledge it.' });
+    }
+    const { rows } = await pool.query(
+      `SELECT e.id FROM employees e
+        WHERE e.deleted_at IS NULL AND ${isCurrentSql('e.status')}
+          AND ($2::int IS NULL OR e.company_id = $2)
+          AND NOT EXISTS (SELECT 1 FROM hr_policy_acknowledgements a
+                           WHERE a.policy_id = $1 AND a.employee_id = e.id
+                             AND a.policy_version IS NOT DISTINCT FROM $3)`,
+      [policyId, cid, policy.version ?? null]);
+    const pendingCount = rows.length;
+    if (pendingCount) {
+      notifyWorkflowEvent('policy_ack_reminder', {
+        module: 'Policies', recordId: policy.id, recipientIds: rows.map(r => r.id),
+        context: { title: policy.title, version: policy.version },
+      });
+    }
+    res.json({
+      success: true, pending_count: pendingCount,
+      message: pendingCount
+        ? `Reminder sent to ${pendingCount} employee(s) who have not acknowledged this version. Those without a Pulse login get nothing.`
+        : 'Everyone has acknowledged the current version.',
+    });
   } catch (e) {
-    if (e.message.includes('does not exist')) return res.json({ success: true, pending_count: 0, message: 'No pending acknowledgements.' });
     res.status(500).json({ error: e.message });
   }
 });
@@ -594,7 +589,7 @@ router.delete('/shifts/:id', verifyToken, requirePermission('hr', 'delete'), cap
 // Returns employees in a resignation/notice/termination state, joined with
 // any open exit_requests row so we have a reliable last_working_date and reason
 // even when the employees.exit_date column has not been populated.
-router.get('/offboarding', verifyToken, requirePermission('hr', 'view'), async (req, res) => {
+router.get('/offboarding', verifyToken, requirePermission('exit', 'view'), async (req, res) => {
   try {
     const companyId = req.scope?.company_id ?? null;
     const params = companyId != null ? [companyId] : [];
@@ -623,6 +618,7 @@ router.get('/offboarding', verifyToken, requirePermission('hr', 'view'), async (
         ORDER BY created_at DESC LIMIT 1
       ) er ON true
       WHERE LOWER(e.status) IN ('resigned', 'terminated', 'notice', 'notice_period', 'notice period')
+        AND e.deleted_at IS NULL   -- deleted (test/duplicate) records are not offboarding cases
         ${cidClause}
       ORDER BY COALESCE(er.last_working_date, e.exit_date) DESC NULLS LAST
       LIMIT 100
@@ -800,23 +796,33 @@ router.delete('/shift-overrides/:id', verifyToken, requirePermission('hr', 'dele
 });
 
 // ── OFFBOARDING ───────────────────────────────────────────────────────────────
-router.get('/offboarding/templates', verifyToken, requirePermission('hr', 'view'), async (_req, res) => {
+// The offboarding checklist is per company (HR audit 2026-11-16, B2;
+// migration 20261116000003). A company with no checklist of its own uses the
+// shared default (company_id NULL) until it saves one. Before this, every
+// company read one global list and any company's save replaced it for all.
+// offboardingTemplates() lives in exitChecklist.js: the payment gate reads the
+// same list (one exit checklist, owner decision 2026-11-17).
+
+// The employee whose checklist is read or written, in the caller's company and
+// not deleted. A global caller (super admin with no company) may open any.
+async function offboardingEmployee(db, employeeId, companyId) {
+  const { rows: [emp] } = await db.query(
+    `SELECT id, company_id FROM employees
+      WHERE id = $1 AND deleted_at IS NULL AND ($2::int IS NULL OR company_id = $2::int)`,
+    [employeeId, companyId]);
+  return emp || null;
+}
+
+router.get('/offboarding/templates', verifyToken, requirePermission('exit', 'view'), async (req, res) => {
   try {
-    const r = await pool.query(`
-      SELECT category, item_label, default_assignee, default_offset_days, sort_order
-      FROM hr_offboarding_checklist_templates
-      WHERE is_active = TRUE
-      ORDER BY category ASC, sort_order ASC, id ASC
-    `);
-    if (!r.rows.length) return res.json([]);
-    res.json(r.rows);
+    res.json(await offboardingTemplates(pool, companyOf(req)));
   } catch (e) {
     if (e.message.includes('does not exist')) return res.json([]);
     res.status(500).json({ error: e.message });
   }
 });
 
-router.put('/offboarding/templates', verifyToken, requirePermission('hr', 'edit'), async (req, res) => {
+router.put('/offboarding/templates', verifyToken, requirePermission('exit', 'edit'), async (req, res) => {
   const rows = Array.isArray(req.body?.items) ? req.body.items : [];
   if (!rows.length) return res.status(400).json({ error: 'items array is required' });
 
@@ -824,17 +830,21 @@ router.put('/offboarding/templates', verifyToken, requirePermission('hr', 'edit'
   // and the body written in its place. There is no :id here at all, so the
   // before-image is the active set itself; without it, "what did the standard
   // exit checklist require last quarter" has no answer.
+  // Only the caller's company's checklist is replaced (B2). A global caller
+  // with no company edits the shared default (company_id NULL).
+  const companyId = companyOf(req);
   try {
-    const { rows: prior } = await pool.query(
-      `SELECT * FROM hr_offboarding_checklist_templates
-        WHERE is_active = TRUE ORDER BY category, item_label`);
-    req._auditBefore = { templates: prior };
+    // The before-image is what the company was using: its own list, or the
+    // shared default when it had none yet.
+    req._auditBefore = { company_id: companyId, templates: await offboardingTemplates(pool, companyId) };
   } catch { /* no before-image is a worse audit entry; a 500 is a worse product */ }
 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    await client.query('UPDATE hr_offboarding_checklist_templates SET is_active = FALSE, updated_at = NOW() WHERE is_active = TRUE');
+    await client.query(
+      `UPDATE hr_offboarding_checklist_templates SET is_active = FALSE, updated_at = NOW()
+        WHERE is_active = TRUE AND company_id IS NOT DISTINCT FROM $1::int`, [companyId]);
     let order = 0;
     for (const it of rows) {
       const category = String(it.category || '').trim();
@@ -844,16 +854,16 @@ router.put('/offboarding/templates', verifyToken, requirePermission('hr', 'edit'
       const defaultOffsetDays = Number.isInteger(Number(it.default_offset_days)) ? Number(it.default_offset_days) : 0;
       await client.query(
         `INSERT INTO hr_offboarding_checklist_templates
-          (category, item_label, default_assignee, default_offset_days, sort_order, is_active, updated_at)
-         VALUES ($1,$2,$3,$4,$5,TRUE,NOW())
-         ON CONFLICT (category, item_label)
+          (category, item_label, default_assignee, default_offset_days, sort_order, is_active, updated_at, company_id)
+         VALUES ($1,$2,$3,$4,$5,TRUE,NOW(),$6::int)
+         ON CONFLICT (company_id, category, item_label)
          DO UPDATE SET
            default_assignee = EXCLUDED.default_assignee,
            default_offset_days = EXCLUDED.default_offset_days,
            sort_order = EXCLUDED.sort_order,
            is_active = TRUE,
            updated_at = NOW()`,
-        [category, itemLabel, defaultAssignee, defaultOffsetDays, order++]
+        [category, itemLabel, defaultAssignee, defaultOffsetDays, order++, companyId]
       );
     }
     await client.query('COMMIT');
@@ -866,16 +876,15 @@ router.put('/offboarding/templates', verifyToken, requirePermission('hr', 'edit'
   }
 });
 
-router.get('/offboarding/:employeeId/checklist', verifyToken, requirePermission('hr', 'view'), async (req, res) => {
+router.get('/offboarding/:employeeId/checklist', verifyToken, requirePermission('exit', 'view'), async (req, res) => {
   const employeeId = Number(req.params.employeeId);
   if (!Number.isInteger(employeeId) || employeeId < 1) return res.status(400).json({ error: 'Invalid employee id' });
   try {
-    const t = await pool.query(`
-      SELECT category, item_label, default_assignee, default_offset_days, sort_order
-      FROM hr_offboarding_checklist_templates
-      WHERE is_active = TRUE
-      ORDER BY category ASC, sort_order ASC, id ASC
-    `);
+    // Scoped by the employee's company (B2): this read another company's
+    // employee's checklist by id alone.
+    const emp = await offboardingEmployee(pool, employeeId, companyOf(req));
+    if (!emp) return res.status(404).json({ error: 'Employee not found' });
+    const t = { rows: await offboardingTemplates(pool, emp.company_id) };
 
     const p = await pool.query(`
       SELECT category, item_label, done, assignee, due_date, handover_notes, completed_at
@@ -905,11 +914,19 @@ router.get('/offboarding/:employeeId/checklist', verifyToken, requirePermission(
   }
 });
 
-router.patch('/offboarding/:employeeId/checklist', verifyToken, requirePermission('hr', 'edit'), async (req, res) => {
+router.patch('/offboarding/:employeeId/checklist', verifyToken, requirePermission('exit', 'edit'), async (req, res) => {
   const employeeId = Number(req.params.employeeId);
   const rows = Array.isArray(req.body?.items) ? req.body.items : [];
   if (!Number.isInteger(employeeId) || employeeId < 1) return res.status(400).json({ error: 'Invalid employee id' });
   if (!rows.length) return res.status(400).json({ error: 'items array is required' });
+  // Same scope as the read (B2): writes used to key on the URL's id alone.
+  try {
+    if (!await offboardingEmployee(pool, employeeId, companyOf(req))) {
+      return res.status(404).json({ error: 'Employee not found' });
+    }
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
 
   // This handler upserts MANY checklist rows in one request, so the before-image
   // is a SET, not a row — captureBefore() cannot express that. The whole of this
@@ -980,102 +997,74 @@ router.patch('/offboarding/:employeeId/checklist', verifyToken, requirePermissio
   }
 });
 
-router.post('/offboarding/:employeeId/checklist/notify', verifyToken, requirePermission('hr', 'edit'), async (req, res) => {
+router.post('/offboarding/:employeeId/checklist/notify', verifyToken, requirePermission('exit', 'edit'), async (req, res) => {
   const employeeId = Number(req.params.employeeId);
   if (!Number.isInteger(employeeId) || employeeId < 1) return res.status(400).json({ error: 'Invalid employee id' });
   const assignee = String(req.body?.assignee || '').trim();
   if (!assignee) return res.status(400).json({ error: 'assignee is required' });
-  // Stub notification hook; can be wired to email service later.
-  res.json({ success: true, message: `Notification queued for ${assignee}`, employee_id: employeeId });
-});
-
-// ── POST /offboarding/:employeeId/complete ─────────────────────────────────────
-// Called when all checklist items are done. Marks the employee as 'left',
-// closes the exit_request, and stamps exit_date if missing.
-router.post('/offboarding/:employeeId/complete', verifyToken, requirePermission('hr', 'edit'), async (req, res) => {
-  const employeeId = Number(req.params.employeeId);
-  if (!Number.isInteger(employeeId) || employeeId < 1) return res.status(400).json({ error: 'Invalid employee id' });
-
-  const companyId = req.scope?.company_id ?? null;
-  const client = await pool.connect();
+  // HR audit 2026-11-16: this was a stub that answered "Notification queued"
+  // and sent nothing. An assignee is a department (its current head is told)
+  // or the leaver's reporting manager ('Reporting manager'; legacy 'Manager').
   try {
-    await client.query('BEGIN');
-
-    // Scope check — ensure employee belongs to caller's company
-    const scopeParams = companyId != null ? [employeeId, companyId] : [employeeId];
-    const scopeClause = companyId != null ? 'AND company_id = $2' : '';
-    const { rows: empRows } = await client.query(
-      `SELECT id, status FROM employees WHERE id = $1 ${scopeClause}`,
-      scopeParams
-    );
-    if (!empRows.length) {
-      await client.query('ROLLBACK');
-      return res.status(404).json({ error: 'Employee not found' });
+    const emp = await offboardingEmployee(pool, employeeId, companyOf(req));
+    if (!emp) return res.status(404).json({ error: 'Employee not found' });
+    const { rows: [leaver] } = await pool.query(
+      `SELECT id, company_id, office_id, first_name, last_name, reporting_manager_id,
+              (SELECT to_char(COALESCE(er.last_working_date, e.exit_date), 'DD Mon YY')
+                 FROM exit_requests er WHERE er.employee_id = e.id AND er.status NOT IN ('rejected','cancelled')
+                 ORDER BY er.created_at DESC LIMIT 1) AS last_day
+         FROM employees e WHERE e.id = $1`, [employeeId]);
+    const isManager = /^(reporting manager|manager)$/i.test(assignee);
+    const { rows: who } = isManager
+      ? await pool.query(
+          `SELECT m.id FROM employees m
+            WHERE m.id = $1 AND m.company_id = $2 AND m.deleted_at IS NULL AND ${isCurrentSql('m.status')}`,
+          [leaver.reporting_manager_id, leaver.company_id])
+      : await pool.query(
+          `SELECT h.id FROM master_departments d
+             JOIN department_heads dh ON dh.department_id = d.id AND dh.ended_at IS NULL AND dh.company_id = $2
+             JOIN employees h ON h.id = dh.head_employee_id
+            WHERE LOWER(BTRIM(d.name)) = LOWER(BTRIM($1)) AND d.is_active = true
+              AND h.company_id = $2 AND h.deleted_at IS NULL AND ${isCurrentSql('h.status')}`,
+          [assignee, leaver.company_id]);
+    if (!who.length) {
+      return res.status(409).json({
+        code: 'NO_RECIPIENT',
+        error: isManager
+          ? 'This employee has no current reporting manager to notify.'
+          : `No one heads "${assignee}". Assign a head in HR → Department Heads, or pick another assignee.`,
+      });
     }
-
-    // Containment C6 (HR_P0_REMEDIATION_DESIGN_2026-11-03.md, P0-6): this used to
-    // end the employment whatever the state of the exit — no clearance, no F&F.
-    // It now finalises only an exit whose settlement was paid through
-    // POST /exit/fnf/:id/pay, the one path that enforces exit clearance. With no
-    // exit request at all there is nothing to finalise; use Exit Management.
-    if (exitStatusWorkflowOnly()) {
-      const { rows: [latest] } = await client.query(
-        `SELECT id, fnf_status FROM exit_requests
-          WHERE employee_id = $1 AND status NOT IN ('rejected','cancelled')
-          ORDER BY created_at DESC, id DESC LIMIT 1 FOR UPDATE`,
-        [employeeId]
-      );
-      if (!latest || latest.fnf_status !== 'paid') {
-        await client.query('ROLLBACK');
-        return res.status(409).json({
-          code: 'EXIT_NOT_SETTLED',
-          error: latest
-            ? 'Offboarding cannot be completed until the full & final settlement is paid and exit clearance is done (Exit Management).'
-            : 'This employee has no exit request. Start the exit in Exit Management first.',
-        });
-      }
+    const { rows: logins } = await pool.query(
+      `SELECT id FROM users WHERE employee_id = ANY($1::int[]) AND is_active = true`, [who.map(w => w.id)]);
+    if (!logins.length) {
+      return res.status(409).json({ code: 'NO_LOGIN', error: `The person to notify for "${assignee}" has no active Pulse login, so nothing can be sent.` });
     }
-
-    // Close any open exit request and capture last_working_date + separation_type
-    const { rows: [er] } = await client.query(
-      `UPDATE exit_requests
-          SET status = 'closed', updated_at = NOW()
-        WHERE employee_id = $1 AND status NOT IN ('rejected','cancelled','closed','paid')
-        RETURNING last_working_date, separation_type`,
-      [employeeId]
-    );
-
-    // Terminal status must match how they actually left — this previously
-    // hardcoded 'left' (retirement's terminal status) for every separation
-    // type, so a completed termination or resignation showed up as a
-    // retiree. Same mapping exitStatusSync.cron.js uses for its own
-    // (independent, date-driven) finalization of the same transition.
-    // One canonical exit status — see EXIT_STATUS in shared/employeeStatus.js.
-    // This was a second copy of exitStatusSync.cron.js's mapping and the two had
-    // already drifted: this one sent 'retirement' to 'left' while the cron sent
-    // it to 'resigned', so which of two independent paths finalised an exit
-    // decided what the employee's status said afterwards. The separation type is
-    // on the exit_request either way.
-    const terminalStatus = EXIT_STATUS;
-
-    await client.query(
-      `UPDATE employees
-          SET status    = $1,
-              exit_date = COALESCE(exit_date, $2, CURRENT_DATE),
-              updated_at = NOW()
-        WHERE id = $3 AND ($4::int IS NULL OR company_id = $4)`,
-      [terminalStatus, er?.last_working_date || null, employeeId, companyId]
-    );
-
-    await client.query('COMMIT');
-    res.json({ success: true });
+    // The leaver's open items with this assignee.
+    const templates = await offboardingTemplates(pool, leaver.company_id);
+    const { rows: progress } = await pool.query(
+      `SELECT category, item_label, done, assignee FROM hr_offboarding_checklist_progress WHERE employee_id = $1`, [employeeId]);
+    const pg = new Map(progress.map(p => [`${p.category}__${p.item_label}`, p]));
+    const items = templates
+      .map(t => ({ t, p: pg.get(`${t.category}__${t.item_label}`) }))
+      .filter(({ t, p }) => !p?.done && String(p?.assignee || t.default_assignee || 'HR').toLowerCase() === assignee.toLowerCase())
+      .map(({ t }) => t.item_label);
+    if (!items.length) return res.status(409).json({ code: 'NOTHING_OPEN', error: `${assignee} has no open items on this checklist.` });
+    const label = [`${leaver.first_name || ''} ${leaver.last_name || ''}`.trim(), leaver.office_id && `(${leaver.office_id})`].filter(Boolean).join(' ');
+    notifyWorkflowEvent('offboarding_items_assigned', {
+      module: 'Offboarding', recordId: employeeId, recipientUserIds: logins.map(l => l.id),
+      context: { employeeLabel: label, assignee, items, count: items.length, lastDay: leaver.last_day },
+    });
+    res.json({ success: true, notified: logins.length, items: items.length, employee_id: employeeId,
+      message: `${logins.length === 1 ? 'Sent' : `Sent to ${logins.length} people`}: ${items.length} open item(s) for ${assignee}.` });
   } catch (e) {
-    await client.query('ROLLBACK');
     res.status(500).json({ error: e.message });
-  } finally {
-    client.release();
   }
 });
+
+// POST /offboarding/:employeeId/complete was removed (exit review 2026-11-17).
+// No screen called it after "Mark complete" went (owner decision 2026-11-17):
+// paying the F&F (POST /exit/fnf/:id/pay) closes the exit and sets Left.
 
 export default router;
 

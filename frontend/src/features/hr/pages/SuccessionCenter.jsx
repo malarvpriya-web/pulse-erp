@@ -1,12 +1,12 @@
 import { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Map, Users, BookOpen, Database, BarChart3, Settings2 } from 'lucide-react';
-import SuccessionPlanning from './SuccessionPlanning';
-import LeadershipPipeline from './LeadershipPipeline';
-import DevelopmentPlans from './DevelopmentPlans';
-import EmployeeSuccessionPools from './EmployeeSuccessionPools';
-import SuccessionReports from './SuccessionReports';
-import SuccessionSettings from './SuccessionSettings';
+import SuccessionPlanning from '../succession/SuccessionPlanning';
+import LeadershipPipeline from '../succession/LeadershipPipeline';
+import DevelopmentPlans from '../succession/DevelopmentPlans';
+import EmployeeSuccessionPools from '../succession/EmployeeSuccessionPools';
+import SuccessionReports from '../succession/SuccessionReports';
+import SuccessionSettings from '../succession/SuccessionSettings';
 import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const TABS = [
@@ -19,7 +19,7 @@ const TABS = [
 ];
 const IDS = TABS.map(t => t.id);
 
-export default function SuccessionCenter({ setPage }) {
+export default function SuccessionCenter() {
   const [sp, setSp] = useSearchParams();
   const urlTab = sp.get('tab');
   const [active, setActive] = useState(IDS.includes(urlTab) ? urlTab : IDS[0]);
@@ -55,11 +55,10 @@ export default function SuccessionCenter({ setPage }) {
       />
     }>
 
-      {/* Every tab body is a full PageShell page. Without `.plh-tabpanel` its
-          sticky, opaque dock froze over this hub's tab strip once the body
-          scrolled, so elementFromPoint at each tab returned the child's hero and
-          Planning (and every other tab) stopped responding until scrolled back
-          up. Same host-side guard TabHub uses — see pulse-hero.css. */}
+      {/* The tab bodies are plain sections (2026-11-12): each used to be a
+          full PageShell page with its own hero, a second header under this
+          one. `.plh-tabpanel` stays as the host-side guard TabHub uses
+          (pulse-hero.css), so nothing a section renders can cover the tabs. */}
       <div className="plh-tabpanel" role="tabpanel">
         {active === 'planning'  && <SuccessionPlanning />}
         {active === 'pipeline'  && <LeadershipPipeline />}

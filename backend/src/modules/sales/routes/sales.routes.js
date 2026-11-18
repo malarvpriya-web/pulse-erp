@@ -2182,22 +2182,6 @@ router.get('/analytics/sales-vs-target', requirePermission('sales', 'view'), asy
 });
 
 // ── Sales Documents ─────────────────────────────────────────────────────────────
-;(async () => {
-  try {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS sales_documents (
-        id SERIAL PRIMARY KEY,
-        company_id INTEGER,
-        name VARCHAR(255) NOT NULL,
-        type VARCHAR(50) DEFAULT 'Other',
-        customer_name VARCHAR(255),
-        file_url TEXT,
-        file_size INTEGER,
-        created_at TIMESTAMPTZ DEFAULT NOW()
-      )
-    `);
-  } catch (e) { console.error('[sales_documents] init error:', e.message); }
-})();
 
 router.get('/documents', requirePermission('sales', 'view'), async (req, res) => {
   try {
@@ -2233,25 +2217,6 @@ router.post('/documents', requirePermission('sales', 'add'), async (req, res) =>
 // registration order and anything defined here would be shadowed anyway.
 
 // ── Sales Territories ──────────────────────────────────────────────────────
-// Still bootstrapped in-process. Left as-is deliberately: it is out of scope for
-// the partner rebuild, and quietly reshaping a second table under a change that
-// was not about it is how the partners/territories pair got into this state.
-(async () => {
-  try {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS sales_territories (
-        id              SERIAL PRIMARY KEY,
-        company_id      INTEGER,
-        name            TEXT NOT NULL,
-        region          TEXT,
-        assigned_to     INTEGER REFERENCES employees(id) ON DELETE SET NULL,
-        target_revenue  NUMERIC(15,2) DEFAULT 0,
-        status          TEXT DEFAULT 'active',
-        created_at      TIMESTAMPTZ DEFAULT NOW()
-      );
-    `);
-  } catch (e) { console.error('[sales] territories migration:', e.message); }
-})();
 
 // The four matching dimensions are jsonb arrays. A form sends '' for an empty
 // multi-select and a bare string for a single pick; both must become [].
@@ -2540,30 +2505,6 @@ router.delete('/playbooks/:id/steps/:stepId', requirePermission('sales', 'edit')
 });
 
 // ── Sales Calendar Events ─────────────────────────────────────────────────────
-;(async () => {
-  try {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS sales_events (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        company_id INTEGER NOT NULL,
-        title VARCHAR(255) NOT NULL,
-        type VARCHAR(30) DEFAULT 'meeting',
-        start_at TIMESTAMPTZ NOT NULL,
-        end_at TIMESTAMPTZ,
-        all_day BOOLEAN DEFAULT false,
-        -- INTEGER, not UUID: users.id, accounts.id and opportunities.id are all
-        -- integer-keyed. Declared uuid, this bootstrap made every insert fail
-        -- with 22P02 the moment owner_id was stamped from req.user.userId.
-        -- See migration 20260827000001_sales_events_actor_ids_to_integer.
-        owner_id INTEGER,
-        account_id INTEGER,
-        opportunity_id INTEGER,
-        notes TEXT,
-        created_at TIMESTAMPTZ DEFAULT NOW()
-      )
-    `);
-  } catch (e) { console.error('[sales_events] init error:', e.message); }
-})();
 
 router.get('/calendar/events', requirePermission('sales', 'view'), async (req, res) => {
   try {
@@ -2642,37 +2583,7 @@ router.delete('/documents/:id', requirePermission('sales', 'delete'), captureBef
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ── Territories: add states column if missing ─────────────────────────────────
-;(async () => {
-  try {
-    await pool.query(`ALTER TABLE sales_territories ADD COLUMN IF NOT EXISTS states JSONB DEFAULT '[]'`);
-  } catch (e) { console.error('[territories] states migration:', e.message); }
-})();
-
 // ── Subscriptions ─────────────────────────────────────────────────────────────
-;(async () => {
-  try {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS subscriptions (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        company_id INTEGER NOT NULL,
-        customer_id INTEGER,
-        customer_name VARCHAR(255),
-        plan_name VARCHAR(255) NOT NULL,
-        amount NUMERIC(14,2) NOT NULL,
-        currency VARCHAR(10) DEFAULT 'INR',
-        billing_cycle VARCHAR(20) DEFAULT 'monthly',
-        status VARCHAR(20) DEFAULT 'active',
-        start_date DATE NOT NULL,
-        next_billing_date DATE,
-        end_date DATE,
-        auto_renew BOOLEAN DEFAULT true,
-        owner_id INTEGER,
-        created_at TIMESTAMPTZ DEFAULT NOW()
-      )
-    `);
-  } catch (e) { console.error('[subscriptions] init error:', e.message); }
-})();
 
 router.get('/subscriptions/stats', requirePermission('sales', 'view'), async (req, res) => {
   try {
@@ -2868,24 +2779,6 @@ router.patch('/subscriptions/:id/renew', requirePermission('sales', 'edit'), asy
 });
 
 // ── Competitors ───────────────────────────────────────────────────────────────
-;(async () => {
-  try {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS competitors (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        company_id INTEGER NOT NULL,
-        name VARCHAR(255) NOT NULL,
-        website VARCHAR(255),
-        strengths TEXT,
-        weaknesses TEXT,
-        win_rate NUMERIC(5,2),
-        notes TEXT,
-        is_active BOOLEAN DEFAULT true,
-        created_at TIMESTAMPTZ DEFAULT NOW()
-      )
-    `);
-  } catch (e) { console.error('[competitors] init error:', e.message); }
-})();
 
 router.get('/competitors', requirePermission('sales', 'view'), async (req, res) => {
   try {
@@ -2940,26 +2833,6 @@ router.delete('/competitors/:id', requirePermission('sales', 'delete'), captureB
 });
 
 // ── Sales Settings ────────────────────────────────────────────────────────────
-;(async () => {
-  try {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS sales_settings (
-        id SERIAL PRIMARY KEY,
-        company_id INTEGER NOT NULL UNIQUE,
-        default_currency VARCHAR(10) DEFAULT 'INR',
-        quotation_validity_days INTEGER DEFAULT 30,
-        order_prefix VARCHAR(10) DEFAULT 'SO',
-        quotation_prefix VARCHAR(10) DEFAULT 'QUO',
-        default_tax_rate NUMERIC(5,2) DEFAULT 18,
-        default_place_of_supply VARCHAR(100) DEFAULT 'Karnataka',
-        auto_invoice_on_delivery BOOLEAN DEFAULT false,
-        require_approval_above NUMERIC(14,2),
-        fiscal_year_start INTEGER DEFAULT 4,
-        created_at TIMESTAMPTZ DEFAULT NOW()
-      )
-    `);
-  } catch (e) { console.error('[sales_settings] init error:', e.message); }
-})();
 
 router.get('/settings', requirePermission('sales', 'view'), async (req, res) => {
   try {

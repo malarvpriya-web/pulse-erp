@@ -9,6 +9,7 @@ import { logAudit } from '../../services/AuditService.js';
 import { recoverPayrollJournals, PayrollJournalError } from './services/payrollJournal.service.js';
 import { getLoanGlMapping, setLoanGlMapping, clearLoanGlMapping, LoanGlMappingError } from './services/loanGlMapping.service.js';
 import { getPaymentGlMapping, setPaymentGlMapping, clearPaymentGlMapping, PaymentGlMappingError } from './services/paymentGlMapping.service.js';
+import { bankLedgerOptions, createBankLedger, BankLedgerError } from './services/bankLedgerLink.service.js';
 import { captureBefore } from '../../middlewares/captureBefore.js';
 import {
   assertBalanced,
@@ -1571,6 +1572,29 @@ router.delete('/payment-gl-mapping', requirePermission('finance', 'approve'), as
     logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'finance', recordType: 'payment_gl_mapping', recordId: null, action: 'delete', oldData: req._auditBefore, req });
     res.json(await getPaymentGlMapping(cid(req)));
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ─── Bank → ledger links (§275) ──────────────────────────────────────────────
+// What the Bank Accounts "Ledger links" panel shows, and a ledger account of its
+// own for a bank account. Linking itself stays PUT /payment-gl-mapping above.
+router.get('/bank-ledger-options', requirePermission('finance', 'view'), async (req, res) => {
+  try {
+    if (cid(req) == null) return res.status(403).json({ code: 'COMPANY_REQUIRED', error: 'No company context for this login' });
+    res.json(await bankLedgerOptions(cid(req)));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+router.post('/bank-ledger-accounts', requirePermission('finance', 'add'), async (req, res) => {
+  try {
+    const bankId = Number(req.body?.bank_account_id);
+    if (!Number.isInteger(bankId) || bankId < 1) return res.status(400).json({ code: 'BANK_ACCOUNT_REQUIRED', error: 'bank_account_id is required' });
+    const out = await createBankLedger(cid(req), bankId);
+    logAudit({ userId: req.user?.userId ?? req.user?.id, module: 'finance', recordType: 'chart_of_accounts', recordId: null,
+      action: 'create_bank_ledger', newData: { ...out.account, bank_account_id: out.bank_account_id }, req });
+    res.status(201).json(out);
+  } catch (err) {
+    if (err instanceof BankLedgerError) return res.status(err.status).json({ code: err.code, error: err.message });
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ─── Loan account mapping (Finance decision) ─────────────────────────────────

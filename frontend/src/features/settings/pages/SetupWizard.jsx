@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '@/context/AuthContext';
 import api from '@/services/api/client';
 import { useSetupProgress } from '@/hooks/useSetupProgress';
@@ -691,213 +691,16 @@ function StepRoles({ data, onChange }) {
 }
 
 // ── Step 5 — Payroll Structure ────────────────────────────────────────────────
-function StepPayroll({ data, onChange }) {
-  const set = (key) => (val) => onChange(key, val);
-  const setComp = (comp, field) => (val) => {
-    onChange('components', { ...data.components, [comp]: { ...data.components[comp], [field]: val } });
-  };
-  const setDeduction = (type, field) => (val) => {
-    onChange(type, { ...data[type], [field]: val });
-  };
-
-  const breakdown = useMemo(() => {
-    const annual = Math.max(0, Number(data.sample_ctc)) || 600000;
-    const monthly = Math.round(annual / 12);
-    const c = data.components;
-
-    const basic = c.basic.enabled ? Math.round(monthly * (c.basic.pct / 100)) : 0;
-    const hra = c.hra.enabled ? Math.round(basic * (c.hra.pct / 100)) : 0;
-    const conv = c.conveyance.enabled ? Math.min(1600, Math.round(monthly * (c.conveyance.pct / 100))) : 0;
-    const med = c.medical.enabled ? Math.min(1250, Math.round(monthly * (c.medical.pct / 100))) : 0;
-    const lta = c.lta.enabled ? Math.round(basic * (c.lta.pct / 100)) : 0;
-    const special = Math.max(0, monthly - basic - hra - conv - med - lta);
-    const gross = basic + hra + conv + med + lta + special;
-
-    const pf = data.pf.enabled ? Math.round(basic * (Number(data.pf.emp_pct) / 100)) : 0;
-    const esi = (data.esi.enabled && gross <= 21000)
-      ? Math.round(gross * (Number(data.esi.emp_pct) / 100)) : 0;
-    const net = gross - pf - esi;
-
-    return { monthly, basic, hra, conv, med, lta, special, gross, pf, esi, net };
-  }, [data]);
-
-  const fmt = (n) => `₹${n.toLocaleString('en-IN')}`;
-
-  const COMPONENTS = [
-    { key: 'basic',      label: 'Basic',               pctOf: '% of CTC' },
-    { key: 'hra',        label: 'HRA',                 pctOf: '% of Basic' },
-    { key: 'conveyance', label: 'Conveyance Allowance', pctOf: '% of CTC (capped ₹1,600)' },
-    { key: 'medical',    label: 'Medical Allowance',    pctOf: '% of CTC (capped ₹1,250)' },
-    { key: 'lta',        label: 'LTA',                 pctOf: '% of Basic' },
-  ];
-
+// Saves nothing: its old form wrote its own defaults (pay day 1, Maharashtra) over the
+// settings Payroll Center keeps in the same record.
+function StepPayroll() {
   return (
-    <div style={{ display: 'flex', gap: 24, alignItems: 'flex-start' }}>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div className="wizard-section">
-          <div className="wizard-section-title">Pay Cycle</div>
-          <div className="wizard-grid-2">
-            <div className="wizard-field">
-              <label>Pay Frequency</label>
-              <select value={data.frequency} onChange={e => set('frequency')(e.target.value)}>
-                <option value="Monthly">Monthly</option>
-                <option value="Biweekly">Biweekly</option>
-              </select>
-            </div>
-            <div className="wizard-field">
-              <label>Pay Day (1–31)</label>
-              <input type="number" min={1} max={31} value={data.pay_day}
-                onChange={e => set('pay_day')(Number(e.target.value))} />
-            </div>
-            <div className="wizard-field">
-              <label>Attendance Cutoff Day</label>
-              <input type="number" min={1} max={31} value={data.cutoff_day}
-                onChange={e => set('cutoff_day')(Number(e.target.value))} />
-            </div>
-          </div>
-        </div>
-
-        <div className="wizard-section">
-          <div className="wizard-section-title">Salary Components</div>
-          {COMPONENTS.map(({ key, label, pctOf }) => (
-            <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10 }}>
-              <Toggle
-                checked={data.components[key].enabled}
-                onChange={setComp(key, 'enabled')}
-              />
-              <span style={{ fontSize: 13, color: '#374151', width: 160, flexShrink: 0 }}>{label}</span>
-              <input type="number" min={0} max={100} step={0.5}
-                value={data.components[key].pct}
-                onChange={e => setComp(key, 'pct')(Number(e.target.value))}
-                disabled={!data.components[key].enabled}
-                style={{
-                  width: 80, padding: '6px 10px', border: '1.5px solid #e5e7eb', borderRadius: 7,
-                  fontSize: 13, fontFamily: 'inherit', outline: 'none', textAlign: 'right',
-                  opacity: data.components[key].enabled ? 1 : 0.4,
-                }}
-              />
-              <span style={{ fontSize: 11, color: '#9ca3af' }}>{pctOf}</span>
-            </div>
-          ))}
-        </div>
-
-        <div className="wizard-section">
-          <div className="wizard-section-title">Statutory Deductions</div>
-
-          {/* PF */}
-          <div style={{ marginBottom: 16 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
-              <Toggle checked={data.pf.enabled} onChange={v => setDeduction('pf', 'enabled')(v)} />
-              <span style={{ fontSize: 13, fontWeight: 600, color: '#374151' }}>Provident Fund (PF)</span>
-            </div>
-            {data.pf.enabled && (
-              <div style={{ display: 'flex', gap: 12, paddingLeft: 44 }}>
-                <div>
-                  <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 3 }}>Employee %</div>
-                  <input type="number" min={0} max={100} value={data.pf.emp_pct}
-                    onChange={e => setDeduction('pf', 'emp_pct')(Number(e.target.value))}
-                    style={{ width: 70, padding: '5px 8px', border: '1.5px solid #e5e7eb', borderRadius: 7, fontSize: 12, fontFamily: 'inherit', outline: 'none' }} />
-                </div>
-                <div>
-                  <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 3 }}>Employer %</div>
-                  <input type="number" min={0} max={100} value={data.pf.employer_pct}
-                    onChange={e => setDeduction('pf', 'employer_pct')(Number(e.target.value))}
-                    style={{ width: 70, padding: '5px 8px', border: '1.5px solid #e5e7eb', borderRadius: 7, fontSize: 12, fontFamily: 'inherit', outline: 'none' }} />
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* ESI */}
-          <div style={{ marginBottom: 16 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
-              <Toggle checked={data.esi.enabled} onChange={v => setDeduction('esi', 'enabled')(v)} />
-              <span style={{ fontSize: 13, fontWeight: 600, color: '#374151' }}>ESI (gross ≤ ₹21,000)</span>
-            </div>
-            {data.esi.enabled && (
-              <div style={{ display: 'flex', gap: 12, paddingLeft: 44 }}>
-                <div>
-                  <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 3 }}>Employee %</div>
-                  <input type="number" min={0} max={100} step={0.01} value={data.esi.emp_pct}
-                    onChange={e => setDeduction('esi', 'emp_pct')(Number(e.target.value))}
-                    style={{ width: 70, padding: '5px 8px', border: '1.5px solid #e5e7eb', borderRadius: 7, fontSize: 12, fontFamily: 'inherit', outline: 'none' }} />
-                </div>
-                <div>
-                  <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 3 }}>Employer %</div>
-                  <input type="number" min={0} max={100} step={0.01} value={data.esi.employer_pct}
-                    onChange={e => setDeduction('esi', 'employer_pct')(Number(e.target.value))}
-                    style={{ width: 70, padding: '5px 8px', border: '1.5px solid #e5e7eb', borderRadius: 7, fontSize: 12, fontFamily: 'inherit', outline: 'none' }} />
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* PT */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
-            <Toggle checked={data.pt.enabled} onChange={v => onChange('pt', { ...data.pt, enabled: v })} />
-            <span style={{ fontSize: 13, fontWeight: 600, color: '#374151' }}>Professional Tax</span>
-            {data.pt.enabled && (
-              <select value={data.pt.state}
-                onChange={e => onChange('pt', { ...data.pt, state: e.target.value })}
-                style={{ padding: '5px 8px', border: '1.5px solid #e5e7eb', borderRadius: 7, fontSize: 12, fontFamily: 'inherit', outline: 'none', marginLeft: 8 }}>
-                {['Maharashtra', 'Karnataka', 'Gujarat', 'Tamil Nadu', 'West Bengal', 'Other']
-                  .map(s => <option key={s} value={s}>{s}</option>)}
-              </select>
-            )}
-          </div>
-
-          {/* TDS */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <Toggle checked={data.tds_auto} onChange={v => onChange('tds_auto', v)} />
-            <span style={{ fontSize: 13, fontWeight: 600, color: '#374151' }}>TDS Auto-Calculate</span>
-          </div>
-        </div>
-      </div>
-
-      {/* Live preview */}
-      <div className="payroll-preview" style={{ width: 220, position: 'sticky', top: 20 }}>
-        <h4>CTC Preview</h4>
-        <div className="wizard-field" style={{ marginBottom: 12 }}>
-          <label style={{ fontSize: 11 }}>Sample CTC (₹/year)</label>
-          <input type="number" value={data.sample_ctc}
-            onChange={e => onChange('sample_ctc', e.target.value)}
-            style={{ padding: '5px 8px', border: '1.5px solid #e5e7eb', borderRadius: 7, fontSize: 12, fontFamily: 'inherit', outline: 'none', width: '100%' }} />
-        </div>
-        {[
-          { label: 'Monthly Gross', value: breakdown.monthly },
-          { label: 'Basic',         value: breakdown.basic   },
-          { label: 'HRA',           value: breakdown.hra     },
-          { label: 'Conveyance',    value: breakdown.conv    },
-          { label: 'Medical',       value: breakdown.med     },
-          { label: 'Special Allw.', value: breakdown.special },
-        ].filter(r => r.value > 0).map(r => (
-          <div className="payroll-preview-row" key={r.label}>
-            <span className="label">{r.label}</span>
-            <span>{fmt(r.value)}</span>
-          </div>
-        ))}
-        {(breakdown.pf > 0 || breakdown.esi > 0) && (
-          <div style={{ fontSize: 10, color: '#9ca3af', padding: '6px 0 2px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.7px' }}>
-            Deductions
-          </div>
-        )}
-        {breakdown.pf > 0 && (
-          <div className="payroll-preview-row">
-            <span className="label">PF (Emp)</span>
-            <span className="deduction">-{fmt(breakdown.pf)}</span>
-          </div>
-        )}
-        {breakdown.esi > 0 && (
-          <div className="payroll-preview-row">
-            <span className="label">ESI (Emp)</span>
-            <span className="deduction">-{fmt(breakdown.esi)}</span>
-          </div>
-        )}
-        <div className="payroll-preview-row">
-          <span>Net Take-Home</span>
-          <span style={{ color: '#6B3FDB' }}>{fmt(breakdown.net)}</span>
-        </div>
-      </div>
+    <div className="wizard-section">
+      <div className="wizard-section-title">Payroll is set up in one place</div>
+      <p style={{ fontSize: 13, color: 'var(--color-text-secondary)', margin: '0 0 12px' }}>
+        Pay cycle, statutory state, rates and bonus plans are all in Payroll Center, under Settings. Salary structures are in the same centre. You can do this now or after finishing this setup.
+      </p>
+      <Link to="/PayrollCenter?tab=settings" className="pulse-btn-secondary">Open Payroll Center Settings</Link>
     </div>
   );
 }
@@ -1271,21 +1074,6 @@ function defaultStepData() {
       existing: [],
       newRoles: [],
     },
-    payroll: {
-      frequency: 'Monthly', pay_day: 1, cutoff_day: 25,
-      components: {
-        basic:      { enabled: true,  pct: 50   },
-        hra:        { enabled: true,  pct: 40   },
-        conveyance: { enabled: true,  pct: 1600 },
-        medical:    { enabled: true,  pct: 1250 },
-        lta:        { enabled: false, pct: 0    },
-      },
-      pf:       { enabled: true,  emp_pct: 12,   employer_pct: 12   },
-      esi:      { enabled: false, emp_pct: 0.75, employer_pct: 3.25 },
-      pt:       { enabled: true,  state: 'Maharashtra' },
-      tds_auto: true,
-      sample_ctc: 600000,
-    },
     leaves: {
       year_type: 'April-March',
       types: [
@@ -1468,9 +1256,6 @@ export default function SetupWizard({ setPage: setPageProp, embedded = false }) 
         }
         break;
       }
-      case 'payroll':
-        await api.post('/settings/payroll', d);
-        break;
       case 'finance': {
         // Only save if the user filled in at least account_name and bank_name
         if (d.account_name?.trim() && d.bank_name?.trim()) {
@@ -1633,10 +1418,7 @@ export default function SetupWizard({ setPage: setPageProp, embedded = false }) 
         );
       case 'payroll':
         return (
-          <StepPayroll
-            data={stepData.payroll}
-            onChange={(key2, val) => updateStepSubField('payroll', key2, val)}
-          />
+          <StepPayroll />
         );
       case 'finance':
         return (

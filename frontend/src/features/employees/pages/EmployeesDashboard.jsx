@@ -40,7 +40,6 @@ import {
   ComposedChart, Area, Line,
 } from 'recharts';
 import api from '@/services/api/client';
-import { useAuth } from '@/context/AuthContext';
 import { ChartExpandButton } from '@/components/dashboard/DashCard';
 import '@/components/dashboard/dashkit.css';
 import { PageHero, PageShell, DashboardFilterBar } from '@/components/pulse-ui';
@@ -357,7 +356,6 @@ export default function EmployeesDashboard({ setPage, setSelectedEmployee }) {
   const [birthdays,     setBirthdays]     = useState(EMPTY_ARR);
   const [anniversaries, setAnniversaries] = useState(EMPTY_ARR);
   const [confirmations, setConfirmations] = useState(EMPTY_ARR);
-  const [expiringDocs,  setExpiringDocs]  = useState(EMPTY_ARR);
   const [upcomingExits, setUpcomingExits] = useState(EMPTY_ARR);
   const [joinees,       setJoinees]       = useState(null);
   const [loading,       setLoading]       = useState(true);
@@ -365,11 +363,6 @@ export default function EmployeesDashboard({ setPage, setSelectedEmployee }) {
   const [error,         setError]         = useState(null);
   const [lastRefresh,   setLastRefresh]   = useState(null);
   const [showAllDepts,  setShowAllDepts]  = useState(false);
-  // The Documents tile opens HR's register, which is gated on
-  // employee_documents (§207). This dashboard is gated on employees:view,
-  // which managers also hold, so the tile is drawn for grant holders only.
-  const { hasPermission } = useAuth();
-  const canOpenDocs = hasPermission('employee_documents', 'view');
 
   const filters = useDashboardFilters({
     defaultPeriod: 'fytd',
@@ -408,13 +401,12 @@ export default function EmployeesDashboard({ setPage, setSelectedEmployee }) {
 
     if (signal.aborted) return;
 
-    const [hiresRes, bdRes, annRes, confRes, expRes, exitRes, joinRes] =
+    const [hiresRes, bdRes, annRes, confRes, exitRes, joinRes] =
       await Promise.allSettled([
         api.get('/employees', { params: { status: 'all' }, signal }),
         api.get('/hr-widgets/upcoming-birthdays',     { params: { days: ALERT_WINDOW_DAYS, ...deptParam }, signal }),
         api.get('/hr-widgets/upcoming-anniversaries', { params: { days: ALERT_WINDOW_DAYS, ...deptParam }, signal }),
         api.get('/hr-widgets/pending-confirmations',  { params: { days: ALERT_WINDOW_DAYS, ...deptParam }, signal }),
-        api.get('/hr-widgets/expiring-documents',     { params: { days: ALERT_WINDOW_DAYS, ...deptParam }, signal }),
         api.get('/hr-widgets/upcoming-exits',         { params: { days: ALERT_WINDOW_DAYS, ...deptParam }, signal }),
         api.get('/hr-widgets/upcoming-joinees',       { params: { days: ALERT_WINDOW_DAYS, ...deptParam }, signal }),
       ]);
@@ -436,7 +428,6 @@ export default function EmployeesDashboard({ setPage, setSelectedEmployee }) {
     setBirthdays(arr(bdRes));
     setAnniversaries(arr(annRes));
     setConfirmations(arr(confRes));
-    setExpiringDocs(arr(expRes));
     setUpcomingExits(arr(exitRes));
     setJoinees(joinRes.status === 'fulfilled' ? joinRes.value.data : null);
 
@@ -493,8 +484,6 @@ export default function EmployeesDashboard({ setPage, setSelectedEmployee }) {
   const trendNet   = trendHires - trendExits;
 
   /** Split counts for the action tiles. */
-  const docsExpired     = expiringDocs.filter(d => d.expiry_state === 'expired').length;
-  const docsExpiring    = expiringDocs.length - docsExpired;
   const exitsOverdue    = upcomingExits.filter(e => e.exit_state === 'overdue').length;
   /**
    * Overdue exits belonging to the NOTICE cohort specifically.
@@ -605,17 +594,6 @@ export default function EmployeesDashboard({ setPage, setSelectedEmployee }) {
     label: 'Employment status: Notice period',
   }), [goEmployees]);
 
-  /** Document register, pre-filtered to whichever bucket has the work in it. */
-  const openDocs = useCallback((which) => {
-    setEmployeeListFilter({
-      origin: 'EmployeesDashboard',
-      expiry: which,
-      label: which === 'expired'
-        ? 'Documents that have already expired'
-        : `Documents expiring or expired within ${ALERT_WINDOW_DAYS} days`,
-    });
-    setPage?.('EmployeeDocuments');
-  }, [setPage]);
   // Joinees are candidates with an accepted offer, so their records live in
   // recruitment — NOT in the employee register, which is the whole point.
   //
@@ -938,17 +916,8 @@ export default function EmployeesDashboard({ setPage, setSelectedEmployee }) {
             <span className="empdash-actionbar-scope">next {ALERT_WINDOW_DAYS} days · overdue always shown</span>
           </span>
           <div className="empdash-actions">
-            {canOpenDocs && (
-              <ActionTile
-                index={7} icon="📄" label="Documents" bg="#fef2f2" color="#dc2626"
-                count={docsExpiring} overdue={docsExpired} overdueLabel="expired"
-                scope="Expiring" loading={listLoading}
-                onClick={() => openDocs('expiring')}
-                title="Open documents expiring soon"
-                onOverdueClick={() => openDocs('expired')}
-                overdueTitle="Open documents that have already expired"
-              />
-            )}
+            {/* The Documents tile went with the Employee Documents register
+                (removed 11 Nov 26, owner: documents live on Add Employee). */}
             <ActionTile
               index={8} icon="🚪" label="Exits" bg="#fffbeb" color="#b45309"
               count={exitsUpcoming} overdue={exitsOverdue} overdueLabel="overdue"

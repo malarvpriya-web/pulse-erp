@@ -113,9 +113,9 @@ function HistoryDrawer({ leaveId, onClose }) {
   const levelLabel = lvl => ({ 1:'L1 Manager', 2:'L2 Dept Head', 3:'L3 HR', 0:'System' }[lvl] || `Level ${lvl}`);
 
   return (
-    <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.4)', zIndex:9999, display:'flex', alignItems:'flex-end', justifyContent:'flex-end' }}
+    <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.4)', zIndex:9999, display:'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}
       onClick={onClose}>
-      <div style={{ width:420, height:'100%', background:'#fff', boxShadow:'-4px 0 20px rgba(0,0,0,0.12)', overflow:'auto', padding:24 }}
+      <div style={{ width:420, maxWidth: '100%', maxHeight: 'calc(100vh - 48px)', borderRadius: 12, background:'#fff', boxShadow: '0 20px 60px rgba(0,0,0,.18)', overflow:'auto', padding:24 }}
         onClick={e => e.stopPropagation()}>
         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20 }}>
           <h3 style={{ margin:0, fontSize:16, fontWeight:700, color:'#1f2937' }}>Approval History</h3>

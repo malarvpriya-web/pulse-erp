@@ -47,11 +47,14 @@ const HEAD_FIELDS = `
 /**
  * Every active master department, with this company's current head (or none)
  * and how many current employees of this company sit in it, plus the list of
- * employees who may be chosen as a head.
+ * employees who may be chosen as a head. A RETIRED department is listed too
+ * while this company still has a head on it (`department_active: false`), so
+ * HR can see it and remove the head — a retired department gives its head no
+ * role anywhere (§271).
  */
 export async function listDepartmentHeads(companyId) {
   const { rows: departments } = await pool.query(
-    `SELECT md.id AS department_id, md.name AS department,
+    `SELECT md.id AS department_id, md.name AS department, md.is_active AS department_active,
             (SELECT COUNT(*)::int FROM employees x
               WHERE x.company_id = $1 AND x.deleted_at IS NULL AND ${isCurrentSql('x.status')}
                 AND LOWER(BTRIM(x.department)) = LOWER(BTRIM(md.name))) AS employee_count,
@@ -61,8 +64,8 @@ export async function listDepartmentHeads(companyId) {
        LEFT JOIN department_heads dh
               ON dh.department_id = md.id AND dh.company_id = $1 AND dh.ended_at IS NULL
        LEFT JOIN employees h ON h.id = dh.head_employee_id
-      WHERE md.is_active = true
-      ORDER BY md.name`,
+      WHERE md.is_active = true OR dh.id IS NOT NULL
+      ORDER BY md.is_active DESC, md.name`,
     [companyId],
   );
   const { rows: eligible } = await pool.query(
@@ -77,6 +80,7 @@ export async function listDepartmentHeads(companyId) {
     departments: departments.map((d) => ({
       department_id: d.department_id,
       department: d.department,
+      department_active: d.department_active,
       employee_count: d.employee_count,
       head: d.assignment_id == null ? null : {
         assignment_id: d.assignment_id,

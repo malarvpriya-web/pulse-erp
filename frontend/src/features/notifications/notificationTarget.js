@@ -46,7 +46,11 @@ const TYPE_PAGE = {
   announcement: 'MyAnnouncements',
   // HR
   fnf_ready_for_approval: 'Offboarding',
-  interview_reminder:     'InterviewScheduler',
+  // Sent to the interviewer and panel (lead or member) — often people with no
+  // Recruitment access, so these open their own page, not the scheduler.
+  interview_reminder:     'MyInterviews',
+  interview_assigned:     'MyInterviews',
+  interview_changed:      'MyInterviews',
   intern_evaluation_request: 'MyInternEvaluations',
   // Sent to the department head asked to review a probation (ref = review id).
   // Exact match, so it wins over the 'probation_' prefix → the HR Probation page.
@@ -54,6 +58,10 @@ const TYPE_PAGE = {
   // Sent to the FORMER reviewer when HR reassigns their review. It carries no
   // reference (reference_id is NULL), so this opens the page without a review.
   probation_review_reassigned: 'MyProbationReviews',
+  // Sent to the reviewing head when HR records the decision (no reference).
+  probation_review_decided: 'MyProbationReviews',
+  // Sent to the head when HR withdraws a review that was waiting on them.
+  probation_review_cancelled: 'MyProbationReviews',
   // finance
   ap_overdue:          'PayablesPage',
   ar_overdue:          'ReceivablesPage',

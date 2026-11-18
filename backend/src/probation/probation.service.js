@@ -200,6 +200,7 @@ export async function getNotifications(companyId) {
        FROM probation_notifications pn
        JOIN employees e ON e.id = pn.employee_id
       WHERE e.company_id = $1
+        AND e.deleted_at IS NULL   -- a removed (test) employee's reminders are not this company's log
       ORDER BY pn.created_at DESC
       LIMIT 200`,
     [companyId],
@@ -272,41 +273,24 @@ export async function createNotification(companyId, body = {}) {
   return saved;
 }
 
-/** Record a decision on one log row — only a row whose employee is in this company. */
-export async function updateNotification(companyId, id, data = {}) {
-  const rowId = positiveInt(id);
-  if (!rowId) throw new ProbationError(400, 'Invalid probation record id.');
-  const { decision, performance_rating, comments } = data;
-  const { rows } = await pool.query(
-    `UPDATE probation_notifications pn
-        SET decision = $1, performance_rating = $2, comments = $3,
-            status = 'completed', decided_at = CURRENT_TIMESTAMP
-       FROM employees e
-      WHERE pn.id = $4 AND e.id = pn.employee_id AND e.company_id = $5
-      RETURNING pn.*`,
-    [decision, performance_rating || null, comments || null, rowId, companyId],
-  );
-  if (!rows[0]) throw new ProbationError(404, 'Probation record not found.');
-  return rows[0];
+/**
+ * Retired 2026-11-11. A decision used to be written onto a NOTIFICATION row
+ * (free text: 'Confirm', 'Extend Probation', 'confirmed', …) and never reached
+ * the employee — status, confirmation date and end date stayed as they were.
+ * The one decision path is now the probation REVIEW: the department head
+ * recommends, HR decides (POST /probation-reviews/:id/decide), and that
+ * decision updates the employee in the same transaction.
+ *
+ * Both legacy routes answer 410 and write nothing. The company is still
+ * resolved first (the controller), so a caller with no company gets 403 as before.
+ */
+const RETIRED_DECISION = 'Probation decisions are no longer recorded on notifications. '
+  + 'Request a department-head review on Probation Management and record the decision there.';
+
+export async function updateNotification() {
+  throw new ProbationError(410, RETIRED_DECISION);
 }
 
-export async function updateByEmployee(companyId, employeeId, data = {}) {
-  const empId = positiveInt(employeeId);
-  if (!empId) throw new ProbationError(400, 'Invalid employee id.');
-  const { decision, performance_rating, comments } = data;
-  const { rows } = await pool.query(
-    `UPDATE probation_notifications
-        SET decision = $1, performance_rating = $2, comments = $3,
-            status = 'completed', decided_at = CURRENT_TIMESTAMP
-      WHERE id = (
-        SELECT pn.id FROM probation_notifications pn
-          JOIN employees e ON e.id = pn.employee_id
-         WHERE pn.employee_id = $4 AND e.company_id = $5 AND pn.status = 'pending'
-         ORDER BY pn.created_at DESC
-         LIMIT 1
-      )
-      RETURNING *`,
-    [decision, performance_rating || null, comments || null, empId, companyId],
-  );
-  return rows[0] || null;
+export async function updateByEmployee() {
+  throw new ProbationError(410, RETIRED_DECISION);
 }

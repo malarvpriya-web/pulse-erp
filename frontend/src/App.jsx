@@ -145,8 +145,9 @@ function App() {
             AttendanceSettings?tab=devices renders DeviceManagement, which covers
             /biometric/devices* only. So /gate-passes and /visitors — both with
             live tables and routes (hr/biometric.routes.js) — had no reachable
-            screen anywhere in the app. The page is now routed normally and
-            carries an HR menu row. */}
+            screen anywhere in the app. Since §272 /BiometricAccess redirects
+            (routes.jsx) to GatePassVisitors — the gate register — and the
+            attendance import is Attendance → Punch Import. */}
 
         <Route
           path="/:page?"

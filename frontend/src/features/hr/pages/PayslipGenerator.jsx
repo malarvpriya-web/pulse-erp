@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { Wallet } from 'lucide-react';
-import jsPDF from 'jspdf';
 import api from '@/services/api/client';
 import { PageHero, PageShell } from '@/components/pulse-ui';
 
@@ -45,11 +44,9 @@ const PRINT_CSS = `
 
 /* ── helpers ──────────────────────────────────────────────────────────────── */
 
+// A payslip shows exact rupees — never "₹3.39 L".
 function fmtINR(n) {
-  const v = Math.abs(parseFloat(n) || 0);
-  if (v >= 10000000) return `₹${(v / 10000000).toFixed(2)} Cr`;
-  if (v >= 100000)   return `₹${(v / 100000).toFixed(2)} L`;
-  return `₹${Math.round(v).toLocaleString('en-IN')}`;
+  return `₹${Math.round(parseFloat(n) || 0).toLocaleString('en-IN')}`;
 }
 
 function numWords(n) {
@@ -80,10 +77,13 @@ export default function PayslipGenerator({ embedded = false } = {}) {
   const [selEmployee, setSelEmployee] = useState('');
   const [month,       setMonth]       = useState(new Date().getMonth() + 1);
   const [year,        setYear]        = useState(new Date().getFullYear());
-  const [lopDays,     setLop]         = useState(0);
-  const [bonus,       setBonus]       = useState(0);
-  const [loanDed,     setLoanDed]     = useState(0);
-  const [advDed,      setAdvDed]      = useState(0);
+  // What-if inputs start EMPTY: an empty field means "use the real figure"
+  // (attendance, bonus plans, loans). They used to start at 0 and were always
+  // sent, so every preview showed no absence, no bonus and no loan recovery.
+  const [lopDays,     setLop]         = useState('');
+  const [bonus,       setBonus]       = useState('');
+  const [loanDed,     setLoanDed]     = useState('');
+  const [advDed,      setAdvDed]      = useState('');
   const [slip,        setSlip]        = useState(null);
   const [pdfData,     setPdfData]     = useState(null);
   const [computing,   setComputing]   = useState(false);
@@ -170,14 +170,10 @@ export default function PayslipGenerator({ embedded = false } = {}) {
     setSlip(null);
     setPdfData(null);
     try {
-      const payload = {
-        employee_id: parseInt(selEmployee, 10),
-        month, year,
-        lop_days: parseFloat(lopDays) || 0,
-        bonus: parseFloat(bonus) || 0,
-        loan_deduction: parseFloat(loanDed) || 0,
-        advance_deduction: parseFloat(advDed) || 0,
-      };
+      const payload = { employee_id: parseInt(selEmployee, 10), month, year };
+      for (const [k, v] of [['lop_days', lopDays], ['bonus', bonus], ['loan_deduction', loanDed], ['advance_deduction', advDed]]) {
+        if (String(v).trim() !== '') payload[k] = parseFloat(v) || 0;
+      }
       const res = await api.post('/payroll/compute-slip', payload);
       if (reqId !== computeIdRef.current) return;
       setSlip(res.data);
@@ -202,69 +198,18 @@ export default function PayslipGenerator({ embedded = false } = {}) {
   /* ── print / download / email ── */
   const printPayslip = () => window.print();
 
-  const downloadPDF = () => {
-    if (!pdfData) {
-      flash('Re-compute the payslip to generate PDF data.', 'warning');
-      return;
-    }
-    const doc = new jsPDF({ unit: 'mm', format: 'a4' });
-    let y = 15;
-    doc.setFontSize(16); doc.setFont('helvetica', 'bold');
-    doc.text(pdfData.company.name, 105, y, { align: 'center' }); y += 7;
-    doc.setFontSize(9); doc.setFont('helvetica', 'normal');
-    doc.text(pdfData.company.address || '', 105, y, { align: 'center' }); y += 5;
-    if (pdfData.company.gstin) {
-      doc.text(`GSTIN: ${pdfData.company.gstin}`, 105, y, { align: 'center' }); y += 5;
-    }
-    doc.setFontSize(12); doc.setFont('helvetica', 'bold');
-    doc.text(`PAYSLIP — ${pdfData.period.period_label}`, 105, y, { align: 'center' }); y += 6;
-    if (pdfData.watermark) { doc.setTextColor(220, 38, 38); doc.text(pdfData.watermark, 105, y, { align: 'center' }); doc.setTextColor(0, 0, 0); }
-    y += 6;
-    doc.setFontSize(10); doc.setFont('helvetica', 'bold');
-    doc.text('Employee Details', 14, y); y += 5;
-    doc.setFont('helvetica', 'normal');
-    const details = [
-      ['Name', pdfData.employee.name], ['Code', pdfData.employee.code],
-      ['Designation', pdfData.employee.designation], ['Department', pdfData.employee.department],
-      ['PAN', pdfData.employee.pan], ['Bank A/C', pdfData.employee.bank_account],
-      ['Working Days', String(pdfData.period.working_days)], ['LOP Days', String(pdfData.period.lop_days)],
-    ];
-    details.forEach(([k, v], i) => {
-      const col = i < 4 ? 14 : 110;
-      const row = y + (i % 4) * 6;
-      doc.text(`${k}:`, col, row);
-      doc.setFont('helvetica', 'bold');
-      doc.text(v || '—', col + 35, row);
-      doc.setFont('helvetica', 'normal');
-    });
-    y += 30;
-    doc.setFont('helvetica', 'bold');
-    doc.text('Earnings', 14, y); doc.text('Deductions', 110, y); y += 5;
-    doc.setFont('helvetica', 'normal');
-    const maxRows = Math.max(pdfData.earnings.length, pdfData.deductions.length);
-    for (let i = 0; i < maxRows; i++) {
-      const e = pdfData.earnings[i]; const d = pdfData.deductions[i];
-      if (e) { doc.text(e.name, 14, y); doc.text(fmtINR(e.monthly), 80, y, { align: 'right' }); }
-      if (d) { doc.text(d.name, 110, y); doc.text(fmtINR(d.monthly), 196, y, { align: 'right' }); }
-      y += 6;
-    }
-    y += 4;
-    doc.setFont('helvetica', 'bold');
-    doc.text(`Gross: ${fmtINR(pdfData.gross)}`, 14, y);
-    doc.text(`Total Deductions: ${fmtINR(pdfData.total_deductions)}`, 110, y); y += 10;
-    doc.setFontSize(12);
-    doc.text(`Net Pay: ${fmtINR(pdfData.net_pay)}`, 105, y, { align: 'center' }); y += 8;
-    doc.setFontSize(9); doc.setFont('helvetica', 'normal');
-    doc.text(`(${numWords(Math.round(pdfData.net_pay))} Rupees Only)`, 105, y, { align: 'center' }); y += 10;
-    if (pdfData.employer_contributions?.length) {
-      doc.setFont('helvetica', 'bold'); doc.text('Employer contributions (not deducted from pay)', 14, y); y += 5;
-      doc.setFont('helvetica', 'normal');
-      pdfData.employer_contributions.forEach(c => { doc.text(c.name, 14, y); doc.text(fmtINR(c.monthly), 110, y, { align: 'right' }); y += 5; });
-      y += 4;
-    }
-    doc.text('This is a computer-generated payslip. No physical signature required.', 105, y, { align: 'center' });
-    doc.save(`Payslip_${pdfData.employee.code}_${pdfData.period.period_label.replace(/\s+/g, '_')}.pdf`);
-    flash('PDF downloaded successfully.');
+  // The one payslip PDF (server): approved months are the issued payslip; a draft
+  // or preview carries its watermark. What-if values are a screen preview only.
+  const whatIf = [lopDays, bonus, loanDed, advDed].some(v => String(v).trim() !== '');
+  const downloadPDF = async () => {
+    try {
+      const r = await api.get(`/payroll/payslip-pdf/${selEmployee}`, { params: { month, year }, responseType: 'blob' });
+      const url = URL.createObjectURL(r.data);
+      const a = document.createElement('a');
+      a.href = url; a.download = `Payslip_${pdfData?.employee?.code || selEmployee}_${MONTHS[month - 1]}_${year}.pdf`; a.click();
+      URL.revokeObjectURL(url);
+      flash('PDF downloaded.');
+    } catch { flash('PDF download failed — please try again.', 'error'); }
   };
 
   const emailPayslip = async () => {
@@ -290,16 +235,18 @@ export default function PayslipGenerator({ embedded = false } = {}) {
       const r = await api.get('/payroll', { params: { month, year, limit: 500 } });
       released = (r.data?.data || []).filter(p => p.status === 'approved' || p.status === 'paid');
     } catch { return flash('Could not load the approved payroll for this month.', 'error'); }
-    const ids = new Set(released.map(p => p.employee_id));
-    const recipients = employees.filter(e => ids.has(e.id));
-    if (!recipients.length) return flash('No approved payslips for this month.', 'error');
-    const rows = recipients.map(e => ({
-      id: e.id,
-      name: empDisplayName(e),
-      dept: e.department || '—',
+    // Everyone with an approved payslip — including people who have since resigned
+    // or are serving notice (they were left out when the list came from the
+    // active-employee picker).
+    if (!released.length) return flash('No approved payslips for this month.', 'error');
+    const byId = new Map(employees.map(e => [e.id, e]));
+    const rows = released.map(p => ({
+      id: p.employee_id,
+      name: p.name || empDisplayName(byId.get(p.employee_id) || {}),
+      dept: p.department || '—',
       status: 'queued',
       error: null,
-      sent_to: e.company_email || e.personal_email || null,
+      sent_to: byId.get(p.employee_id)?.company_email || byId.get(p.employee_id)?.personal_email || null,
     }));
     bulkAbortRef.current = false;
     setBulkEmail({ show: true, active: false, rows, sent: 0, failed: 0 });
@@ -514,7 +461,7 @@ export default function PayslipGenerator({ embedded = false } = {}) {
             <label style={lblStyle}>LOP Days</label>
             <input
               type="number" min={0} max={31} step={0.5}
-              value={lopDays} onChange={e => setLop(e.target.value)}
+              value={lopDays} onChange={e => setLop(e.target.value)} placeholder="from attendance"
               style={inputStyle} disabled={computing}
             />
           </div>
@@ -522,7 +469,7 @@ export default function PayslipGenerator({ embedded = false } = {}) {
             <label style={lblStyle}>Bonus (₹)</label>
             <input
               type="number" min={0}
-              value={bonus} onChange={e => setBonus(e.target.value)}
+              value={bonus} onChange={e => setBonus(e.target.value)} placeholder="from bonus plans"
               style={inputStyle} disabled={computing}
             />
           </div>
@@ -530,7 +477,7 @@ export default function PayslipGenerator({ embedded = false } = {}) {
             <label style={lblStyle}>Loan Deduction (₹)</label>
             <input
               type="number" min={0}
-              value={loanDed} onChange={e => setLoanDed(e.target.value)}
+              value={loanDed} onChange={e => setLoanDed(e.target.value)} placeholder="from loans"
               style={inputStyle} disabled={computing}
             />
           </div>
@@ -538,7 +485,7 @@ export default function PayslipGenerator({ embedded = false } = {}) {
             <label style={lblStyle}>Advance Deduction (₹)</label>
             <input
               type="number" min={0}
-              value={advDed} onChange={e => setAdvDed(e.target.value)}
+              value={advDed} onChange={e => setAdvDed(e.target.value)} placeholder="from advances"
               style={inputStyle} disabled={computing}
             />
           </div>
@@ -559,9 +506,9 @@ export default function PayslipGenerator({ embedded = false } = {}) {
             <>
               <button
                 onClick={downloadPDF}
-                disabled={!pdfData}
-                title={!pdfData ? 'Re-compute to generate PDF preview' : 'Download payslip as PDF'}
-                style={{ ...btnStyle('#16a34a'), opacity: pdfData ? 1 : 0.45 }}
+                disabled={whatIf}
+                title={whatIf ? 'Clear the what-if fields: the PDF is the payslip itself, not a what-if' : 'Download the payslip PDF'}
+                style={{ ...btnStyle('#16a34a'), opacity: whatIf ? 0.45 : 1 }}
                 aria-label="Download as PDF"
               >
                 Download PDF
@@ -778,7 +725,7 @@ export default function PayslipGenerator({ embedded = false } = {}) {
               ['Department',    pdfData.employee.department],
               ['PAN Number',    pdfData.employee.pan],
               ['Bank A/C',      pdfData.employee.bank_account],
-              ['Working Days',  pdfData.period.working_days],
+              ['Days paid',     pdfData.period.paid_days != null && pdfData.period.paid_days !== '—' ? `${pdfData.period.paid_days}${pdfData.period.days_in_month && pdfData.period.days_in_month !== '—' ? ` of ${pdfData.period.days_in_month}` : ''}` : '—'],
               ['LOP Days',      pdfData.period.lop_days],
             ].map(([k, v]) => (
               <div key={k} style={{ display: 'flex', gap: 8, padding: '4px 0' }}>
@@ -841,6 +788,12 @@ export default function PayslipGenerator({ embedded = false } = {}) {
             </div>
           </div>
 
+          {(pdfData.lop_note || pdfData.taxable_perquisites?.length > 0) && (
+            <div style={{ fontSize: 12, color: '#4b5563', marginBottom: 12 }}>
+              {pdfData.lop_note && <div>Loss of pay {pdfData.lop_note}.</div>}
+              {(pdfData.taxable_perquisites || []).map(p => <div key={p.name}>{p.name}: {fmtINR(p.monthly)}</div>)}
+            </div>
+          )}
           {pdfData.employer_contributions?.length > 0 && (
             <div style={{ background: '#f9fafb', borderRadius: 8, padding: 14, marginBottom: 16, fontSize: 13 }}>
               <div style={{ fontWeight: 700, color: '#374151', marginBottom: 6 }}>

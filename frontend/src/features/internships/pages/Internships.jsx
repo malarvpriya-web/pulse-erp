@@ -5,6 +5,7 @@ import { PageHero, PageShell, StatBand, Stat, LoadingState, LoadError, EmptyStat
 import { formatDuration, StatusBadge, StageBadge, stipendLabel, money, fmtDate } from '../internship';
 import { useAuth } from '@/context/AuthContext';
 import InternTemplatesPanel from './InternTemplatesPanel';
+import InternStipendsPanel from './InternStipendsPanel';
 import './Internships.css';
 
 /**
@@ -25,7 +26,7 @@ const VIEW_LABELS = {
   completed: 'Completed', awaiting_completion: 'Past end date — awaiting completion', current: 'Onboarding + Active',
   evaluation_pending: 'Evaluation pending', converted: 'Converted to employee',
 };
-const TABS = ['register', 'reports', 'templates'];
+const TABS = ['register', 'reports', 'stipends', 'templates'];
 
 /**
  * One single-series horizontal bar list. Each row is a button that filters the register.
@@ -189,11 +190,14 @@ export default function Internships({ setPage, urlParams = {} }) {
             onClick={() => applyFilters(filters)}>Register</button>
           <button role="tab" aria-selected={tab === 'reports'} className={tab === 'reports' ? 'is-active' : ''}
             onClick={() => applyFilters({}, 'reports')}>Reports</button>
+          <button role="tab" aria-selected={tab === 'stipends'} className={tab === 'stipends' ? 'is-active' : ''}
+            onClick={() => applyFilters({}, 'stipends')}>Stipends</button>
           <button role="tab" aria-selected={tab === 'templates'} className={tab === 'templates' ? 'is-active' : ''}
             onClick={() => applyFilters({}, 'templates')}>Document Templates</button>
         </div>
 
         {tab === 'templates' && <InternTemplatesPanel canEdit={hasPermission('internships', 'edit')} />}
+        {tab === 'stipends' && <InternStipendsPanel />}
 
         {tab === 'register' && (
           <div className="in-panel">

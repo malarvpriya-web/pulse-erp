@@ -2,8 +2,9 @@ import express from "express";
 import { verifyToken, requirePermission } from "../middlewares/auth.middleware.js";
 import { requireCompany, ProbationError } from "./probation.service.js";
 import { companyOf } from "../shared/scope.js";
+import { buildProbationLetterPdf } from "../utils/probationLetterPdf.js";
 import {
-  worklist, employeeReviews, requestReview, myReviews, submitReview, mySummary, reassignReview,
+  worklist, employeeReviews, requestReview, myReviews, submitReview, mySummary, reassignReview, decideReview, cancelReview, letterContent,
 } from "./probationReviews.service.js";
 
 /**
@@ -60,5 +61,31 @@ router.post("/", verifyToken, requirePermission('hr', 'add'),
 // server resolves who; the body carries only the reason). Existing hr:edit.
 router.post("/:reviewId/reassign", verifyToken, requirePermission('hr', 'edit'),
   handle((cid, req) => reassignReview(cid, req.params.reviewId, req.body, actorOf(req), req)));
+// HR's decision on a SUBMITTED review, applied to the employee record in the
+// same transaction (confirm / extend / not confirmed → exit). Existing hr:edit,
+// the grant that edits the employee record.
+router.post("/:reviewId/decide", verifyToken, requirePermission('hr', 'edit'),
+  handle((cid, req) => decideReview(cid, req.params.reviewId, req.body, actorOf(req), req)));
+
+// Withdraw an open review (requested or submitted) with a reason. hr:edit.
+router.post("/:reviewId/cancel", verifyToken, requirePermission('hr', 'edit'),
+  handle((cid, req) => cancelReview(cid, req.params.reviewId, req.body, actorOf(req), req)));
+
+// Confirmation / extension letter of a decided review, as a PDF. hr:view.
+router.get("/:reviewId/letter", verifyToken, requirePermission('hr', 'view'), async (req, res) => {
+  try {
+    const companyId = requireCompany(req);
+    const content = await letterContent(companyId, req.params.reviewId);
+    const pdf = await buildProbationLetterPdf(content);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${content.filename}"`);
+    res.setHeader('Cache-Control', 'no-store');
+    res.send(pdf);
+  } catch (err) {
+    if (err instanceof ProbationError) return res.status(err.status).json({ error: err.message });
+    console.error('[ProbationReviews] letter', err);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 export default router;

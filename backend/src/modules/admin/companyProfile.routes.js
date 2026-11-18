@@ -22,24 +22,6 @@ const normState = (s) => String(s || '').toLowerCase()
 const MAX_LEN = { gstin: 15, pan: 10, tan: 10, cin: 21, phone: 20, pincode: 10, city: 100, state: 100, country: 100, email: 255, website: 255, name: 255 };
 const LABEL   = { gstin: 'GSTIN', pan: 'PAN', tan: 'TAN', cin: 'CIN', phone: 'Phone', pincode: 'Pincode', city: 'City', state: 'State', country: 'Country', email: 'Email', website: 'Website', name: 'Company name' };
 
-// Ensure companies table has all required columns
-(async () => {
-  try {
-    await pool.query(`
-      ALTER TABLE companies
-        ADD COLUMN IF NOT EXISTS gstin      VARCHAR(15),
-        ADD COLUMN IF NOT EXISTS pan        VARCHAR(10),
-        ADD COLUMN IF NOT EXISTS tan        VARCHAR(10),
-        ADD COLUMN IF NOT EXISTS cin        VARCHAR(21),
-        ADD COLUMN IF NOT EXISTS logo_url   TEXT,
-        ADD COLUMN IF NOT EXISTS phone      VARCHAR(20),
-        ADD COLUMN IF NOT EXISTS email      VARCHAR(255),
-        ADD COLUMN IF NOT EXISTS website    VARCHAR(255),
-        ADD COLUMN IF NOT EXISTS pincode    VARCHAR(10)
-    `);
-  } catch (e) { console.error('[companyProfile] migration error:', e.message); }
-})();
-
 // GET /company-profile — admin/finance roles only (contains PAN, TAN, GSTIN, CIN)
 router.get('/', allowRoles(...READ_ROLES), async (req, res) => {
   try {

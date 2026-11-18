@@ -377,7 +377,7 @@ router.post('/gdpr/purge/:userId', async (req, res) => {
       UPDATE employees SET
         first_name=$1, last_name='', company_email=$2, personal_email=NULL,
         phone=NULL, pan_number=NULL, aadhaar_number=NULL,
-        account_number=NULL, ifsc_code=NULL, bank_name=NULL,
+        account_number=NULL, ifsc_code=NULL, bank_name=NULL, account_holder_name=NULL,
         emergency_name=NULL, emergency_phone=NULL, emergency_relationship=NULL,
         current_address=NULL, permanent_address=NULL
       WHERE id=$3 AND ($4::int IS NULL OR company_id = $4)
@@ -385,6 +385,13 @@ router.post('/gdpr/purge/:userId', async (req, res) => {
     if (empRes.rowCount !== 1) {
       throw Object.assign(new Error(`expected 1 employee row, updated ${empRes.rowCount}`), { purgeStep: step });
     }
+    // Bank-detail change requests carry the same numbers and the proof files' paths (§267).
+    step = 'anonymise_bank_requests';
+    await client.query(`
+      UPDATE employee_bank_change_requests SET
+        proposed_account_number=NULL, proposed_ifsc_code=NULL, proposed_bank_name=NULL, proposed_branch_name=NULL,
+        proposed_account_holder_name=NULL, proof_cheque_file=NULL, proof_statement_file=NULL
+      WHERE employee_id=$1`, [target.id]);
 
     // The login to anonymise is the one LINKED to this employee
     // (users.employee_id) — not whichever account's email equals the company

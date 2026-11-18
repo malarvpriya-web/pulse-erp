@@ -157,9 +157,8 @@ async function anonymise(candidate) {
               tags                = '[]'::jsonb,
               expected_ctc        = NULL,
               current_salary      = NULL,
-              expected_salary     = NULL,
-              first_name          = NULL,
-              last_name           = NULL,
+              -- (first_name / last_name were dropped 2026-11-18 — they were never
+              -- filled; full_name above is the name.)
               anonymised_at       = NOW(),
               updated_at          = NOW()
         WHERE id = $1`,

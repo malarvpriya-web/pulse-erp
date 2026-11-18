@@ -400,16 +400,20 @@
 /* ── Slide-in drawer ─────────────────────────────────────────── */
 .atd-drawer {
   position: fixed;
-  right: 0;
-  top: 0;
-  height: 100%;
+  
+  
+  
   width: 420px;
   background: #fff;
   z-index: 101;
   display: flex;
   flex-direction: column;
-  box-shadow: -4px 0 20px rgba(0, 0, 0, 0.12);
-  animation: atd-slide-in 0.25s ease;
+  box-shadow: 0 20px 60px rgba(0,0,0,.18);
+  /* centered dialog (was a right-side drawer) */
+  top: 50%; left: 50%; transform: translate(-50%, -50%);
+  max-width: calc(100vw - 32px); max-height: calc(100vh - 48px);
+  border-radius: 12px; overflow: hidden;
+  animation: pulse-dialog-fade .18s ease-out;
 }
 
 .atd-drawer-hd {

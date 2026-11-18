@@ -4,6 +4,7 @@ import pool from '../../config/db.js';
 import { logAudit } from '../../services/AuditService.js';
 import { initOnboardingChecklist } from './onboarding.service.js';
 import { employeeOf } from '../../shared/scope.js';
+import { rolesOf } from '../../middlewares/auth.middleware.js';
 import {
   readScope, isHrRecordUser, isLineManager, managesEmployee, parseEmployeeId,
 } from '../../shared/employeeAccess.js';
@@ -33,7 +34,10 @@ async function employeeInScope(companyId, empId) {
   return rows.length > 0;
 }
 
-const isHR = (req) => HR_ROLES.some(r => r.toLowerCase() === String(req.user?.role || '').toLowerCase());
+// Every role the caller holds counts, not only the primary one (HR audit
+// 2026-11-16, B4 / 11-03 F-16: a second role was invisible here).
+const HR_ROLE_SET = new Set(HR_ROLES.map(r => r.toLowerCase()));
+const isHR = (req) => rolesOf(req).some(r => HR_ROLE_SET.has(r));
 
 function requireHR(req, res) {
   if (!isHR(req)) { res.status(403).json({ message: 'Only HR can manage the onboarding checklist' }); return false; }
@@ -307,7 +311,7 @@ router.get('/progress/:employee_id', async (req, res) => {
 
 /* ─── POST /onboarding/progress/:employee_id/init ───────────── */
 router.post('/progress/:employee_id/init', async (req, res) => {
-  if (!HR_ROLES.includes(req.user?.role)) return res.status(403).json({ message: 'Forbidden' });
+  if (!isHR(req)) return res.status(403).json({ message: 'Forbidden' });
   const empId = parseInt(req.params.employee_id, 10);
   const companyId = cid(req);
   try {
@@ -320,7 +324,7 @@ router.post('/progress/:employee_id/init', async (req, res) => {
 
 /* ─── PATCH /onboarding/progress/:employee_id/item ──────────── */
 router.patch('/progress/:employee_id/item', async (req, res) => {
-  if (!HR_ROLES.includes(req.user?.role)) return res.status(403).json({ message: 'Forbidden' });
+  if (!isHR(req)) return res.status(403).json({ message: 'Forbidden' });
   const empId = parseInt(req.params.employee_id, 10);
   const { category, item_label, done, notes, assignee } = req.body;
   if (!category || !item_label) return res.status(400).json({ message: 'category and item_label required' });
@@ -380,7 +384,7 @@ router.patch('/progress/:employee_id/item', async (req, res) => {
 
 /* ─── GET /onboarding/pending — list employees with incomplete onboarding ── */
 router.get('/pending', async (req, res) => {
-  if (!HR_ROLES.includes(req.user?.role)) return res.status(403).json({ message: 'Forbidden' });
+  if (!isHR(req)) return res.status(403).json({ message: 'Forbidden' });
   const companyId = cid(req);
   try {
     const cidClause = companyId != null ? 'AND e.company_id = $1' : '';

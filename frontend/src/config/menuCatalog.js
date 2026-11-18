@@ -83,19 +83,26 @@ export const EMPLOYEE_RESTRICTED_SECTIONS = new Set([
 
 export const EMPLOYEE_SELF_SERVICE_PAGES = new Set([
   // HR ('Announcements' intentionally excluded — disabled for employee self-service)
-  'Policies', 'Downloads', 'EmployeeSelfService',
+  // (EmployeeSelfService removed 2026-11-11 — its route only redirects now.)
+  // ('Policies', 'Downloads' removed 2026-11-11 with the Employee Records hub
+  // they are tabs of — see below.)
   // 'EmployeeDashboard' — the personal dashboard (punch, payslip, leave
   // balance, tasks). It is the most self-service page in the HR menu; it only
   // ever showed the caller's own record.
   'EmployeeDashboard',
+  // My Details (2026-11-11): the employee's own record, read-only.
+  'MyEmployeeRecord',
+  // My Gate Passes (2026-11-12, §272): own passes and own visitors only.
+  'MyGatePasses',
   // EmployeeDocuments is NOT here (§207): it is HR's register, gated on
-  // employee_documents; an employee's own documents are the Self Service vault.
-  'EmployeeAssets', 'SkillMatrix',
-  // The hub that now carries Documents / Assets / Policies / HR Documents
-  // (2026-09-16 IA pass). The four pages stay listed above: TabHub filters its
-  // own tabs through canRoleOpenPage, which reads this very set, so listing the
-  // hub alone would render it with no tabs at all for an employee.
-  'EmployeeRecords',
+  // employee_documents; HR files an employee's documents there.
+  // Employee Records (EmployeeRecords hub + its EmployeeAssets / Policies /
+  // Downloads tabs) REMOVED for employees 2026-11-11, owner's instruction: the
+  // HR menu is My Dashboard + My Details only. My Details already carries the
+  // employee's own Documents and Assets tabs, and Home shows Policies to every
+  // role, so nothing an employee needs lived only in that hub.
+  // (SkillMatrix used to be listed here too; it is in Learning Center, which is
+  // not a restricted section, so this list never governed it.)
   // (EmployeeDirectory used to be listed here because it sat inside the HR menu.
   // It is now its own section, granted through ROLE_SECTION_ALLOWLIST below, so
   // this self-service list no longer governs it.)
@@ -112,13 +119,20 @@ export const EMPLOYEE_SELF_SERVICE_PAGES = new Set([
   'MyTravel', 'TravelExpenseCenter', 'TravelVisits',
   // Trip expense register, self-service alongside ExpenseClaims.
   'TravelExpenses',
-  // Attendance
-  'AttendanceDashboard', 'QRAttendance', 'ShiftCalendar',
-  // Leaves
-  'MyLeaves', 'ApplyLeave', 'LeaveCalendar', 'HolidayCalendar',
-  'CompOff', 'LeaveEncashment',
-  // Timesheets
-  'MyTimesheet', 'MyAnalytics',
+  // Attendance — My Attendance only (2026-11-11, owner's instruction).
+  //   QRAttendance: a second punch method beside My Attendance's own punch;
+  //     only seed QR codes exist. ShiftCalendar: no real shifts are set up
+  //     (hr_shift_assignments holds SEED/QA rows only). Re-add either if the
+  //     company starts using QR punch points or rotating shifts.
+  'AttendanceDashboard',
+  // Leaves — LeaveCalendar removed: GET /leaves/calendar returns the whole
+  //   company's leave (names + leave types), not the caller's. LeaveEncashment
+  //   removed: it is HR's processing screen (employee picker, TDS), not a
+  //   request form. CompOff removed too (owner, later on 2026-11-11: not needed).
+  'MyLeaves', 'ApplyLeave', 'HolidayCalendar',
+  // Timesheets — MyAnalytics removed: hours/leave/travel charts that repeat
+  //   My Timesheet and My Dashboard.
+  'MyTimesheet',
   // Performance ('TeamPerformance'/'PerformanceSettings'/'OKRManagement'/
   // 'KRAManagement'/'ReviewCycleManager'/'CalibrationCenter'/'IncrementPlanning'/
   // 'PromotionPlanning'/'PerformanceReports' intentionally excluded — manager/HR-only)
@@ -241,11 +255,17 @@ export const MANAGER_ANALYTICS_SCOPED_PAGES = new Set(['ExecutiveDashboard']);
 // on their own punch clock and payslips the moment the page got an HR row.
 // (EmployeeDirectory was the other entry; it left the HR menu on 2026-10-20 and
 // is now its own section, so this scoping no longer needs to name it.)
-// 'EmployeeSelfService' for the same reason (2026-10-29): it is the manager's
-// own IT declarations, documents, claims and profile — a manager is an
-// employee too, and was refused the only screen that files them. The backend
-// resolves every call there to the caller's own record.
-export const MANAGER_HR_SCOPED_PAGES = new Set(['EmployeeDashboard', 'EmployeeSelfService']);
+// ('EmployeeSelfService' was the other entry until the page was removed on
+// 2026-11-11 — HR and Finance now make those changes for the employee.)
+export const MANAGER_HR_SCOPED_PAGES = new Set(['EmployeeDashboard', 'MyEmployeeRecord', 'MyGatePasses']);
+
+// ── Security / Gate Desk (§273, migration 20261112000004) ─────────────────
+// The role holds the 'HR' section ONLY for the gate register and its own
+// self-service rows — never Payroll, Probation, Exit or the HR registers.
+export const SECURITY_HR_SCOPED_PAGES = new Set(['GatePassVisitors', 'EmployeeDashboard', 'MyEmployeeRecord', 'MyGatePasses']);
+export function canSecurityAccessPage(page) {
+  return getSectionForPage(page) !== 'HR' || SECURITY_HR_SCOPED_PAGES.has(page);
+}
 
 // True if the manager role may render `page`. Mirrors canHrAccessPage/
 // canFinanceAccessPage above.
@@ -307,10 +327,11 @@ export function canRoleAccessSuperAdminPage(role, page) {
 // separately (super_admin sees all; admin sees all except SUPER_ADMIN_ONLY).
 // Section names must match NAV_ITEMS `name` values exactly.
 //
-// 'Employee Directory' (2026-10-20) is granted to exactly the six roles that
+// 'Employee Directory' (2026-10-20) was granted to exactly the six roles that
 // held 'HR' when the phonebook was a row inside it — manager, hr, employee,
 // hr_manager, hr_exec, payroll_admin — so moving it out of HR neither revoked
 // nor widened anyone's access. department_head never had it and still does not.
+// employee lost it on 2026-11-11 (see the employee entry below).
 export const ROLE_SECTION_ALLOWLIST = {
   // 'Analytics & AI' is scoped to the Executive Dashboard only — see
   // MANAGER_ANALYTICS_SCOPED_PAGES / canManagerAccessPage above.
@@ -398,10 +419,12 @@ export const ROLE_SECTION_ALLOWLIST = {
   // Reporting Manager" panel from non-HR roles, so both are safe self-service
   // reads for employee too (2026-07-28, closing the gap a stale pasted
   // UX-audit note flagged — see project_nav_module_gating_audit memory).
+  // 'Employee Directory' REMOVED for employee 2026-11-11 (owner's instruction):
+  // a colleague list is not something every employee needs; Org Chart already
+  // shows who is where.
   employee: [
     'Home', 'Attendance', 'Leaves', 'Travel Desk', 'Service Desk', 'HR',
     'Timesheets', 'QR Codes', 'Performance', 'Notifications', 'Org Chart',
-    'Employee Directory',
   ],
   // Phase-42 granular HR seats (20260529000001_phase42_security_roles.js).
   // Scoped from what role_permissions actually grants each code: hr_manager
@@ -577,6 +600,11 @@ export const ROLE_SECTION_ALLOWLIST = {
     'Home', 'Inventory', 'Procurement', 'Reports',
     'Notifications', 'Org Chart', 'QR Codes', 'Asset Register',
   ],
+  // Security / Gate Desk (§273): the gate register under HR (scoped by
+  // canSecurityAccessPage) and Approvals for visitor entry.
+  security: [
+    'Home', 'Approvals', 'HR', 'Notifications', 'Org Chart', 'QR Codes',
+  ],
   // Phase-42 granular production seats. production_manager holds FULL
   // production+bom (bom has no top-level section), view/add/edit/approve/
   // export engineering, view/add/edit/delete/approve quality, view-only
@@ -699,10 +727,20 @@ export function canRoleSeeSection(role, sectionName) {
 export const PERSONAL_PAGES = new Set([
   'ProfileSettings', 'UserPreferences', 'NotificationCenter', 'MyRequests', 'ApprovalCenter',
   'EmployeeDashboard',
-  // NOT 'EmployeeSelfService' (management decision, 2026-10-29, §202): the
-  // portal is for the roles that hold the HR menu, by menu AND by URL, so it is
-  // governed by the section allowlist like any HR row. The server enforces the
-  // same boundary with the self_service grant, seeded for exactly those roles.
+  // My Payslip (2026-11-11). Its only menu row is Finance → My Payslip, and
+  // most roles hold no 'Finance' section, so every employee was refused their
+  // own payslip (reported 2026-10-28) and My Dashboard's payslip links opened
+  // Access Denied. The server already limits a self-service caller to their own
+  // RELEASED payslips (payroll.routes.js ownPayslipOrForbidden), so opening the
+  // page grants nothing beyond that.
+  'PayslipViewer',
+  // My Details (2026-11-11): every employee reads their own record, whatever
+  // menus their role holds; /home/my-record only ever returns the caller's own.
+  'MyEmployeeRecord',
+  // My Gate Passes (§272): the gate-pass notifications link here for every
+  // role; the API returns only the caller's own passes and visitors.
+  'MyGatePasses',
+  // (EmployeeSelfService was never here and is gone since 2026-11-11.)
   // A mentor can sit in any department and any role. The route is open to every
   // role; the API admits only the intern's current mentor, and the page tells
   // anyone else it is for assigned mentors. The menu entry is drawn only for a
@@ -712,6 +750,10 @@ export const PERSONAL_PAGES = new Set([
   // admits only the review's assigned head, and the page shows anyone else a
   // notice. The menu entry is `probationReviewerOnly` (Sidebar.jsx).
   'MyProbationReviews',
+  // Interviewers and panel members, whatever their role: the API returns only
+  // interviews the caller is on (lead or panel). No menu row — the bell and
+  // Home's My Pending Approvals (Approval Center `ivfb`) link here.
+  'MyInterviews',
   // The reader's side of HR Announcements — where the bell sends every role.
   // GET /announcements/active returns only the caller's company and audience, so
   // opening the page grants nothing; it is NOT the HR administration page
@@ -758,6 +800,7 @@ export function canRoleOpenPage(role, page, { menuAccess } = {}) {
   if ((role === 'finance' || role === 'finance_manager' || role === 'accounts_exec') && !canFinanceAccessPage(page)) return false;
   if (role === 'hr_exec' && !canHrExecAccessPage(page)) return false;
   if (role === 'manager' && !canManagerAccessPage(page)) return false;
+  if (role === 'security' && !canSecurityAccessPage(page)) return false;
   if (!canRoleAccessAdminOnlyPage(role, page)) return false;
   if (!canRoleAccessSuperAdminPage(role, page)) return false;
   if (!canRoleAccessPageBySection(role, page)) return false;
@@ -816,6 +859,7 @@ export function canRenderPage(role, page, { route, menuAccess, hasPermission } =
   if (financeRole && !granted && !canFinanceAccessPage(page)) return false;
   if (role === 'hr_exec' && !granted && !canHrExecAccessPage(page)) return false;
   if (role === 'manager' && !granted && !canManagerAccessPage(page)) return false;
+  if (role === 'security' && !granted && !canSecurityAccessPage(page)) return false;
   if (!canRoleAccessAdminOnlyPage(role, page)) return false;
   if (!canRoleAccessSuperAdminPage(role, page)) return false;
   if (!canRoleAccessPageBySection(role, page)) return false;
@@ -862,6 +906,8 @@ export const PAYROLL_HUB_PAGES = {
   PayrollSettings:  { tab: 'settings' },
   PayrollForm16:    { tab: 'statutory', view: 'form16' },
   PayrollForm24Q:   { tab: 'statutory', view: 'form138' },
+  // §265: the reviewer screen is a Payroll Center view now; the view needs its own grant.
+  ITDeclarationReview: { tab: 'statutory', view: 'declarations', grant: ['it_declarations', 'view'] },
 };
 
 /** The hub URL for a consolidated payroll page, or null when the viewer stays on the page. */
@@ -869,5 +915,9 @@ export function payrollHubRedirect(role, page, { route, menuAccess, hasPermissio
   const target = PAYROLL_HUB_PAGES[page];
   if (!target || !route) return null;
   if (!canRenderPage(role, PAYROLL_HUB_PAGE, { route, menuAccess, hasPermission })) return null;
-  return `/${PAYROLL_HUB_PAGE}?${new URLSearchParams(target).toString()}`;
+  const { grant, ...params } = target;
+  // A view with its own grant: only its holders are sent there; anyone else
+  // keeps the old page's outcome (never a redirect to a section they can't see).
+  if (grant && !(typeof hasPermission === 'function' && hasPermission(grant[0], grant[1]))) return null;
+  return `/${PAYROLL_HUB_PAGE}?${new URLSearchParams(params).toString()}`;
 }

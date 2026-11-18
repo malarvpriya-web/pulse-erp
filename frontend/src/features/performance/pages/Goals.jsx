@@ -4,6 +4,7 @@ import { Plus, Target, X, TrendingUp, CheckCircle, AlertTriangle, Clock, Zap, Ed
 import './Goals.css';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import { useAuth } from '@/context/AuthContext';
 
 const EMPTY_FORM = {
   goal_title: '', goal_description: '', target_value: '', achieved_value: '0',
@@ -20,6 +21,30 @@ const TAB_FILTERS = [
   { key: 'draft',    label: 'Draft' },
 ];
 
+// A worked example, shown on request while the employee has no goals of their
+// own (owner, 2026-11-11: "add sample KPIs to understand the page"). Rendered
+// only in the browser — never saved, never read by reviews. Four KPIs whose
+// weightages add up to 100, one in each status the page tracks. Status follows
+// the server's check-in rule: 100 % → achieved, under 30 % → at risk.
+const inDays = (n) => {
+  const d = new Date(); d.setDate(d.getDate() + n);
+  return d.toISOString().slice(0, 10);
+};
+const EXAMPLE_GOALS = [
+  { id: 'ex-1', goal_title: 'Deliver project milestones on time', category: 'Delivery', priority: 'High',
+    goal_description: 'Milestones completed by their planned date this quarter.',
+    target_value: 12, achieved_value: 9, unit: 'milestones', weightage: 40, status: 'active', due_date: inDays(60) },
+  { id: 'ex-2', goal_title: 'Customer issues resolved within SLA', category: 'Quality', priority: 'High',
+    goal_description: 'Share of service tickets closed inside the agreed response time.',
+    target_value: 95, achieved_value: 88, unit: '%', weightage: 25, status: 'active', due_date: inDays(60) },
+  { id: 'ex-3', goal_title: 'Enquiries converted to orders', category: 'Sales', priority: 'Medium',
+    goal_description: 'New enquiries that became confirmed orders.',
+    target_value: 10, achieved_value: 2, unit: 'orders', weightage: 20, status: 'at_risk', due_date: inDays(45) },
+  { id: 'ex-4', goal_title: 'Complete product & safety training', category: 'Learning', priority: 'Low',
+    goal_description: 'Mandatory courses finished and passed.',
+    target_value: 4, achieved_value: 4, unit: 'courses', weightage: 15, status: 'achieved', due_date: inDays(30) },
+];
+
 function pct(g) {
   const t = Number(g.target_value || 1);
   const a = Number(g.achieved_value || g.progress_pct || 0);
@@ -31,7 +56,7 @@ function ringColor(p) {
   return p >= 100 ? '#10b981' : p >= 70 ? '#4338ca' : p >= 30 ? '#7c5cf0' : '#ef4444';
 }
 
-function GoalCard({ goal, onCheckin, onEdit, onDelete }) {
+function GoalCard({ goal, onCheckin, onEdit, onDelete, example = false, onUseTemplate, canManage = false }) {
   const p = pct(goal);
   const color = ringColor(p);
   const r = 22, circ = 2 * Math.PI * r;
@@ -45,6 +70,7 @@ function GoalCard({ goal, onCheckin, onEdit, onDelete }) {
       <div className="gl-card-top">
         <div className="gl-card-title">{goal.goal_title || goal.title}</div>
         <div className="gl-card-badges">
+          {example && <span className="gl-badge gl-badge-example">Example</span>}
           {goal.priority && <span className={`gl-badge ${priorityClass}`}>{goal.priority}</span>}
           {goal.category && <span className="gl-badge gl-badge-cat">{goal.category}</span>}
         </div>
@@ -67,6 +93,7 @@ function GoalCard({ goal, onCheckin, onEdit, onDelete }) {
         <div className="gl-progress-info">
           <div className="gl-progress-nums">
             <strong>{goal.achieved_value ?? goal.current_value ?? 0}</strong> / {goal.target_value || 0} {goal.unit || ''}
+            {goal.weightage != null && <span className="gl-weight"> · weight {Number(goal.weightage)}%</span>}
           </div>
           <div className="gl-prog-track">
             <div className="gl-prog-fill" style={{ width: `${p}%`, background: color }} />
@@ -81,17 +108,28 @@ function GoalCard({ goal, onCheckin, onEdit, onDelete }) {
           </span>
         )}
       </div>
+      {example ? (
+        <div className="gl-card-actions">
+          <button className="gl-btn-edit-v2" onClick={() => onUseTemplate(goal)}>
+            <Plus size={11} /> Use as template
+          </button>
+        </div>
+      ) : (
       <div className="gl-card-actions">
         <button className="gl-btn-checkin" onClick={() => onCheckin(goal)}>
           <Zap size={11} /> Check In
         </button>
-        <button className="gl-btn-edit-v2" onClick={() => onEdit(goal)}>
-          <Edit2 size={11} /> Edit
-        </button>
-        <button className="gl-btn-del" onClick={() => onDelete(goal.id)}>
-          <Trash2 size={13} />
-        </button>
+        {/* Goals are set by the manager: only they edit or delete (2026-11-11). */}
+        {canManage && (<>
+          <button className="gl-btn-edit-v2" onClick={() => onEdit(goal)}>
+            <Edit2 size={11} /> Edit
+          </button>
+          <button className="gl-btn-del" onClick={() => onDelete(goal.id)} aria-label="Delete goal">
+            <Trash2 size={13} />
+          </button>
+        </>)}
       </div>
+      )}
     </div>
   );
 }
@@ -110,6 +148,21 @@ export default function Goals() {
   const [ciSaving,  setCiSaving]  = useState(false);
   const [toast,     setToast]     = useState(null);
   const [pendingHandleDelete, setPendingHandleDelete] = useState(null);
+  const [showExample, setShowExample] = useState(false);
+  // The worked example is for the super admin setting the page up, not for
+  // employees (owner, 2026-11-11). Employees see their own goals only.
+  const { hasAnyRole } = useAuth();
+  const canSeeExample = hasAnyRole('super_admin');
+  // Goals are set by the manager (owner, 2026-11-11). `team` = the people the
+  // caller sets goals for (direct reports; HR / admin: everyone). `viewing` =
+  // whose goals are shown: null = my own.
+  const [team, setTeam] = useState([]);
+  const [viewing, setViewing] = useState(null);
+  const isManager = team.length > 0;
+  const viewingMember = viewing != null ? team.find(m => String(m.id) === String(viewing)) : null;
+  useEffect(() => {
+    api.get('/performance/my-team').then(r => setTeam(Array.isArray(r.data) ? r.data : [])).catch(() => setTeam([]));
+  }, []);
 
   const showToast = (msg, type = 'success') => {
     setToast({ msg, type });
@@ -118,15 +171,15 @@ export default function Goals() {
 
   const load = useCallback(() => {
     setLoading(true);
-    api.get('/performance/goals')
+    api.get('/performance/goals', { params: viewing != null ? { employee_id: viewing } : {} })
       .then(r => setGoals(Array.isArray(r.data) ? r.data : []))
       .catch(() => setGoals([]))
       .finally(() => setLoading(false));
-  }, []);
+  }, [viewing]);
 
   useEffect(() => { load(); }, [load]);
 
-  const openCreate = () => { setEditGoal(null); setForm(EMPTY_FORM); setShowForm(true); };
+  const openCreate = () => { setEditGoal(null); setForm({ ...EMPTY_FORM, employee_id: viewing != null ? String(viewing) : '' }); setShowForm(true); };
   const openEdit   = (g) => {
     setEditGoal(g);
     setForm({
@@ -147,6 +200,7 @@ export default function Goals() {
 
   const handleSave = async () => {
     if (!form.goal_title) return;
+    if (!editGoal && !form.employee_id) { showToast('Choose the team member this goal is for', 'error'); return; }
     setSaving(true);
     try {
       const payload = {
@@ -164,7 +218,7 @@ export default function Goals() {
       }
       setShowForm(false);
       load();
-    } catch { showToast('Failed to save goal', 'error'); }
+    } catch (e) { showToast(e?.response?.data?.error || 'Failed to save goal', 'error'); }
     finally { setSaving(false); }
   };
 
@@ -193,15 +247,30 @@ export default function Goals() {
     finally { setCiSaving(false); }
   };
 
-  const counts = {
-    all:      goals.length,
-    active:   goals.filter(g => g.status === 'active').length,
-    achieved: goals.filter(g => g.status === 'achieved').length,
-    at_risk:  goals.filter(g => g.status === 'at_risk').length,
-    overdue:  goals.filter(g => g.status === 'overdue').length,
-    draft:    goals.filter(g => g.status === 'draft').length,
+  // Super admin only; while it is open it replaces the list, so the example is
+  // never mixed with real goals.
+  const example = canSeeExample && showExample;
+  const list = example ? EXAMPLE_GOALS : goals;
+  const useTemplate = (g) => {
+    setEditGoal(null);
+    setForm({
+      ...EMPTY_FORM,
+      goal_title: g.goal_title, goal_description: g.goal_description, target_value: String(g.target_value),
+      unit: g.unit, category: g.category, priority: g.priority, weightage: String(g.weightage), due_date: g.due_date,
+      employee_id: viewing != null ? String(viewing) : '',
+    });
+    setShowForm(true);
   };
-  const filtered = tab === 'all' ? goals : goals.filter(g => g.status === tab);
+
+  const counts = {
+    all:      list.length,
+    active:   list.filter(g => g.status === 'active').length,
+    achieved: list.filter(g => g.status === 'achieved').length,
+    at_risk:  list.filter(g => g.status === 'at_risk').length,
+    overdue:  list.filter(g => g.status === 'overdue').length,
+    draft:    list.filter(g => g.status === 'draft').length,
+  };
+  const filtered = tab === 'all' ? list : list.filter(g => g.status === tab);
 
   return (
     <PageShell dock={
@@ -209,15 +278,62 @@ export default function Goals() {
         icon={Target}
         eyebrow="Performance"
         title="Goals & KPIs"
-        actions={<button className="plh-cta" onClick={openCreate}>
-          <Plus size={15} /> Add Goal
-        </button>}
+        actions={<>
+          {canSeeExample && (
+            <button className="plh-cta plh-cta--ghost" onClick={() => { setTab('all'); setShowExample(v => !v); }}>
+              {showExample ? 'Hide example' : 'See an example'}
+            </button>
+          )}
+          {isManager && (
+            <button className="plh-cta" onClick={openCreate}>
+              <Plus size={15} /> Add Goal
+            </button>
+          )}
+        </>}
       />
     }>
       {toast && <div className={`gl-toast gl-toast-${toast.type}`}>{toast.msg}</div>}
 
 
       <div className="gl-body">
+        {isManager ? (
+          <div className="gl-viewing">
+            <label htmlFor="gl-viewing">Viewing</label>
+            <select id="gl-viewing" className="gl-select-v2" value={viewing ?? ''}
+              onChange={e => { setShowExample(false); setTab('all'); setViewing(e.target.value === '' ? null : e.target.value); }}>
+              <option value="">My goals</option>
+              {team.map(m => <option key={m.id} value={m.id}>{m.name}{m.designation ? ` — ${m.designation}` : ''}</option>)}
+            </select>
+            <span className="gl-viewing-hint">
+              {viewingMember ? `You set ${viewingMember.name}'s goals: add, edit or delete them here.` : 'Pick a team member to set their goals.'}
+            </span>
+          </div>
+        ) : (
+          <div className="gl-viewing gl-viewing-note">
+            Your goals are set by your manager. Use <b>Check In</b> to record your progress.
+          </div>
+        )}
+        {example && (
+          <div className="gl-example-banner">
+            <div>
+              <strong>Example — not saved.</strong> This is how the page looks with four KPIs.
+              It is shown only to super admins and is on nobody&apos;s record; use any card as a template.
+            </div>
+            <button className="gl-btn-cancel-v2" onClick={() => setShowExample(false)}>Hide example</button>
+          </div>
+        )}
+        {example && (
+          <div className="gl-example-help">
+            <strong>How this page works</strong>
+            <ul>
+              <li><b>Target</b> and <b>Unit</b> say what “done” is — e.g. 12 milestones, 95 %.</li>
+              <li><b>Check In</b> records where you are now; the ring shows progress against the target.</li>
+              <li>Status follows progress: <b>Achieved</b> at 100 %, <b>At risk</b> below 30 %, otherwise <b>On track</b>.</li>
+              <li><b>Weightage</b> is how much each KPI counts in your review; together they should add up to 100 %.</li>
+              <li>Your manager sees these goals in your performance review.</li>
+            </ul>
+          </div>
+        )}
         {/* KPIs */}
         <div className="gl-kpis">
           {[
@@ -255,11 +371,20 @@ export default function Goals() {
         ) : filtered.length === 0 ? (
           <div className="gl-empty">
             <Target size={40} color="#d1d5db" />
-            <p>{goals.length === 0 ? 'No goals set yet' : `No ${tab} goals`}</p>
-            {goals.length === 0 && (
-              <button className="gl-btn-primary" onClick={openCreate} style={{ marginTop: 8 }}>
-                <Plus size={14} /> Set First Goal
-              </button>
+            <p>{list.length === 0 ? 'No goals set yet' : `No ${tab.replace('_', ' ')} goals`}</p>
+            {list.length === 0 && (
+              <div style={{ display: 'flex', gap: 8, marginTop: 8, justifyContent: 'center' }}>
+                {isManager && viewing != null && (
+                  <button className="gl-btn-primary" onClick={openCreate}>
+                    <Plus size={14} /> Set First Goal
+                  </button>
+                )}
+                {canSeeExample && (
+                  <button className="gl-btn-cancel-v2" onClick={() => { setTab('all'); setShowExample(true); }}>
+                    See an example
+                  </button>
+                )}
+              </div>
             )}
           </div>
         ) : (
@@ -268,6 +393,9 @@ export default function Goals() {
               <GoalCard
                 key={g.id}
                 goal={g}
+                example={example}
+                onUseTemplate={useTemplate}
+                canManage={viewing != null}
                 onCheckin={g => { setCheckin(g); setCiVal(String(g.achieved_value || g.current_value || '')); setCiNote(''); }}
                 onEdit={openEdit}
                 onDelete={setPendingHandleDelete}
@@ -276,6 +404,18 @@ export default function Goals() {
           </div>
         )}
       </div>
+
+      {/* The delete button only set pendingHandleDelete — this dialog was never
+          rendered, so a goal could not be deleted (2026-11-11). */}
+      <ConfirmDialog
+        open={pendingHandleDelete != null}
+        title="Delete goal"
+        message="Delete this goal? It will no longer appear in your goals or your review."
+        confirmLabel="Delete"
+        variant="warning"
+        onConfirm={handleDelete}
+        onCancel={() => setPendingHandleDelete(null)}
+      />
 
       {/* Check-in modal */}
       {checkin && (
@@ -322,6 +462,16 @@ export default function Goals() {
               <button className="gl-modal-close" onClick={() => setShowForm(false)}>✕</button>
             </div>
             <div className="gl-modal-body-v2">
+              {!editGoal && (
+                <div className="gl-field">
+                  <label className="gl-label-v2" htmlFor="gl-for">For team member *</label>
+                  <select id="gl-for" className="gl-select-v2" value={form.employee_id || ''}
+                    onChange={e => setForm(f => ({ ...f, employee_id: e.target.value }))}>
+                    <option value="">Choose…</option>
+                    {team.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+                  </select>
+                </div>
+              )}
               <div className="gl-field">
                 <label className="gl-label-v2">Goal Title *</label>
                 <input className="gl-input-v2" placeholder="e.g. Increase revenue by 20%"

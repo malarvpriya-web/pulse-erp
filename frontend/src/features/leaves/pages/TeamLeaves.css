@@ -55,8 +55,8 @@
 .tl-comment   { font-size: 11px; color: #6b7280; max-width: 120px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
 
 /* Drawer */
-.tl-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 1000; display: flex; justify-content: flex-end; }
-.tl-drawer  { width: 440px; max-width: 95vw; background: #fff; display: flex; flex-direction: column; height: 100vh; box-shadow: -8px 0 32px rgba(0,0,0,.12); animation: tl-slide-in .2s ease; }
+.tl-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 1000; display: flex; align-items: center; justify-content: center; padding: 24px; }
+.tl-drawer  { width: 440px; max-width: 95vw; background: #fff; display: flex; flex-direction: column; max-height: calc(100vh - 48px); border-radius: 12px; overflow: auto; box-shadow: 0 20px 60px rgba(0,0,0,.18); animation: pulse-dialog-in .18s ease-out; }
 @keyframes tl-slide-in { from { transform: translateX(100%); } to { transform: translateX(0); } }
 
 .tl-drawer-hd { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid #e5e7eb; }

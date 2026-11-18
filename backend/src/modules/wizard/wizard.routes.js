@@ -4,29 +4,6 @@ import { seedCompanyDefaults } from '../../seeds/defaultSeed.js';
 
 const router = express.Router();
 
-(async () => {
-  try {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS system_wizard (
-        id           INTEGER PRIMARY KEY DEFAULT 1,
-        dismissed    BOOLEAN NOT NULL DEFAULT false,
-        dismissed_at TIMESTAMPTZ,
-        completed    BOOLEAN NOT NULL DEFAULT false,
-        completed_at TIMESTAMPTZ,
-        current_step INTEGER NOT NULL DEFAULT 0,
-        CONSTRAINT system_wizard_single_row CHECK (id = 1)
-      );
-      INSERT INTO system_wizard (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
-    `);
-    // Non-destructive: add current_step to existing installations
-    await pool.query(`
-      ALTER TABLE system_wizard ADD COLUMN IF NOT EXISTS current_step INTEGER NOT NULL DEFAULT 0
-    `);
-  } catch (e) {
-    console.error('[wizard] table init failed:', e.message);
-  }
-})();
-
 async function safeCount(sql, params = []) {
   try {
     const r = await pool.query(sql, params);
@@ -151,7 +128,7 @@ router.get('/progress', async (req, res) => {
         pool.query(`SELECT COUNT(*) FROM holidays WHERE company_id = $1`, [cid]).catch(() => ({ rows: [{ count: '0' }] })),
         pool.query(`SELECT COUNT(*) FROM users WHERE company_id = $1 AND is_active = true`, [cid]).catch(() => ({ rows: [{ count: '0' }] })),
         pool.query(`SELECT COUNT(*) FROM bank_accounts WHERE company_id = $1`, [cid]).catch(() => ({ rows: [{ count: '0' }] })),
-        pool.query(`SELECT COUNT(*) FROM payroll_settings WHERE company_id = $1`, [cid]).catch(() => ({ rows: [{ count: '0' }] })),
+        pool.query(`SELECT COUNT(*) FROM company_settings WHERE company_id = $1 AND module = 'payroll'`, [cid]).catch(() => ({ rows: [{ count: '0' }] })),
         pool.query(`SELECT COUNT(*) FROM leave_types WHERE company_id = $1 AND is_active = true AND deleted_at IS NULL`, [cid]).catch(() => ({ rows: [{ count: '0' }] })),
       ]);
 

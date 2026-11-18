@@ -311,12 +311,16 @@
   -webkit-backdrop-filter: blur(2px); backdrop-filter: blur(2px); z-index: 1001;
 }
 .sq-rev-drawer {
-  position: fixed; top: 0; right: 0; bottom: 0;
-  width: 460px; max-width: 95vw;
+  position: fixed;   
+  width: 460px; 
   background: #fff; display: flex; flex-direction: column;
-  box-shadow: -8px 0 40px rgba(75,45,206,.18);
+  box-shadow: 0 20px 60px rgba(0,0,0,.18);
   z-index: 1002;
-  animation: sq-rev-slide .22s ease;
+  /* centered dialog (was a right-side drawer) */
+  top: 50%; left: 50%; transform: translate(-50%, -50%);
+  max-width: calc(100vw - 32px); max-height: calc(100vh - 48px);
+  border-radius: 12px; overflow: hidden;
+  animation: pulse-dialog-fade .18s ease-out;
 }
 @keyframes sq-rev-slide { from { transform: translateX(100%); } to { transform: translateX(0); } }
 

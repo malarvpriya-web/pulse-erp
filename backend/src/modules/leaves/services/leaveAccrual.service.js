@@ -262,12 +262,20 @@ export async function runMonthlyAccrual({ companyId = null, month, year, runMode
 
   const employees = await accrualEmployees(companyId);
   result.employees = employees.length;
+  // A balance already given up front is not topped up month by month as well: one
+  // given as a whole year (the type was "Yearly credit" earlier in this year), or one
+  // that already holds days but has no monthly credit this year (made before
+  // 2026-11-12 at the full annual quota, or set by hand). Topping those up was the
+  // EL double count — 12 days, then 1 more every month.
+  const yearlyDone = await yearlyClaimed(leaveTypes.map((t) => t.id), y);
+  for (const k of await givenUpFront(leaveTypes.map((t) => t.id), y)) yearlyDone.add(k);
 
   for (const emp of employees) {
     const factor = proRationFactor(emp.joining_date, y, m);
     if (factor <= 0) continue;
 
     for (const lt of leaveTypes) {
+      if (yearlyDone.has(`${emp.id}:${lt.id}`)) { result.skipped++; continue; }
       const days = Number((lt.accrual_days_per_month * factor).toFixed(2));
       if (days <= 0) continue;
       try {
@@ -286,6 +294,132 @@ export async function runMonthlyAccrual({ companyId = null, month, year, runMode
     }
   }
   return result;
+}
+
+// ── How a leave type is credited (Leave Settings → Accrual Type) ──────────────
+//   monthly                 accrual_days_per_month on the 1st of each month
+//   yearly / joining_date   the whole year's annual_quota at once (in January, or on
+//                           joining, pro-rated for the months left in the year)
+//   manual                  annual_quota when the balance row is first made; HR edits it
+// A balance row must NOT start at annual_quota for a monthly type: that was the
+// double count (12 days up front, then 1 more every month on top).
+export const ACCRUAL_YEARLY = 'yearly';
+const YEARLY_KINDS = ['yearly', 'joining_date'];
+
+/** The year's quota pro-rated to the months from joining (part months by day), to half days. */
+export function proRatedQuota(quota, joiningDate, year) {
+  const q = Number(quota) || 0;
+  if (q <= 0) return 0;
+  let months = 0;
+  for (let m = 1; m <= 12; m += 1) months += proRationFactor(joiningDate, year, m);
+  return Math.round(((q * months) / 12) * 2) / 2;
+}
+
+/** The days a NEW balance row starts with. */
+export function openingAllocation(leaveType, joiningDate, year) {
+  const kind = leaveType?.accrual_type || 'manual';
+  if (kind === 'monthly' || kind === 'quarterly') return 0;
+  if (YEARLY_KINDS.includes(kind)) return proRatedQuota(leaveType.annual_quota, joiningDate, year);
+  return Number(leaveType?.annual_quota) || 0;
+}
+
+/** employee:type pairs already given their whole year for `year`. */
+async function yearlyClaimed(typeIds, year) {
+  if (!typeIds.length) return new Set();
+  const { rows } = await pool.query(
+    `SELECT employee_id, leave_type_id FROM leave_accrual_log
+      WHERE leave_type_id = ANY($1::int[]) AND year = $2 AND accrual_type = $3`,
+    [typeIds, year, ACCRUAL_YEARLY]);
+  return new Set(rows.map((r) => `${r.employee_id}:${r.leave_type_id}`));
+}
+
+/** employee:type pairs whose balance for `year` holds days but has no monthly credit that year. */
+async function givenUpFront(typeIds, year) {
+  if (!typeIds.length) return [];
+  const { rows } = await pool.query(
+    `SELECT lb.employee_id, lb.leave_type_id FROM leave_balances lb
+      WHERE lb.leave_type_id = ANY($1::int[]) AND lb.year = $2
+        AND COALESCE(lb.allocated_days, 0) - COALESCE(lb.carried_forward_days, 0) > 0
+        AND NOT EXISTS (SELECT 1 FROM leave_accrual_log l
+                         WHERE l.employee_id = lb.employee_id AND l.leave_type_id = lb.leave_type_id
+                           AND l.year = $2 AND COALESCE(l.accrual_type, 'monthly') = 'monthly')`,
+    [typeIds, year]);
+  return rows.map((r) => `${r.employee_id}:${r.leave_type_id}`);
+}
+
+/**
+ * Give every employee the year's allowance of each "Yearly credit" leave type, once.
+ * The log row is the lock, as for monthly accrual. A balance row that already exists
+ * for the year is taken as already allocated and is NOT added to (HR may have set
+ * it by hand, or the employee was given it on joining).
+ */
+export async function runYearlyCredit({ companyId = null, year, runMode = 'cron', runBy = null }) {
+  const y = Number(year);
+  if (!Number.isInteger(y) || y < 2000 || y > 2100) {
+    throw Object.assign(new Error('year must be a four-digit year'), { status: 422 });
+  }
+  const { rows: leaveTypes } = await pool.query(
+    `SELECT id, annual_quota, accrual_type FROM leave_types
+      WHERE accrual_type = ANY($2::text[]) AND is_active = true AND deleted_at IS NULL
+        AND annual_quota > 0 AND (company_id IS NULL OR company_id = $1)`,
+    [companyId ?? null, YEARLY_KINDS]);
+  const result = { credited: 0, skipped: 0, failed: 0, leave_types: leaveTypes.length };
+  if (!leaveTypes.length) return result;
+  const employees = await accrualEmployees(companyId);
+  for (const emp of employees) {
+    for (const lt of leaveTypes) {
+      const days = proRatedQuota(lt.annual_quota, emp.joining_date, y);
+      if (days <= 0) continue;
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const { rows: claimed } = await client.query(
+          `INSERT INTO leave_accrual_log
+             (employee_id, leave_type_id, year, month, days_accrued, accrual_type, run_by, run_mode, company_id)
+           VALUES ($1, $2, $3, NULL, $4, $5, $6, $7, $8)
+           ON CONFLICT DO NOTHING RETURNING id`,
+          [emp.id, lt.id, y, days, ACCRUAL_YEARLY, runBy, runMode, companyId]);
+        if (!claimed.length) { await client.query('ROLLBACK'); result.skipped++; continue; }
+        const { rows: made } = await client.query(
+          `INSERT INTO leave_balances (employee_id, leave_type_id, year, allocated_days, used_days)
+           VALUES ($1, $2, $3, $4, 0)
+           ON CONFLICT (employee_id, leave_type_id, year) DO NOTHING RETURNING id`,
+          [emp.id, lt.id, y, days]);
+        // The balance was already there: the claim stays (so monthly accrual will not
+        // top it up) but records that this run added nothing.
+        if (!made.length) await client.query('UPDATE leave_accrual_log SET days_accrued = 0 WHERE id = $1', [claimed[0].id]);
+        await client.query('COMMIT');
+        result.credited++;
+      } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        result.failed++;
+        console.error(`[leaveAccrual] yearly employee ${emp.id} / type ${lt.id} ${y}: ${err.message}`);
+      } finally {
+        client.release();
+      }
+    }
+  }
+  return result;
+}
+
+/**
+ * Bring a company's credits up to date for this year: the yearly allowance, and every
+ * monthly accrual from January to this month that has not been made. The 1st-of-month
+ * job only fires if the server is running at that minute, so a month it missed was
+ * never credited; this catches it up. Safe to run any number of times (the log locks
+ * each period).
+ */
+export async function catchUpAccruals({ companyId = null, today = new Date(), runMode = 'catch_up' }) {
+  const parts = new Intl.DateTimeFormat('en-CA', { timeZone: process.env.APP_TIMEZONE || 'Asia/Kolkata', year: 'numeric', month: '2-digit' })
+    .formatToParts(today).reduce((o, p) => ({ ...o, [p.type]: p.value }), {});
+  const year = Number(parts.year), month = Number(parts.month);
+  const yearly = await runYearlyCredit({ companyId, year, runMode });
+  const monthly = { credited: 0, skipped: 0, failed: 0 };
+  for (let m = 1; m <= month; m += 1) {
+    const r = await runMonthlyAccrual({ companyId, month: m, year, runMode });
+    monthly.credited += r.credited; monthly.skipped += r.skipped; monthly.failed += r.failed;
+  }
+  return { year, month, yearly, monthly };
 }
 
 /**

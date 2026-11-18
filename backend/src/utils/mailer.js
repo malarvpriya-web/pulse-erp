@@ -65,6 +65,11 @@ export async function isEmailConfigured(companyId = null) {
 // other function in this file, it never throws in production — it's a
 // fire-and-forget side effect of create(), same contract as the push mirror, and
 // a delivery failure here must not affect the notification write.
+/** HTML-escape text for the notification email body. */
+export const escapeHtml = (s) => String(s ?? '')
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+
 export async function sendNotificationEmail(toEmail, { title, message, companyId = null }) {
   const mailer = await createTransport(companyId);
   if (!mailer) {
@@ -78,8 +83,8 @@ export async function sendNotificationEmail(toEmail, { title, message, companyId
     text: message || '',
     html: `
       <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;color:#111">
-        <h2 style="color:#7c3aed;margin-bottom:4px">${title || 'Pulse ERP'}</h2>
-        <p style="white-space:pre-wrap">${message || ''}</p>
+        <h2 style="color:#7c3aed;margin-bottom:4px">${escapeHtml(title || 'Pulse ERP')}</h2>
+        <p style="white-space:pre-wrap">${escapeHtml(message || '')}</p>
         <p style="color:#9ca3af;font-size:12px;margin-top:24px">This is an automated message from Pulse ERP. Please do not reply.</p>
       </div>
     `,
@@ -87,7 +92,7 @@ export async function sendNotificationEmail(toEmail, { title, message, companyId
   return { sent: true };
 }
 
-export async function sendPayslipEmail(toEmail, { empName, month, year, periodLabel, gross, netPay, totalDeductions, companyId = null }) {
+export async function sendPayslipEmail(toEmail, { empName, month, year, periodLabel, gross, netPay, totalDeductions, companyId = null, attachments = null }) {
   const mailer = await createTransport(companyId);
   if (!mailer) {
     if (process.env.NODE_ENV === 'production') {
@@ -102,11 +107,12 @@ export async function sendPayslipEmail(toEmail, { empName, month, year, periodLa
   await mailer.transport.sendMail({
     from:    mailer.from,
     to:      toEmail,
+    ...(attachments?.length ? { attachments } : {}),
     subject: `Pulse ERP — Payslip for ${periodLabel}`,
     text: [
       `Dear ${empName},`,
       '',
-      `Please find your payslip details for ${periodLabel} below.`,
+      attachments?.length ? `Your payslip for ${periodLabel} is attached (PDF).` : `Please find your payslip details for ${periodLabel} below.`,
       '',
       `  Gross Pay       : ${fmt(gross)}`,
       `  Total Deductions: ${fmt(totalDeductions)}`,
@@ -120,7 +126,7 @@ export async function sendPayslipEmail(toEmail, { empName, month, year, periodLa
       <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;color:#111">
         <h2 style="color:#7c3aed;margin-bottom:4px">Payslip — ${periodLabel}</h2>
         <p>Dear <strong>${empName}</strong>,</p>
-        <p>Your payslip for <strong>${periodLabel}</strong> is ready.</p>
+        <p>Your payslip for <strong>${periodLabel}</strong> is ready${attachments?.length ? ' and attached to this email as a PDF' : ''}.</p>
         <table style="width:100%;border-collapse:collapse;margin:16px 0">
           <tr style="background:#f5f3ff">
             <td style="padding:10px 14px;font-weight:600">Gross Pay</td>

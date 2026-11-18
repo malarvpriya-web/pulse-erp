@@ -1,3 +1,5 @@
+// First: sets process.env.TZ before anything here builds a Date (see the file).
+import { APP_TIMEZONE, SET_SESSION_TIMEZONE_SQL } from "./timezone.js";
 import pkg from "pg";
 import dotenv from "dotenv";
 dotenv.config();
@@ -86,6 +88,23 @@ const pool = process.env.DATABASE_URL
 pool.on("error", (err) => {
   console.error("Unexpected DB pool error:", err.message);
 });
+
+// Every session runs in the business time zone (config/timezone.js), so
+// CURRENT_DATE and naive-timestamp comparisons mean India time on any host.
+// A client queues queries in order, so this SET runs before the first query
+// of whoever checked the client out.
+//
+// Not sticky behind a TRANSACTION-mode pooler (pgbouncer / Supabase port 6543),
+// where each statement may land on another server session. If you deploy behind
+// one, also set the zone on the database role:
+//   ALTER ROLE <app_login> SET timezone = 'Asia/Kolkata';
+pool.on("connect", (client) => {
+  client.query(SET_SESSION_TIMEZONE_SQL).catch((err) => {
+    console.error(`Could not set session time zone to ${APP_TIMEZONE}:`, err.message);
+  });
+});
+
+export { APP_TIMEZONE };
 
 /**
  * Under vitest, `pool.end()` is a no-op.

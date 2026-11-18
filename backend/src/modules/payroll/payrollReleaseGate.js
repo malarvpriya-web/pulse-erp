@@ -15,6 +15,11 @@
  *   JURISDICTION_UNCONFIRMED / JURISDICTION_MISMATCH / PT_LOCAL_BODY — the
  *                       statutory state (and TN PT local body) is not recorded,
  *                       or an employee resolves to another state
+ *   (TAX_NOT_MODELLED was retired on 2026-11-09: surcharge and the old-regime
+ *    senior-citizen slabs are computed — payrollEngine.computeIncomeTaxDetail)
+ *                       (surcharge above ₹50L, old-regime senior-citizen slabs)
+ *   DRAFT_PREDATES_RULE a rule version that changes figures was recorded after
+ *                       the draft was generated — the draft must be regenerated
  *   RULE_MID_PERIOD     a rule changed INSIDE the wage month (e.g. PF ceiling on
  *                       17-Sep-2026) and the company has not recorded how that
  *                       month is to be treated
@@ -24,7 +29,7 @@
  * approvePayroll() itself against the employee records at approval time.
  */
 import pool from '../shared/db.js';
-import { loadRuleRows, resolveRules, versionsOf, RULE_KEYS, panchayatPtProblems } from './statutoryRules.js';
+import { loadRuleRows, resolveRules, sameValue, versionsOf, RULE_KEYS, COMPANY_SETTING_KEYS, STATE_RULE_GAPS, panchayatPtProblems } from './statutoryRules.js';
 import { stateFromGstin } from '../../shared/gstinStates.js';
 import { normalizePayrollSettings, validatePayCycle } from './payrollSettings.js';
 import { periodStartDate, periodEndDate, getMonthName, normalizeState } from './payrollEngine.js';
@@ -32,6 +37,7 @@ import { periodStartDate, periodEndDate, getMonthName, normalizeState } from './
 const TN_ULB_TYPES = ['municipal_corporation', 'municipality', 'town_panchayat'];
 
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
 
 export async function releaseReadiness({ company_id, month, year, client = pool }) {
   const m = parseInt(month), y = parseInt(year);
@@ -122,14 +128,39 @@ export async function releaseReadiness({ company_id, month, year, client = pool 
     }
   }
 
+  // ── The saved drafts. The rule checks below say the rule is right; these say
+  // the figures in the draft can actually follow it.
+  const { rows: drafts } = await client.query(
+    `SELECT e.office_id, pr.generated_at, pr.tax_regime, pr.annual_taxable_income, e.dob
+       FROM payroll_runs pr JOIN employees e ON e.id = pr.employee_id
+      WHERE e.company_id = $1 AND pr.month = $2 AND pr.year = $3 AND pr.status = 'pending' AND pr.is_test = false`,
+    [company_id ?? 0, m, y]);
+  const generated = drafts.map(d => d.generated_at).filter(Boolean).map(d => new Date(d).getTime());
+  if (generated.length) {
+    const earliest = Math.min(...generated);
+    // What the period's rules were when the draft was computed, against now.
+    const atDraft = resolveRules(end, rows.filter(r => !r.created_at || new Date(r.created_at).getTime() <= earliest)).values;
+    // bonus.statutory feeds a report, not a payslip; bonus.plans does change pay.
+    const keys = RULE_KEYS.filter(k => k !== 'bonus.statutory' && !sameValue(values[k], atDraft[k]));
+    if (keys.length) {
+      blockers.push({ code: 'DRAFT_PREDATES_RULE', keys,
+        message: `${keys.join(', ')} changed after this draft was generated, so its figures do not follow the recorded rule. Regenerate the payroll for ${getMonthName(m)} ${y}.` });
+    }
+  }
+
+  const stateGap = (key) => STATE_RULE_GAPS[key]?.[juris] ?? null;
   for (const key of RULE_KEYS) {
+    if (COMPANY_SETTING_KEYS.includes(key)) continue;
+    // The loan perquisite rule matters only to a payroll with such a loan:
+    // payroll.service.js periodReadiness checks it there.
+    if (key === 'perq.loan') continue;
     const a = applied[key];
     if (a.status === 'decision_required') {
-      blockers.push({ code: 'RULE_DECISION', key, effective_from: a.effective_from, value: values[key], options: a.options,
+      blockers.push({ code: 'RULE_DECISION', key, effective_from: a.effective_from, record_from: a.effective_from, value: values[key], options: a.options,
         message: `${key}: a company decision is required (${(a.options || []).join(' / ')}; current default "${values[key]}"). ${a.evidence || ''}` });
     } else if (a.status !== 'verified') {
-      blockers.push({ code: 'RULE_UNVERIFIED', key, effective_from: a.effective_from, value: values[key],
-        message: `${key} (in force from ${a.effective_from}) is not verified against a primary source. ${a.evidence || ''}` });
+      blockers.push({ code: 'RULE_UNVERIFIED', key, effective_from: a.effective_from, record_from: a.effective_from, value: values[key], state: stateGap(key) ? juris : null,
+        message: `${key} (in force from ${a.effective_from}) is not verified against a primary source. ${stateGap(key) || a.evidence || ''}` });
     }
     // A version that took effect AFTER the first day of the wage month means
     // the month straddles two rules. The engine applies the version in force
@@ -139,7 +170,7 @@ export async function releaseReadiness({ company_id, month, year, client = pool 
     if (mid && a.effective_from > start) {
       const ack = rows.some(r => r.rule_key === key && String(r.effective_from instanceof Date ? r.effective_from.toISOString() : r.effective_from).slice(0, 10) === start && same(r.value, values[key]));
       if (!ack) {
-        blockers.push({ code: 'RULE_MID_PERIOD', key, changed_on: mid.effective_from, value: values[key],
+        blockers.push({ code: 'RULE_MID_PERIOD', key, changed_on: mid.effective_from, record_from: start, value: values[key],
           message: `${key} changed on ${mid.effective_from}, inside ${getMonthName(m)} ${y}. The payroll applies ${JSON.stringify(values[key])} to the whole month. ` +
             `No primary source sets a part-month rule; record the company's treatment (a version of ${key} effective ${start} with the decision reference) before approving. A part-month split is not implemented.` });
       }

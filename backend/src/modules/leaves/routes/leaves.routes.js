@@ -1,6 +1,7 @@
 import express from 'express';
 import pool from '../../../config/db.js';
 import leavesRepository from '../repositories/leaves.repository.js';
+import { openingAllocation } from '../services/leaveAccrual.service.js';
 import { requirePermission, allowRoles } from '../../../middlewares/auth.middleware.js';
 import { validate } from '../../../services/ValidationEngineService.js';
 import { evaluateRules } from '../../../services/RuleEngineService.js';
@@ -798,12 +799,12 @@ router.post('/bulk-allocate', requireLeaveAdmin, requirePermission('leaves', 'ad
   const companyId = req.scope?.company_id ?? null;
   try {
     const { rows: leaveTypes } = await pool.query(`
-      SELECT id, annual_quota FROM leave_types
+      SELECT id, annual_quota, accrual_type FROM leave_types
       WHERE is_active = true AND deleted_at IS NULL
         AND (company_id IS NULL OR company_id = $1)
     `, [companyId]);
     const { rows: employees } = await pool.query(`
-      SELECT id FROM employees
+      SELECT id, to_char(joining_date, 'YYYY-MM-DD') AS joining_date FROM employees
       WHERE LOWER(COALESCE(status,'active')) NOT IN ('left','terminated','resigned','inactive','ex-employee','notice_period')
         AND ($1::integer IS NULL OR company_id = $1)
     `, [companyId]);
@@ -814,7 +815,7 @@ router.post('/bulk-allocate', requireLeaveAdmin, requirePermission('leaves', 'ad
           INSERT INTO leave_balances (employee_id, leave_type_id, year, allocated_days)
           VALUES ($1, $2, $3, $4)
           ON CONFLICT (employee_id, leave_type_id, year) DO NOTHING
-        `, [emp.id, lt.id, allocYear, lt.annual_quota]);
+        `, [emp.id, lt.id, allocYear, openingAllocation(lt, emp.joining_date, allocYear)]);
         count++;
       }
     }
@@ -1473,7 +1474,17 @@ router.put('/applications/:id/status', requirePermission('leaves', 'approve'), h
 
 router.get('/calendar', requirePermission('leaves', 'view'), async (req, res) => {
   try {
-    const calendar = await leavesRepository.getLeaveCalendar({ ...req.query, company_id: req.scope?.company_id ?? null });
+    const filters = { ...req.query, company_id: req.scope?.company_id ?? null };
+    // Company-wide "who is on leave" (names + leave type, e.g. sick leave) is
+    // for the people who plan cover: leave admins and managers. Anyone else
+    // gets only their own approved leave (2026-11-11). Same role set as the
+    // manager/admin checks further down this router.
+    if (!hasRole(req, ...LEAVE_ADMIN_ROLES, 'manager', 'department_head', 'hr_manager')) {
+      const me = await employeeOf(req, pool);
+      if (me == null) return res.json([]);
+      filters.employee_id = me;
+    }
+    const calendar = await leavesRepository.getLeaveCalendar(filters);
     res.json(calendar);
   } catch (error) {
     res.status(500).json({ error: error.message });

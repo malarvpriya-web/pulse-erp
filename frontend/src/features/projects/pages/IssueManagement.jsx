@@ -340,9 +340,9 @@ export default function IssueManagement({ setPage, urlParams }) {
 
       {/* Drawer */}
       {drawer && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 1000, display: 'flex', justifyContent: 'flex-end' }}
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}
           onClick={() => setDrawer(false)}>
-          <div style={{ width: 520, background: 'var(--color-background)', height: '100%', overflowY: 'auto', padding: 24 }}
+          <div style={{ width: 520, background: 'var(--color-background)', maxWidth: '100%', maxHeight: 'calc(100vh - 48px)', borderRadius: 12, boxShadow: '0 20px 60px rgba(0,0,0,.18)', overflowY: 'auto', padding: 24 }}
             onClick={e => e.stopPropagation()}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
               <h3 style={{ margin: 0 }}>{editItem ? 'Edit Issue' : 'Raise Issue'}</h3>

@@ -228,6 +228,8 @@ const EDITABLE = [
   'department', 'designation', 'mentor_employee_id', 'internship_type',
   'start_date', 'end_date', 'status', 'status_reason',
   'stipend', 'stipend_frequency', 'other_benefits', 'notes', 'project_work_area',
+  // Where the stipend is paid (HR audit 2026-11-16, migration 20261116000009).
+  'bank_account_holder', 'bank_name', 'bank_account_number', 'bank_ifsc',
 ];
 // completed_on / certificate_issued / certificate_number are NOT editable here.
 // They are written only by POST /:id/complete and the certificate actions.
@@ -341,6 +343,18 @@ export async function validateIntern(body, companyId, db, current) {
   }
   if (v.stipend_frequency === 'Unpaid' && v.stipend) {
     throw fieldError('stipend', 'An unpaid internship cannot carry a stipend amount.');
+  }
+  // Stipend account. Optional, but checked as payroll checks an employee's:
+  // a stipend cannot be paid into an account that is not well formed.
+  v.bank_account_holder = optional(body.bank_account_holder);
+  v.bank_name = optional(body.bank_name);
+  v.bank_account_number = optional(body.bank_account_number)?.replace(/s+/g, '') ?? null;
+  if (v.bank_account_number && !/^d{9,18}$/.test(v.bank_account_number)) {
+    throw fieldError('bank_account_number', 'Account number: 9 to 18 digits.');
+  }
+  v.bank_ifsc = optional(body.bank_ifsc)?.toUpperCase() ?? null;
+  if (v.bank_ifsc && !/^[A-Z]{4}0[A-Z0-9]{6}$/.test(v.bank_ifsc)) {
+    throw fieldError('bank_ifsc', 'IFSC must look like AAAA0XXXXXX (11 characters, the 5th is zero).');
   }
   v.other_benefits = optional(body.other_benefits);
 

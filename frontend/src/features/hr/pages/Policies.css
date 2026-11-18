@@ -96,9 +96,13 @@
   border: 0;
   border-radius: 8px;
   padding: 8px 12px;
-  background: #0f766e;
+  background: var(--color-primary, #6B3FDB);
   color: #fff;
   cursor: pointer;
+}
+
+.pol-primary-btn:hover:not(:disabled) {
+  background: var(--color-primary-hov, #5B35D5);
 }
 
 .pol-primary-btn:disabled {
@@ -215,7 +219,7 @@
 
 .pol-open-link {
   display: inline-block;
-  color: #0f766e;
+  color: var(--color-primary, #6B3FDB);
   font-weight: 600;
   text-decoration: none;
 }
@@ -264,7 +268,7 @@
   width: 16px;
   height: 16px;
   cursor: pointer;
-  accent-color: #0f766e;
+  accent-color: var(--color-primary, #6B3FDB);
 }
 
 .pol-ack-required-badge {
@@ -295,7 +299,7 @@
 
 .pol-ack-bar-fill {
   height: 100%;
-  background: #0f766e;
+  background: var(--color-success, #16a34a);
   border-radius: 999px;
   transition: width 0.3s;
 }

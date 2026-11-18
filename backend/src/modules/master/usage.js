@@ -65,7 +65,7 @@ export const USAGE = {
   ],
   designations: [
     { table: 'employees',       column: 'designation', label: 'employee' },
-    { table: 'job_offers',      column: 'designation', label: 'job offer' },
+    { table: 'offer_letters',   column: 'designation', label: 'job offer' },
     { table: 'contract_labour', column: 'designation', label: 'contract worker' },
     { table: 'interns',         column: 'designation', label: 'intern' },
   ],

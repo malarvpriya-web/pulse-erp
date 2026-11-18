@@ -5,12 +5,12 @@ import { createRequire } from 'module';
 import pool from '../../config/db.js';
 import { captureBefore } from '../../middlewares/captureBefore.js';
 import { requirePermission, permissionFor, permissionColumn } from '../../middlewares/auth.middleware.js';
-import { companyOf, employeeOf } from '../../shared/scope.js';
+import { companyOf } from '../../shared/scope.js';
 import { CURRENT_STATUSES, sqlList } from '../../shared/employeeStatus.js';
 import { LEAVE_APPROVED } from '../../shared/statusSets.js';
 import { getWeekendDays, dayIsWeekend } from '../../shared/weekend.js';
 import { getFullDayHours, isPeriodFrozen } from '../../shared/attendanceRules.js';
-import { GP_APPROVER_JOIN, approverDecision } from '../../shared/gatePassApprover.js';
+import { blank, listPage, dateRange, positiveIntOrNull } from './listQuery.js';
 
 const router = express.Router();
 const require = createRequire(import.meta.url);
@@ -81,7 +81,6 @@ const attendanceAdd    = requirePermission('attendance', 'add');
 const attendanceAdmin  = requirePermission('attendance', 'edit');
 const attendanceDelete = requirePermission('attendance', 'delete');
 const hrView           = requirePermission('hr', 'view');
-const hrAdd            = requirePermission('hr', 'add');
 const hrEdit           = requirePermission('hr', 'edit');
 
 /**
@@ -113,7 +112,7 @@ const hrEdit           = requirePermission('hr', 'edit');
  * requirePermission. It reuses `permissionFor`, so a user-level override still
  * wins and the per-request permission cache is shared.
  */
-const requireAnyPermission = (grants) => async (req, res, next) => {
+export const requireAnyPermission = (grants) => async (req, res, next) => {
   if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
   try {
     for (const [module, action] of grants) {
@@ -217,7 +216,7 @@ async function testZKDevice(ipAddress, port = 4370) {
  * against a configured 18:00 end. */
 const DEFAULT_TZ = 'Asia/Kolkata';
 
-async function dayRules(companyId, db = pool) {
+export async function dayRules(companyId, db = pool) {
   const out = { tz: DEFAULT_TZ, workStart: '09:00:00', workEnd: '18:00:00', graceMinutes: 0 };
   try {
     const { rows: [s] } = await db.query(
@@ -399,20 +398,6 @@ async function resolveDeviceUser(db, deviceUserId, deviceUserName, companyId) {
   }
   return null;
 }
-
-/* ─── table migrations ───────────────────────────────────────── */
-(async () => {
-  try {
-    await pool.query(`
-      ALTER TABLE biometric_devices ADD COLUMN IF NOT EXISTS company_id           INTEGER;
-      ALTER TABLE biometric_devices ADD COLUMN IF NOT EXISTS vendor               TEXT;
-      ALTER TABLE biometric_devices ADD COLUMN IF NOT EXISTS serial_number        TEXT;
-      ALTER TABLE biometric_devices ADD COLUMN IF NOT EXISTS attendance_direction TEXT DEFAULT 'both';
-      ALTER TABLE gate_passes        ADD COLUMN IF NOT EXISTS company_id INTEGER;
-      ALTER TABLE visitors           ADD COLUMN IF NOT EXISTS company_id INTEGER;
-    `);
-  } catch (e) { console.error('[biometric] migration error:', e.message); }
-})();
 
 /* ─── dev-only: seed sample biometric devices ───
  * Inserted WITHOUT a status or last_sync. The original wrote 'online' and a
@@ -824,41 +809,8 @@ router.get('/biometric/devices/:id/punches', biometricRead, async (req, res) => 
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
-/* ─── shared list-query helpers ──────────────────────────────── */
-const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
-
-/** ?page / ?page_size, clamped. Lists here are paged for real (25 by default). */
-function listPage(query, { size = 25, max = 100 } = {}) {
-  const page = Math.max(1, parseInt(query.page, 10) || 1);
-  const pageSize = Math.min(max, Math.max(1, parseInt(query.page_size, 10) || size));
-  return { page, pageSize, offset: (page - 1) * pageSize };
-}
-
-/**
- * ?from / ?to as validated 'YYYY-MM-DD' strings. Returns { error } for a
- * malformed or backwards range rather than letting Postgres 500 on the cast.
- */
-function dateRange(query) {
-  const out = {};
-  for (const k of ['from', 'to']) {
-    const v = blank(query[k]);
-    if (v === null) continue;
-    const s = String(v);
-    const d = new Date(`${s}T00:00:00Z`);
-    if (!ISO_DATE.test(s) || isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== s) {
-      return { error: `${k} must be a date in YYYY-MM-DD format` };
-    }
-    out[k] = s;
-  }
-  if (out.from && out.to && out.from > out.to) return { error: 'from must be on or before to' };
-  return out;
-}
-
-const positiveIntOrNull = (v) => {
-  const s = blank(v);
-  if (s === null) return null;
-  return /^\d+$/.test(String(s).trim()) && Number(s) >= 1 ? Number(s) : NaN;
-};
+/* Gate passes and visitors: hr/gateAccess.routes.js (§272). The list helpers
+ * (blank, listPage, dateRange, positiveIntOrNull) live in ./listQuery.js. */
 
 /* ─── GET /biometric/logs ─── the Recent Punch Log ─────────────
  *
@@ -1151,523 +1103,6 @@ router.post('/biometric/logs/import', attendanceAdmin, async (req, res) => {
   }
 });
 
-/* ─── gate passes ─────────────────────────────────────────────────
- *
- * Lifecycle (stored `status`):  pending → approved → completed
- *                                  └──────────┴────→ cancelled
- * The page also shows two states that are NOT stored, because they are facts
- * about the clock rather than decisions anyone made:
- *   · expired — valid_to has passed and the pass was neither completed nor
- *     cancelled. The five SEED passes say 'active' with valid_to in Sep/Oct
- *     2026; stored status is left alone and they now READ as expired.
- *   · active  — approved and inside its window (or open-ended). 'approved' is
- *     shown only for an approved pass whose window has not opened yet.
- * Computed in SQL so the status filter and the counts agree with the rows. */
-const GP_EFFECTIVE = `CASE
-    WHEN gp.status = 'cancelled' THEN 'cancelled'
-    WHEN gp.status = 'completed' THEN 'completed'
-    WHEN gp.valid_to IS NOT NULL AND gp.valid_to < NOW() THEN 'expired'
-    WHEN gp.status = 'pending' THEN 'pending'
-    WHEN gp.valid_from IS NOT NULL AND gp.valid_from > NOW() THEN 'approved'
-    ELSE 'active' END`;
-const GP_STATUSES = ['pending', 'approved', 'active', 'expired', 'completed', 'cancelled'];
-
-/* ─── GET /gate-passes ───────────────────────────────────────────
- * Filters: q (pass no., employee name/code, visitor name, reason), status
- * (effective), employee_id, from/to (validity window overlaps the range);
- * paged. `counts` is per effective status over the WHOLE company, unfiltered,
- * for the status chips. */
-router.get('/gate-passes', hrView, async (req, res) => {
-  const companyId = cid(req);
-  const range = dateRange(req.query);
-  if (range.error) return res.status(400).json({ message: range.error });
-  const status = blank(req.query.status);
-  if (status !== null && !GP_STATUSES.includes(String(status))) {
-    return res.status(400).json({ message: `status must be one of ${GP_STATUSES.join(', ')}` });
-  }
-  const employeeId = positiveIntOrNull(req.query.employee_id);
-  if (Number.isNaN(employeeId)) return res.status(400).json({ message: 'employee_id must be a positive integer' });
-  const { page, pageSize, offset } = listPage(req.query);
-  try {
-    const params = [companyId];
-    const where = ['($1::int IS NULL OR gp.company_id = $1)'];
-    const add = (sql, v) => { params.push(v); where.push(sql.replaceAll('$?', `$${params.length}`)); };
-    if (status)     add(`(${GP_EFFECTIVE}) = $?`, status);
-    if (employeeId) add('gp.employee_id = $?', employeeId);
-    if (range.from) add(`COALESCE(gp.valid_to, 'infinity'::timestamptz)::date >= $?::date`, range.from);
-    if (range.to)   add(`COALESCE(gp.valid_from, gp.created_at)::date <= $?::date`, range.to);
-    const q = blank(req.query.q);
-    if (q !== null) {
-      add(`(gp.pass_number ILIKE $? OR e.name ILIKE $? OR e.office_id ILIKE $? OR gp.visitor_name ILIKE $? OR gp.purpose ILIKE $?)`,
-        `%${String(q).trim()}%`);
-    }
-    const from_ = `FROM gate_passes gp
-                   LEFT JOIN employees e ON e.id = gp.employee_id AND e.company_id IS NOT DISTINCT FROM gp.company_id
-                   LEFT JOIN employees a ON a.id = gp.approved_by
-                  WHERE ${where.join(' AND ')}`;
-    const [rowsRes, countRes, countsRes] = await Promise.all([
-      pool.query(
-        `SELECT gp.*, (${GP_EFFECTIVE}) AS effective_status,
-                e.name AS employee_name, e.office_id AS emp_code, e.department,
-                a.name AS approved_by_name,
-                appr.approver_kind, appr.approver_employee_id, appr.approver_name
-           ${from_.replace('WHERE', `${GP_APPROVER_JOIN}
-                  WHERE`)}
-          ORDER BY gp.created_at DESC, gp.id DESC
-          LIMIT ${pageSize} OFFSET ${offset}`, params),
-      pool.query(`SELECT COUNT(*)::int AS n ${from_}`, params),
-      pool.query(
-        `SELECT (${GP_EFFECTIVE}) AS s, COUNT(*)::int AS n FROM gate_passes gp
-          WHERE ($1::int IS NULL OR gp.company_id = $1) GROUP BY 1`, [companyId]),
-    ]);
-    const counts = Object.fromEntries(GP_STATUSES.map(s => [s, 0]));
-    for (const r of countsRes.rows) counts[r.s] = r.n;
-    // Per row: who is awaited, and whether THIS caller may approve or cancel
-    // it — the same rule the approve/cancel routes enforce (§198).
-    const callerEmployeeId = await employeeOf(req, pool);
-    const hrEditCaller = !!(await permissionFor(req, 'hr'))?.[permissionColumn('edit')];
-    const rows = rowsRes.rows.map((r) => {
-      const d = approverDecision(r, { callerEmployeeId, hrEdit: hrEditCaller });
-      const open = r.effective_status === 'pending';
-      return {
-        ...r,
-        can_approve: open && d.ok,
-        can_cancel: ['pending', 'approved', 'active'].includes(r.effective_status) && (hrEditCaller || (open && d.ok)),
-        approver_note: open && !d.ok ? d.reason : null,
-      };
-    });
-    res.json({ rows, total: countRes.rows[0].n, page, page_size: pageSize, counts });
-  } catch (err) { res.status(500).json({ message: err.message }); }
-});
-
-/**
- * Validate a gate-pass payload. Returns a list of field-level messages, the
- * `validateProduct`/`validateProductLine` shape used in admin.routes.js.
- *
- * ⚠⚠ POST /gate-passes validated NOTHING. An empty body inserted a row whose
- * every business column was NULL and answered 201 — not a record of anything,
- * and it is how 114 of 119 rows in this table came to be debris.
- *
- *   · ONE OF `employee_id` / `visitor_name`: a pass must say who it is for.
- *   · `purpose`, `valid_from` and `valid_to` are optional, validated when
- *     supplied; a window must run forwards.
- *   · ⚠ A pass whose `valid_to` has already passed is refused: it would be
- *     created expired, a state no-one can act on. (§197)
- *   · `visitor_name` is varchar(200); over that length Postgres raises and the
- *     route answers 500. A 400 naming the field is the better answer.
- *
- * ⚠⚠ Everything is normalised through `blank()` first, because the form posts
- * '' for every field the user left alone, and '' bound to a timestamptz or int
- * column is not NULL — Postgres rejects it outright.
- */
-const blank = (v) => (v === undefined || v === null || String(v).trim() === '' ? null : v);
-
-function validateGatePass(body) {
-  const errors = [];
-  const employeeId  = blank(body.employee_id);
-  const visitorName = blank(body.visitor_name);
-  const validFrom   = blank(body.valid_from);
-  const validTo     = blank(body.valid_to);
-
-  if (employeeId === null && visitorName === null) {
-    errors.push('employee_id or visitor_name is required — a gate pass must identify who it is for');
-  }
-  // Digits only AND >= 1: `/^\d+$/` alone accepts "0".
-  if (employeeId !== null
-      && (!/^\d+$/.test(String(employeeId).trim()) || Number(String(employeeId).trim()) < 1)) {
-    errors.push('employee_id must be a positive integer');
-  }
-  if (visitorName !== null && String(visitorName).length > 200) {
-    errors.push('visitor_name must be 200 characters or fewer');
-  }
-  if (blank(body.purpose) !== null && String(body.purpose).length > 1000) {
-    errors.push('purpose must be 1000 characters or fewer');
-  }
-  const parsed = {};
-  for (const [field, value] of [['valid_from', validFrom], ['valid_to', validTo]]) {
-    if (value === null) continue;
-    const t = new Date(value);
-    if (isNaN(t.getTime())) errors.push(`${field} must be a valid date/time`);
-    else parsed[field] = t;
-  }
-  if (parsed.valid_from && parsed.valid_to && parsed.valid_to <= parsed.valid_from) {
-    errors.push('valid_to must be after valid_from');
-  } else if (parsed.valid_to && parsed.valid_to <= new Date()) {
-    errors.push('valid_to is already in the past — the pass would be created expired');
-  }
-  return errors;
-}
-
-/* ─── POST /gate-passes ──────────────────────────────────────── */
-router.post('/gate-passes', hrAdd, async (req, res) => {
-  const errors = validateGatePass(req.body ?? {});
-  // `message` carries the first error because BiometricAccess renders
-  // `err.response?.data?.message`; `errors` carries the full list.
-  if (errors.length) return res.status(400).json({ message: errors[0], errors });
-
-  const employee_id  = blank(req.body.employee_id);
-  const visitor_name = blank(req.body.visitor_name);
-  const purpose      = blank(req.body.purpose);
-  const valid_from   = blank(req.body.valid_from);
-  const valid_to     = blank(req.body.valid_to);
-  const companyId = cid(req);
-  try {
-    // ⚠ `employee_id` is a body FK: checked against the caller's company, so a
-    // crafted id cannot read a foreign employee's name back through the list.
-    // Nullable on purpose — a visitor-only pass names no employee.
-    if (employee_id !== null) {
-      const { rows } = await pool.query(
-        'SELECT id FROM employees WHERE id=$1 AND ($2::int IS NULL OR company_id = $2)',
-        [employee_id, companyId]
-      );
-      if (!rows.length) return res.status(404).json({ message: 'Employee not found' });
-    }
-    const { rows } = await pool.query(
-      `INSERT INTO gate_passes (employee_id, visitor_name, purpose, valid_from, valid_to, company_id)
-       VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
-      [employee_id, visitor_name, purpose, valid_from, valid_to, companyId]
-    );
-    res.status(201).json(rows[0]);
-  } catch (err) { res.status(500).json({ message: err.message }); }
-});
-
-/**
- * A conditional transition: UPDATE only when the pass is in an allowed state,
- * and when it is not, say WHICH state it is in (409) — or 404 when it is not
- * the caller's. A plain `WHERE id=$1` UPDATE re-approved approved passes and
- * re-numbered them, and approved cancelled ones.
- */
-async function transitionGatePass(req, res, { setSql, setParams, allowedSql, refuse }) {
-  const companyId = cid(req);
-  const id = positiveIntOrNull(req.params.id);
-  if (!id) return res.status(404).json({ message: 'Gate pass not found' });
-  try {
-    const params = [id, companyId, ...setParams];
-    const { rows } = await pool.query(
-      `UPDATE gate_passes gp SET ${setSql}
-        WHERE gp.id = $1 AND ($2::int IS NULL OR gp.company_id = $2) AND (${allowedSql})
-        RETURNING gp.*, (${GP_EFFECTIVE}) AS effective_status`,
-      params
-    );
-    if (rows.length) return res.json(rows[0]);
-    const { rows: [cur] } = await pool.query(
-      `SELECT (${GP_EFFECTIVE}) AS s FROM gate_passes gp
-        WHERE gp.id = $1 AND ($2::int IS NULL OR gp.company_id = $2)`, [id, companyId]);
-    if (!cur) return res.status(404).json({ message: 'Gate pass not found' });
-    return res.status(409).json({ message: refuse(cur.s), current_status: cur.s });
-  } catch (err) { return res.status(500).json({ message: err.message }); }
-}
-
-/**
- * Who may approve / cancel this pass (shared/gatePassApprover.js, §198).
- *
- * The approve route used to be `hr:edit` — any HR user, for any department.
- * The approver now comes from the pass holder's department: its head, else
- * the employee's reporting manager, else HR. Department heads and managers
- * hold no hr grant (they are not HR-page users), so these two routes are gated
- * on being signed in, and THIS check is the authorization.
- *
- *   approve — the designated approver only; never the pass holder.
- *   cancel  — HR (hr:edit) at any allowed stage; the designated approver too
- *             while the pass is pending, which is how they reject it.
- *
- * A foreign or missing id is 404 before anything else is said about it.
- */
-async function gatePassActor(req, id) {
-  const companyId = cid(req);
-  const { rows: [row] } = await pool.query(
-    `SELECT gp.id, gp.employee_id, gp.status, appr.*
-       FROM gate_passes gp ${GP_APPROVER_JOIN}
-      WHERE gp.id = $1 AND ($2::int IS NULL OR gp.company_id = $2)`,
-    [id, companyId]
-  );
-  if (!row) return null;
-  const callerEmployeeId = await employeeOf(req, pool);
-  const hrEdit = !!(await permissionFor(req, 'hr'))?.[permissionColumn('edit')];
-  return { row, callerEmployeeId, hrEdit, decision: approverDecision(row, { callerEmployeeId, hrEdit }) };
-}
-
-const signedIn = (req, res, next) => (req.user ? next() : res.status(401).json({ error: 'Unauthorized' }));
-
-/* ─── PUT /gate-passes/:id/approve ───────────────────────────────
- * pending, and not yet expired, only. The approver is the CALLER — it was
- * `approved_by` from the request body, so any value could be recorded. */
-router.put('/gate-passes/:id/approve', signedIn, captureBefore('gate_passes'), async (req, res) => {
-  const id = positiveIntOrNull(req.params.id);
-  if (!id) return res.status(404).json({ message: 'Gate pass not found' });
-  let actor;
-  try { actor = await gatePassActor(req, id); } catch (err) { return res.status(500).json({ message: err.message }); }
-  if (!actor) return res.status(404).json({ message: 'Gate pass not found' });
-  if (!actor.decision.ok) {
-    return res.status(403).json({
-      code: 'NOT_THE_APPROVER', message: actor.decision.reason,
-      approver: { kind: actor.row.approver_kind, employee_id: actor.row.approver_employee_id, name: actor.row.approver_name },
-    });
-  }
-  const approver = actor.callerEmployeeId;
-  const passNumber = `GP-${new Date().getFullYear()}-${String(req.params.id).padStart(4, '0')}`;
-  return transitionGatePass(req, res, {
-    setSql: `status = 'approved', approved_by = $3, approved_at = NOW(), pass_number = COALESCE(gp.pass_number, $4)`,
-    setParams: [approver, passNumber],
-    allowedSql: `gp.status = 'pending' AND (gp.valid_to IS NULL OR gp.valid_to > NOW())`,
-    refuse: (s) => `This pass is ${s} and cannot be approved.`,
-  });
-});
-
-/* ─── PUT /gate-passes/:id/cancel ─── pending or approved, not expired ── */
-router.put('/gate-passes/:id/cancel', signedIn, captureBefore('gate_passes'), async (req, res) => {
-  const id = positiveIntOrNull(req.params.id);
-  if (!id) return res.status(404).json({ message: 'Gate pass not found' });
-  let actor;
-  try { actor = await gatePassActor(req, id); } catch (err) { return res.status(500).json({ message: err.message }); }
-  if (!actor) return res.status(404).json({ message: 'Gate pass not found' });
-  const approverRejecting = actor.row.status === 'pending' && actor.decision.ok;
-  if (!actor.hrEdit && !approverRejecting) {
-    return res.status(403).json({
-      code: 'NOT_THE_APPROVER',
-      message: actor.row.status === 'pending'
-        ? actor.decision.reason
-        : 'Only HR can cancel a gate pass once it is approved.',
-    });
-  }
-  const reason = blank(req.body?.reason);
-  if (reason === null) return res.status(400).json({ message: 'reason is required to cancel a gate pass' });
-  if (String(reason).length > 500) return res.status(400).json({ message: 'reason must be 500 characters or fewer' });
-  const by = actor.callerEmployeeId;
-  return transitionGatePass(req, res, {
-    setSql: `status = 'cancelled', cancelled_at = NOW(), cancelled_by = $3, cancel_reason = $4`,
-    setParams: [by, String(reason).trim()],
-    allowedSql: `gp.status IN ('pending', 'approved', 'active') AND (gp.valid_to IS NULL OR gp.valid_to > NOW())`,
-    refuse: (s) => `This pass is ${s} and cannot be cancelled.`,
-  });
-});
-
-/* ─── PUT /gate-passes/:id/complete ───────────────────────────────
- * Marks the pass used/returned. Approved passes only, and not before the
- * window opens. An EXPIRED approved pass may be completed — a late return is
- * still a return, and completing it is how the record stops reading expired. */
-router.put('/gate-passes/:id/complete', hrEdit, captureBefore('gate_passes'), async (req, res) => {
-  const by = await employeeOf(req, pool);
-  return transitionGatePass(req, res, {
-    setSql: `status = 'completed', completed_at = NOW(), completed_by = $3`,
-    setParams: [by],
-    allowedSql: `gp.status IN ('approved', 'active') AND (gp.valid_from IS NULL OR gp.valid_from <= NOW())`,
-    refuse: (s) => (s === 'approved'
-      ? 'This pass has not started yet and cannot be completed.'
-      : `This pass is ${s} and cannot be completed.`),
-  });
-});
-
-/* ─── GET /visitors ──────────────────────────────────────────────
- * Filters: q (visitor name, company, phone), host_employee_id, status
- * (inside | checked_out), from/to (check-in date, company timezone), and the
- * legacy active_only=true; paged. `inside_total` is every open visit in the
- * company, unfiltered — the number the header and the dashboard card show. */
-router.get('/visitors', hrView, async (req, res) => {
-  const companyId = cid(req);
-  const range = dateRange(req.query);
-  if (range.error) return res.status(400).json({ message: range.error });
-  let status = blank(req.query.status);
-  if (req.query.active_only === 'true') status = 'inside';
-  if (status !== null && !['inside', 'checked_out'].includes(String(status))) {
-    return res.status(400).json({ message: "status must be 'inside' or 'checked_out'" });
-  }
-  const hostId = positiveIntOrNull(req.query.host_employee_id);
-  if (Number.isNaN(hostId)) return res.status(400).json({ message: 'host_employee_id must be a positive integer' });
-  const { page, pageSize, offset } = listPage(req.query);
-  try {
-    const { tz } = await dayRules(companyId);
-    const params = [companyId];
-    const where = ['($1::int IS NULL OR v.company_id = $1)'];
-    const add = (sql, v) => { params.push(v); where.push(sql.replaceAll('$?', `$${params.length}`)); };
-    if (status === 'inside')      where.push('v.check_out_time IS NULL');
-    if (status === 'checked_out') where.push('v.check_out_time IS NOT NULL');
-    if (hostId)     add('v.host_employee_id = $?', hostId);
-    // The zone is bound only when a date filter uses it — an unreferenced $n
-    // is a bind error in Postgres.
-    if (range.from || range.to) {
-      params.push(tz);
-      const tzRef = `$${params.length}::text`;
-      if (range.from) add(`(v.check_in_time AT TIME ZONE ${tzRef})::date >= $?::date`, range.from);
-      if (range.to)   add(`(v.check_in_time AT TIME ZONE ${tzRef})::date <= $?::date`, range.to);
-    }
-    const q = blank(req.query.q);
-    if (q !== null) add('(v.name ILIKE $? OR v.company ILIKE $? OR v.phone ILIKE $? OR e.name ILIKE $?)', `%${String(q).trim()}%`);
-    const from_ = `FROM visitors v
-                   LEFT JOIN employees e ON e.id = v.host_employee_id AND e.company_id IS NOT DISTINCT FROM v.company_id
-                  WHERE ${where.join(' AND ')}`;
-    const [rowsRes, countRes, insideRes] = await Promise.all([
-      pool.query(
-        `SELECT v.*, e.name AS host_name, e.office_id AS host_code, e.department AS host_department,
-                (v.check_out_time IS NULL) AS inside
-           ${from_}
-          ORDER BY v.check_in_time DESC, v.id DESC
-          LIMIT ${pageSize} OFFSET ${offset}`, params),
-      pool.query(`SELECT COUNT(*)::int AS n ${from_}`, params),
-      pool.query(
-        `SELECT COUNT(*)::int AS n FROM visitors
-          WHERE ($1::int IS NULL OR company_id = $1) AND check_out_time IS NULL`, [companyId]),
-    ]);
-    res.json({ rows: rowsRes.rows, total: countRes.rows[0].n, page, page_size: pageSize, inside_total: insideRes.rows[0].n });
-  } catch (err) { res.status(500).json({ message: err.message }); }
-});
-
-/**
- * Validate a visitor payload. Same shape as validateGatePass above.
- *
- * ⚠⚠ `visitorForm` posts '' for every untouched field and `host_employee_id`
- * is an INTEGER column, so checking in without a host was a 500. Everything is
- * normalised through `blank()` first.
- *
- *   · `name` only is required (the form's one `required` input; NOT NULL).
- *   · Length caps are the column widths, checked FIRST so an over-long value
- *     answers with the length message.
- *   · `phone`, when given, must be a contact number: digits with optional
- *     spaces, dashes, brackets and a leading +, 10–15 digits. Nothing checked
- *     it, so "abc" was stored as a phone number. (§197)
- *   · `email` format is deliberately NOT checked server-side (type="email"
- *     covers the form; a varchar causes no 500).
- */
-const VISITOR_MAX = { name: 200, company: 200, phone: 20, email: 200, id_type: 50, id_number: 100 };
-const PHONE_SHAPE = /^\+?[0-9][0-9\s\-()]*$/;
-const phoneDigits = (v) => String(v).replace(/\D/g, '');
-
-function validateVisitor(body) {
-  const errors = [];
-  const name = blank(body.name);
-  if (name === null) errors.push('name is required');
-
-  for (const [field, max] of Object.entries(VISITOR_MAX)) {
-    const v = blank(body[field]);
-    if (v !== null && String(v).length > max) {
-      errors.push(`${field} must be ${max} characters or fewer`);
-    }
-  }
-  const phone = blank(body.phone);
-  if (phone !== null && String(phone).length <= VISITOR_MAX.phone) {
-    const digits = phoneDigits(phone).length;
-    if (!PHONE_SHAPE.test(String(phone).trim()) || digits < 10 || digits > 15) {
-      errors.push('phone must be a valid contact number (10–15 digits)');
-    }
-  }
-
-  const host = blank(body.host_employee_id);
-  if (host !== null
-      && (!/^\d+$/.test(String(host).trim()) || Number(String(host).trim()) < 1)) {
-    errors.push('host_employee_id must be a positive integer');
-  }
-  return errors;
-}
-
-/* ─── POST /visitors ─── check a visitor IN ──────────────────────
- * ⚠ A second check-in for someone already inside is refused (409): same
- * phone, or — when no phone is given — same name and company. A double-click
- * created two open visits for one person, and "visitors inside" counted both.
- * The check and the insert run under one advisory lock per person, so two
- * concurrent requests cannot both pass the check. */
-router.post('/visitors', hrAdd, async (req, res) => {
-  const errors = validateVisitor(req.body ?? {});
-  if (errors.length) return res.status(400).json({ message: errors[0], errors });
-
-  const name             = String(blank(req.body.name)).trim();
-  const company          = blank(req.body.company) === null ? null : String(req.body.company).trim();
-  const phone            = blank(req.body.phone) === null ? null : String(req.body.phone).trim();
-  const email            = blank(req.body.email);
-  const host_employee_id = blank(req.body.host_employee_id);
-  const purpose          = blank(req.body.purpose);
-  const id_type          = blank(req.body.id_type);
-  const id_number        = blank(req.body.id_number);
-  const companyId = cid(req);
-  const client = await pool.connect();
-  try {
-    // ⚠ Same body-FK check as POST /gate-passes. Nullable — a walk-in may have
-    // no host on record.
-    if (host_employee_id !== null) {
-      const { rows } = await client.query(
-        'SELECT id FROM employees WHERE id=$1 AND ($2::int IS NULL OR company_id = $2)',
-        [host_employee_id, companyId]
-      );
-      if (!rows.length) return res.status(404).json({ message: 'Host employee not found' });
-    }
-    await client.query('BEGIN');
-    const who = phone ? `p:${phoneDigits(phone).slice(-10)}` : `n:${name.toLowerCase()}|${(company || '').toLowerCase()}`;
-    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`visitor:${companyId}:${who}`]);
-    const { rows: open } = await client.query(
-      `SELECT id, name, check_in_time FROM visitors
-        WHERE ($1::int IS NULL OR company_id = $1) AND check_out_time IS NULL
-          AND (CASE WHEN $2::text IS NOT NULL
-                    THEN RIGHT(regexp_replace(COALESCE(phone, ''), '\\D', '', 'g'), 10) = RIGHT($2::text, 10)
-                    ELSE phone IS NULL AND LOWER(name) = LOWER($3) AND LOWER(COALESCE(company, '')) = LOWER(COALESCE($4, ''))
-               END)
-        LIMIT 1`,
-      [companyId, phone ? phoneDigits(phone) : null, name, company]
-    );
-    if (open.length) {
-      await client.query('ROLLBACK');
-      // Names the visit already open, which may be spelled differently from
-      // what was just typed (same phone, other name).
-      return res.status(409).json({
-        message: `${open[0].name} is already checked in with ${phone ? 'this contact number' : 'this name and company'}. Check them out first.`,
-        visitor_id: open[0].id,
-        check_in_time: open[0].check_in_time,
-      });
-    }
-    const { rows } = await client.query(
-      `INSERT INTO visitors (name, company, phone, email, host_employee_id, purpose, id_type, id_number, company_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
-      [name, company, phone, email, host_employee_id, purpose, id_type, id_number, companyId]
-    );
-    await client.query('COMMIT');
-    res.status(201).json(rows[0]);
-  } catch (err) {
-    await client.query('ROLLBACK').catch(() => {});
-    res.status(500).json({ message: err.message });
-  } finally {
-    client.release();
-  }
-});
-
-/* ─── PUT /visitors/:id/checkout ─────────────────────────────────
- * ⚠ Once only. The UPDATE had no `check_out_time IS NULL` guard, so a second
- * click (or a stale page) silently moved an earlier check-out time. */
-router.put('/visitors/:id/checkout', hrEdit, captureBefore('visitors'), async (req, res) => {
-  const companyId = cid(req);
-  const id = positiveIntOrNull(req.params.id);
-  if (!id) return res.status(404).json({ message: 'Visitor not found' });
-  try {
-    const { rows } = await pool.query(
-      `UPDATE visitors SET check_out_time = GREATEST(NOW(), check_in_time)
-       WHERE id=$1 AND ($2::int IS NULL OR company_id = $2) AND check_out_time IS NULL RETURNING *`,
-      [id, companyId]
-    );
-    if (rows.length) return res.json(rows[0]);
-    const { rows: [cur] } = await pool.query(
-      'SELECT check_out_time FROM visitors WHERE id=$1 AND ($2::int IS NULL OR company_id = $2)', [id, companyId]);
-    if (!cur) return res.status(404).json({ message: 'Visitor not found' });
-    return res.status(409).json({
-      message: `This visitor already checked out at ${new Date(cur.check_out_time).toISOString()}.`,
-      check_out_time: cur.check_out_time,
-    });
-  } catch (err) { res.status(500).json({ message: err.message }); }
-});
-
-/* ─── PUT /visitors/:id/badge ─── record that a badge was printed ──
- * The form's "Print Badge" button only flashed "Badge printed (demo)" and
- * badge_printed was written by nothing but the seed. The page now prints the
- * badge for a saved visitor and records it here. */
-router.put('/visitors/:id/badge', hrEdit, captureBefore('visitors'), async (req, res) => {
-  const companyId = cid(req);
-  const id = positiveIntOrNull(req.params.id);
-  if (!id) return res.status(404).json({ message: 'Visitor not found' });
-  try {
-    const { rows } = await pool.query(
-      `UPDATE visitors SET badge_printed = true
-        WHERE id=$1 AND ($2::int IS NULL OR company_id = $2) RETURNING *`, [id, companyId]);
-    if (!rows.length) return res.status(404).json({ message: 'Visitor not found' });
-    res.json(rows[0]);
-  } catch (err) { res.status(500).json({ message: err.message }); }
-});
-
 /* ─── GET /biometric/dashboard ───────────────────────────────────
  *
  * Every card, and the population it is measured against:
@@ -1739,7 +1174,8 @@ router.get('/biometric/dashboard', biometricRead, async (req, res) => {
       `SELECT COUNT(*)::int AS n,
               COUNT(*) FILTER (WHERE (check_in_time AT TIME ZONE $2)::date < $3::date)::int AS overdue
          FROM visitors
-        WHERE check_out_time IS NULL AND ($1::int IS NULL OR company_id = $1)`,
+        WHERE check_in_time IS NOT NULL AND check_out_time IS NULL AND cancelled_at IS NULL
+          AND ($1::int IS NULL OR company_id = $1)`,
       [companyId, rules.tz, today]
     );
 
@@ -1841,7 +1277,10 @@ router.post('/biometric/employees/map', hrEdit, async (req, res) => {
  * Current employees of the caller's company: id, name, code, department.
  * The gate-pass form asked for a raw internal "Employee ID" number and the
  * visitor form for a "Host Employee ID" — numbers no-one in HR knows. */
-router.get('/biometric/employees/options', hrView, async (req, res) => {
+// Employee picker for the gate-pass register (gate_access:view), the HR pages
+// (hr:view) and Attendance → Punch Import (attendance:edit). §272.
+const employeeOptionsRead = requireAnyPermission([['hr', 'view'], ['gate_access', 'view'], ['attendance', 'edit']]);
+router.get('/biometric/employees/options', employeeOptionsRead, async (req, res) => {
   const companyId = cid(req);
   try {
     const { rows } = await pool.query(

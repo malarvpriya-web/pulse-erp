@@ -453,8 +453,8 @@ function SequenceDrawer({ templates, onSave, onClose, sequence }) {
   }
 
   return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 1000, display: 'flex', justifyContent: 'flex-end' }}>
-      <div style={{ width: 500, background: '#fff', height: '100%', overflow: 'auto', boxShadow: '-8px 0 30px rgba(0,0,0,0.15)' }}>
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+      <div style={{ width: 500, background: '#fff', maxWidth: '100%', maxHeight: 'calc(100vh - 48px)', borderRadius: 12, overflow: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,.18)' }}>
         <div style={{ padding: '24px 24px 16px', borderBottom: '1px solid #f0f0f4', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <h3 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: '#1e1e2e' }}>{sequence ? 'Edit Sequence' : 'Create Sequence'}</h3>
           <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 22, cursor: 'pointer', color: '#888' }}>×</button>

@@ -1164,8 +1164,12 @@ router.get('/hr-benchmarks', async (req, res) => {
       sq1(`SELECT ROUND(AVG(e.joining_date - c.created_at::date)) AS avg_days,
                   COUNT(*) AS matched
            FROM employees e
-           JOIN candidates c ON LOWER(c.email) = LOWER(e.company_email)
-           WHERE c.stage IN ('joined','accepted')
+           -- The real link (set by every hire path) and the real status. This
+           -- matched on email and on candidates.stage IN ('joined','accepted'):
+           -- a stale twin column that only ever holds its default 'applied',
+           -- so the benchmark always found no hires (review 2026-11-18).
+           JOIN candidates c ON c.id = e.source_candidate_id AND c.deleted_at IS NULL
+           WHERE c.overall_status = 'hired' AND e.deleted_at IS NULL
              AND e.joining_date >= c.created_at::date
              ${s0.and} ${w0}`, s0.params),
 

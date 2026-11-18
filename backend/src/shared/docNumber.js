@@ -426,7 +426,7 @@ export async function nextBomNumber(client) {
   return `BOM-${String(n).padStart(4, '0')}`;
 }
 
-/** OFR-0001  (job_offers) */
+/** OFR-0001  (offer_letters.offer_no) */
 export async function nextOfferNumber(client) {
   const n = await nextval('seq_ofr', client);
   return `OFR-${String(n).padStart(4, '0')}`;

@@ -54,6 +54,7 @@ export const ROLE_CATALOG_FALLBACK = [
   { code: 'sales_exec',          label: 'Sales Executive'      },
   { code: 'service_manager',     label: 'Service Manager'      },
   { code: 'service_engineer',    label: 'Service Engineer'     },
+  { code: 'security',            label: 'Security / Gate Desk' },
   { code: 'employee',            label: 'Employee'             },
 ];
 

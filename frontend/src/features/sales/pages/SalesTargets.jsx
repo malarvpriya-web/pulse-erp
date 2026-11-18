@@ -87,6 +87,18 @@ function SetTargetModal({ onClose, onSaved, initialData }) {
       .catch(() => {});
   }, []);
 
+  // The same person's yearly target and achievement a year earlier, as a guide.
+  const [lastYear, setLastYear] = useState(null);
+  useEffect(() => {
+    setLastYear(null);
+    if (!form.owner_id || form.period_type !== 'annual') return undefined;
+    let live = true;
+    api.get('/sales/targets', { params: { period_type: 'annual', period_year: Number(form.period_year) - 1 } })
+      .then(r => { if (live) setLastYear((Array.isArray(r.data) ? r.data : []).find(t => String(t.owner_id) === String(form.owner_id)) || null); })
+      .catch(() => {});
+    return () => { live = false; };
+  }, [form.owner_id, form.period_type, form.period_year]);
+
   const handleTypeChange = (type) => {
     const now    = new Date();
     const fyYear = getFYStartYear(now);
@@ -195,6 +207,14 @@ function SetTargetModal({ onClose, onSaved, initialData }) {
             <label style={S.label}>Target Revenue (₹) *</label>
             <input type="number" min="0" style={S.input} placeholder="e.g. 10000000"
               value={form.target_amount} onChange={e => setForm(f => ({ ...f, target_amount: e.target.value }))} />
+            {lastYear && (
+              <div style={{ fontSize:11, color:'#6b7280', marginTop:4 }}>
+                {fyLabel(Number(form.period_year) - 1)}: target ₹{Math.round(Number(lastYear.target_amount)).toLocaleString('en-IN')},
+                {' '}achieved ₹{Math.round(Number(lastYear.achieved_amount)).toLocaleString('en-IN')}
+                {lastYear.achievement_pct != null ? ` (${lastYear.achievement_pct}%)` : ''}.
+                {' '}Each person&apos;s target is set separately; nothing is raised automatically.
+              </div>
+            )}
           </div>
 
           {/* Orders + Margin (optional) */}

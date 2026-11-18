@@ -66,8 +66,8 @@ function NCRDrawer({ ncr, onClose, onRefresh }) {
   const lbl = { fontSize: 12, fontWeight: 600, color: '#374151', marginBottom: 4, display: 'block' };
 
   return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 999, display: 'flex', justifyContent: 'flex-end' }}>
-      <div style={{ width: 480, background: '#fff', height: '100%', overflowY: 'auto', padding: 28, boxShadow: '-4px 0 24px rgba(0,0,0,0.15)' }}>
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 999, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+      <div style={{ width: 480, background: '#fff', maxWidth: '100%', maxHeight: 'calc(100vh - 48px)', borderRadius: 12, overflowY: 'auto', padding: 28, boxShadow: '0 20px 60px rgba(0,0,0,.18)' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20 }}>
           <div>
             <div style={{ fontSize: 12, color: '#6b7280' }}>{ncr.ncr_number}</div>

@@ -110,7 +110,7 @@ export const REGISTRY = [
     key: 'employment-types', type: 'EMPLOYMENT_TYPE', label: 'Employment Type', module: 'HR',
     roles: HR,
     columns: ['employees.employment_type', 'job_openings.employment_type',
-              'job_offers.employment_type', 'job_requisitions.employment_type'],
+              'job_requisitions.employment_type'],
   },
   {
     key: 'qualifications', type: 'QUALIFICATION', label: 'Qualification', module: 'HR',
@@ -140,6 +140,30 @@ export const REGISTRY = [
     key: 'asset-types', type: 'ASSET_TYPE', label: 'Asset Type', module: 'HR',
     roles: [...HR, 'manager'],
     columns: ['employee_asset_allocations.asset_type'],
+  },
+  // HR audit 2026-11-16: three lists that were constants in page files
+  // (migration 20261116000008 seeds the old values).
+  {
+    key: 'announcement-categories', type: 'ANNOUNCEMENT_CATEGORY', label: 'Announcement Category', module: 'HR',
+    roles: HR,
+    columns: ['announcements.category'],
+  },
+  {
+    key: 'hr-document-categories', type: 'HR_DOCUMENT_CATEGORY', label: 'HR Document Category', module: 'HR',
+    roles: HR,
+    columns: ['hr_downloads.category'],
+  },
+  {
+    key: 'succession-pool-types', type: 'SUCCESSION_POOL_TYPE', label: 'Talent Pool Type', module: 'HR',
+    roles: HR,
+    columns: ['employee_talent_pools.pool_type'],
+  },
+  // Exit review 2026-11-17: the exit-interview reasons were six keys fixed in
+  // ExitManagement.jsx (migration 20261117000001 seeds them by name).
+  {
+    key: 'exit-reasons', type: 'EXIT_REASON', label: 'Exit Reason', module: 'HR',
+    roles: HR,
+    columns: ['exit_interviews.reason_category'],
   },
   {
     // ── Bank name on an employee's salary account ────────────────────────────

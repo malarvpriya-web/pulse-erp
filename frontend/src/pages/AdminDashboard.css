@@ -100,8 +100,8 @@
 .adm-root .adm-reset-user { display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: #f9fafb; border-radius: 8px; border: 1px solid #f0f0f4; }
 
 /* drawer */
-.adm-root .adm-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 1000; display: flex; justify-content: flex-end; }
-.adm-root .adm-drawer { background: #fff; width: 420px; height: 100vh; display: flex; flex-direction: column; box-shadow: -8px 0 32px rgba(0,0,0,.12); }
+.adm-root .adm-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 1000; display: flex; align-items: center; justify-content: center; padding: 24px; }
+.adm-root .adm-drawer { background: #fff; width: 420px; max-width: 100%; max-height: calc(100vh - 48px); border-radius: 12px; overflow: auto; display: flex; flex-direction: column; box-shadow: 0 20px 60px rgba(0,0,0,.18); }
 .adm-root .adm-drawer-hd { display: flex; align-items: center; justify-content: space-between; padding: 20px; border-bottom: 1px solid #f0f0f4; }
 .adm-root .adm-drawer-hd h3 { margin: 0; font-size: 16px; font-weight: 700; color: #111827; }
 .adm-root .adm-drawer-body { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 16px; }

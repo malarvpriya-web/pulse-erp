@@ -1,1181 +1,623 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
-  Calendar, Clock, CheckCircle, FileText, Bell, Briefcase,
-  X, ChevronRight, ArrowRight, LogIn, LogOut, Gift,
-  Star, RefreshCw, Users, ListChecks, AlertTriangle, Camera,
+  UserCircle, Calendar, CalendarClock, Clock, FileText, Briefcase, Gift, Users,
+  ShieldCheck, LogOut, AlertTriangle, ArrowRight, RefreshCw, Package,
+  LifeBuoy, Star, Inbox, Plus,
 } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
 import api from '../services/api/client';
+import { PageShell, PageHero, StatBand, Stat, SectionTitle, ContentCard } from '@/components/pulse-ui';
 import MyPayslipsWidget from '@/components/dashboard/widgets/MyPayslipsWidget';
-import CameraClockModal from '@/components/attendance/CameraClockModal';
-import PunchModeNotice from '@/components/attendance/PunchModeNotice';
-import { getLocationString } from '@/components/attendance/geo';
-import usePunchMode from '@/hooks/usePunchMode';
-import { VizCard, Donut, DonutLegend, ProgressRing, RoundBars } from '@/components/charts/PulseViz';
-import CelebrationsBoard from '@/components/dashboard/CelebrationsBoard';
-import { ChartExpandButton } from '@/components/dashboard/DashCard';
-import { announcementText, announcementDate } from '@/features/hr/announcementFeed';
+import { MERGED_ROUTES as ROUTES } from '@/config/autoRouter';
+import { canRenderPage } from '@/config/menuCatalog';
 import './EmployeeDashboard.css';
 
-const REFRESH_INTERVAL = 5 * 60 * 1000; // 5 minutes
+/*
+ * HR > Self Service > My Dashboard — the signed-in employee's OWN HR record.
+ *
+ * Not repeated here, because Home already shows them: clock-in, open tasks,
+ * pending approvals, announcements, policies, Brand Vault, celebrations.
+ * Each fact on this page appears ONCE:
+ *   stat band        leave available · leave requests pending · present / absent this month
+ *   Employment       designation, department, manager, type, grade, joining date, status
+ *   Probation        ONLY while on probation (hidden once confirmed)
+ *   Resignation      ONLY once an exit is in progress — notice period, last day, clearance
+ *   Leave            balance per type · my recent requests
+ *   Holidays / Team  upcoming holidays · my team on leave today
+ *   Pay / Time       released payslips · recent timesheet entries
+ *   Sales Target     ONLY with a yearly target: month-by-month target vs achieved,
+ *                    days left, incentive so far (/home/my-sales-target)
+ *
+ * Every link is offered only when canRenderPage() — Layout's own gate — would
+ * open it for this role, so nothing here lands on Access Denied.
+ *
+ * Sources (all the caller's own): /home/my-employment, /leaves/balance,
+ * /leaves/my, /holidays, /timesheets/timesheets, /payroll/my-payslips (widget).
+ */
+
+const REFRESH_INTERVAL = 5 * 60 * 1000;
+// Leave codes kept off the Leave Balance card (see balanceRows below).
+const DASHBOARD_HIDDEN_LEAVE_CODES = new Set(['MRG', 'PATERNITY']);
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-function getGreeting() {
-  const h = new Date().getHours();
-  if (h < 12) return 'Good morning';
-  if (h < 17) return 'Good afternoon';
-  return 'Good evening';
+// DD Mon YY. A bare YYYY-MM-DD is read as a LOCAL date (new Date('Y-M-D') is UTC
+// midnight and shows the previous day west of UTC).
+function fmtDate(v) {
+  if (!v) return '';
+  const s = String(v);
+  const d = /^\d{4}-\d{2}-\d{2}$/.test(s) ? new Date(`${s}T00:00:00`) : new Date(s);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' });
 }
-
-function formatDateIN() {
-  return new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' });
+const dayKey = v => String(v || '').slice(0, 10);
+function todayKey() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
-
-function todayISO() {
-  return new Date().toISOString().split('T')[0];
+function weekday(v) {
+  const d = new Date(`${dayKey(v)}T00:00:00`);
+  return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString('en-GB', { weekday: 'short' });
 }
+function tenureOf(doj) {
+  if (!doj) return '';
+  const yrs = (Date.now() - new Date(`${dayKey(doj)}T00:00:00`).getTime()) / (365.25 * 86400000);
+  if (!(yrs >= 0)) return '';
+  return yrs >= 1 ? `${yrs.toFixed(1)} yr${yrs >= 2 ? 's' : ''}` : `${Math.max(0, Math.round(yrs * 12))} mo`;
+}
+const num = v => { const n = parseFloat(v); return Number.isFinite(n) ? n : 0; };
+const fmtDays = n => (Number.isInteger(n) ? String(n) : n.toFixed(1));
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+const titleCase = s => String(s || '').replace(/[_-]+/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+const asList = raw => (Array.isArray(raw) ? raw : Array.isArray(raw?.data) ? raw.data : []);
 
-function calcWorkingDays(from, to) {
-  if (!from || !to) return 0;
-  const start = new Date(from);
-  const end   = new Date(to);
-  if (end < start) return 0;
-  let count = 0;
-  const cur = new Date(start);
-  while (cur <= end) {
-    const dow = cur.getDay();
-    if (dow !== 0 && dow !== 6) count++;
-    cur.setDate(cur.getDate() + 1);
+// Probation state → what the employee reads.
+function probationView(p) {
+  if (!p) return null;
+  switch (p.state) {
+    case 'confirmed':
+      return { tone: 'ok', label: 'Confirmed' };
+    case 'on_probation':
+      return { tone: p.days_left <= 30 ? 'warn' : 'info', label: `On probation · ${plural(p.days_left, 'day')} left` };
+    case 'decision_pending':
+      return { tone: 'warn', label: 'Probation ended · confirmation pending with HR' };
+    default:
+      return { tone: 'muted', label: 'Not recorded — check with HR' };
   }
-  return count;
 }
+const REVIEW_STATUS = {
+  requested: 'Requested from your reviewer',
+  submitted: 'Submitted by your reviewer · awaiting HR decision',
+};
+const DECISION_LABEL = { confirm: 'Confirmed', extend: 'Probation extended', not_confirm: 'Not confirmed' };
+const LEAVE_STATUS_TONE = { approved: 'ok', pending: 'warn', rejected: 'bad', cancelled: 'muted', withdrawn: 'muted' };
 
-function formatINR(amount) {
-  return new Intl.NumberFormat('en-IN', {
-    style: 'currency', currency: 'INR', maximumFractionDigits: 0,
-  }).format(amount);
-}
-
-function weatherEmoji(desc) {
-  const d = (desc || '').toLowerCase();
-  if (d.includes('sunny') || d.includes('clear')) return '☀️';
-  if (d.includes('partly cloudy')) return '⛅';
-  if (d.includes('overcast') || d.includes('cloudy')) return '☁️';
-  if (d.includes('rain') || d.includes('drizzle') || d.includes('shower')) return '🌧️';
-  if (d.includes('thunder') || d.includes('storm')) return '⛈️';
-  if (d.includes('snow') || d.includes('blizzard')) return '❄️';
-  if (d.includes('fog') || d.includes('mist') || d.includes('haze')) return '🌫️';
-  return '🌡️';
-}
-
-// ─── Toast ────────────────────────────────────────────────────────────────────
-function Toast({ message, type = 'success', onClose }) {
-  useEffect(() => {
-    const t = setTimeout(onClose, 3000);
-    return () => clearTimeout(t);
-  }, [onClose]);
-
+// ─── Small pieces ─────────────────────────────────────────────────────────────
+function InfoRow({ label, value, hint, tone }) {
   return (
-    <div className={`ed-toast ed-toast-${type}`}>
-      <CheckCircle size={16} />
-      <span>{message}</span>
-      <button className="ed-icon-btn" style={{ marginLeft: 8 }} onClick={onClose}>
-        <X size={14} />
-      </button>
+    <div className="mhr-row">
+      <span className="mhr-row-label">{label}</span>
+      <span className={`mhr-row-val${tone ? ` is-${tone}` : ''}`}>
+        {value || <span className="mhr-missing">{hint || 'Not recorded'}</span>}
+      </span>
     </div>
   );
 }
-
-// ─── Leave conflict checker ───────────────────────────────────────────────────
-function checkLeaveConflict(form, existingLeaves, holidays) {
-  if (!form.fromDate || !form.toDate) return null;
-  const from = new Date(form.fromDate);
-  const to   = new Date(form.toDate);
-  if (to < from) return 'End date must be on or after start date';
-
-  for (const leave of existingLeaves) {
-    const st = (leave.status || '').toLowerCase();
-    if (!['approved', 'pending'].includes(st)) continue;
-    const lFrom = new Date(leave.from_date || leave.start_date || leave.fromDate);
-    const lTo   = new Date(leave.to_date   || leave.end_date   || leave.toDate);
-    if (from <= lTo && to >= lFrom) {
-      const type  = leave.leave_type || leave.leaveType || '';
-      const label = type ? `${type} leave` : `a ${st} leave`;
-      return `Overlaps with ${label} (${leave.from_date || leave.start_date} → ${leave.to_date || leave.end_date})`;
-    }
-  }
-
-  const holidaySet = new Map((holidays || []).map(h => [h.date, h.name]));
-  const cur = new Date(from);
-  while (cur <= to) {
-    const dow     = cur.getDay();
-    const dateStr = cur.toISOString().split('T')[0];
-    if (dow !== 0 && dow !== 6 && holidaySet.has(dateStr)) {
-      return `${holidaySet.get(dateStr)} is a public holiday within this range`;
-    }
-    cur.setDate(cur.getDate() + 1);
-  }
-  return null;
+function Skeleton({ rows = 3 }) {
+  return <div className="mhr-skel">{Array.from({ length: rows }, (_, i) => <span key={i} />)}</div>;
+}
+function Empty({ children }) {
+  return <div className="mhr-empty">{children}</div>;
+}
+function CardLink({ label, onClick }) {
+  if (!onClick) return null;
+  return (
+    <button type="button" className="mhr-link" onClick={onClick}>
+      {label} <ArrowRight size={12} />
+    </button>
+  );
 }
 
-// ─── Apply Leave Drawer ───────────────────────────────────────────────────────
-function ApplyLeaveDrawer({ open, onClose, onSubmit, submitting = false, existingLeaves = [], holidays = [] }) {
-  const [form, setForm] = useState({
-    leaveType: 'Annual', fromDate: '', toDate: '', reason: '',
-  });
-  const [days,     setDays]     = useState(0);
-  const [conflict, setConflict] = useState(null);
-
-  useEffect(() => {
-    setDays(form.fromDate && form.toDate ? calcWorkingDays(form.fromDate, form.toDate) : 0);
-    setConflict(checkLeaveConflict(form, existingLeaves, holidays));
-  }, [form.fromDate, form.toDate, existingLeaves, holidays]);
-
-  function handleChange(e) {
-    setForm(prev => ({ ...prev, [e.target.name]: e.target.value }));
-  }
-
-  function handleSubmit(e) {
-    e.preventDefault();
-    if (conflict) return;
-    onSubmit(form);
-  }
-
-  if (!open) return null;
-
+// ─── My sales target ──────────────────────────────────────────────────────────
+// The yearly target split by month, what the person achieved (from their own
+// sales orders), the days left, and the incentive on the sales so far.
+const rupees = n => `₹${Math.round(num(n)).toLocaleString('en-IN')}`;
+function MySalesTarget({ t }) {
+  const pct = t.pct ?? 0;
+  const inc = t.incentive || {};
+  const tone = p => (p == null ? 'muted' : p >= 100 ? 'ok' : p >= 80 ? 'info' : 'warn');
   return (
     <>
-      <div className="ed-overlay" onClick={onClose} />
-      <div className="ed-drawer" role="dialog" aria-modal="true" aria-label="Apply Leave">
-        <div className="ed-drawer-hd">
-          <span style={{ fontSize: 15, fontWeight: 600, color: '#111827' }}>Apply Leave</span>
-          <button className="ed-icon-btn" onClick={onClose} aria-label="Close"><X size={16} /></button>
-        </div>
-        <form className="ed-drawer-body" onSubmit={handleSubmit}>
-          <div className="ed-form-group">
-            <label className="ed-label" htmlFor="leaveType">Leave Type</label>
-            <select id="leaveType" name="leaveType" className="ed-select"
-              value={form.leaveType} onChange={handleChange} required>
-              <option value="Annual">Annual Leave</option>
-              <option value="Sick">Sick Leave</option>
-              <option value="Casual">Casual Leave</option>
-              <option value="Compensatory">Compensatory Leave</option>
-            </select>
+      <SectionTitle rule>Sales Target · {t.fy_label}</SectionTitle>
+      <div className="mhr-grid">
+        <ContentCard title={<span className="mhr-title"><Star size={14} /> My Year</span>}>
+          <InfoRow label="Yearly target" value={rupees(t.annual_target)} />
+          <InfoRow label="Achieved so far" value={`${rupees(t.achieved)} · ${t.pct == null ? '—' : `${t.pct}%`}`} tone={tone(t.pct)} />
+          <InfoRow label="Still to achieve" value={t.remaining > 0 ? rupees(t.remaining) : 'Target reached'} tone={t.remaining > 0 ? undefined : 'ok'} />
+          <InfoRow label="Days left in the year" value={plural(t.days_left_in_year, 'day')} />
+          <InfoRow label="Days left this month" value={plural(t.days_left_in_month, 'day')} />
+          <div className="mhr-track" aria-label={`${pct}% of the yearly target`}>
+            <span style={{ width: `${Math.min(100, Math.max(0, pct))}%` }} />
           </div>
-          <div className="ed-form-group">
-            <label className="ed-label" htmlFor="fromDate">From Date</label>
-            <input id="fromDate" name="fromDate" type="date" className="ed-input"
-              value={form.fromDate} onChange={handleChange} required />
-          </div>
-          <div className="ed-form-group">
-            <label className="ed-label" htmlFor="toDate">To Date</label>
-            <input id="toDate" name="toDate" type="date" className="ed-input"
-              value={form.toDate} onChange={handleChange} required />
-            {days > 0 && !conflict && (
-              <div className="ed-days-calc">{days} working day{days !== 1 ? 's' : ''}</div>
-            )}
-            {conflict && (
-              <div className="ed-conflict-error">
-                <AlertTriangle size={13} />
-                {conflict}
-              </div>
-            )}
-          </div>
-          <div className="ed-form-group">
-            <label className="ed-label" htmlFor="reason">Reason</label>
-            <textarea id="reason" name="reason" className="ed-textarea" rows={4}
-              placeholder="Briefly describe the reason for leave..."
-              value={form.reason} onChange={handleChange} required />
-          </div>
-          <div className="ed-drawer-footer" style={{ padding: 0, marginTop: 8, border: 'none' }}>
-            <button type="button" className="ed-btn-ghost" onClick={onClose} disabled={submitting}>Cancel</button>
-            <button type="submit" className="ed-btn-primary" disabled={!!conflict || submitting}
-              title={conflict || undefined}>
-              {submitting ? 'Submitting...' : 'Submit Application'}
-            </button>
-          </div>
-        </form>
+          <InfoRow
+            label={inc.final ? 'Incentive for the year' : 'Incentive on sales so far'}
+            value={!inc.slabs_set ? null : rupees(inc.amount_so_far)}
+            hint="Incentive slabs not set yet" />
+          {inc.slabs_set && <div className="mhr-note">{inc.basis} Paid once a year, after 31 March.</div>}
+        </ContentCard>
+        <ContentCard title={<span className="mhr-title"><Calendar size={14} /> Month by Month</span>}>
+          <table className="mhr-table">
+            <thead><tr><th>Month</th><th>Target</th><th>Achieved</th><th>%</th><th>Days left</th></tr></thead>
+            <tbody>
+              {t.months.map(m => (
+                <tr key={`${m.year}-${m.month}`} className={m.state === 'current' ? 'is-current' : undefined}>
+                  <td>{m.label}</td>
+                  <td>{rupees(m.target)}</td>
+                  <td className="is-strong">{m.state === 'future' ? '—' : rupees(m.achieved)}</td>
+                  <td><span className={`mhr-pill is-${m.state === 'future' ? 'muted' : tone(m.pct)}`}>{m.state === 'future' || m.pct == null ? '—' : `${m.pct}%`}</span></td>
+                  <td>{m.state === 'past' ? 'Done' : m.days_left}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </ContentCard>
       </div>
     </>
   );
 }
 
-// ─── Loading Skeleton ─────────────────────────────────────────────────────────
-function Shimmer({ width = '100%' }) {
-  return (
-    <div style={{
-      height: 14, borderRadius: 6, width,
-      background: 'linear-gradient(90deg, #f3f4f6 25%, #e5e7eb 50%, #f3f4f6 75%)',
-      backgroundSize: '200% 100%',
-      animation: 'ed-shimmer 1.4s infinite',
-    }} />
-  );
-}
-
-// ─── Empty State ──────────────────────────────────────────────────────────────
-function EmptyState({ icon, message }) {
-  return (
-    <div style={{
-      display: 'flex', flexDirection: 'column',
-      alignItems: 'center', justifyContent: 'center',
-      padding: '32px 16px', color: '#9ca3af', gap: 8,
-    }}>
-      <span style={{ fontSize: 28 }}>{icon}</span>
-      <p style={{ margin: 0, fontSize: 13 }}>{message}</p>
-    </div>
-  );
-}
-
-// ─── Main Component ───────────────────────────────────────────────────────────
+// ─── Page ─────────────────────────────────────────────────────────────────────
 export default function EmployeeDashboard({ setPage }) {
-  const { user, hasPermission, role } = useAuth();
+  const { user, role, hasPermission, menuAccess } = useAuth();
 
-  const [attendance,    setAttendance]    = useState(null);
-  const [empProfile,    setEmpProfile]    = useState(null);
-  const [leaveBalance,  setLeaveBalance]  = useState(null);
-  const [pendingTasks,  setPendingTasks]  = useState(0);
-  const [todayTasks,    setTodayTasks]    = useState([]);
-  const [latestPayslip, setLatestPayslip] = useState(null);
-  const [announcements, setAnnouncements] = useState([]);
-  const [holidays,      setHolidays]      = useState([]);
-  const [loading,       setLoading]       = useState(false);
-  const [refreshing,    setRefreshing]    = useState(false);
-  const [lastRefreshed, setLastRefreshed] = useState(null);
-
-  // New feature state
-  const [teamOnLeave,  setTeamOnLeave]  = useState([]);
-  const [notifCount,   setNotifCount]   = useState(0);
-  const [weather,      setWeather]      = useState(null);
-  const [clockLoading,      setClockLoading]      = useState(false);
-  const [currentTime,       setCurrentTime]       = useState(new Date());
-  const [myLeaves,          setMyLeaves]          = useState([]);
-  const [recentTimesheets,  setRecentTimesheets]  = useState([]);
-  const [leaveSubmitting,   setLeaveSubmitting]   = useState(false);
-
-  const [drawerOpen, setDrawerOpen] = useState(false);
-  const [cameraOpen, setCameraOpen] = useState(false);
-  const [toast,      setToast]      = useState(null);
-
-  // Only field employees punch from the app; everyone else uses the office
-  // face/biometric device.
-  const punch = usePunchMode(user?.employee_id);
-
+  const [employment,   setEmployment]   = useState(null);
+  const [employmentErr,setEmploymentErr]= useState(false);
+  const [balances,     setBalances]     = useState(null);   // null = failed / not loaded
+  const [myLeaves,     setMyLeaves]     = useState([]);
+  const [holidays,     setHolidays]     = useState([]);
+  const [timesheets,   setTimesheets]   = useState(null);   // null = not available to this role
+  // The company assets issued to me (HR audit 2026-11-16): the page showed only
+  // a count. GET /employee-assets?employee_id=<own> is the own-record read.
+  const [myAssets,     setMyAssets]     = useState(null);   // null = not loaded / failed
+  // HR Documents meant for everyone (audience 'all'): employees had no way to
+  // reach a company form (HR audit 2026-11-16). The Employee Records hub stays
+  // HR-only (owner, 11 Nov), so the forms are listed here.
+  const [forms,        setForms]        = useState(null);
+  const [salesTarget,  setSalesTarget]  = useState(null);   // shown only when has_target
+  const [loading,      setLoading]      = useState(true);
+  const [refreshing,   setRefreshing]   = useState(false);
   const isInitial = useRef(true);
 
-  // Live clock — ticks every second
-  useEffect(() => {
-    const id = setInterval(() => setCurrentTime(new Date()), 1000);
-    return () => clearInterval(id);
-  }, []);
+  // A link is offered only if Layout would render the target for this role.
+  const canOpen = useCallback(page => canRenderPage(role, page, {
+    route: ROUTES[page], menuAccess, hasPermission,
+  }), [role, menuAccess, hasPermission]);
+  const linkTo = useCallback((page, params) => (
+    typeof setPage === 'function' && canOpen(page)
+      ? () => (params ? setPage(page, params) : setPage(page))
+      : null
+  ), [setPage, canOpen]);
 
-  const showToast    = useCallback((message, type = 'success') => setToast({ message, type }), []);
-  const dismissToast = useCallback(() => setToast(null), []);
+  const showTimesheets = canOpen('MyTimesheet');
 
-  const canAddLeave = hasPermission('leaves', 'add') || hasPermission('leave', 'add') || role === 'employee';
-
-  function normalizeAttendance(record) {
-    if (!record) return null;
-    return {
-      ...record,
-      check_in: record.check_in ?? record.check_in_time ?? null,
-      check_out: record.check_out ?? record.check_out_time ?? null,
-    };
-  }
-
-  // ── Data loading ──────────────────────────────────────────────────────────
   const loadData = useCallback(async () => {
     if (isInitial.current) setLoading(true); else setRefreshing(true);
-
-    const empId = user?.employee_id;
-    const [
-      attendRes, leaveRes, tasksRes, annRes, holRes,
-      payRes, teamLeaveRes, notifRes, weatherRes,
-      myLeavesRes, tsRes, empRes,
-    ] = await Promise.allSettled([
-      empId ? api.get(`/attendance/today/${empId}`) : Promise.resolve(null),
+    const [empRes, balRes, myLeavesRes, holRes, tsRes, stRes, assetRes, formRes] = await Promise.allSettled([
+      api.get('/home/my-employment'),
       api.get('/leaves/balance'),
-      api.get('/tasks/today'),
-      api.get('/announcements/active'),
+      api.get('/leaves/my'),
       api.get('/holidays'),
-      empId ? api.get(`/payroll/employee/${empId}`) : Promise.resolve(null),
-      api.get('/leaves/team'),
-      api.get('/notifications/unread-count'),
-      fetch('https://wttr.in/?format=j1').then(r => r.json()),
-      empId ? api.get('/leaves/applications', { params: { employee_id: empId } }) : Promise.resolve(null),
-      empId ? api.get('/timesheets/timesheets', { params: { employee_id: empId, limit: 5 } }) : Promise.resolve(null),
-      empId ? api.get(`/employees/${empId}`) : Promise.resolve(null),
+      showTimesheets && user?.employee_id
+        ? api.get('/timesheets/timesheets', { params: { employee_id: user.employee_id } })
+        : Promise.resolve(null),
+      api.get('/home/my-sales-target'),
+      user?.employee_id
+        ? api.get('/employee-assets', { params: { employee_id: user.employee_id } })
+        : Promise.resolve({ data: [] }),
+      api.get('/hr/downloads'),
     ]);
+    setForms(formRes.status === 'fulfilled' ? asList(formRes.value?.data) : null);
+    setMyAssets(assetRes.status === 'fulfilled'
+      ? asList(assetRes.value?.data).filter(a => !['returned', 'disposed'].includes(String(a.status || '').toLowerCase()))
+      : null);
+    setSalesTarget(stRes.status === 'fulfilled' && stRes.value?.data?.has_target ? stRes.value.data : null);
 
-    // Employee profile — department, designation, date of joining
-    if (empRes.status === 'fulfilled' && empRes.value?.data) {
-      const raw = empRes.value.data?.employee || empRes.value.data;
-      if (raw && typeof raw === 'object') setEmpProfile(raw);
-    }
+    if (empRes.status === 'fulfilled' && empRes.value?.data) { setEmployment(empRes.value.data); setEmploymentErr(false); }
+    else setEmploymentErr(true);
 
-    // Attendance
-    if (attendRes.status === 'fulfilled' && attendRes.value?.data) {
-      const data = attendRes.value.data;
-      const myRecord = Array.isArray(data)
-        ? (data.find(r => r.user_id === empId || r.employee_id === empId) ?? null)
-        : data;
-      setAttendance(normalizeAttendance(myRecord));
-    }
-
-    if (leaveRes.status === 'fulfilled' && leaveRes.value?.data)
-      setLeaveBalance(leaveRes.value.data);
-
-    // /tasks/today returns {success:true, data:[...tasks]}
-    if (tasksRes.status === 'fulfilled') {
-      const raw = tasksRes.value?.data;
-      const taskArray = Array.isArray(raw?.data) ? raw.data : (Array.isArray(raw) ? raw : []);
-      setTodayTasks(taskArray);
-      setPendingTasks(taskArray.filter(t => t.status !== 'done' && t.status !== 'completed').length);
-    }
-
-    if (annRes.status === 'fulfilled' && Array.isArray(annRes.value?.data))
-      setAnnouncements(annRes.value.data);
-
-    if (holRes.status === 'fulfilled' && Array.isArray(holRes.value?.data))
-      setHolidays(holRes.value.data);
-
-    if (payRes.status === 'fulfilled' && payRes.value?.data)
-      setLatestPayslip(payRes.value.data);
-
-    // Team leaves — filter for today's date range
-    if (teamLeaveRes.status === 'fulfilled') {
-      const raw = teamLeaveRes.value?.data;
-      const allLeaves = Array.isArray(raw) ? raw : (Array.isArray(raw?.data) ? raw.data : []);
-      const todayDate = new Date(); todayDate.setHours(0, 0, 0, 0);
-      const onLeave = allLeaves.filter(l => {
-        const from = new Date(l.from_date); from.setHours(0, 0, 0, 0);
-        const to   = new Date(l.to_date);   to.setHours(0, 0, 0, 0);
-        return todayDate >= from && todayDate <= to
-          && ['approved', 'active'].includes((l.status || '').toLowerCase());
-      });
-      setTeamOnLeave(onLeave);
-    }
-
-    // Notification unread count
-    if (notifRes.status === 'fulfilled')
-      setNotifCount(notifRes.value?.data?.count ?? 0);
-
-    // Weather — native fetch, value is the parsed JSON (no .data wrapper)
-    if (weatherRes.status === 'fulfilled' && weatherRes.value?.current_condition) {
-      const cond = weatherRes.value.current_condition[0];
-      const area = weatherRes.value.nearest_area?.[0];
-      setWeather({
-        temp:     cond.temp_C,
-        feelsLike: cond.FeelsLikeC,
-        desc:     cond.weatherDesc?.[0]?.value || '',
-        humidity: cond.humidity,
-        city:     area?.areaName?.[0]?.value || '',
-      });
-    }
-
-    // My leaves (for conflict detection in leave drawer)
-    if (myLeavesRes.status === 'fulfilled' && myLeavesRes.value?.data) {
-      const raw = myLeavesRes.value.data;
-      setMyLeaves(Array.isArray(raw) ? raw : (Array.isArray(raw?.data) ? raw.data : []));
-    }
-
-    // Recent timesheets
-    if (tsRes.status === 'fulfilled' && tsRes.value?.data) {
-      const raw = tsRes.value.data;
-      setRecentTimesheets(Array.isArray(raw) ? raw : (Array.isArray(raw?.data) ? raw.data : []));
-    }
+    setBalances(balRes.status === 'fulfilled' ? asList(balRes.value?.data) : null);
+    if (myLeavesRes.status === 'fulfilled') setMyLeaves(asList(myLeavesRes.value?.data));
+    if (holRes.status === 'fulfilled') setHolidays(asList(holRes.value?.data));
+    setTimesheets(tsRes.status === 'fulfilled' && tsRes.value ? asList(tsRes.value.data) : (showTimesheets ? [] : null));
 
     isInitial.current = false;
     setLoading(false);
     setRefreshing(false);
-    setLastRefreshed(new Date());
-  }, [user]);
+  }, [user?.employee_id, showTimesheets]);
 
-  // Auto-refresh every 5 minutes
   useEffect(() => {
     loadData();
     const id = setInterval(loadData, REFRESH_INTERVAL);
     return () => clearInterval(id);
   }, [loadData]);
 
-  // ── Clock-in / Clock-out ──────────────────────────────────────────────────
-  async function handleClockAction(proof = null) {
-    if (!user?.employee_id) {
-      showToast('Your login is not linked to an employee record — ask HR to link your account to an employee profile.', 'error');
-      return;
-    }
-    setClockLoading(true);
-    try {
-      const now = new Date().toTimeString().slice(0, 5); // "HH:MM"
-      const isClockIn = !attendance?.check_in;
-      // Clock-in carries the selfie + GPS the camera modal captured (both are
-      // mandatory server-side for field staff); a clock-out re-reads GPS only.
-      const location = proof?.location ?? (isClockIn ? await getLocationString() : null);
-      const { data } = await api.post('/attendance/clock', {
-        employee_id:     user?.employee_id,
-        action:          isClockIn ? 'in' : 'out',
-        time:            now,
-        ...(location ? { location } : {}),
-        ...(proof?.selfie_url ? { selfie_url: proof.selfie_url } : {}),
-      });
-      setAttendance(normalizeAttendance(data));
-      showToast(isClockIn ? 'Clocked in successfully!' : 'Clocked out successfully!');
-      loadData();
-    } catch (error) {
-      console.error('[EmployeeDashboard] Attendance action failed', error);
-      showToast(error.response?.data?.message || error.response?.data?.error || 'Failed to record attendance', 'error');
-    } finally {
-      setClockLoading(false);
-    }
-  }
+  // ── Derived ──────────────────────────────────────────────────────────────
+  const linked    = employment?.linked === true;
+  const emp       = employment?.employee || {};
+  const probation = employment?.probation;
+  const exit      = employment?.exit;
+  const att       = employment?.attendance;
+  const attention = employment?.attention || {};
+  const degraded  = employment?.degraded || [];
+  const team      = employment?.team_on_leave_today || [];
+  const pv        = probationView(probation);
+  // Shown only while probation runs, or has ended with no decision recorded.
+  const showProbation = linked && ['on_probation', 'decision_pending'].includes(probation?.state);
+  const noticeDays    = exit ? (exit.notice_period_days || emp.notice_period_days) : null;
+  const tenure    = tenureOf(emp.joining_date);
+  const name      = emp.name || user?.name || [user?.first_name, user?.last_name].filter(Boolean).join(' ') || 'My HR Summary';
 
-  // ── Permission-gated quick actions ────────────────────────────────────────
-  const quickActions = [
-    {
-      id:     'leave',
-      label:  'Apply Leave',
-      sub:    'Submit a leave request',
-      color:  '#6366f1',
-      Icon:   Calendar,
-      show:   () => canAddLeave,
-      action: () => setDrawerOpen(true),
+  // Leave types with something allocated or used; zero-everything types are noise.
+  // Marriage and Paternity are once-in-an-event leaves, not a running balance:
+  // left out here (owner's instruction, 2026-11-11) so they neither show as
+  // cards nor inflate the "available" total. My Leaves / Apply Leave still list them.
+  const balanceRows = (balances || [])
+    .filter(b => !DASHBOARD_HIDDEN_LEAVE_CODES.has(String(b.leave_code || '').toUpperCase()))
+    .map(b => ({
+      name: b.leave_name || b.leave_type || b.leave_code || 'Leave',
+      available: num(b.available_days ?? (num(b.allocated_days) + num(b.carried_forward_days) - num(b.used_days) - num(b.pending_days))),
+      used: num(b.used_days),
+      pending: num(b.pending_days),
+    }))
+    .filter(b => b.available > 0 || b.used > 0 || b.pending > 0);
+  const totalAvailable = balanceRows.reduce((s, b) => s + b.available, 0);
+
+  const pendingLeave = attention.pending_leave_requests ?? 0;
+  const recentLeaves = [...myLeaves]
+    .sort((a, b) => dayKey(b.start_date || b.applied_at).localeCompare(dayKey(a.start_date || a.applied_at)))
+    .slice(0, 5);
+
+  const today = todayKey();
+  const upcomingHolidays = holidays
+    .filter(h => dayKey(h.date) >= today)
+    .sort((a, b) => dayKey(a.date).localeCompare(dayKey(b.date)))
+    .slice(0, 5);
+
+  const recentTimesheets = (timesheets || []).slice(0, 5);
+
+  // Only what isn't already on a card: expiring documents, assets to return.
+  const alerts = [
+    attention.expiring_documents > 0 && {
+      key: 'docs', Icon: FileText,
+      text: `${plural(attention.expiring_documents, 'document')} on your record expire${attention.expiring_documents === 1 ? 's' : ''} in the next 30 days — please send HR the renewed copy.`,
+      // HR keeps employees' documents (no self-service vault since 2026-11-11), so no link.
     },
-    {
-      id:     'timesheet',
-      label:  'Submit Timesheet',
-      sub:    'Log your work hours',
-      color:  '#10b981',
-      Icon:   Clock,
-      show:   () => hasPermission('timesheets', 'add'),
-      action: () => setPage('MyTimesheet'),
+    exit && attention.assets_held > 0 && {
+      key: 'assets', Icon: Package,
+      text: `${plural(attention.assets_held, 'company asset')} still to be returned before your last working day.`,
     },
-    {
-      id:     'ticket',
-      label:  'Raise Ticket',
-      sub:    'IT or HR support',
-      color:  '#f59e0b',
-      Icon:   Briefcase,
-      show:   () => true,
-      action: () => setPage('MyTickets'),
-    },
-    {
-      id:     'payslip',
-      label:  'View Payslip',
-      sub:    'Download salary slips',
-      color:  '#8b5cf6',
-      Icon:   FileText,
-      show:   () => hasPermission('hr', 'view') || role === 'employee' || role === 'super_admin' || role === 'admin',
-      action: () => setPage('PayslipViewer'),
-    },
-    {
-      id:     'performance',
-      label:  'My Reviews',
-      sub:    'Performance & goals',
-      color:  '#ec4899',
-      Icon:   Star,
-      show:   () => hasPermission('performance', 'view'),
-      action: () => setPage('PerformanceReviews'),
-    },
-    {
-      id:     'attendance',
-      label:  'My Attendance',
-      sub:    'View attendance log',
-      color:  '#06b6d4',
-      Icon:   CheckCircle,
-      show:   () => hasPermission('attendance', 'view'),
-      action: () => setPage('AttendanceDashboard'),
-    },
-  ].filter(a => a.show());
+  ].filter(Boolean);
 
-  // ── Badge helpers ─────────────────────────────────────────────────────────
-  function attendanceBadgeClass(status) {
-    if (!status) return 'ed-status-badge ed-status-absent';
-    const s = status.toLowerCase();
-    if (s === 'present') return 'ed-status-badge ed-status-present';
-    if (s === 'late')    return 'ed-status-badge ed-status-late';
-    return 'ed-status-badge ed-status-absent';
-  }
+  const quickLinks = [
+    { page: 'MyTickets',          label: 'Raise a ticket',      sub: 'IT or HR support',          Icon: LifeBuoy },
+    { page: 'PerformanceReviews', label: 'My reviews',          sub: 'Performance & goals',       Icon: Star },
+    { page: 'MyRequests',         label: 'My requests',         sub: 'Everything you have raised', Icon: Inbox },
+  ].map(q => ({ ...q, onClick: linkTo(q.page) })).filter(q => q.onClick);
 
-  function attendanceBadgeLabel(status) {
-    if (!status) return 'Not Marked';
-    const s = status.toLowerCase();
-    if (s === 'present') return 'Present';
-    if (s === 'late')    return 'Late';
-    return 'Absent';
-  }
-
-  function attendanceKpiColor(status) {
-    if (!status) return '#ef4444';
-    const s = status.toLowerCase();
-    if (s === 'present') return '#10b981';
-    if (s === 'late')    return '#f59e0b';
-    return '#ef4444';
-  }
-
-  // ── Leave submit ──────────────────────────────────────────────────────────
-  async function handleLeaveSubmit(formData) {
-    setLeaveSubmitting(true);
-    try {
-      if (!user?.employee_id) throw new Error('Missing employee id for leave application');
-      await api.post('/leaves/apply', {
-        employee_id:    user.employee_id,
-        leave_type:     formData.leaveType,
-        start_date:     formData.fromDate,
-        end_date:       formData.toDate,
-        number_of_days: calcWorkingDays(formData.fromDate, formData.toDate),
-        reason:         formData.reason,
-      });
-      setDrawerOpen(false);
-      showToast('Leave application submitted');
-      loadData();
-    } catch (error) {
-      console.error('[EmployeeDashboard] Leave application failed', error);
-      showToast(error.response?.data?.error || 'Failed to submit leave application', 'error');
-    } finally {
-      setLeaveSubmitting(false);
-    }
-  }
-
-  const firstName  = user?.first_name || user?.name?.split(' ')[0] || 'there';
-
-  // Department / designation / date-of-joining for the header identity strip
-  // Human-readable employee code (EMP001), falling back to the internal id only
-  // if the office code isn't available yet.
-  const empCode  = empProfile?.office_id || empProfile?.employee_code
-                 || user?.office_id || empProfile?.employee_id || user?.employee_id || '';
-  const empDept  = empProfile?.department || '';
-  const empDesig = empProfile?.designation || empProfile?.job_title || '';
-  const empDoj   = empProfile?.joining_date || empProfile?.date_of_joining || null;
-  const dojLabel = empDoj
-    ? new Date(empDoj).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' })
-    : '';
-  const tenure   = empDoj ? (() => {
-    const yrs = (Date.now() - new Date(empDoj).getTime()) / (365.25 * 86400000);
-    if (yrs < 0) return '';
-    return yrs >= 1 ? `${yrs.toFixed(1)} yr${yrs >= 2 ? 's' : ''}` : `${Math.max(0, Math.round(yrs * 12))} mo`;
-  })() : '';
-
-  const attColor   = attendanceKpiColor(attendance?.status);
-  const clockedOut = !!(attendance?.check_in && attendance?.check_out);
-  const clockedIn  = !!(attendance?.check_in && !attendance?.check_out);
-
-  // ── My Insights derivations (all from already-fetched data) ──
-  const LEAVE_BALANCE_KEYS = ['annual', 'sick', 'casual', 'earned', 'privilege', 'compoff', 'maternity', 'paternity'];
-  const leaveDonut = leaveBalance
-    ? LEAVE_BALANCE_KEYS
-        .filter(k => parseFloat(leaveBalance[k]) > 0)
-        .map(k => ({ name: k[0].toUpperCase() + k.slice(1), value: parseFloat(leaveBalance[k]) }))
-    : [];
-  const totalLeaveLeft = leaveDonut.reduce((s, d) => s + d.value, 0);
-
-  const doneTasks = todayTasks.filter(t => ['done', 'completed'].includes((t.status || '').toLowerCase())).length;
-  const taskPct   = todayTasks.length ? Math.round((doneTasks / todayTasks.length) * 100) : 0;
-
-  const leaveUsage = (() => {
-    const yr = new Date().getFullYear();
-    const counts = {};
-    for (const l of myLeaves) {
-      if ((l.status || '').toLowerCase() !== 'approved') continue;
-      const from = new Date(l.from_date || l.start_date || l.fromDate);
-      if (isNaN(from) || from.getFullYear() !== yr) continue;
-      const type = l.leave_type || l.leaveType || 'Other';
-      const days = parseFloat(l.days || l.total_days || l.no_of_days) || 1;
-      counts[type] = (counts[type] || 0) + days;
-    }
-    return Object.entries(counts).map(([label, value]) => ({ label, value }));
-  })();
+  const applyLeave = linkTo('ApplyLeave');
+  // Designation / department / code are on the My Employment card — not repeated here.
+  const heroSub = 'Your own employment, leave, attendance and pay record';
 
   return (
-    <div className="ed-root">
-      <style>{`
-        @keyframes ed-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
-        @keyframes ed-spin { to { transform: rotate(360deg); } }
-      `}</style>
-
-      {toast && <Toast message={toast.message} type={toast.type} onClose={dismissToast} />}
-      <ApplyLeaveDrawer
-        open={drawerOpen}
-        onClose={() => setDrawerOpen(false)}
-        onSubmit={handleLeaveSubmit}
-        submitting={leaveSubmitting}
-        existingLeaves={myLeaves}
-        holidays={holidays}
+    <PageShell dock={
+      <PageHero
+        icon={UserCircle}
+        eyebrow="My Dashboard"
+        title={name}
+        subtitle={heroSub}
+        actions={<>
+          <button type="button" className="plh-cta plh-cta--ghost" onClick={loadData} disabled={refreshing}>
+            <RefreshCw size={14} className={refreshing ? 'mhr-spin' : undefined} /> {refreshing ? 'Refreshing…' : 'Refresh'}
+          </button>
+          {applyLeave && (
+            <button type="button" className="plh-cta" onClick={applyLeave}>
+              <Plus size={14} /> Apply Leave
+            </button>
+          )}
+        </>}
       />
+    }>
+      <div className="mhr-root">
 
-      {/* ── Header ─────────────────────────────────────────────────────────── */}
-      <div className="ed-header">
-        <div>
-          <p className="ed-greeting">{getGreeting()}, {firstName}!</p>
-          <p className="ed-date">{formatDateIN()}</p>
-          {(empCode || empDesig || empDept || dojLabel) && (
-            <p className="ed-emp-meta" style={{ margin: '4px 0 0', fontSize: 12, color: '#6b7280', display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-              {empCode  && <span style={{ fontWeight: 700, color: '#4c1d95' }}>{empCode}</span>}
-              {empDesig && <span>· {empDesig}</span>}
-              {empDept  && <span>· <strong style={{ color: '#374151' }}>{empDept}</strong></span>}
-              {dojLabel && <span>· Joined {dojLabel}{tenure ? ` · ${tenure}` : ''}</span>}
-            </p>
-          )}
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-
-          {/* Weather chip */}
-          {weather && (
-            <div className="ed-weather-chip" title={`${weather.desc} · Feels like ${weather.feelsLike}°C · Humidity ${weather.humidity}%`}>
-              <span style={{ fontSize: 16 }}>{weatherEmoji(weather.desc)}</span>
-              <span className="ed-weather-temp">{weather.temp}°C</span>
-              {weather.city && <span className="ed-weather-city">{weather.city}</span>}
-            </div>
-          )}
-
-          {/* Notification bell with badge */}
-          <button
-            className="ed-notif-bell"
-            onClick={() => typeof setPage === 'function' && setPage('NotificationCenter')}
-            title={notifCount ? `${notifCount} unread notification${notifCount !== 1 ? 's' : ''}` : 'Notifications'}
-          >
-            <Bell size={18} />
-            {notifCount > 0 && (
-              <span className="ed-notif-badge">{notifCount > 99 ? '99+' : notifCount}</span>
-            )}
-          </button>
-
-          {/* Refresh button */}
-          <button
-            onClick={loadData}
-            disabled={refreshing}
-            style={{
-              display: 'flex', alignItems: 'center', gap: 5,
-              background: 'none', border: '1px solid #e9e4ff',
-              borderRadius: 8, padding: '5px 10px', cursor: refreshing ? 'default' : 'pointer',
-              fontSize: 11, color: '#7c3aed', fontFamily: 'inherit',
-            }}
-            title={lastRefreshed ? `Last refreshed ${lastRefreshed.toLocaleTimeString('en-IN')}` : 'Refresh'}
-          >
-            <RefreshCw size={12} style={{ animation: refreshing ? 'ed-spin 1s linear infinite' : 'none' }} />
-            {refreshing ? 'Refreshing…' : 'Refresh'}
-          </button>
-
-          <span className={attendanceBadgeClass(attendance?.status)}>
-            {attendanceBadgeLabel(attendance?.status)}
-          </span>
-        </div>
-      </div>
-
-      {/* ── Clock-in / Clock-out banner ─────────────────────────────────────── */}
-      {!loading && (
-        <div className={`ed-clock-banner${clockedOut ? ' ed-clock-done' : ''}`}>
-          <div>
-            <div style={{ fontSize: 13, fontWeight: 600, color: '#111827' }}>
-              {clockedOut
-                ? `Clocked out at ${attendance.check_out} ✓`
-                : clockedIn
-                ? `Clocked in at ${attendance.check_in}`
-                : 'Not clocked in yet today'}
-            </div>
-            <div style={{ fontSize: 12, color: '#6b7280', marginTop: 2 }}>
-              {currentTime.toLocaleTimeString('en-IN')}
-            </div>
+        {!loading && employmentErr && (
+          <div className="mhr-banner is-warn" role="status">
+            <AlertTriangle size={15} /> Couldn't load your employment details.
+            <button type="button" className="mhr-link" onClick={loadData}>Retry</button>
           </div>
-          {!clockedOut && (
-            punch.loading ? (
-              <span style={{ fontSize: 12, color: '#6b7280' }}>Checking your attendance setup…</span>
-            ) : !punch.canPunch ? (
-              /* Non-field staff record attendance on the office device. */
-              <PunchModeNotice reason={punch.reason} message={punch.message} compact />
-            ) : (
-              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: '#6b7280' }}>
-                  <Camera size={13} /> Selfie + location required
-                </span>
-                <button
-                  className={clockedIn ? 'ed-clock-btn-out' : 'ed-clock-btn-in'}
-                  onClick={() => (clockedIn ? handleClockAction() : setCameraOpen(true))}
-                  disabled={clockLoading}
-                >
-                  {clockLoading
-                    ? 'Recording…'
-                    : clockedIn
-                      ? <><LogOut size={14} /> Clock Out</>
-                      : <><LogIn size={14} /> Clock In</>
-                  }
-                </button>
-              </div>
-            )
-          )}
-        </div>
-      )}
-
-      {/* Camera clock-in for field staff — selfie + GPS, both enforced server-side */}
-      {cameraOpen && user?.employee_id && punch.canPunch && (
-        <CameraClockModal
-          employeeId={user.employee_id}
-          action={clockedIn ? 'out' : 'in'}
-          onCaptured={(proof) => { setCameraOpen(false); handleClockAction(proof); }}
-          onClose={() => setCameraOpen(false)}
-        />
-      )}
-
-      {/* ── KPI row ────────────────────────────────────────────────────────── */}
-      <div className="ed-kpis">
-
-        {/* 1 — Today's Attendance */}
-        <div className="ed-kpi">
-          <div className="ed-kpi-icon" style={{ background: attColor + '18', color: attColor }}>
-            <Clock size={20} />
+        )}
+        {!loading && employment && !linked && (
+          <div className="mhr-banner is-warn" role="status">
+            <AlertTriangle size={15} />
+            Your login is not linked to an employee record, so there is no HR record to show. Ask HR to link your account.
           </div>
-          <div>
-            <p className="ed-kpi-label">Today's Attendance</p>
-            {loading ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 4 }}>
-                <Shimmer width="80px" /><Shimmer width="110px" />
+        )}
+
+        {/* ── Key figures — each appears only here ── */}
+        <StatBand cols={4}>
+          <Stat index={0} icon={Calendar} label="Leave available" tone="primary" loading={loading}
+            value={balances === null ? '—' : `${fmtDays(totalAvailable)} days`}
+            sub={balances === null ? "Couldn't load balance" : `${plural(balanceRows.length, 'leave type')}`}
+            onClick={linkTo('MyLeaves') || undefined} />
+          <Stat index={1} icon={CalendarClock} label="Leave requests pending" tone={pendingLeave ? 'warning' : 'neutral'} loading={loading}
+            value={degraded.includes('pendingLeave') ? '—' : pendingLeave}
+            sub={pendingLeave ? 'Awaiting approval' : 'Nothing awaiting approval'}
+            onClick={linkTo('MyLeaves') || undefined} />
+          <Stat index={2} icon={Clock} label="Present this month" tone="success" loading={loading}
+            value={!att || degraded.includes('attendance') ? '—' : att.present}
+            sub={att ? `${att.leave} on leave${att.half_day ? ` · ${att.half_day} half-day` : ''}${att.late_days ? ` · ${att.late_days} late` : ''}` : ''} />
+          <Stat index={3} icon={AlertTriangle} label="Absent this month" tone={att?.absent ? 'danger' : 'neutral'} loading={loading}
+            value={!att || degraded.includes('attendance') ? '—' : att.absent}
+            warn={!!att?.absent}
+            sub={att?.absent ? 'Tell your manager if this is wrong' : 'No absences recorded'} />
+        </StatBand>
+
+        {alerts.length > 0 && (
+          <div className="mhr-alerts">
+            {alerts.map(({ key, Icon, text, onClick }) => (
+              <div key={key} className="mhr-alert">
+                <Icon size={14} /> <span>{text}</span>
+                <CardLink label="Open" onClick={onClick} />
               </div>
-            ) : (
+            ))}
+          </div>
+        )}
+
+        {/* ── Employment ── */}
+        <SectionTitle rule>Employment</SectionTitle>
+        <div className={showProbation || exit ? 'mhr-grid' : ''}>
+          <ContentCard className={showProbation || exit ? '' : 'mhr-card--wide'}
+            title={<span className="mhr-title"><Briefcase size={14} /> My Employment</span>}
+            headerActions={<CardLink label="All my details" onClick={linkTo('MyEmployeeRecord')} />}>
+            {loading ? <Skeleton rows={6} /> : !linked ? <Empty>No employee record linked</Empty> : (
               <>
-                <p className="ed-kpi-val" style={{ color: attColor }}>
-                  {attendanceBadgeLabel(attendance?.status)}
-                </p>
-                {attendance?.check_in ? (
-                  <p className="ed-kpi-sub ed-clock-time">
-                    <LogIn size={10} style={{ display: 'inline', marginRight: 3 }} />
-                    Clocked in at {attendance.check_in}
-                  </p>
-                ) : (
-                  <p className="ed-kpi-sub">No clock-in recorded</p>
-                )}
+                <InfoRow label="Employee code"     value={emp.office_id} />
+                <InfoRow label="Designation"       value={emp.designation} />
+                <InfoRow label="Department"        value={emp.department} />
+                <InfoRow label="Reporting manager" value={emp.reporting_manager} />
+                <InfoRow label="Employment type"   value={emp.employment_type} />
+                <InfoRow label="Grade"             value={emp.grade} />
+                <InfoRow label="Date of joining"   value={emp.joining_date && `${fmtDate(emp.joining_date)}${tenure ? ` · ${tenure}` : ''}`} />
+                <InfoRow label="Status"            value={emp.status} />
               </>
             )}
-          </div>
-        </div>
+          </ContentCard>
 
-        {/* 2 — Leave Balance */}
-        <div className="ed-kpi">
-          <div className="ed-kpi-icon" style={{ background: '#6366f118', color: '#6366f1' }}>
-            <Calendar size={20} />
-          </div>
-          <div>
-            <p className="ed-kpi-label">Leave Balance</p>
-            {loading ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 4 }}>
-                <Shimmer width="100px" /><Shimmer width="130px" />
-              </div>
-            ) : leaveBalance ? (
-              <>
-                <p className="ed-kpi-val">Annual: {leaveBalance.annual ?? '—'} days</p>
-                <p className="ed-kpi-sub">
-                  Sick: {leaveBalance.sick ?? '—'} &nbsp;|&nbsp; Casual: {leaveBalance.casual ?? '—'}
-                </p>
-              </>
-            ) : (
-              <p className="ed-kpi-sub" style={{ marginTop: 4 }}>No balance data</p>
-            )}
-          </div>
-        </div>
-
-        {/* 3 — Pending Tasks */}
-        <div className="ed-kpi">
-          <div className="ed-kpi-icon" style={{ background: '#f59e0b18', color: '#f59e0b' }}>
-            <CheckCircle size={20} />
-          </div>
-          <div>
-            <p className="ed-kpi-label">Today's Pending Tasks</p>
-            {loading ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 4 }}>
-                <Shimmer width="40px" /><Shimmer width="70px" />
-              </div>
-            ) : (
-              <>
-                <p className="ed-kpi-val">{pendingTasks}</p>
-                <button
-                  className="ed-text-btn"
-                  onClick={() => setPage('KanbanBoard')}
-                  style={{ padding: 0, marginTop: 2 }}
-                >
-                  View Tasks <ChevronRight size={11} />
-                </button>
-              </>
-            )}
-          </div>
-        </div>
-
-        {/* 4 — Latest Payslip (clickable) */}
-        <div
-          className="ed-kpi"
-          style={{ cursor: 'pointer' }}
-          onClick={() => setPage('PayslipViewer')}
-          title="View payslips"
-        >
-          <div className="ed-kpi-icon" style={{ background: '#8b5cf618', color: '#8b5cf6' }}>
-            <FileText size={20} />
-          </div>
-          <div style={{ flex: 1 }}>
-            <p className="ed-kpi-label">Latest Payslip</p>
-            {loading ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 4 }}>
-                <Shimmer width="90px" /><Shimmer width="110px" />
-              </div>
-            ) : latestPayslip ? (
-              <>
-                <p className="ed-kpi-val">{formatINR(latestPayslip.amount)}</p>
-                <p className="ed-kpi-sub">{latestPayslip.month}</p>
-              </>
-            ) : (
-              <p className="ed-kpi-sub" style={{ marginTop: 4 }}>No payslip yet</p>
-            )}
-          </div>
-          <ArrowRight size={14} color="#8b5cf6" style={{ flexShrink: 0, marginTop: 2 }} />
-        </div>
-
-      </div>
-
-      {/* ── My Insights — personal graphics ── */}
-      <div className="ed-viz-row">
-        <VizCard
-          title="Leave Balance"
-          subtitle="Days remaining by type"
-          icon={<Calendar size={15} />}
-          loading={loading}
-          empty={!loading && leaveDonut.length === 0}
-          emptyText="No balance data yet"
-          action={leaveDonut.length > 0 && (
-            <ChartExpandButton title="Leave Balance" subtitle="Days remaining by type"
-              onViewAll={() => setPage && setPage('MyLeaves')} viewAllLabel="My Leaves">
-              <Donut data={leaveDonut} height={360} centerLabel="Days left" centerValue={totalLeaveLeft} />
-              <DonutLegend data={leaveDonut} max={8} />
-            </ChartExpandButton>
+          {/* Probation: only while it runs (or has ended without a decision).
+              Once confirmed there is nothing to show. */}
+          {showProbation && (
+            <ContentCard title={<span className="mhr-title"><ShieldCheck size={14} /> Probation</span>}>
+              <InfoRow label="Status" value={pv?.label} tone={pv?.tone} />
+              <InfoRow label="Probation end date" value={fmtDate(probation?.probation_end_date)} />
+              {probation?.state === 'on_probation' && (
+                <InfoRow label="Days remaining" value={plural(probation.days_left, 'day')} />
+              )}
+              {probation?.review && (
+                <InfoRow label="Probation review"
+                  value={probation.review.decision
+                    ? `${DECISION_LABEL[probation.review.decision] || titleCase(probation.review.decision)}${probation.review.new_end_date ? ` · new end ${fmtDate(probation.review.new_end_date)}` : ''}`
+                    : (REVIEW_STATUS[probation.review.status] || titleCase(probation.review.status))} />
+              )}
+            </ContentCard>
           )}
-        >
-          <Donut data={leaveDonut} height={140} centerLabel="Days left" centerValue={totalLeaveLeft} />
-          <DonutLegend data={leaveDonut} max={4} />
-        </VizCard>
 
-        <VizCard
-          title="Today's Task Progress"
-          subtitle={todayTasks.length ? `${doneTasks} of ${todayTasks.length} done` : 'No tasks scheduled today'}
-          icon={<CheckCircle size={15} />}
-          loading={loading}
-          empty={!loading && todayTasks.length === 0}
-          emptyText="Nothing on your plate today 🎉"
-        >
-          <div className="ed-viz-ring-wrap">
-            <ProgressRing value={taskPct} size={110} stroke={11} color="#10b981" sublabel="Done" />
-            <div className="ed-viz-ring-stats">
-              <div className="ed-viz-stat">
-                <span className="ed-viz-stat-dot" style={{ background: '#10b981' }} />
-                <b>{doneTasks}</b>&nbsp;completed
-              </div>
-              <div className="ed-viz-stat">
-                <span className="ed-viz-stat-dot" style={{ background: '#f59e0b' }} />
-                <b>{pendingTasks}</b>&nbsp;pending
-              </div>
-            </div>
-          </div>
-        </VizCard>
-
-        <VizCard
-          title="My Leaves This Year"
-          subtitle="Approved days by type"
-          icon={<Briefcase size={15} />}
-          loading={loading}
-          empty={!loading && leaveUsage.length === 0}
-          emptyText="No leaves taken this year"
-          action={leaveUsage.length > 0 && (
-            <ChartExpandButton title="My Leaves This Year" subtitle="Approved days by type"
-              onViewAll={() => setPage && setPage('MyLeaves')} viewAllLabel="My Leaves">
-              <RoundBars data={leaveUsage} height={420} multiColor name="Days" />
-            </ChartExpandButton>
-          )}
-        >
-          <RoundBars data={leaveUsage} height={170} multiColor name="Days" />
-        </VizCard>
-      </div>
-
-      {/* ── Celebrations wall — react & wish colleagues ── */}
-      <div className="ed-card" style={{ marginBottom: 12 }}>
-        <div className="ed-card-hd">
-          <span className="ed-card-title">
-            <Gift size={14} style={{ display: 'inline', marginRight: 6, verticalAlign: 'middle', color: '#a855f7' }} />
-            Today's Celebrations
-          </span>
-        </div>
-        <div className="ed-card-body" style={{ maxHeight: 480, overflowY: 'auto' }}>
-          <CelebrationsBoard />
-        </div>
-      </div>
-
-      {/* ── Middle row — Announcements + Holidays ───────────────────────────── */}
-      <div className="ed-mid-row">
-
-        {/* Announcements */}
-        <div className="ed-card">
-          <div className="ed-card-hd">
-            <span className="ed-card-title">
-              <Bell size={14} style={{ display: 'inline', marginRight: 6, verticalAlign: 'middle', color: '#6366f1' }} />
-              Company Announcements
-            </span>
-            <button className="ed-text-btn" onClick={() => setPage('Announcements')}>
-              View All <ArrowRight size={12} />
-            </button>
-          </div>
-          <div className="ed-card-body">
-            {loading ? (
-              <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
-                {[1, 2, 3].map(i => (
-                  <div key={i} style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                    <Shimmer width={i === 3 ? '50%' : '90%'} /><Shimmer width="70%" />
+          {/* Notice period: only once a resignation / exit is in progress. */}
+          {exit && (
+            <ContentCard title={<span className="mhr-title"><LogOut size={14} /> Resignation &amp; Notice</span>}>
+              <div className="mhr-exit" role="status">
+                <LogOut size={15} />
+                <div>
+                  <strong>Serving notice{exit.separation_type ? ` · ${titleCase(exit.separation_type)}` : ''}</strong>
+                  <div className="mhr-exit-sub">
+                    {exit.last_working_date
+                      ? <>Last working day <b>{fmtDate(exit.last_working_date)}</b>{exit.days_left >= 0 ? ` · ${plural(exit.days_left, 'day')} left` : ''}</>
+                      : 'Last working day not set yet'}
                   </div>
-                ))}
+                </div>
               </div>
-            ) : announcements.length === 0 ? (
-              <EmptyState icon="📢" message="No announcements" />
-            ) : (
-              announcements.slice(0, 3).map((ann, idx) => (
-                <div
-                  key={ann.id || idx}
-                  className="ed-ann-row"
-                  style={idx === Math.min(announcements.length, 3) - 1 ? { borderBottom: 'none' } : {}}
-                >
-                  <div className="ed-ann-icon"><Bell size={14} /></div>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-                      <span className="ed-ann-title">{ann.title}</span>
-                      <span className="ed-ann-date">{announcementDate(ann)}</span>
+              <InfoRow label="Notice period" value={noticeDays ? `${noticeDays} days` : null}
+                hint="Not recorded — ask HR" />
+              <InfoRow label="Resignation submitted" value={fmtDate(exit.submitted_on)} />
+              <InfoRow label="Last working day"      value={fmtDate(exit.last_working_date)} hint="Not set yet" />
+              <InfoRow label="Exit status"           value={titleCase(exit.status)} />
+              <InfoRow label="Exit clearance"        value={`${exit.clearance_done} of ${exit.clearance_total} done`} />
+            </ContentCard>
+          )}
+        </div>
+
+        {/* ── Sales target: only for someone with a yearly target ── */}
+        {salesTarget && <MySalesTarget t={salesTarget} />}
+
+        {/* ── Leave ── */}
+        <SectionTitle rule>Leave</SectionTitle>
+        <div className="mhr-grid">
+          <ContentCard
+            title={<span className="mhr-title"><Calendar size={14} /> Leave Balance</span>}
+            headerActions={<CardLink label="My Leaves" onClick={linkTo('MyLeaves')} />}>
+            {loading ? <Skeleton rows={4} /> : balances === null ? <Empty>Couldn't load your leave balance.</Empty>
+              : balanceRows.length === 0 ? <Empty>No leave allocated to you yet.</Empty> : (
+                <table className="mhr-table">
+                  <thead><tr><th>Type</th><th>Available</th><th>Used</th><th>Pending</th></tr></thead>
+                  <tbody>
+                    {balanceRows.map(b => (
+                      <tr key={b.name}>
+                        <td>{b.name}</td>
+                        <td className="is-strong">{fmtDays(b.available)}</td>
+                        <td>{fmtDays(b.used)}</td>
+                        <td>{fmtDays(b.pending)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+          </ContentCard>
+
+          <ContentCard
+            title={<span className="mhr-title"><CalendarClock size={14} /> My Recent Leave Requests</span>}
+            headerActions={<CardLink label="View all" onClick={linkTo('MyLeaves')} />}>
+            {loading ? <Skeleton rows={4} /> : recentLeaves.length === 0 ? <Empty>You haven't applied for leave yet.</Empty> : (
+              recentLeaves.map((l, i) => {
+                const st = String(l.status || '').toLowerCase();
+                const days = num(l.days ?? l.number_of_days);
+                return (
+                  <div key={l.id || i} className="mhr-line">
+                    <div className="mhr-line-main">
+                      <span className="mhr-line-title">{l.leave_name || l.leave_type || 'Leave'}</span>
+                      <span className="mhr-line-sub">
+                        {fmtDate(l.start_date)}{dayKey(l.end_date) !== dayKey(l.start_date) ? ` – ${fmtDate(l.end_date)}` : ''}
+                        {days ? ` · ${plural(days, 'day')}` : ''}
+                      </span>
                     </div>
-                    <p className="ed-ann-desc">{announcementText(ann.message)}</p>
+                    <span className={`mhr-pill is-${LEAVE_STATUS_TONE[st] || 'muted'}`}>{titleCase(st || 'unknown')}</span>
+                  </div>
+                );
+              })
+            )}
+          </ContentCard>
+        </div>
+
+        {/* ── Company assets with me ── */}
+        <SectionTitle rule>Company Assets</SectionTitle>
+        <div className="mhr-grid">
+          <ContentCard title={<span className="mhr-title"><Package size={14} /> Assets Issued to You</span>}>
+            {loading ? <Skeleton rows={3} /> : myAssets === null ? <Empty>Couldn't load your assets.</Empty>
+              : myAssets.length === 0 ? <Empty>No company assets are issued to you.</Empty> : (
+                <table className="mhr-table">
+                  <thead><tr><th>Asset</th><th>Tag / Serial</th><th>Issued</th><th>Status</th></tr></thead>
+                  <tbody>
+                    {myAssets.map(a => (
+                      <tr key={a.id}>
+                        <td className="is-strong">{a.asset_name}{a.asset_type ? <span className="mhr-line-sub"> · {a.asset_type}</span> : null}</td>
+                        <td>{[a.asset_tag, a.serial_number].filter(Boolean).join(' / ') || '—'}</td>
+                        <td>{fmtDate(a.allocated_date)}</td>
+                        <td>{titleCase(String(a.status || '').replace(/_/g, ' '))}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            {myAssets?.length > 0 && (
+              <p className="mhr-line-sub" style={{ margin: '8px 0 0' }}>Something wrong or missing? Tell HR; they keep this register.</p>
+            )}
+          </ContentCard>
+
+          <ContentCard title={<span className="mhr-title"><FileText size={14} /> Company Forms &amp; Documents</span>}>
+            {loading ? <Skeleton rows={3} /> : forms === null ? <Empty>Couldn't load the company forms.</Empty>
+              : forms.length === 0 ? <Empty>HR has not published any forms yet.</Empty> : (
+                forms.slice(0, 12).map(d => (
+                  <div key={d.id} className="mhr-line">
+                    <div className="mhr-line-main">
+                      <span className="mhr-line-title">{d.title}</span>
+                      <span className="mhr-line-sub">{[d.category, d.file_type].filter(Boolean).join(' · ')}</span>
+                    </div>
+                    {d.file_url
+                      ? <a className="mhr-pill is-info" href={d.file_url} target="_blank" rel="noopener noreferrer">Open</a>
+                      : <span className="mhr-pill is-muted">No file</span>}
+                  </div>
+                ))
+              )}
+          </ContentCard>
+        </div>
+
+        {/* ── Holidays & team ── */}
+        <SectionTitle rule>Calendar &amp; Team</SectionTitle>
+        <div className="mhr-grid">
+          <ContentCard
+            title={<span className="mhr-title"><Gift size={14} /> Upcoming Holidays</span>}
+            headerActions={<CardLink label="Holiday calendar" onClick={linkTo('HolidayCalendar')} />}>
+            {loading ? <Skeleton rows={4} /> : upcomingHolidays.length === 0 ? <Empty>No more holidays on the calendar.</Empty> : (
+              upcomingHolidays.map(h => (
+                <div key={h.id || h.name + h.date} className="mhr-line">
+                  <div className="mhr-date-chip">
+                    <b>{dayKey(h.date).slice(8, 10)}</b>
+                    <span>{new Date(`${dayKey(h.date)}T00:00:00`).toLocaleDateString('en-GB', { month: 'short' })}</span>
+                  </div>
+                  <div className="mhr-line-main">
+                    <span className="mhr-line-title">{h.name}</span>
+                    <span className="mhr-line-sub">{weekday(h.date)}{dayKey(h.date).slice(0, 4) !== today.slice(0, 4) ? ` · ${dayKey(h.date).slice(0, 4)}` : ''}{h.type ? ` · ${h.type}` : ''}</span>
                   </div>
                 </div>
               ))
             )}
-          </div>
+          </ContentCard>
+
+          <ContentCard title={<span className="mhr-title"><Users size={14} /> My Team on Leave Today</span>}>
+            {loading ? <Skeleton rows={3} /> : degraded.includes('teamOnLeave') ? <Empty>Couldn't load your team.</Empty>
+              : team.length === 0 ? <Empty>Everyone in your team is in today.</Empty> : (
+                team.map((m, i) => (
+                  <div key={i} className="mhr-line">
+                    <div className="mhr-avatar">{(m.name || '?')[0].toUpperCase()}</div>
+                    <div className="mhr-line-main">
+                      <span className="mhr-line-title">{m.name}</span>
+                      <span className="mhr-line-sub">{[m.designation, m.back_after && `back after ${fmtDate(m.back_after)}`].filter(Boolean).join(' · ')}</span>
+                    </div>
+                  </div>
+                ))
+              )}
+          </ContentCard>
         </div>
 
-        {/* Holidays */}
-        <div className="ed-card">
-          <div className="ed-card-hd">
-            <span className="ed-card-title">
-              <Gift size={14} style={{ display: 'inline', marginRight: 6, verticalAlign: 'middle', color: '#f59e0b' }} />
-              Upcoming Holidays
-            </span>
-            <button className="ed-text-btn" onClick={() => setPage('HolidayCalendar')}>
-              View Calendar <ArrowRight size={12} />
-            </button>
-          </div>
-          <div className="ed-card-body">
-            {loading ? (
-              <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
-                {[1, 2, 3].map(i => (
-                  <div key={i} style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                    <Shimmer width="60%" /><Shimmer width="40%" />
-                  </div>
-                ))}
-              </div>
-            ) : holidays.length === 0 ? (
-              <EmptyState icon="📅" message="No upcoming holidays" />
-            ) : (
-              holidays.slice(0, 3).map((hol, idx) => (
-                <div
-                  key={hol.name + idx}
-                  className="ed-hol-row"
-                  style={idx === Math.min(holidays.length, 3) - 1 ? { borderBottom: 'none' } : {}}
-                >
-                  <div className="ed-hol-icon"><Gift size={14} /></div>
-                  <div>
-                    <p className="ed-hol-name">{hol.name}</p>
-                    <p className="ed-hol-date">{hol.date} &nbsp;&middot;&nbsp; {hol.day}</p>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-        </div>
+        {/* ── Pay & time ── */}
+        <SectionTitle rule>Pay &amp; Time</SectionTitle>
+        <div className={showTimesheets ? 'mhr-grid' : ''}>
+          <ContentCard
+            title={<span className="mhr-title"><FileText size={14} /> My Payslips</span>}
+            headerActions={<CardLink label="Open My Payslip" onClick={linkTo('PayslipViewer')} />}>
+            <MyPayslipsWidget />
+          </ContentCard>
 
-      </div>
-
-      {/* ── Second row — Team on Leave + Today's Tasks ───────────────────────── */}
-      <div className="ed-second-row">
-
-        {/* Team on Leave Today */}
-        <div className="ed-card">
-          <div className="ed-card-hd">
-            <span className="ed-card-title">
-              <Users size={14} style={{ display: 'inline', marginRight: 6, verticalAlign: 'middle', color: '#ec4899' }} />
-              Team on Leave Today
-            </span>
-            <span style={{ fontSize: 11, color: '#9ca3af', fontWeight: 500 }}>
-              {teamOnLeave.length} member{teamOnLeave.length !== 1 ? 's' : ''}
-            </span>
-          </div>
-          <div className="ed-card-body">
-            {loading ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                {[1, 2, 3].map(i => <Shimmer key={i} width={i === 3 ? '60%' : '85%'} />)}
-              </div>
-            ) : teamOnLeave.length === 0 ? (
-              <EmptyState icon="👥" message="No team members on leave today" />
-            ) : (
-              <div className="ed-leave-pills">
-                {teamOnLeave.slice(0, 6).map((l, i) => {
-                  const name = [l.first_name, l.last_name].filter(Boolean).join(' ') || l.name || 'Unknown';
-                  const initial = name[0].toUpperCase();
+          {showTimesheets && (
+            <ContentCard
+              title={<span className="mhr-title"><Clock size={14} /> My Recent Timesheet Entries</span>}
+              headerActions={<CardLink label="Log hours" onClick={linkTo('MyTimesheet')} />}>
+              {loading ? <Skeleton rows={4} /> : recentTimesheets.length === 0 ? <Empty>No timesheet entries yet.</Empty> : (
+                recentTimesheets.map((t, i) => {
+                  const st = String(t.status || 'draft').toLowerCase();
                   return (
-                    <div key={i} className="ed-member-pill">
-                      <div className="ed-member-avatar">{initial}</div>
-                      <div style={{ minWidth: 0 }}>
-                        <div style={{ fontSize: 12, fontWeight: 600, color: '#111827', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          {name}
-                        </div>
-                        <div style={{ fontSize: 11, color: '#9ca3af' }}>
-                          {l.department || l.designation || l.leave_type || 'On Leave'}
-                        </div>
+                    <div key={t.id || i} className="mhr-line">
+                      <div className="mhr-line-main">
+                        <span className="mhr-line-title">{t.project_name || t.task_title || t.task_description || t.description || 'Timesheet entry'}</span>
+                        <span className="mhr-line-sub">
+                          {fmtDate(t.work_date || t.entry_date)} · {num(t.hours_worked ?? t.hours)}h
+                          {t.task_title && t.project_name ? ` · ${t.task_title}` : ''}
+                        </span>
                       </div>
+                      <span className={`mhr-pill is-${st === 'approved' ? 'ok' : st === 'rejected' ? 'bad' : 'warn'}`}>{titleCase(st)}</span>
                     </div>
                   );
-                })}
-                {teamOnLeave.length > 6 && (
-                  <div style={{ fontSize: 11, color: '#9ca3af', paddingTop: 4 }}>
-                    +{teamOnLeave.length - 6} more
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
+                })
+              )}
+            </ContentCard>
+          )}
         </div>
 
-        {/* Today's Tasks */}
-        <div className="ed-card">
-          <div className="ed-card-hd">
-            <span className="ed-card-title">
-              <ListChecks size={14} style={{ display: 'inline', marginRight: 6, verticalAlign: 'middle', color: '#10b981' }} />
-              Today's Tasks
-            </span>
-            <button className="ed-text-btn" onClick={() => setPage('KanbanBoard')}>
-              View All <ArrowRight size={12} />
-            </button>
-          </div>
-          <div className="ed-card-body">
-            {loading ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                {[1, 2, 3, 4].map(i => <Shimmer key={i} width={i % 2 === 0 ? '70%' : '90%'} />)}
-              </div>
-            ) : todayTasks.length === 0 ? (
-              <EmptyState icon="✅" message="No tasks due today" />
-            ) : (
-              todayTasks.slice(0, 5).map((task, i) => {
-                const done = task.status === 'done' || task.status === 'completed';
-                const priority = (task.priority || 'medium').toLowerCase();
-                return (
-                  <div
-                    key={task.id || i}
-                    className="ed-event-item"
-                    style={i === Math.min(todayTasks.length, 5) - 1 ? { borderBottom: 'none' } : {}}
-                  >
-                    <div className={`ed-event-dot ed-priority-${priority}`} />
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{
-                        fontSize: 13, fontWeight: 500, color: done ? '#9ca3af' : '#111827',
-                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                        textDecoration: done ? 'line-through' : 'none',
-                      }}>
-                        {task.title || task.name}
-                      </div>
-                      <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 1 }}>
-                        {task.project_name || task.project || ''}
-                        {task.status ? ` · ${task.status}` : ''}
-                      </div>
-                    </div>
-                    {done && <CheckCircle size={14} color="#10b981" style={{ flexShrink: 0 }} />}
-                  </div>
-                );
-              })
-            )}
-          </div>
-        </div>
-
-      </div>
-
-      {/* ── Third row — My Payslips + My Timesheets ─────────────────────────── */}
-      <div className="ed-third-row">
-
-        {/* My Payslips */}
-        <div className="ed-card">
-          <div className="ed-card-hd">
-            <span className="ed-card-title">
-              <FileText size={14} style={{ display: 'inline', marginRight: 6, verticalAlign: 'middle', color: '#8b5cf6' }} />
-              My Payslips
-            </span>
-            <button className="ed-text-btn" onClick={() => setPage('PayslipViewer')}>
-              View All <ArrowRight size={12} />
-            </button>
-          </div>
-          <MyPayslipsWidget />
-        </div>
-
-        {/* My Timesheets */}
-        <div className="ed-card">
-          <div className="ed-card-hd">
-            <span className="ed-card-title">
-              <Clock size={14} style={{ display: 'inline', marginRight: 6, verticalAlign: 'middle', color: '#10b981' }} />
-              My Timesheets
-            </span>
-            <button className="ed-text-btn" onClick={() => setPage('MyTimesheet')}>
-              Log Hours <ArrowRight size={12} />
-            </button>
-          </div>
-          <div className="ed-card-body">
-            {loading ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                {[1, 2, 3].map(i => <Shimmer key={i} width={i === 3 ? '60%' : '85%'} />)}
-              </div>
-            ) : recentTimesheets.length === 0 ? (
-              <EmptyState icon="⏱️" message="No timesheet entries yet" />
-            ) : (
-              recentTimesheets.slice(0, 5).map((ts, i) => {
-                const st = (ts.status || 'draft').toLowerCase();
-                const statusColor =
-                  st === 'approved' ? '#10b981' :
-                  st === 'rejected' ? '#ef4444' : '#f59e0b';
-                const isLast = i === Math.min(recentTimesheets.length, 5) - 1;
-                return (
-                  <div
-                    key={ts.id || i}
-                    className="ed-event-item"
-                    style={isLast ? { borderBottom: 'none' } : {}}
-                  >
-                    <div className="ed-event-dot" style={{ background: statusColor }} />
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{
-                        fontSize: 13, fontWeight: 500, color: '#111827',
-                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                      }}>
-                        {ts.task_description || ts.project_name || ts.project || 'Timesheet Entry'}
-                      </div>
-                      <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 1 }}>
-                        {ts.date || ts.work_date} &nbsp;&middot;&nbsp; {ts.hours_worked || ts.hours || 0}h
-                      </div>
-                    </div>
-                    <span className={`ed-ts-badge ed-ts-${st}`}>{st}</span>
-                  </div>
-                );
-              })
-            )}
-          </div>
-        </div>
-
-      </div>
-
-      {/* ── Quick Actions ────────────────────────────────────────────────────── */}
-      {quickActions.length > 0 && (
-        <div className="ed-quick-actions">
-          {quickActions.map(({ id, label, sub, color, Icon, action }) => (
-            <div key={id} className="ed-qa-card" onClick={action}>
-              <div className="ed-qa-icon" style={{ background: color + '18' }}>
-                <Icon size={22} color={color} />
-              </div>
-              <span className="ed-qa-label">{label}</span>
-              <span className="ed-qa-sub">{sub}</span>
+        {/* ── Other self-service pages (not already linked above) ── */}
+        {quickLinks.length > 0 && (
+          <>
+            <SectionTitle rule>More for you</SectionTitle>
+            <div className="mhr-quick">
+              {quickLinks.map(({ page, label, sub, Icon, onClick }) => (
+                <button key={page} type="button" className="mhr-quick-card" onClick={onClick}>
+                  <span className="mhr-quick-ico"><Icon size={18} /></span>
+                  <span className="mhr-quick-txt">
+                    <span className="mhr-quick-label">{label}</span>
+                    <span className="mhr-quick-sub">{sub}</span>
+                  </span>
+                  <ArrowRight size={14} className="mhr-quick-arrow" />
+                </button>
+              ))}
             </div>
-          ))}
-        </div>
-      )}
-    </div>
+          </>
+        )}
+      </div>
+    </PageShell>
   );
 }
-

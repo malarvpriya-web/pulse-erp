@@ -12,6 +12,8 @@ import { exitStatusWorkflowOnly } from "../shared/hrContainment.js";
 import { getDirectoryEntries } from "./employee.service.js";
 import { readScope } from "../shared/employeeAccess.js";
 import { withSalaryMasking } from "./salaryVisibility.js";
+import { ownOrPermission } from "../shared/ownRecordRead.js";
+import { cleanExitFields, cleanSeparationType, startExitChecks, freshClearance, sendExitError, notifyExitStarted, defaultNoticeDays } from "../modules/hr/exitCase.js";
 
 const HR_ROLES = [
   "admin", "super_admin", "hr", "hr_manager", "hr_exec", "payroll_admin",
@@ -48,7 +50,8 @@ router.get("/next-code", verifyToken, allowRoles(...HR_ROLES), getNextEmployeeCo
 // list that also admitted hr_exec and finance_manager. Scope: the employee must
 // be in the caller's company; a login with no company is refused unless it is a
 // genuinely global super-admin scope (it used to read every tenant).
-router.get("/:id/salary-revisions", verifyToken, requirePermission('payroll', 'view'), async (req, res) => {
+// payroll:view, or the caller's own history — My Details' History tab (2026-11-11).
+router.get("/:id/salary-revisions", verifyToken, ownOrPermission('payroll', 'view', req => req.params.id), async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id < 1) return res.status(400).json({ message: 'Invalid employee id' });
   const companyId = companyOf(req);
@@ -86,40 +89,27 @@ router.post("/:id/offboard", verifyToken, allowRoles(...HR_ROLES), async (req, r
   const empId = Number(req.params.id);
   if (!Number.isInteger(empId) || empId < 1) return res.status(400).json({ error: 'Invalid employee id' });
 
-  const {
-    separation_type = 'resignation',
-    last_working_date,
-    notice_period,
-    reason,
-  } = req.body;
-
-  if (!last_working_date) return res.status(400).json({ error: 'last_working_date is required' });
-
   const companyId = req.scope?.company_id ?? null;
   const client = await pool.connect();
   try {
+    // Same rules as Exit Management's Initiate (§274, modules/hr/exitCase.js):
+    // valid type and dates, employee live and still employed, no second open
+    // exit, clearance started from nothing. This path used to accept any of those.
+    const f = cleanExitFields(req.body);
+    const { separation_type, last_working_date } = f;
     await client.query('BEGIN');
-
-    // Scope check
-    const { rows: [emp] } = await client.query(
-      `SELECT * FROM employees WHERE id=$1 ${companyId != null ? 'AND company_id=$2' : ''}`,
-      companyId != null ? [empId, companyId] : [empId]
-    );
-    if (!emp) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Employee not found' }); }
+    const emp = await startExitChecks(client, empId, companyId);
 
     // Create exit request
     const { rows: [er] } = await client.query(
       `INSERT INTO exit_requests
-         (employee_id, separation_type, last_working_date, notice_period, reason, status)
-       VALUES ($1,$2,$3,$4,$5,'active') RETURNING *`,
-      [empId, separation_type, last_working_date, notice_period || null, reason || null]
+         (employee_id, separation_type, last_working_date, resignation_date, notice_period, reason, status)
+       VALUES ($1,$2,$3,$4,$5,$6,'active') RETURNING *`,
+      [empId, separation_type, last_working_date, f.resignation_date ?? null, f.notice_period ?? await defaultNoticeDays(client, emp), f.reason ?? null]
     );
 
-    // Seed exit_clearance row so checklist is immediately visible
-    await client.query(
-      `INSERT INTO exit_clearance (employee_id) VALUES ($1) ON CONFLICT (employee_id) DO NOTHING`,
-      [empId]
-    );
+    // Clearance checklist, visible straight away and never inherited from an earlier exit
+    await freshClearance(client, empId);
 
     // Move employee into notice period — NOT straight to the terminal status.
     // exitStatusSync.cron.js flips to resigned/terminated/left once
@@ -153,11 +143,12 @@ router.post("/:id/offboard", verifyToken, allowRoles(...HR_ROLES), async (req, r
       oldData: { status: emp.status },
       newData: { status: newStatus, separation_type, last_working_date, exit_request_id: er.id },
     });
+    const notified = await notifyExitStarted({ employee: emp, exitRequest: er, actorUserId: req.user?.userId ?? req.user?.id });
 
-    res.status(201).json({ exit_request: er, employee_status: newStatus });
+    res.status(201).json({ exit_request: er, employee_status: newStatus, notified });
   } catch (e) {
-    await client.query('ROLLBACK');
-    res.status(500).json({ error: e.message });
+    await client.query('ROLLBACK').catch(() => {});
+    sendExitError(res, e);
   } finally {
     client.release();
   }
@@ -169,13 +160,26 @@ router.patch("/ex/:id/exit-details", verifyToken, allowRoles(...HR_ROLES), async
   const empId = Number(req.params.id);
   if (!Number.isInteger(empId) || empId < 1) return res.status(400).json({ error: 'Invalid employee id' });
 
-  const { exit_date, exit_reason, separation_type, last_working_date } = req.body;
+  const { exit_date, exit_reason, last_working_date } = req.body;
   const companyId = req.scope?.company_id ?? null;
   const client = await pool.connect();
   try {
+    // §274: a records correction for people who have ALREADY left. A current
+    // employee's exit is edited in Exit Management (PUT /exit/requests/:id),
+    // which refuses once F&F is approved; this path would have rewritten it
+    // without either check. The exit type comes from the same list too.
+    const separation_type = req.body?.separation_type ? cleanSeparationType(req.body.separation_type) : null;
     await client.query('BEGIN');
+    const { rows: [cur] } = await client.query(
+      `SELECT status FROM employees WHERE id = $1 AND deleted_at IS NULL AND ($2::int IS NULL OR company_id = $2::int) FOR UPDATE`,
+      [empId, companyId]);
+    if (!cur) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Employee not found' }); }
+    if (!EXITED_STATUSES.includes(String(cur.status ?? '').trim().toLowerCase())) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'This employee has not left. Change their exit in Exit Management.', code: 'USE_EXIT_MANAGEMENT' });
+    }
 
-    // Update employees table base fields
+    // Base exit fields on the employee record
     const { rows: [emp] } = await client.query(
       `UPDATE employees
           SET exit_date   = COALESCE($1, exit_date),
@@ -216,8 +220,8 @@ router.patch("/ex/:id/exit-details", verifyToken, allowRoles(...HR_ROLES), async
     logAudit({ userId: req.user?.id, module: 'employees', recordId: empId, recordType: 'employee', action: 'update_exit_details', newData: req.body });
     res.json(await withSalaryMasking(req, { success: true, employee: emp }));
   } catch (e) {
-    await client.query('ROLLBACK');
-    res.status(500).json({ error: e.message });
+    await client.query('ROLLBACK').catch(() => {});
+    sendExitError(res, e);
   } finally {
     client.release();
   }

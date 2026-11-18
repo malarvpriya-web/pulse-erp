@@ -14,8 +14,6 @@ import ConfirmDialog from '@/components/core/ConfirmDialog';
 import { PageHero, PageShell } from '@/components/pulse-ui';
 import { fmtDate } from '@/utils/dateFormatter';
 
-const DECISION_MAP = { approve: 'Confirm', reject: 'Terminate', extend: 'Extend Probation' };
-
 /* Icon + colour per notification type. Mirrors the topbar bell's NOTIF_CFG so
    the same notification reads identically in the dropdown and here. */
 const TYPE_CFG = {
@@ -69,9 +67,6 @@ const NotificationCenter = () => {
   const { user, role, menuAccess } = useAuth();
   const [notifications, setNotifications] = useState([]);
   const [filter, setFilter] = useState('all');
-  const [showDecisionForm, setShowDecisionForm] = useState(false);
-  const [selectedNotification, setSelectedNotification] = useState(null);
-  const [formData, setFormData] = useState({ decision: '', performance_rating: 3, comments: '' });
   const [deleteConfirmId, setDeleteConfirmId] = useState(null);
 
   const fetchNotifications = useCallback(async (options = {}) => {
@@ -125,12 +120,6 @@ const NotificationCenter = () => {
     await deleteNotification(id);
   };
 
-  const handleProbationAction = (notif, action) => {
-    setSelectedNotification({ ...notif, action });
-    setFormData({ decision: DECISION_MAP[action] || '', performance_rating: 3, comments: '' });
-    setShowDecisionForm(true);
-  };
-
   const handleLeaveAction = async (notif, action) => {
     try {
       await api.put(`/leaves/applications/${notif.reference_id}/status`, { status: action });
@@ -143,26 +132,12 @@ const NotificationCenter = () => {
     }
   };
 
-  const submitDecisionForm = async () => {
-    if (!formData.decision) {
-      toast.error('Please select a decision');
-      return;
-    }
-    try {
-      await api.put(`/probation/by-employee/${selectedNotification.reference_id}`, {
-        decision: formData.decision,
-        performance_rating: formData.performance_rating,
-        comments: formData.comments,
-      });
-      await api.put(`/notifications/${selectedNotification.id}/read`, {});
-      toast.success(`Probation decision "${formData.decision}" submitted successfully`);
-      setShowDecisionForm(false);
-      fetchNotifications();
-    } catch (error) {
-      console.error('Error:', error);
-      toast.error('Failed to submit decision');
-    }
-  };
+  // Probation decisions are NOT taken from a notification any more
+  // (2026-11-11): the old Confirm / Extend / Terminate buttons wrote free text
+  // onto a reminder-log row and never changed the employee, and anyone who
+  // received the reminder could press them. The decision is recorded on
+  // Probation Management, from the department head's submitted review. A
+  // probation notification just opens that page (notificationTarget.js).
 
   /* Opening a notification takes you to the record's module. The destination
      comes from module_name/notification_type (notificationTarget.js) and is
@@ -180,10 +155,6 @@ const NotificationCenter = () => {
     const qs = new URLSearchParams(target.params).toString();
     navigate(`/${target.page}${qs ? `?${qs}` : ''}`);
   };
-
-  const isProbationNotif = (notif) =>
-    ['probation_warning', 'probation_due', 'approval'].includes(notif.notification_type) &&
-    (notif.module_name || '').toLowerCase() === 'probation';
 
   const isLeaveNotif = (notif) =>
     notif.notification_type === 'approval' &&
@@ -304,19 +275,6 @@ const NotificationCenter = () => {
                       {/* Approve/reject/read/delete act on the row — they must
                           not also open it. */}
                       <div className="nc-acts" onClick={e => e.stopPropagation()}>
-                        {isProbationNotif(notif) && !notif.is_read && (
-                          <>
-                            <button className="nc-btn nc-btn-ok" onClick={() => handleProbationAction(notif, 'approve')}>
-                              Confirm
-                            </button>
-                            <button className="nc-btn nc-btn-alt" onClick={() => handleProbationAction(notif, 'extend')}>
-                              Extend
-                            </button>
-                            <button className="nc-btn nc-btn-no" onClick={() => handleProbationAction(notif, 'reject')}>
-                              Terminate
-                            </button>
-                          </>
-                        )}
                         {isLeaveNotif(notif) && !notif.is_read && (
                           <>
                             <button className="nc-btn nc-btn-ok" onClick={() => handleLeaveAction(notif, 'approved')}>
@@ -355,63 +313,6 @@ const NotificationCenter = () => {
         ))
       )}
 
-      {showDecisionForm && (
-        <div className="nc-mask" onClick={() => setShowDecisionForm(false)}>
-          <div className="nc-modal" onClick={e => e.stopPropagation()}>
-            <div className="nc-modal-hd">
-              <h2>Probation Decision</h2>
-              <p>{selectedNotification?.title}</p>
-            </div>
-
-            <div className="nc-modal-bd">
-              <div className="nc-field">
-                <label htmlFor="nc-decision">Decision *</label>
-                <select
-                  id="nc-decision"
-                  value={formData.decision}
-                  onChange={(e) => setFormData({ ...formData, decision: e.target.value })}
-                >
-                  <option value="">Select Decision</option>
-                  <option value="Confirm">Confirm</option>
-                  <option value="Extend Probation">Extend Probation</option>
-                  <option value="Terminate">Terminate</option>
-                </select>
-              </div>
-
-              <div className="nc-field">
-                <label htmlFor="nc-rating">
-                  Performance Rating <span className="nc-rating-val">{formData.performance_rating}/5</span>
-                </label>
-                <input
-                  id="nc-rating"
-                  type="range" min="1" max="5"
-                  value={formData.performance_rating}
-                  onChange={(e) => setFormData({ ...formData, performance_rating: parseInt(e.target.value, 10) })}
-                />
-                <div className="nc-range-scale">
-                  <span>1 — Poor</span><span>3 — Average</span><span>5 — Excellent</span>
-                </div>
-              </div>
-
-              <div className="nc-field">
-                <label htmlFor="nc-comments">Comments</label>
-                <textarea
-                  id="nc-comments"
-                  value={formData.comments}
-                  onChange={(e) => setFormData({ ...formData, comments: e.target.value })}
-                  rows="3"
-                  placeholder="Add any remarks or observations…"
-                />
-              </div>
-            </div>
-
-            <div className="nc-modal-ft">
-              <button className="nc-cancel" onClick={() => setShowDecisionForm(false)}>Cancel</button>
-              <button className="nc-submit" onClick={submitDecisionForm}>Submit Decision</button>
-            </div>
-          </div>
-        </div>
-      )}
     </PageShell>
   );
 };

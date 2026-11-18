@@ -7,12 +7,16 @@
  *      ended_at IS NULL, matched to employees.department by name, the way
  *      shared/employeeAccess.js managesEmployee() matches it);
  *   2. if the department has no head, the employee's reporting manager;
- *   3. if neither exists — or the pass names a visitor, not an employee — HR
- *      (any holder of hr:edit).
+ *   3. if neither exists — or a legacy pass names a visitor, not an employee —
+ *      HR: any holder of gate_access:approve (was hr:edit until §272).
  * The approver must be a current, non-deleted employee of the same company,
  * and is never the pass holder: a head's own pass falls to their manager.
  * HR does not approve over a department head or manager; it covers only the
  * case where the department has nobody to approve.
+ *
+ * §273: a goods pass for a VISITOR (gate_passes.visitor_id) is approved by the
+ * visitor's HOST — the pass's employee_id — and by nobody else; security then
+ * releases it at the gate.
  *
  * One SQL fragment, used by the approve/cancel routes, the gate-pass list
  * (who is awaited, and whether the caller may act) and the Approval Center —
@@ -29,9 +33,14 @@ export const GP_APPROVER_JOIN = `
   LEFT JOIN LATERAL (
     SELECT x.kind AS approver_kind, x.emp_id AS approver_employee_id, x.emp_name AS approver_name
       FROM (
+        SELECT 0 AS rk, 'host'::text AS kind, hv.id AS emp_id, hv.name::text AS emp_name
+          FROM employees hv
+         WHERE gp.visitor_id IS NOT NULL AND hv.id = gp.employee_id AND hv.company_id = gp.company_id
+        UNION ALL
         SELECT 1 AS rk, 'department_head'::text AS kind, h.id AS emp_id, h.name::text AS emp_name
           FROM employees pe
-          JOIN master_departments d ON LOWER(BTRIM(d.name)) = LOWER(BTRIM(pe.department))
+          -- a retired department has no head here, as in probation (§271)
+          JOIN master_departments d ON LOWER(BTRIM(d.name)) = LOWER(BTRIM(pe.department)) AND d.is_active = true
           JOIN department_heads dh ON dh.department_id = d.id AND dh.ended_at IS NULL
                                   AND dh.company_id = pe.company_id
           JOIN employees h ON h.id = dh.head_employee_id
@@ -53,23 +62,32 @@ export const GP_APPROVER_JOIN = `
   ) appr ON true`;
 
 export const APPROVER_LABEL = {
+  host: 'Host employee',
   department_head: 'Department head',
   reporting_manager: 'Reporting manager',
   hr: 'HR',
 };
 
 /**
- * May `callerEmployeeId` (holding hr:edit or not) approve this pass?
+ * May `callerEmployeeId` approve this pass? `hrApprover`: the caller holds
+ * gate_access:approve, which makes them the HR fallback approver.
  * `row` carries employee_id + the GP_APPROVER_JOIN columns.
  * Returns { ok: true } or { ok: false, reason }.
  */
-export function approverDecision(row, { callerEmployeeId, hrEdit }) {
+export function approverDecision(row, { callerEmployeeId, hrApprover }) {
+  // A visitor's goods: the host approves — the one case where the pass's
+  // employee approves it, because the pass is for their visitor, not for them.
+  if (row.approver_kind === 'host') {
+    return callerEmployeeId != null && String(callerEmployeeId) === String(row.approver_employee_id)
+      ? { ok: true }
+      : { ok: false, reason: `This goods pass is approved by the visitor's host, ${row.approver_name || 'the host'}.` };
+  }
   if (row.employee_id != null && callerEmployeeId != null
       && String(row.employee_id) === String(callerEmployeeId)) {
     return { ok: false, reason: 'You cannot approve your own gate pass.' };
   }
   if (row.approver_kind === 'hr') {
-    return hrEdit ? { ok: true }
+    return hrApprover ? { ok: true }
       : { ok: false, reason: 'This pass is approved by HR: its department has no head and the employee has no reporting manager.' };
   }
   if (callerEmployeeId != null && String(callerEmployeeId) === String(row.approver_employee_id)) return { ok: true };

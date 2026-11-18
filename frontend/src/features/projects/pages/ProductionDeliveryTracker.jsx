@@ -602,7 +602,7 @@ export default function ProductionDeliveryTracker({ setPage }) {
       {drawer && (
         <>
           <div onClick={() => setDrawer(false)} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.3)', zIndex: 40 }} />
-          <div style={{ position: 'fixed', right: 0, top: 0, bottom: 0, width: 460, maxWidth: '92vw', background: 'var(--color-background-primary)', borderLeft: '0.5px solid var(--color-border-tertiary)', zIndex: 50, padding: 24, overflowY: 'auto', boxShadow: '-4px 0 24px rgba(0,0,0,0.12)' }}>
+          <div style={{ position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', maxHeight: 'calc(100vh - 48px)', borderRadius: 12, width: 460, maxWidth: 'calc(100vw - 32px)', background: 'var(--color-background-primary)', zIndex: 50, padding: 24, overflowY: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,.18)' }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18 }}>
               <h3 style={{ margin: 0, color: 'var(--color-text-primary)', fontSize: 17 }}>{editingId ? 'Edit Project' : 'New Project'}</h3>
               <button onClick={() => setDrawer(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-secondary)' }}><X size={20} /></button>

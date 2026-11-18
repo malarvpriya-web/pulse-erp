@@ -28,6 +28,8 @@ import { canOverride, canClaimCategory, isApproverRole } from './approvals.authz
 import { isAttendanceApprover } from '../attendance/attendance.authz.js';
 import { assertCanDecideAmount, assertNotSelfApproval } from '../procurement/procurement.authz.js';
 import { isCurrentSql } from '../../shared/employeeStatus.js';
+import { canApproveRequisition, canApproveOffer } from '../recruitment/requisitionAccess.js';
+import { fnfSettlementSuspended } from '../../shared/hrContainment.js';
 import { GP_APPROVER_JOIN, APPROVER_LABEL, approverDecision } from '../../shared/gatePassApprover.js';
 
 // Overdue threshold when a request type has no configured SLA. 48h is the
@@ -99,7 +101,10 @@ export async function buildContext(req) {
         AND ($1::int IS NULL OR e.company_id = $1)`, [req.scope?.company_id ?? null]);
 
   const perms = {};
-  for (const m of ['leaves', 'procurement', 'finance', 'engineering', 'hr', 'expense_claims']) {
+  // ('hr' and 'it_declarations' also decide Record corrections, `corr`.)
+  for (const m of ['leaves', 'procurement', 'finance', 'engineering', 'hr', 'expense_claims', 'it_declarations', 'employee_bank', 'gate_access', 'gate_security',
+                   // F&F (fnf): approve = payroll:approve, pay = payroll_payment:approve.
+                   'payroll', 'payroll_payment']) {
     perms[m] = await permissionFor(req, m).catch(() => null);
   }
 
@@ -721,16 +726,17 @@ const requisition = {
       SELECT 'requisition:' || jr.id AS id, jr.id::text AS source_id,
              CONCAT(jr.job_title, ' (', jr.number_of_positions, ' position',
                     CASE WHEN jr.number_of_positions = 1 THEN '' ELSE 's' END, ')') AS request_title,
-             jr.job_description AS description, NULL::numeric AS amount,
+             COALESCE(NULLIF(jr.justification, ''), jr.job_description) AS description, NULL::numeric AS amount,
              e.id AS requester_emp_id, ${name('e')} AS requested_by, e.company_email AS requester_email,
              jr.department, jr.created_at AS request_date, jr.company_id,
-             CASE WHEN jr.number_of_positions >= 3 THEN 'High' WHEN jr.number_of_positions = 2 THEN 'Medium' ELSE 'Low' END AS priority
+             INITCAP(COALESCE(jr.priority, 'medium')) AS priority
         FROM job_requisitions jr LEFT JOIN employees e ON e.id = jr.requested_by
        WHERE jr.status = 'pending_approval' AND jr.deleted_at IS NULL ${cf(companyId, 'jr.company_id')}`, cp(companyId));
   },
   stage: () => 'Approver',
-  canAct: (ctx, r) => (canOverride(ctx.req) || (isApproverRole(ctx.req) && canClaimCategory(ctx.req, 'requisition')))
-    && !(ctx.employeeId != null && String(ctx.employeeId) === String(r.requester_emp_id)),
+  // Super Admin only, including a requisition Super Admin raised — there is no
+  // one above (owner decision 2026-11-17, requisitionAccess.js).
+  canAct: (ctx) => canApproveRequisition(ctx.req),
   actions: (r) => ({
     approve: req_('post', `/approvals/${r.id}/approve`, {}, 'comment'),
     reject:  req_('post', `/approvals/${r.id}/reject`,  {}, 'comment', { commentRequired: true, label: 'Send back' }),
@@ -771,8 +777,8 @@ const offer = {
        WHERE ol.offer_status = 'pending_approval' AND ol.deleted_at IS NULL ${cf(companyId, 'ol.company_id')}`, cp(companyId));
   },
   stage: () => 'Approver',
-  canAct: (ctx, r) => (canOverride(ctx.req) || (isApproverRole(ctx.req) && canClaimCategory(ctx.req, 'offer')))
-    && !(ctx.employeeId != null && String(ctx.employeeId) === String(r.requester_emp_id)),
+  // Super Admin only (owner, 2026-11-18) — same as requisitions.
+  canAct: (ctx) => canApproveOffer(ctx.req),
   actions: (r) => ({
     approve: req_('post', `/approvals/${r.id}/approve`, {}, 'comment'),
     reject:  req_('post', `/approvals/${r.id}/reject`,  {}, 'comment', { commentRequired: true, label: 'Send back' }),
@@ -844,6 +850,39 @@ const internEval = {
   actions: () => ({ open: { page: 'MyInternEvaluations', params: {} } }),
 };
 
+// Interview feedback (2026-11-17): an interview that has happened (or is today)
+// and has no note from this panel member yet. One row per interviewer — the
+// lead and each panel member. Completed on My Interviews; the only action is
+// `open`. Interviews older than 30 days drop off.
+const interviewFeedback = {
+  type: 'ivfb', label: 'Interview Feedback', page: 'MyInterviews',
+  pending(companyId) {
+    return q(`
+      SELECT 'ivfb:' || s.id || ':' || m.emp AS id, s.id::text AS source_id,
+             CONCAT('Interview feedback · ', c.full_name) AS request_title,
+             CONCAT_WS(' · ', COALESCE(jo.job_title, cjo.job_title), TO_CHAR(s.interview_date, 'DD Mon YY')) AS description,
+             NULL::numeric AS amount, NULL AS requester_emp_id,
+             'Recruitment' AS requested_by, NULL AS requester_email, COALESCE(jo.department, cjo.department) AS department,
+             s.interview_date::timestamp AS request_date, s.company_id, m.emp AS assignee_emp_id,
+             CASE WHEN s.interview_date < CURRENT_DATE THEN 'High' ELSE 'Medium' END AS priority
+        FROM interview_schedules s
+        JOIN candidates c ON c.id = s.candidate_id AND c.deleted_at IS NULL
+        CROSS JOIN LATERAL (
+          SELECT s.interviewer_id AS emp
+          UNION
+          SELECT (jsonb_array_elements_text(s.panel_employee_ids))::int) m
+        LEFT JOIN job_openings jo ON jo.id = s.job_opening_id
+        LEFT JOIN job_openings cjo ON cjo.id = c.applied_job_id
+       WHERE m.emp IS NOT NULL AND s.deleted_at IS NULL AND s.status <> 'cancelled'
+         AND s.interview_date <= CURRENT_DATE AND s.interview_date >= CURRENT_DATE - 30
+         AND NOT EXISTS (SELECT 1 FROM interview_notes n WHERE n.interview_id = s.id AND n.interviewer_id = m.emp)
+         ${cf(companyId, 's.company_id')}`, cp(companyId));
+  },
+  stage: () => 'Interviewer',
+  canAct: (ctx, r) => ctx.linkedEmployeeId != null && String(r.assignee_emp_id) === String(ctx.linkedEmployeeId),
+  actions: (r) => ({ open: { page: 'MyInterviews', params: { interview: r.source_id } } }),
+};
+
 const probationReview = {
   type: 'prob', label: 'Probation Review', page: 'MyProbationReviews',
   // Same rule as GET /probation-reviews/mine/summary `needs_action`.
@@ -866,15 +905,49 @@ const probationReview = {
   actions: (r) => ({ open: { page: 'MyProbationReviews', params: { ref: r.source_id } } }),
 };
 
+// The HR side of the same review (probationReviews.service.js decideReview,
+// §268/§269): once the head has SUBMITTED, HR (hr:edit) records the decision,
+// which updates the employee. The decision needs the head's comments and, for
+// an extension or exit, dates — so the action is `open`: Probation Management
+// with the decision form on that review. Never on one's own probation.
+const probationDecision = {
+  type: 'probd', label: 'Probation Decision', page: 'Probation',
+  pending(companyId) {
+    return q(`
+      SELECT 'probd:' || r.id AS id, r.id::text AS source_id,
+             CONCAT('Probation decision · ', ${name('e')}, COALESCE(' (' || e.office_id || ')', '')) AS request_title,
+             CONCAT('Head recommends ',
+                    CASE r.recommendation WHEN 'confirm' THEN 'Confirm' WHEN 'extend' THEN 'Extend' ELSE 'Do not confirm' END,
+                    ' · ', r.rating, '/5 · probation ends ', TO_CHAR(r.original_end_date, 'DD Mon YY')) AS description,
+             NULL::numeric AS amount, r.employee_id AS requester_emp_id,
+             COALESCE(${name('rv')}, 'Department head') AS requested_by, NULL AS requester_email, e.department,
+             r.submitted_at AS request_date, r.company_id,
+             CASE WHEN r.original_end_date < CURRENT_DATE THEN 'High' ELSE 'Medium' END AS priority
+        FROM probation_reviews r
+        JOIN employees e  ON e.id = r.employee_id
+        JOIN employees rv ON rv.id = r.reviewer_employee_id
+       WHERE r.status = 'submitted' AND e.deleted_at IS NULL ${cf(companyId, 'r.company_id')}`, cp(companyId));
+  },
+  stage: () => 'HR decision',
+  canAct: (ctx, r) => can(ctx, 'hr', 'can_edit')
+    && !(ctx.linkedEmployeeId != null && String(r.requester_emp_id) === String(ctx.linkedEmployeeId)),
+  actions: (r) => ({ open: { page: 'Probation', params: { review: r.source_id } } }),
+};
+
 // Gate passes (hr/biometric.routes.js). The approver is the pass holder's
 // department head, else their reporting manager, else HR — one rule in
 // shared/gatePassApprover.js, used by the endpoint too, so this mirror is the
 // rule itself rather than a copy of it. Reject = cancel with a reason, which
 // the designated approver may do while the pass is pending. §198.
-const GP_TITLE = (a) => `CONCAT('Gate pass · ', COALESCE(${name('e')}, ${a}.visitor_name, 'Visitor'),
+// §272: hr/gateAccess.routes.js; material passes too; the HR fallback is
+// gate_access:approve; the page is the Gate Pass & Visitors register and the
+// requester's own list is My Gate Passes.
+const GP_TITLE = (a) => `CONCAT(CASE WHEN ${a}.visitor_id IS NOT NULL THEN 'Visitor goods · '
+                                     WHEN ${a}.pass_type = 'material' THEN 'Material pass · ' ELSE 'Gate pass · ' END,
+  COALESCE(${a}.pass_number || ' · ', ''), COALESCE(${name('e')}, ${a}.visitor_name, 'Visitor'),
   COALESCE(' · ' || TO_CHAR(${a}.valid_from AT TIME ZONE 'Asia/Kolkata', 'DD Mon YY HH24:MI'), ''))`;
 const gatePass = {
-  type: 'gate', label: 'Gate Pass', page: 'BiometricAccess', myPage: 'BiometricAccess',
+  type: 'gate', label: 'Gate Pass', page: 'GatePassVisitors', myPage: 'MyGatePasses',
   pending(companyId) {
     return q(`
       SELECT 'gate:' || gp.id AS id, gp.id::text AS source_id,
@@ -891,7 +964,7 @@ const gatePass = {
          ${cf(companyId, 'gp.company_id')}`, cp(companyId));
   },
   stage: (r) => APPROVER_LABEL[r.approver_kind] || 'Approver',
-  canAct: (ctx, r) => approverDecision(r, { callerEmployeeId: ctx.employeeId, hrEdit: can(ctx, 'hr', 'can_edit') }).ok,
+  canAct: (ctx, r) => approverDecision(r, { callerEmployeeId: ctx.employeeId, hrApprover: can(ctx, 'gate_access', 'can_approve') }).ok,
   actions: (r) => ({
     approve: req_('put', `/gate-passes/${r.source_id}/approve`, {}, null),
     reject:  req_('put', `/gate-passes/${r.source_id}/cancel`, {}, 'reason', { commentRequired: true }),
@@ -907,7 +980,7 @@ const gatePass = {
         FROM gate_passes gp
         LEFT JOIN employees e ON e.id = gp.employee_id
         ${GP_APPROVER_JOIN}
-       WHERE gp.employee_id = $1`, [ctx.employeeId]);
+       WHERE gp.employee_id = $1 OR gp.requested_by = $1`, [ctx.employeeId]);
   },
   decided(ctx) {
     return q(`
@@ -922,8 +995,291 @@ const gatePass = {
   },
 };
 
+// Visitor entry (hr/gateAccess.routes.js, §273). Security — gate_security:approve —
+// approves a registered or pre-registered visitor before entry, issuing the
+// visitor pass; reject needs a reason. Nobody else decides it, HR included.
+const visitorEntry = {
+  type: 'visitor', label: 'Visitor entry', page: 'GatePassVisitors', myPage: 'MyGatePasses',
+  pending(companyId) {
+    return q(`
+      SELECT 'visitor:' || v.id AS id, v.id::text AS source_id,
+             CONCAT('Visitor · ', v.name, COALESCE(' (' || v.company || ')', ''),
+                    COALESCE(' · ' || TO_CHAR(v.expected_at AT TIME ZONE 'Asia/Kolkata', 'DD Mon YY HH24:MI'), '')) AS request_title,
+             CONCAT_WS(' · ', CASE WHEN h.id IS NOT NULL THEN 'Meeting ' || ${name('h')} END, v.purpose,
+                       CASE WHEN v.visitor_count > 1 THEN v.visitor_count || ' people' END) AS description,
+             NULL::numeric AS amount, COALESCE(v.pre_registered_by, v.host_employee_id) AS requester_emp_id,
+             COALESCE(${name('p')}, 'Gate desk') AS requested_by, h.department, v.created_at AS request_date, v.company_id
+        FROM visitors v
+        LEFT JOIN employees h ON h.id = v.host_employee_id
+        LEFT JOIN employees p ON p.id = v.pre_registered_by
+       WHERE v.approved_at IS NULL AND v.rejected_at IS NULL AND v.cancelled_at IS NULL AND v.check_in_time IS NULL
+         ${cf(companyId, 'v.company_id')}`, cp(companyId));
+  },
+  stage: () => 'Security',
+  canAct: (ctx, r) => can(ctx, 'gate_security', 'can_approve'),
+  actions: (r) => ({
+    approve: req_('put', `/visitors/${r.source_id}/approve`, {}, null),
+    reject:  req_('put', `/visitors/${r.source_id}/reject`, {}, 'reason', { commentRequired: true }),
+  }),
+  mine(ctx) {
+    return q(`
+      SELECT 'visitor:' || v.id AS id, v.id::text AS source_id, CONCAT('Visitor · ', v.name) AS request_title,
+             NULL::numeric AS amount, v.created_at AS request_date,
+             CASE WHEN v.rejected_at IS NOT NULL THEN 'rejected' WHEN v.cancelled_at IS NOT NULL THEN 'cancelled'
+                  WHEN v.approved_at IS NOT NULL THEN 'approved' ELSE 'pending' END AS raw_status,
+             v.reject_reason AS comments,
+             CASE WHEN v.approved_at IS NULL AND v.rejected_at IS NULL AND v.cancelled_at IS NULL THEN 'Security' END AS current_approver,
+             COALESCE(v.approved_at, v.rejected_at) AS decided_at
+        FROM visitors v WHERE v.pre_registered_by = $1`, [ctx.employeeId]);
+  },
+  decided(ctx) {
+    return q(`
+      SELECT 'visitor:' || v.id AS id, v.id::text AS source_id, CONCAT('Visitor · ', v.name) AS request_title,
+             COALESCE(${name('p')}, 'Gate desk') AS requested_by, v.created_at AS request_date,
+             CASE WHEN v.approved_by = $1 THEN 'approved' ELSE 'rejected' END AS decision,
+             CASE WHEN v.approved_by = $1 THEN v.approved_at ELSE v.rejected_at END AS decision_date,
+             v.reject_reason AS comments
+        FROM visitors v LEFT JOIN employees p ON p.id = v.pre_registered_by
+       WHERE v.approved_by = $1 OR v.rejected_by = $1`, [ctx.employeeId]);
+  },
+};
+
+// IT declarations (selfservice.routes.js, §264). Every submitted declaration
+// of the company, decided by it_declarations:approve — never on one's own. A
+// decision can lower the approved amount and needs the proof in view, so the
+// action is `open`: Payroll Center → Tax & Statutory → IT declarations (§265),
+// the only place it is decided.
+const itDeclaration = {
+  type: 'itdecl', label: 'IT Declaration', page: 'PayrollCenter', myPage: 'MyEmployeeRecord',
+  pending(companyId) {
+    return q(`
+      SELECT 'itdecl:' || d.id AS id, d.id::text AS source_id,
+             CONCAT('IT declaration · ', d.declaration_type, ' · FY ', d.financial_year) AS request_title,
+             d.description, d.claimed_amount AS amount, d.employee_id AS requester_emp_id,
+             ${name('e')} AS requested_by, e.company_email AS requester_email, e.department,
+             d.created_at AS request_date, e.company_id
+        FROM it_declarations d JOIN employees e ON e.id = d.employee_id
+       WHERE d.status = 'submitted' AND e.deleted_at IS NULL ${cf(companyId, 'e.company_id')}`, cp(companyId));
+  },
+  stage: () => 'HR — declaration review',
+  canAct: (ctx, r) => can(ctx, 'it_declarations', 'can_approve')
+    && !(ctx.linkedEmployeeId != null && String(r.requester_emp_id) === String(ctx.linkedEmployeeId)),
+  actions: () => ({ open: { page: 'PayrollCenter', params: { tab: 'statutory', view: 'declarations' } } }),
+};
+
+// Bank-detail changes (employees/bankChange.service.js, §204; §266 dropped the
+// separate HR → Bank Detail Approvals page). A new or changed account waits
+// until a DIFFERENT HR person approves it — a super admin may approve their own
+// (§261). Decided here or on the employee's Edit page, through the same
+// endpoints. Account numbers are masked in the queue.
+const maskAcct = (col) => `CASE WHEN ${col} IS NULL OR ${col} = '' THEN '—' ELSE 'XXXX' || RIGHT(${col}, 4) END`;
+const bankChangeSrc = {
+  type: 'bank', label: 'Bank details', page: 'EmployeesData',
+  pending(companyId) {
+    return q(`
+      SELECT 'bank:' || r.id AS id, r.id::text AS source_id,
+             CONCAT(CASE r.source WHEN 'create' THEN 'New bank details · ' WHEN 'verify' THEN 'Verify bank details · ' ELSE 'Bank details change · ' END,
+                    ${name('e')}, COALESCE(' (' || e.office_id || ')', '')) AS request_title,
+             CASE WHEN r.source = 'verify' THEN CONCAT('Account ', ${maskAcct('r.proposed_account_number')}, ' · IFSC ', COALESCE(r.proposed_ifsc_code, '—'), ' — no change, confirm as on record')
+                  ELSE CONCAT('Account ', ${maskAcct('e.account_number')}, ' → ', ${maskAcct('r.proposed_account_number')},
+                              ' · IFSC ', COALESCE(e.ifsc_code, '—'), ' → ', COALESCE(r.proposed_ifsc_code, '—'),
+                              ' · ', COALESCE(r.proposed_bank_name, ''), CASE WHEN r.proposed_branch_name IS NOT NULL THEN ', ' || r.proposed_branch_name ELSE '' END) END
+             -- §267: whose account it is, and the proof to check it against (opened on the employee's Edit page)
+             || ' · Name on account: ' || COALESCE(NULLIF(TRIM(r.proposed_account_holder_name), ''), 'not given')
+             || ' · Proof: ' || CASE WHEN r.proof_cheque_file IS NOT NULL AND r.proof_statement_file IS NOT NULL THEN 'cheque and statement'
+                                     WHEN r.proof_cheque_file IS NOT NULL THEN 'cancelled cheque'
+                                     WHEN r.proof_statement_file IS NOT NULL THEN 'bank statement' ELSE 'none attached' END AS description,
+             NULL::numeric AS amount, NULL AS requester_emp_id, r.requested_by AS requested_by_user,
+             COALESCE(ru.name, ru.email, 'HR') AS requested_by, ru.email AS requester_email, e.department,
+             r.requested_at AS request_date, r.company_id, r.employee_id, 'High' AS priority
+        FROM employee_bank_change_requests r
+        JOIN employees e ON e.id = r.employee_id
+        LEFT JOIN users ru ON ru.id = r.requested_by
+       WHERE r.status = 'pending' AND e.deleted_at IS NULL ${cf(companyId, 'r.company_id')}`, cp(companyId));
+  },
+  stage: () => 'Second HR person',
+  canAct: (ctx, r) => can(ctx, 'employee_bank', 'can_edit')
+    && (String(r.requested_by_user) !== String(ctx.userId) || holds(ctx, 'super_admin')),
+  actions: (r) => ({
+    approve: req_('post', `/employees/bank-change-requests/${r.source_id}/approve`, {}, null),
+    reject:  req_('post', `/employees/bank-change-requests/${r.source_id}/reject`, {}, 'reason', { commentRequired: true }),
+  }),
+};
+
+// Record corrections (servicedesk/recordCorrections.js, 2026-11-11). An employee
+// who finds a mistake on My Details raises a 'Record correction' ticket to HR
+// ('HR Support') or Finance ('Finance'). The people who maintain that data
+// decide it here — HR with hr:edit, Finance with it_declarations:add — never
+// the requester. "Mark corrected" after fixing the record,
+// or "Decline" with a reason; both answer on the employee's ticket.
+const correction = {
+  type: 'corr', label: 'Record correction', page: 'ApprovalCenter', myPage: 'MyEmployeeRecord',
+  pending(companyId) {
+    return q(`
+      SELECT 'corr:' || t.id AS id, t.id::text AS source_id,
+             t.title AS request_title, t.description, NULL::numeric AS amount,
+             u.employee_id AS requester_emp_id, COALESCE(t.requester_name, t.requester_email) AS requested_by,
+             t.requester_email, t.department, t.created_at AS request_date, t.company_id, t.team, t.priority
+        FROM support_tickets t
+        LEFT JOIN users u ON LOWER(u.email) = LOWER(t.requester_email)
+       WHERE t.category = 'Record correction' AND t.status IN ('Open', 'In Progress') AND t.deleted_at IS NULL
+             ${cf(companyId, 't.company_id')}`, cp(companyId));
+  },
+  stage: (r) => (r.team === 'Finance' ? 'Finance' : 'HR'),
+  canAct: (ctx, r) => (r.team === 'Finance'
+      ? can(ctx, 'it_declarations', 'can_add')
+      : r.team === 'HR Support' && can(ctx, 'hr', 'can_edit'))
+    && !(ctx.linkedEmployeeId != null && r.requester_emp_id != null && String(r.requester_emp_id) === String(ctx.linkedEmployeeId)),
+  actions: (r) => ({
+    approve: req_('post', `/servicedesk/corrections/${r.source_id}/resolve`, { outcome: 'done' }, 'note', { label: 'Mark corrected' }),
+    reject:  req_('post', `/servicedesk/corrections/${r.source_id}/resolve`, { outcome: 'declined' }, 'note', { commentRequired: true, label: 'Decline' }),
+  }),
+};
+
+// Timesheets (2026-11-11): one item per employee per week (Monday start), over
+// the entries POST /timesheets/approve and /reject act on. Mirror of that
+// route: never one's own; company-wide roles (admin / HR, as
+// COMPANY_WIDE_APPROVER_ROLES in timesheets.routes.js) decide any; anyone else
+// must be the reporting manager, or the project manager of EVERY entry.
+const TS_COMPANY_WIDE = ['admin', 'super_admin', 'superadmin', 'hr', 'hr_manager'];
+const TS_WEEK = `date_trunc('week', te.work_date)`;
+const tsGroup = (alias = 'te') => `${alias}.employee_id || '-' || to_char(date_trunc('week', ${alias}.work_date), 'YYYYMMDD')`;
+const timesheet = {
+  type: 'ts', label: 'Timesheet', page: 'ApprovalCenter', myPage: 'MyTimesheet',
+  pending(companyId) {
+    return q(`
+      SELECT 'ts:' || ${tsGroup()} AS id, ${tsGroup()} AS source_id,
+             CONCAT('Timesheet · week of ', TO_CHAR(${TS_WEEK}, 'DD Mon YY')) AS request_title,
+             string_agg(DISTINCT p.project_name, ', ') AS description,
+             SUM(te.hours_worked) AS amount, 'hours' AS amount_unit,
+             e.id AS requester_emp_id, ${name('e')} AS requested_by, e.company_email AS requester_email,
+             e.department, MIN(COALESCE(te.submitted_at, te.created_at)) AS request_date, te.company_id,
+             e.reporting_manager_id, array_agg(te.id ORDER BY te.id) AS entry_ids,
+             array_agg(p.project_manager_id) AS pm_ids
+        FROM timesheet_entries te
+        JOIN employees e ON e.id = te.employee_id
+        LEFT JOIN projects p ON p.id = te.project_id
+       WHERE te.status = 'submitted' AND te.deleted_at IS NULL ${cf(companyId, 'te.company_id')}
+       GROUP BY te.employee_id, ${TS_WEEK}, e.id, te.company_id`, cp(companyId));
+  },
+  stage: () => 'Reporting / project manager',
+  canAct(ctx, r) {
+    const me = ctx.employeeId != null ? String(ctx.employeeId) : null;
+    if (me != null && String(r.requester_emp_id) === me) return false;
+    if (holds(ctx, ...TS_COMPANY_WIDE)) return true;
+    if (me == null) return false;
+    if (String(r.reporting_manager_id) === me) return true;
+    return Array.isArray(r.pm_ids) && r.pm_ids.length > 0 && r.pm_ids.every(x => String(x) === me);
+  },
+  actions: (r) => ({
+    // The router is mounted at /timesheets and its routes start /timesheets/…
+    // (server.js), so the API path repeats the segment — same as the page's calls.
+    approve: req_('post', '/timesheets/timesheets/approve', { ids: r.entry_ids }),
+    reject:  req_('post', '/timesheets/timesheets/reject',  { ids: r.entry_ids }, 'reason', { commentRequired: true }),
+  }),
+  mine(ctx) {
+    if (ctx.employeeId == null) return [];
+    return q(`
+      SELECT 'ts:' || ${tsGroup()} AS id, ${tsGroup()} AS source_id,
+             CONCAT('Timesheet · week of ', TO_CHAR(${TS_WEEK}, 'DD Mon YY')) AS request_title,
+             SUM(te.hours_worked) AS amount, 'hours' AS amount_unit,
+             MIN(COALESCE(te.submitted_at, te.created_at)) AS request_date,
+             CASE WHEN bool_or(te.status = 'rejected') THEN 'rejected'
+                  WHEN bool_or(te.status = 'submitted') THEN 'pending'
+                  ELSE 'approved' END AS raw_status,
+             MAX(te.rejection_reason) AS comments,
+             CASE WHEN bool_or(te.status = 'submitted') THEN COALESCE(MAX(${name('m')}), 'Reporting manager') END AS current_approver,
+             MAX(te.approved_at) AS decided_at
+        FROM timesheet_entries te
+        LEFT JOIN employees e ON e.id = te.employee_id
+        LEFT JOIN employees m ON m.id = e.reporting_manager_id
+       WHERE te.employee_id = $1 AND te.deleted_at IS NULL
+         AND te.status IN ('submitted', 'approved', 'rejected')
+       GROUP BY te.employee_id, ${TS_WEEK}`, [ctx.employeeId]);
+  },
+  decided(ctx) {
+    if (ctx.employeeId == null) return [];
+    return q(`
+      SELECT 'ts:' || ${tsGroup()} AS id, ${tsGroup()} AS source_id,
+             CONCAT('Timesheet · week of ', TO_CHAR(${TS_WEEK}, 'DD Mon YY')) AS request_title,
+             MAX(${name('e')}) AS requested_by, MIN(COALESCE(te.submitted_at, te.created_at)) AS request_date,
+             MAX(te.status) AS decision, MAX(te.approved_at) AS decision_date, MAX(te.rejection_reason) AS comments
+        FROM timesheet_entries te LEFT JOIN employees e ON e.id = te.employee_id
+       WHERE te.approved_by = $1 AND te.status IN ('approved', 'rejected') AND te.deleted_at IS NULL
+       GROUP BY te.employee_id, ${TS_WEEK}, te.status`, [ctx.employeeId]);
+  },
+};
+
+// Full & final settlement (exit.routes.js /fnf/:id/approve and /fnf/:id/pay,
+// fnf.service.js). One row per exit whose LATEST settlement version awaits a
+// step: no 'approve' event → Finance approval (payroll:approve; never the
+// person who computed it); approved, no 'pay' event → Payment
+// (payroll_payment:approve; never the approver). Pay needs a UTR, value date
+// and bank account, so both actions open Exit Management on that exit. Never
+// one's own settlement. HR audit 2026-11-16.
+const fnfSettlement = {
+  type: 'fnf', label: 'Full & Final', page: 'SettlementReview',
+  pending(companyId) {
+    return q(`
+      SELECT 'fnf:' || s.id AS id, s.id::text AS source_id, s.exit_request_id,
+             CONCAT('Full & final · ', ${name('e')}, COALESCE(' (' || e.office_id || ')', '')) AS request_title,
+             CONCAT(CASE WHEN ap.id IS NULL THEN 'Approve' ELSE 'Record payment' END,
+                    ' · last working day ', TO_CHAR(s.last_working_date, 'DD Mon YY'), ' · v', s.version) AS description,
+             s.net_payable AS amount, s.employee_id AS requester_emp_id,
+             COALESCE(cu.name, 'HR') AS requested_by, NULL AS requester_email, e.department,
+             COALESCE(ap.created_at, s.computed_at) AS request_date, s.company_id,
+             s.computed_by, ap.actor_id AS approved_by, (ap.id IS NOT NULL) AS approved,
+             CASE WHEN s.last_working_date < CURRENT_DATE - 2 THEN 'High' ELSE 'Medium' END AS priority
+        FROM fnf_settlements s
+        JOIN exit_requests er ON er.id = s.exit_request_id
+                             AND LOWER(COALESCE(er.status, '')) NOT IN ('cancelled', 'rejected', 'closed')
+        JOIN employees e ON e.id = s.employee_id AND e.deleted_at IS NULL
+        LEFT JOIN users cu ON cu.id = s.computed_by
+        LEFT JOIN fnf_settlement_events ap ON ap.settlement_id = s.id AND ap.action = 'approve'
+       WHERE s.version = (SELECT MAX(v.version) FROM fnf_settlements v WHERE v.exit_request_id = s.exit_request_id)
+         AND NOT EXISTS (SELECT 1 FROM fnf_settlement_events p WHERE p.settlement_id = s.id AND p.action = 'pay')
+         ${cf(companyId, 's.company_id')}`, cp(companyId));
+  },
+  stage: (r) => (r.approved ? 'Payment' : 'Finance approval'),
+  canAct: (ctx, r) => {
+    // HR_CONTAINMENT_FNF on: the approve/pay endpoints answer 423.
+    if (fnfSettlementSuspended()) return false;
+    if (ctx.linkedEmployeeId != null && String(r.requester_emp_id) === String(ctx.linkedEmployeeId)) return false;
+    return r.approved
+      ? can(ctx, 'payroll_payment', 'can_approve') && String(r.approved_by) !== String(ctx.userId)
+      : can(ctx, 'payroll', 'can_approve') && String(r.computed_by) !== String(ctx.userId);
+  },
+  actions: (r) => ({ open: { page: 'SettlementReview', params: { exit: r.exit_request_id } } }),
+};
+
+// Intern stipends raised by HR and waiting for Finance to record the payment
+// (modules/hr/internStipends.routes.js POST /:id/pay — payroll_payment:approve,
+// never the person who raised it). Payment needs a UTR, value date and bank
+// account, so the action opens the Finance stipend page. HR audit 2026-11-16.
+const internStipend = {
+  type: 'stip', label: 'Intern Stipend', page: 'InternStipends',
+  pending(companyId) {
+    return q(`
+      SELECT 'stip:' || p.id AS id, p.id::text AS source_id,
+             CONCAT('Stipend · ', TRIM(CONCAT(i.first_name, ' ', COALESCE(i.last_name, ''))), ' (', i.intern_code, ') · ',
+                    TO_CHAR(p.period_month, 'Mon YY')) AS request_title,
+             COALESCE(p.basis, 'Stipend') AS description, p.amount, NULL::int AS requester_emp_id,
+             COALESCE(cu.name, 'HR') AS requested_by, NULL AS requester_email, i.department,
+             p.created_at AS request_date, p.company_id, p.created_by,
+             'Medium' AS priority
+        FROM intern_stipend_payments p
+        JOIN interns i ON i.id = p.intern_id
+        LEFT JOIN users cu ON cu.id = p.created_by
+       WHERE p.status = 'due' AND p.amount > 0 ${cf(companyId, 'p.company_id')}`, cp(companyId));
+  },
+  stage: () => 'Payment',
+  canAct: (ctx, r) => can(ctx, 'payroll_payment', 'can_approve') && String(r.created_by) !== String(ctx.userId),
+  actions: () => ({ open: { page: 'InternStipends' } }),
+};
+
 export const SOURCES = [leave, regularization, overtime, expense, purchase, ecn, payment, travel, advance, requisition, offer,
-  internEval, probationReview, gatePass];
+  internEval, interviewFeedback, probationReview, probationDecision, gatePass, visitorEntry, itDeclaration, bankChangeSrc, correction, timesheet,
+  fnfSettlement, internStipend];
 export const SOURCE_BY_TYPE = Object.fromEntries(SOURCES.map(s => [s.type, s]));
 
 /** Types whose decision belongs to a module endpoint, never to /approvals. */

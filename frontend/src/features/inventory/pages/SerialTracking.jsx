@@ -267,9 +267,9 @@ export default function SerialTracking() {
 
       {/* Detail Panel */}
       {detail && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 1000, display: 'flex', justifyContent: 'flex-end' }}
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}
           onClick={() => setDetail(null)}>
-          <div style={{ width: 560, background: '#fff', height: '100%', overflow: 'auto', padding: 24 }} onClick={e => e.stopPropagation()}>
+          <div style={{ width: 560, background: '#fff', maxWidth: '100%', maxHeight: 'calc(100vh - 48px)', borderRadius: 12, boxShadow: '0 20px 60px rgba(0,0,0,.18)', overflow: 'auto', padding: 24 }} onClick={e => e.stopPropagation()}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
               <div>
                 <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700 }}>{detail.serial_number}</h3>
@@ -354,9 +354,9 @@ export default function SerialTracking() {
 
       {/* Add / Edit Drawer */}
       {drawer !== null && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 1000, display: 'flex', justifyContent: 'flex-end' }}
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}
           onClick={() => setDrawer(null)}>
-          <div style={{ width: 480, background: '#fff', height: '100%', overflow: 'auto', padding: 24 }} onClick={e => e.stopPropagation()}>
+          <div style={{ width: 480, background: '#fff', maxWidth: '100%', maxHeight: 'calc(100vh - 48px)', borderRadius: 12, boxShadow: '0 20px 60px rgba(0,0,0,.18)', overflow: 'auto', padding: 24 }} onClick={e => e.stopPropagation()}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
               <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700 }}>{drawer === 'add' ? 'Add Serial Number' : 'Edit Serial Number'}</h3>
               <button onClick={() => setDrawer(null)} style={{ background: 'none', border: 'none', cursor: 'pointer' }}><X size={18} /></button>

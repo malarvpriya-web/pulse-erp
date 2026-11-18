@@ -20,40 +20,6 @@ import { verifyToken, verifyTokenLax, allowRoles } from "../middlewares/auth.mid
 import { dbRateLimit } from "../middlewares/rateLimit.js";
 import pool from "../config/db.js";
 
-// ── Schema bootstrap ──────────────────────────────────────────────────────────
-// Ensures auth tables exist on first startup without a separate migration step.
-(async () => {
-  try {
-    await pool.query(`
-      ALTER TABLE users ADD COLUMN IF NOT EXISTS logout_at TIMESTAMPTZ;
-    `);
-    await pool.query(`
-      ALTER TABLE users ADD COLUMN IF NOT EXISTS preferences JSONB DEFAULT '{}'::jsonb;
-    `);
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS auth_audit_log (
-        id          BIGSERIAL PRIMARY KEY,
-        user_id     INT REFERENCES users(id) ON DELETE SET NULL,
-        event       VARCHAR(32) NOT NULL,
-        ip          VARCHAR(64),
-        metadata    JSONB,
-        created_at  TIMESTAMPTZ DEFAULT NOW()
-      );
-      CREATE INDEX IF NOT EXISTS idx_auth_audit_user
-        ON auth_audit_log(user_id, created_at DESC);
-    `);
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS auth_rate_limit (
-        ip           VARCHAR(64) PRIMARY KEY,
-        count        INT         NOT NULL DEFAULT 0,
-        window_start TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      );
-    `);
-  } catch (err) {
-    console.warn("[auth] Schema bootstrap warning:", err.message);
-  }
-})();
-
 // ── DB-backed rate limiter ────────────────────────────────────────────────────
 // Shared across all process instances (no per-process state).
 // Uses an atomic upsert so concurrent requests don't race.

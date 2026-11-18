@@ -30,8 +30,8 @@ function VendorDetail({ vendor_id, vendor_name, onClose }) {
   }, [vendor_id, toast]);
 
   return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', justifyContent: 'flex-end' }}>
-      <div style={{ background: '#fff', width: 560, height: '100vh', overflowY: 'auto', padding: 24, display: 'flex', flexDirection: 'column', gap: 20 }}>
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+      <div style={{ background: '#fff', width: 560, maxWidth: '100%', maxHeight: 'calc(100vh - 48px)', borderRadius: 12, boxShadow: '0 20px 60px rgba(0,0,0,.18)', overflowY: 'auto', padding: 24, display: 'flex', flexDirection: 'column', gap: 20 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <h3 style={{ margin: 0 }}>{vendor_name}</h3>
           <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 22, cursor: 'pointer' }}>×</button>

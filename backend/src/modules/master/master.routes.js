@@ -54,66 +54,6 @@ const READ_ROLES  = ['super_admin', 'admin', 'hr', 'hr_manager', 'hr_exec', 'pay
                      'production_engineer', 'qc_manager', 'store_keeper', 'manager',
                      'sales_manager', 'sales_exec', 'project_manager', 'department_head'];
 
-(async () => {
-  try {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS master_departments (
-        id        SERIAL PRIMARY KEY,
-        name      VARCHAR(100) NOT NULL UNIQUE,
-        is_active BOOLEAN NOT NULL DEFAULT true,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      );
-      CREATE TABLE IF NOT EXISTS master_zones (
-        id        SERIAL PRIMARY KEY,
-        name      VARCHAR(100) NOT NULL UNIQUE,
-        is_active BOOLEAN NOT NULL DEFAULT true,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      );
-      CREATE TABLE IF NOT EXISTS master_designations (
-        id        SERIAL PRIMARY KEY,
-        name      VARCHAR(100) NOT NULL UNIQUE,
-        is_active BOOLEAN NOT NULL DEFAULT true,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      );
-      CREATE TABLE IF NOT EXISTS master_uom (
-        id           SERIAL PRIMARY KEY,
-        code         VARCHAR(20)  NOT NULL UNIQUE,
-        name         VARCHAR(100) NOT NULL,
-        category     VARCHAR(50)  NOT NULL DEFAULT 'General',
-        is_active    BOOLEAN      NOT NULL DEFAULT true,
-        created_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW()
-      );
-      CREATE TABLE IF NOT EXISTS master_hsn_sac (
-        id           SERIAL PRIMARY KEY,
-        code         VARCHAR(20)  NOT NULL UNIQUE,
-        description  VARCHAR(255) NOT NULL,
-        gst_rate     NUMERIC(5,2) NOT NULL DEFAULT 0,
-        type         VARCHAR(3)   NOT NULL DEFAULT 'HSN' CHECK (type IN ('HSN','SAC')),
-        is_active    BOOLEAN      NOT NULL DEFAULT true,
-        created_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW()
-      );
-      CREATE TABLE IF NOT EXISTS master_grades (
-        id         SERIAL PRIMARY KEY,
-        company_id INTEGER REFERENCES companies(id),
-        name       VARCHAR(50) NOT NULL,
-        is_active  BOOLEAN NOT NULL DEFAULT true,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        UNIQUE (company_id, name)
-      );
-      CREATE TABLE IF NOT EXISTS master_bands (
-        id         SERIAL PRIMARY KEY,
-        company_id INTEGER REFERENCES companies(id),
-        name       VARCHAR(50) NOT NULL,
-        is_active  BOOLEAN NOT NULL DEFAULT true,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        UNIQUE (company_id, name)
-      );
-    `);
-  } catch (e) {
-    console.error('[master] table init failed:', e.message);
-  }
-})();
-
 // The employee fallback in GET /:type surfaces legacy free-text values as rows
 // with id: null, so clients can hand us "null" here. Postgres answers that with
 // a 22P02 500 ("invalid input syntax for type integer"); reject it up front.
@@ -1040,6 +980,67 @@ router.post('/:type', allowRoles(...ADMIN_ROLES), async (req, res) => {
 });
 
 // PUT update item — admin only
+/**
+ * Records that hold a DEPARTMENT NAME as text (USAGE.departments). A rename in
+ * Master Data is carried onto them in the same transaction (§271): employees
+ * are matched to a department — for its head as probation reviewer, gate-pass
+ * approver and manager — by name, so a rename that left them on the old text
+ * silently disconnected every one of them from the head.
+ *
+ * master_departments is ONE list for the whole deployment (no company_id), so
+ * renaming a row renames it for every company; the records follow in every
+ * company, or the other companies would be disconnected the same way. Only
+ * admins can rename (ADMIN_ROLES), as before.
+ */
+let deptRefColumns = null;
+async function departmentRefs(db) {
+  if (!deptRefColumns) {
+    const refs = USAGE.departments || [];
+    const { rows } = await db.query(
+      `SELECT table_name || '.' || column_name AS tc FROM information_schema.columns
+        WHERE table_schema = 'public' AND (table_name || '.' || column_name) = ANY($1::text[])`,
+      [refs.map((r) => `${r.table}.${r.column}`)]);
+    const have = new Set(rows.map((r) => r.tc));
+    deptRefColumns = refs.filter((r) => have.has(`${r.table}.${r.column}`));
+  }
+  return deptRefColumns;
+}
+
+async function renameDepartment(req, res, id, newName) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows: [old] } = await client.query(
+      `SELECT name FROM master_departments WHERE id = $1 FOR UPDATE`, [id]);
+    if (!old) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Not found' }); }
+    await client.query(
+      `UPDATE master_departments SET name = $1, updated_at = NOW(), updated_by = $3 WHERE id = $2`,
+      [newName, id, actorOf(req)]);
+    const moved = [];
+    if (old.name.trim() !== newName) {
+      for (const ref of await departmentRefs(client)) {
+        // Fixed identifiers from USAGE (verified against information_schema above).
+        const { rowCount } = await client.query(
+          `UPDATE ${ref.table} SET ${ref.column} = $1
+            WHERE LOWER(BTRIM(${ref.column})) = LOWER(BTRIM($2::text))`,
+          [newName, old.name]);
+        if (rowCount) moved.push({ label: ref.label, table: ref.table, count: rowCount });
+      }
+    }
+    await client.query('COMMIT');
+    const total = moved.reduce((n, m) => n + m.count, 0);
+    res.json({ success: true, renamed_from: old.name, records_updated: total, records: moved });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    if (err.code === '23505') {
+      return res.status(409).json({ error: dupNameMessage('department', newName) });
+    }
+    respondError(res, err);
+  } finally {
+    client.release();
+  }
+}
+
 router.put('/:type/:id', allowRoles(...ADMIN_ROLES), captureBeforeParam(TABLES), async (req, res) => {
   const table = TABLES[req.params.type];
   if (!table) return res.status(400).json({ error: 'Invalid type' });
@@ -1055,6 +1056,7 @@ router.put('/:type/:id', allowRoles(...ADMIN_ROLES), captureBeforeParam(TABLES),
         existing: { id: dup.id, name: dup.name },
       });
     }
+    if (req.params.type === 'departments') return await renameDepartment(req, res, id, name.trim());
     const r = await pool.query(
       `UPDATE ${table} SET name = $1, updated_at = NOW(), updated_by = $3 WHERE id = $2`,
       [name.trim(), id, actorOf(req)]
@@ -1087,6 +1089,20 @@ router.delete('/:type/:id', allowRoles(...ADMIN_ROLES), captureBeforeParam(TABLE
     if (!rows.length) return res.status(404).json({ error: 'Not found' });
     const verdict = await deleteVerdict(req, USAGE[req.params.type] || [], rows[0].name);
     if (verdict.refuse) return res.status(409).json(verdict.body);
+    if (verdict.hard && req.params.type === 'departments') {
+      // department_heads points at the row by id (ON DELETE RESTRICT) and keeps
+      // its history, so a department that ever had a head cannot be removed —
+      // say so instead of surfacing the foreign-key error (§271).
+      const { rows: [h] } = await pool.query(
+        `SELECT COUNT(*)::int AS n FROM department_heads WHERE department_id = $1`, [id]);
+      if (h.n > 0) {
+        return res.status(409).json({
+          error: `"${rows[0].name}" has department-head history (${h.n} assignment${h.n === 1 ? '' : 's'}), so it cannot be deleted. `
+            + 'Deactivate it instead — the history is kept.',
+          remedy: 'deactivate',
+        });
+      }
+    }
     if (verdict.hard) {
       await pool.query(`DELETE FROM ${table} WHERE id = $1`, [id]);
       return res.json({ success: true, deleted: 'permanently' });

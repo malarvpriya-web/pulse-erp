@@ -1,28 +1,36 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import {
   RefreshCw, Search, Bell, Clock, AlertTriangle, CheckCircle,
-  Users, ChevronDown, ChevronUp, Send, X, Star, History,
+  Users, ChevronDown, ChevronUp, Send, X, Star, History, ClipboardCheck, Download,
 } from "lucide-react";
 import api from "@/services/api/client";
+import { useAuth } from "@/context/AuthContext";
 import ResultDialog from "@/components/ResultDialog";
 import "./Probation.css";
-import DepartmentHeadsPanel from "../components/DepartmentHeadsPanel";
 import ProbationReviewsPanel from "../components/ProbationReviewsPanel";
-import { PageHero, PageShell } from '@/components/pulse-ui';
+import { PageHero, PageShell, LoadError } from '@/components/pulse-ui';
 
 /* ── helpers ── */
 /*
  * Probation dates come from the SERVER. employees.probation_end_date is the one
  * canonical end date (backend shared/probationDates.js writes it). This page
- * used to compute joining + 180 days (90 for interns, 120 for trainees) and
- * ignore the stored date entirely, so it disagreed with the dashboard, leave
- * and the reminder job about the same employee. It now only measures the days
- * between stored dates; an employee with no stored end date is shown as
- * "No end date", never given a guessed one.
+ * only measures the days between stored dates; an employee with no stored end
+ * date is shown as "No end date", never given a guessed one.
+ *
+ * ONE decision path (2026-11-11): HR requests a review → the department head
+ * submits a rating and recommendation → HR records the decision here, and the
+ * server applies it to the employee in the same transaction (confirmed →
+ * Active + confirmation date; extended → new end date; not confirmed → an exit
+ * request). The old "Record Decision" on reminder-log rows never reached the
+ * employee and is gone; the log is now only a record of reminders sent.
+ *
+ * Department heads (who reviews each department) are set on their own page,
+ * HR › Department Heads — they also decide gate-pass approvers and manager
+ * access, so they are not a probation setting.
  */
 const DAY_MS = 86400000;
-// After a send, the same employee's Notify button rests this long (guards a
-// double send). It says why on hover; it used to just grey out.
+// After a send, the same employee's reminder button rests this long (guards a
+// double send). It says why on hover.
 const NOTIFY_COOLDOWN_MS = 60 * 60 * 1000;
 function utcDay(value) {
   if (!value) return null;
@@ -33,6 +41,15 @@ function utcDay(value) {
 function todayUtc() {
   const n = new Date();
   return Date.UTC(n.getFullYear(), n.getMonth(), n.getDate());
+}
+function todayIso() {
+  const n = new Date();
+  return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`;
+}
+function addDaysIso(isoDate, n) {
+  const t = utcDay(isoDate);
+  if (t == null) return null;
+  return new Date(t + n * DAY_MS).toISOString().slice(0, 10);
 }
 
 const AVATAR_PALETTE = [
@@ -77,9 +94,17 @@ const STATUS_CFG = {
   overdue  : { label: 'Overdue',    color: '#9d174d', bg: '#fce7f3', barColor: '#ec4899' },
 };
 
+export const RECOMMENDATION_LABEL = { confirm: 'Confirm', extend: 'Extend', not_confirm: 'Do not confirm' };
+export const DECISION_LABEL = { confirmed: 'Confirmed', extended: 'Extended', not_confirmed: 'Not confirmed' };
+const RECOMMENDATION_TO_DECISION = { confirm: 'confirmed', extend: 'extended', not_confirm: 'not_confirmed' };
+
 function fmtDate(d) {
   if (!d) return '—';
-  return new Date(d).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' });
+  const s = String(d);
+  // A bare calendar date is read as that day, not UTC midnight shifted.
+  const t = /^\d{4}-\d{2}-\d{2}$/.test(s) ? new Date(`${s}T00:00:00`) : new Date(s);
+  if (Number.isNaN(t.getTime())) return '—';
+  return t.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' });
 }
 function timeAgo(ts) {
   if (!ts) return null;
@@ -91,20 +116,32 @@ function timeAgo(ts) {
   return fmtDate(ts);
 }
 
+const EMPTY_DECISION = { decision: '', effective_date: '', extension_months: '3', last_working_date: '', notice_days: '', notes: '' };
+
 /* ── main component ── */
-export default function Probation() {
+export default function Probation({ setPage } = {}) {
+  const { hasPermission } = useAuth() || {};
+  const canEdit = !!hasPermission?.('hr', 'edit');
+  const canAdd = !!hasPermission?.('hr', 'add');
+
   const [employees,   setEmployees]   = useState([]);
   const [allEmps,     setAllEmps]     = useState([]);
   const [activeEmps,  setActiveEmps]  = useState([]);
   const [history,     setHistory]     = useState([]);
+  const [loadFailed,  setLoadFailed]  = useState([]);   // parts of the page that did not load
+  const [reviews,     setReviews]     = useState([]);
+  const [awaiting,    setAwaiting]    = useState([]);
   const [loading,     setLoading]     = useState(false);
   const [refreshing,  setRefreshing]  = useState(false);
+  const [view,        setView]        = useState('current');   // current | reviews | history
   const [activeTab,   setActiveTab]   = useState('all');
   const [search,      setSearch]      = useState('');
   const [showHistory, setShowHistory] = useState(false);
   const [dialog,      setDialog]      = useState(null);
+  const [panelKey,    setPanelKey]    = useState(0);
+  const [requesting,  setRequesting]  = useState(null);        // employee id while a request is in flight
 
-  /* notify modal */
+  /* reminder modal */
   const [modalEmp,      setModalEmp]      = useState(null);
   const [notifyTo,      setNotifyTo]      = useState('');
   // The recipient is an EMPLOYEE ID of this company — the server resolves
@@ -116,12 +153,11 @@ export default function Probation() {
   const notifyTyped = useRef(false);   // false = value was prefilled or picked, not typed
   const [sending,       setSending]       = useState(false);
 
-  /* decision modal */
-  const [decRecord,   setDecRecord]   = useState(null);
-  const [decision,    setDecision]    = useState('');
-  const [rating,      setRating]      = useState(0);
-  const [comments,    setComments]    = useState('');
-  const [decidingSending, setDecidingSending] = useState(false);
+  /* HR decision modal (a SUBMITTED review) */
+  const [decReview,   setDecReview]   = useState(null);
+  const [decForm,     setDecForm]     = useState(EMPTY_DECISION);
+  const [decPreview,  setDecPreview]  = useState(null);       // new end date for an extension
+  const [decSaving,   setDecSaving]   = useState(false);
   /* company probation policy (Probation settings) */
   const [policy,        setPolicy]        = useState(null);
   const [policyEdit,    setPolicyEdit]    = useState(null);   // { months, days } while editing
@@ -130,12 +166,20 @@ export default function Probation() {
   const load = useCallback(async (quiet = false) => {
     if (!quiet) setLoading(true); else setRefreshing(true);
     try {
-      const [empRes, histRes, activeRes, policyRes] = await Promise.allSettled([
+      const [empRes, histRes, activeRes, policyRes, reviewRes] = await Promise.allSettled([
         api.get('/employees', { params: { status: 'Probation' } }),
         api.get('/probation'),
         api.get('/employees', { params: { status: 'Active' } }),
         api.get('/probation/settings'),
+        api.get('/probation-reviews'),
       ]);
+      // A failed call used to read as "no one on probation" (HR audit
+      // 2026-11-16, B5). Name each part that did not load; the banner says so.
+      const failed = [
+        [empRes, 'employees on probation'], [histRes, 'reminder log'], [activeRes, 'active employees'],
+        [policyRes, 'probation settings'], [reviewRes, 'reviews'],
+      ].filter(([r]) => r.status === 'rejected').map(([, label]) => label);
+      setLoadFailed(failed);
       if (policyRes.status === 'fulfilled') setPolicy(policyRes.value.data);
       const empsRaw = empRes.status === 'fulfilled' ? empRes.value.data : [];
       const hist = histRes.status === 'fulfilled' ? histRes.value.data : [];
@@ -148,7 +192,10 @@ export default function Probation() {
       setAllEmps((Array.isArray(empsRaw) ? empsRaw : []).filter(e => !EX.has(e.status?.toLowerCase() ?? '')));
       const activeRaw = activeRes.status === 'fulfilled' ? activeRes.value.data : [];
       setActiveEmps(Array.isArray(activeRaw) ? activeRaw : []);
-      setHistory(hist);
+      setHistory(Array.isArray(hist) ? hist : []);
+      const rv = reviewRes.status === 'fulfilled' ? reviewRes.value.data : null;
+      setReviews(Array.isArray(rv?.reviews) ? rv.reviews : []);
+      setAwaiting(Array.isArray(rv?.awaiting_request) ? rv.awaiting_request : []);
     } catch (err) {
       console.error(err);
     } finally {
@@ -158,6 +205,58 @@ export default function Probation() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  const reloadAll = () => { load(true); setPanelKey(k => k + 1); };
+
+  /* ── confirmation / extension letter (PDF) ── */
+  const [letterBusy, setLetterBusy] = useState(null);
+  const downloadLetter = async (r) => {
+    setLetterBusy(r.id);
+    try {
+      const res = await api.get(`/probation-reviews/${r.id}/letter`, { responseType: 'blob' });
+      const url = URL.createObjectURL(res.data);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${r.decision === 'confirmed' ? 'Confirmation' : 'Probation_Extension'}_Letter_${r.office_id || r.id}.pdf`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      setDialog({ type: 'error', title: 'Letter Not Ready', message: 'Could not prepare the letter. Please try again.' });
+    } finally {
+      setLetterBusy(null);
+    }
+  };
+
+  /* ── opened from the Approval Center: ?review=<id> opens its decision ── */
+  const deepLinkDone = useRef(false);
+  useEffect(() => {
+    if (deepLinkDone.current || !reviews.length) return;
+    let wanted = null;
+    try { wanted = new URLSearchParams(window.location.search).get('review'); } catch { /* no URL */ }
+    if (!wanted) { deepLinkDone.current = true; return; }
+    deepLinkDone.current = true;
+    const r = reviews.find(x => String(x.id) === String(wanted));
+    if (r?.status === 'submitted' && canEdit) openDecision(r);
+    else if (r) setView(r.status === 'requested' ? 'reviews' : 'history');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reviews, canEdit]);
+
+  /* ── reviews, by employee ── */
+  const openReviewByEmp = {};
+  reviews.forEach(r => { if (r.status === 'requested' || r.status === 'submitted') openReviewByEmp[r.employee_id] = r; });
+  const awaitingByEmp = {};
+  awaiting.forEach(a => { awaitingByEmp[a.employee_id] = a; });
+  const decided = reviews.filter(r => r.status === 'decided');
+  // History = decided and cancelled, newest first (the server orders them so).
+  const closed = reviews.filter(r => r.status === 'decided' || r.status === 'cancelled');
+  const submittedCount = reviews.filter(r => r.status === 'submitted').length;
+  const openCount = reviews.filter(r => r.status === 'requested' || r.status === 'submitted').length;
+  const extensionsByEmp = {};
+  decided.forEach(r => {
+    if (r.decision === 'extended') (extensionsByEmp[r.employee_id] ||= []).push(r);
+  });
+  // Employees who cannot get a review because their department has no usable head.
+  const blocked = awaiting.filter(a => a.blocked);
 
   /* ── KPI counts ── */
   const attentionDays = policy?.reminder_days ?? 14;
@@ -183,32 +282,19 @@ export default function Probation() {
     return matchTab && matchSearch;
   });
 
-  /* ── last notification per employee ── */
+  /* ── last reminder per employee ── */
   const lastNotif = {};
   history.forEach(h => {
     if (!lastNotif[h.employee_id] || new Date(h.created_at) > new Date(lastNotif[h.employee_id].created_at)) {
       lastNotif[h.employee_id] = h;
     }
   });
-  const extensionHistoryByEmp = {};
-  history.forEach(h => {
-    if (String(h.decision || '').toLowerCase() === 'extended') {
-      if (!extensionHistoryByEmp[h.employee_id]) extensionHistoryByEmp[h.employee_id] = [];
-      extensionHistoryByEmp[h.employee_id].push(h);
-    }
-  });
 
-  // The page used to POST a "probation_due" alert for every critical/overdue
-  // employee on EVERY load, de-duplicated only in this browser's localStorage —
-  // so each new browser, device or cleared cache re-sent all of them (146
-  // pending log rows and 201 notifications for three employees). Reminders now
-  // come only from the daily job (backend jobs/probation.cron.js), which keeps a
-  // durable once-per-end-date ledger. Opening this page sends nothing.
+  // Reminders come only from the daily job (backend jobs/probation.cron.js),
+  // which keeps a durable once-per-end-date ledger. Opening this page sends nothing.
 
   /* ── autocomplete ── */
-  // Was type-to-reveal: with the field empty the list stayed hidden, so you had
-  // to already know a name to notify anyone. It is a dropdown now — focusing the
-  // field opens the list, typing narrows it.
+  // Focusing the field opens the list, typing narrows it.
   const notifyPool = () =>
     [...activeEmps, ...allEmps.filter(e => !activeEmps.some(a => a.id === e.id))];
 
@@ -229,13 +315,11 @@ export default function Probation() {
     setSuggestions(matchEmployees(v));
   };
 
-  // Focusing a field that still holds a prefilled or already-picked name should
-  // open the whole list — filtering by that name would show one row and hide
-  // everyone you might switch to.
+  // A field that still holds a prefilled or picked name opens the whole list.
   const openNotifyList = () =>
     setSuggestions(matchEmployees(notifyTyped.current ? notifyTo : ''));
 
-  /* ── send notification ── */
+  /* ── send reminder ── */
   const handleSend = async () => {
     if (!notifyToId) {
       setDialog({ type:'warning', title:'Required', message:'Pick the person to notify from the list.' });
@@ -250,18 +334,92 @@ export default function Probation() {
         notification_type: notifyType,
         remarks        : notifyRemarks,
       });
-      // Recorded either way; say plainly when the person has no login to receive it.
       const message = data?.recipient_has_login === false
         ? `Recorded. ${notifyTo} has no Pulse login, so no in-app notification could be delivered to them.`
-        : `${notifyTo} has been notified about ${modalEmp.first_name}'s probation.`;
-      setDialog({ type: data?.recipient_has_login === false ? 'warning' : 'success', title:'Notification Sent', message, autoClose: 3500 });
+        : `${notifyTo} has been reminded about ${modalEmp.first_name}'s probation.`;
+      setDialog({ type: data?.recipient_has_login === false ? 'warning' : 'success', title:'Reminder Sent', message, autoClose: 3500 });
       setModalEmp(null);
       setNotifyTo(''); setNotifyToId(null); setNotifyRemarks(''); notifyTyped.current = false; setSuggestions([]);
       load(true);
     } catch (err) {
-      setDialog({ type:'error', title:'Failed to Send', message: err?.response?.data?.error || 'Could not send notification. Please try again.' });
+      setDialog({ type:'error', title:'Failed to Send', message: err?.response?.data?.error || 'Could not send the reminder. Please try again.' });
     } finally {
       setSending(false);
+    }
+  };
+
+  /* ── request a department-head review ── */
+  const requestReview = async (emp) => {
+    setRequesting(emp.id);
+    try {
+      const { data } = await api.post('/probation-reviews', { employee_id: emp.id });
+      const reviewer = data?.review?.reviewer || 'the department head';
+      setDialog(data?.created === false
+        ? { type: 'info', title: 'Already Requested', message: `${emp.first_name}'s review is already with ${reviewer}.`, autoClose: 3000 }
+        : { type: 'success', title: 'Review Requested', message: `${reviewer} has been asked to review ${emp.first_name} ${emp.last_name || ''}`.trim() + '.', autoClose: 3000 });
+      reloadAll();
+    } catch (err) {
+      setDialog({ type: 'error', title: 'Review Not Requested', message: err?.response?.data?.error || 'Could not request the review.' });
+    } finally {
+      setRequesting(null);
+    }
+  };
+
+  /* ── HR decision on a submitted review ── */
+  const openDecision = (review) => {
+    setDecReview(review);
+    setDecPreview(null);
+    setDecForm({ ...EMPTY_DECISION, decision: RECOMMENDATION_TO_DECISION[review.recommendation] || '' });
+  };
+  const closeDecision = () => { setDecReview(null); setDecForm(EMPTY_DECISION); setDecPreview(null); };
+
+  // Extension preview: the server's own calendar rule (the day after the
+  // current end date + N months), via the existing calculator.
+  const decEmp = decReview ? employees.find(e => e.id === decReview.employee_id) : null;
+  const decCurrentEnd = decEmp?.probation_end_date?.slice?.(0, 10) || decReview?.original_end_date || null;
+  useEffect(() => {
+    if (!decReview || decForm.decision !== 'extended' || !decCurrentEnd) { setDecPreview(null); return undefined; }
+    const months = Number(decForm.extension_months);
+    if (!Number.isInteger(months) || months < 1 || months > 24) { setDecPreview(null); return undefined; }
+    let stale = false;
+    api.get('/probation/calculate', { params: { joining_date: addDaysIso(decCurrentEnd, 1), months } })
+      .then(({ data }) => { if (!stale) setDecPreview(data?.probation_end_date || null); })
+      .catch(() => { if (!stale) setDecPreview(null); });
+    return () => { stale = true; };
+  }, [decReview, decForm.decision, decForm.extension_months, decCurrentEnd]);
+
+  const saveDecision = async () => {
+    const f = decForm;
+    if (!f.decision) { setDialog({ type: 'warning', title: 'Required', message: 'Choose a decision.' }); return; }
+    if (f.decision !== 'confirmed' && !f.notes.trim()) {
+      setDialog({ type: 'warning', title: 'Required', message: 'Give a reason for this decision.' }); return;
+    }
+    if (f.decision === 'not_confirmed' && !f.last_working_date) {
+      setDialog({ type: 'warning', title: 'Required', message: 'Enter the last working date.' }); return;
+    }
+    const body = { decision: f.decision, notes: f.notes.trim() };
+    if (f.decision === 'confirmed' && f.effective_date) body.effective_date = f.effective_date;
+    if (f.decision === 'extended') body.extension_months = Number(f.extension_months);
+    if (f.decision === 'not_confirmed') {
+      body.last_working_date = f.last_working_date;
+      if (f.notice_days !== '') body.notice_days = Number(f.notice_days);
+    }
+    setDecSaving(true);
+    try {
+      const { data } = await api.post(`/probation-reviews/${decReview.id}/decide`, body);
+      const who = decReview.employee;
+      const message = f.decision === 'confirmed'
+        ? `${who} is confirmed and now Active. The confirmation letter is under History.`
+        : f.decision === 'extended'
+          ? `${who}'s probation now ends on ${fmtDate(data?.new_end_date)}. The extension letter is under History.`
+          : `An exit request was opened for ${who} (last working day ${fmtDate(f.last_working_date)}). Continue in Exit Management.`;
+      setDialog({ type: 'success', title: 'Decision Recorded', message, autoClose: 4000 });
+      closeDecision();
+      reloadAll();
+    } catch (err) {
+      setDialog({ type: 'error', title: 'Decision Not Saved', message: err?.response?.data?.error || 'Could not save the decision.' });
+    } finally {
+      setDecSaving(false);
     }
   };
 
@@ -283,23 +441,9 @@ export default function Probation() {
     }
   };
 
-  /* ── save decision ── */
-  const handleDecision = async () => {
-    if (!decision) {
-      setDialog({ type:'warning', title:'Required', message:'Please select a decision.' });
-      return;
-    }
-    setDecidingSending(true);
-    try {
-      await api.put(`/probation/${decRecord.id}`, { decision, performance_rating: rating, comments });
-      setDialog({ type:'success', title:'Decision Saved', message:'Probation outcome has been recorded.', autoClose: 2000 });
-      setDecRecord(null); setDecision(''); setRating(0); setComments('');
-      load(true);
-    } catch {
-      setDialog({ type:'error', title:'Failed', message:'Could not save decision.' });
-    } finally {
-      setDecidingSending(false);
-    }
+  const goDepartmentHeads = () => {
+    if (setPage) setPage('DepartmentHeads');
+    else window.location.assign('/DepartmentHeads');
   };
 
   /* ── render ── */
@@ -309,25 +453,31 @@ export default function Probation() {
         icon={Users}
         eyebrow="Human Resources"
         title="Probation Management"
-        subtitle="Track, notify, and close probation periods for all employees"
+        subtitle="Track probation periods, get each head's review, and record the outcome"
         actions={<>
           <button
             className="plh-cta plh-cta--ghost"
-            onClick={() => load(true)}>
+            onClick={() => reloadAll()}
+            disabled={refreshing}>
             <RefreshCw size={14} />
             Refresh
           </button>
           <button className="plh-cta" onClick={() => setShowHistory(v => !v)}>
             <History size={14} />
-            Notification Log
+            Reminder Log
             {showHistory ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
           </button>
         </>}
       />
     }>
-      {/* Header */}
-
-
+      {loadFailed.length > 0 && (
+        <LoadError
+          compact
+          title="Part of this page did not load"
+          message={`Could not load: ${loadFailed.join(', ')}. The lists below may be incomplete.`}
+          onRetry={() => load()}
+        />
+      )}
       {/* KPI */}
       <div className="prob-kpi-row">
         <div className="prob-kpi">
@@ -355,6 +505,15 @@ export default function Probation() {
           <div className="prob-kpi-body">
             <div className="prob-kpi-val" style={{ color: '#6d28d9' }}>{kpi.warning}</div>
             <div className="prob-kpi-label">Due in 30 Days</div>
+          </div>
+        </div>
+        <div className="prob-kpi">
+          <div className="prob-kpi-icon" style={{ background: '#fef3c7' }}>
+            <ClipboardCheck size={20} color="#b45309" />
+          </div>
+          <div className="prob-kpi-body">
+            <div className="prob-kpi-val" style={{ color: '#b45309' }}>{submittedCount}</div>
+            <div className="prob-kpi-label">Awaiting HR Decision</div>
           </div>
         </div>
         <div className="prob-kpi">
@@ -398,81 +557,149 @@ export default function Probation() {
                 {' · '}HR is reminded <strong>{policy.reminder_days} days</strong> before the end date
                 {policy.reminder_days_is_default ? ' (standard)' : ''}
               </span>
-              <button className="prob-hist-action-btn"
-                onClick={() => setPolicyEdit({ months: policy.probation_months, days: policy.reminder_days })}>
-                Edit policy
-              </button>
+              {canEdit && (
+                <button className="prob-hist-action-btn"
+                  onClick={() => setPolicyEdit({ months: policy.probation_months, days: policy.reminder_days })}>
+                  Edit policy
+                </button>
+              )}
             </>
           )}
         </div>
       )}
 
-      {/* Who reviews probations, per department. Its own permission checks:
-          hr:view to read, hr:edit to change (enforced by the server). */}
-      <DepartmentHeadsPanel />
+      {/* Who cannot be reviewed, and why — the fix is on Department Heads. */}
+      {blocked.length > 0 && (
+        <div className="prob-banner" role="status">
+          <AlertTriangle size={14} />
+          <div>
+            <strong>{blocked.length} {blocked.length === 1 ? 'employee' : 'employees'} cannot be sent for review.</strong>
+            <ul>
+              {blocked.slice(0, 5).map(b => <li key={b.employee_id}>{b.employee}: {b.blocked}</li>)}
+              {blocked.length > 5 && <li>…and {blocked.length - 5} more</li>}
+            </ul>
+          </div>
+          <button type="button" className="prob-hist-action-btn" onClick={goDepartmentHeads}>Open Department Heads</button>
+        </div>
+      )}
 
-      {/* Open reviews and whether each reviewer is still the eligible head;
-          reassignment via the existing endpoint (hr:edit). */}
-      <ProbationReviewsPanel />
-
-      {/* Notification history panel */}
+      {/* Reminder log — what was sent, to whom. No decisions here any more. */}
       {showHistory && (
         <div className="prob-history">
           <div className="prob-history-head">
-            <h3>Notification History</h3>
+            <h3>Reminder Log</h3>
             <span style={{ fontSize: 12, color: '#9ca3af' }}>{history.length} records</span>
           </div>
           {history.length === 0 ? (
             <div style={{ padding: '24px', textAlign: 'center', color: '#9ca3af', fontSize: 13 }}>
-              No notifications sent yet
+              No reminders sent yet
             </div>
           ) : (
             <>
-              <div className="prob-hist-row prob-hist-head-row">
+              <div className="prob-hist-row prob-hist-row--log prob-hist-head-row">
                 <span>Employee</span>
-                <span>Notified To</span>
+                <span>Sent To</span>
                 <span>Type</span>
                 <span>Date</span>
-                <span>Action</span>
               </div>
-              {history.slice(0, 20).map(h => {
-                const [_c] = avatarColor(`${h.first_name}${h.last_name}`);
-                const dec = h.decision || 'pending';
-                return (
-                  <div key={h.id} className="prob-hist-row">
-                    <div>
-                      <div className="prob-hist-name">{h.first_name} {h.last_name}</div>
-                      <div style={{ fontSize: 11, color: '#9ca3af' }}>{h.office_id}</div>
-                    </div>
-                    <div className="prob-hist-to">{h.notified_to || '—'}</div>
-                    <div>
-                      <span className={`prob-hist-type prob-hist-type-${h.notification_type || 'approval'}`}>
-                        {(h.notification_type || 'approval').replace('_', ' ')}
-                      </span>
-                    </div>
-                    <div className="prob-hist-date">{timeAgo(h.created_at)}</div>
-                    <div>
-                      {dec === 'pending' ? (
-                        <button
-                          className="prob-hist-action-btn"
-                          onClick={() => { setDecRecord(h); setDecision(''); setRating(0); setComments(''); }}
-                        >
-                          Record Decision
-                        </button>
-                      ) : (
-                        <span className={`prob-hist-decision prob-hist-decision-${dec}`}>
-                          {dec}
-                        </span>
-                      )}
-                    </div>
+              {history.slice(0, 20).map(h => (
+                <div key={h.id} className="prob-hist-row prob-hist-row--log">
+                  <div>
+                    <div className="prob-hist-name">{h.first_name} {h.last_name}</div>
+                    <div style={{ fontSize: 11, color: '#9ca3af' }}>{h.office_id}</div>
                   </div>
-                );
-              })}
+                  <div className="prob-hist-to">{h.notified_to && h.notified_to !== 'null' ? h.notified_to : '—'}</div>
+                  <div>
+                    <span className={`prob-hist-type prob-hist-type-${h.notification_type || 'approval'}`}>
+                      {(h.notification_type || 'approval').replace('_', ' ')}
+                    </span>
+                  </div>
+                  <div className="prob-hist-date">{timeAgo(h.created_at)}</div>
+                </div>
+              ))}
             </>
           )}
         </div>
       )}
 
+      {/* Views */}
+      <div className="prob-views" role="tablist" aria-label="Probation views">
+        {[
+          { key: 'current', label: 'Employees', count: kpi.total },
+          { key: 'reviews', label: 'Open Reviews', count: openCount },
+          { key: 'history', label: 'History', count: closed.length },
+        ].map(v => (
+          <button key={v.key} type="button" role="tab" aria-selected={view === v.key}
+            className={`prob-view${view === v.key ? ' active' : ''}`} onClick={() => setView(v.key)}>
+            {v.label} <span className="prob-tab-count">{v.count}</span>
+          </button>
+        ))}
+      </div>
+
+      {view === 'reviews' && (
+        <ProbationReviewsPanel reloadKey={panelKey} onDecide={canEdit ? openDecision : undefined}
+          onChanged={() => load(true)} />
+      )}
+
+      {view === 'history' && (
+        <section className="prob-dh" aria-label="Probation history">
+          <div className="prob-dh-body" style={{ paddingTop: 12 }}>
+            {closed.length === 0 ? (
+              <div className="prob-dh-help">No probation decisions recorded yet.</div>
+            ) : (
+              <table className="prob-dh-table">
+                <thead>
+                  <tr><th>Employee</th><th>Cycle</th><th>Head&apos;s review</th><th>Decision</th><th>Outcome</th><th>Decided</th><th aria-label="Letter" /></tr>
+                </thead>
+                <tbody>
+                  {closed.map(r => r.status === 'cancelled' ? (
+                    <tr key={r.id} data-history={r.id}>
+                      <td>{r.employee} <span className="prob-dh-muted">{r.office_id}</span></td>
+                      <td>{r.cycle_no}</td>
+                      <td>
+                        {r.recommendation ? `${RECOMMENDATION_LABEL[r.recommendation] || r.recommendation} · ${r.rating}/5` : 'Not submitted'}
+                        <div className="prob-dh-muted">{r.reviewer}</div>
+                      </td>
+                      <td><span className="prob-hist-decision prob-hist-decision-pending">Cancelled</span></td>
+                      <td>Review withdrawn<div className="prob-dh-muted">{r.cancel_reason}</div></td>
+                      <td>{fmtDate(r.cancelled_at)}<div className="prob-dh-muted">{r.cancelled_by || '—'}</div></td>
+                      <td />
+                    </tr>
+                  ) : (
+                    <tr key={r.id} data-history={r.id}>
+                      <td>{r.employee} <span className="prob-dh-muted">{r.office_id}</span></td>
+                      <td>{r.cycle_no}</td>
+                      <td>
+                        {RECOMMENDATION_LABEL[r.recommendation] || '—'} · {r.rating}/5
+                        <div className="prob-dh-muted">{r.reviewer}</div>
+                      </td>
+                      <td><span className={`prob-hist-decision prob-hist-decision-${r.decision}`}>{DECISION_LABEL[r.decision] || r.decision}</span></td>
+                      <td>
+                        {r.decision === 'extended' ? `New end date ${fmtDate(r.new_end_date)} (+${r.extension_months} mo)`
+                          : r.decision === 'not_confirmed' ? 'Exit request opened'
+                          : 'Status Active'}
+                        {r.decision_notes && <div className="prob-dh-muted">{r.decision_notes}</div>}
+                      </td>
+                      <td>{fmtDate(r.decided_at)}<div className="prob-dh-muted">{r.decided_by || '—'}</div></td>
+                      <td className="prob-dh-actions">
+                        {(r.decision === 'confirmed' || r.decision === 'extended') && (
+                          <button type="button" className="prob-hist-action-btn" disabled={letterBusy === r.id}
+                            onClick={() => downloadLetter(r)}>
+                            <Download size={12} /> {letterBusy === r.id ? 'Preparing…'
+                              : r.decision === 'confirmed' ? 'Confirmation letter' : 'Extension letter'}
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </section>
+      )}
+
+      {view === 'current' && <>
       {/* Filters + search */}
       <div className="prob-tabs">
         {[
@@ -527,12 +754,18 @@ export default function Probation() {
             const [avatarBg] = avatarColor(`${emp.first_name}${emp.last_name}`);
             const last = lastNotif[emp.id];
             const coolingDown = !!last && (Date.now() - new Date(last.created_at).getTime()) < NOTIFY_COOLDOWN_MS;
+            const open = openReviewByEmp[emp.id];
+            const wait = awaitingByEmp[emp.id];
+            const extensions = extensionsByEmp[emp.id] || [];
             const btnClass =
               prob?.status === 'overdue' || prob?.status === 'critical'
                 ? 'prob-notify-btn-danger'
                 : prob?.status === 'warning'
                 ? 'prob-notify-btn-warn'
                 : 'prob-notify-btn-primary';
+            const requestBlockedReason = !emp.probation_end_date
+              ? 'Set a probation end date on the employee first.'
+              : wait?.blocked || null;
 
             return (
               <div key={emp.id} className="prob-card">
@@ -607,53 +840,89 @@ export default function Probation() {
                     <div className="prob-info-val">{emp.reporting_manager || '—'}</div>
                   </div>
                   <div className="prob-info-item">
-                    <div className="prob-info-key">Location</div>
-                    <div className="prob-info-val">{emp.location || '—'}</div>
+                    <div className="prob-info-key">Reviewer</div>
+                    <div className="prob-info-val">
+                      {open ? open.reviewer : wait?.reviewer?.name || '—'}
+                    </div>
                   </div>
                 </div>
+
+                {/* Review state */}
+                <div className="prob-card-review">
+                  {open?.status === 'submitted' ? (
+                    <>
+                      <span className="prob-review-chip is-submitted">
+                        Head recommends: {RECOMMENDATION_LABEL[open.recommendation] || open.recommendation} · {open.rating}/5
+                      </span>
+                      {canEdit && (
+                        <button type="button" className="prob-modal-send prob-card-cta" onClick={() => openDecision(open)}>
+                          Record decision
+                        </button>
+                      )}
+                    </>
+                  ) : open?.status === 'requested' ? (
+                    <span className={`prob-review-chip${open.is_overdue ? ' is-overdue' : ''}`}>
+                      Review with {open.reviewer} · due {fmtDate(open.reviewer_due_date)}{open.is_overdue ? ' (overdue)' : ''}
+                    </span>
+                  ) : (
+                    <>
+                      <span className="prob-review-chip is-none">No review requested</span>
+                      {canAdd && (
+                        <button type="button" className="prob-modal-send prob-card-cta"
+                          disabled={!!requestBlockedReason || requesting === emp.id}
+                          title={requestBlockedReason || (wait?.reviewer ? `Ask ${wait.reviewer.name} to review` : undefined)}
+                          onClick={() => requestReview(emp)}>
+                          {requesting === emp.id ? 'Requesting…' : 'Request review'}
+                        </button>
+                      )}
+                    </>
+                  )}
+                </div>
+                {requestBlockedReason && !open && (
+                  <div className="prob-card-blocked">{requestBlockedReason}</div>
+                )}
 
                 {/* Footer */}
                 <div className="prob-card-footer">
                   <div className="prob-last-notif">
                     {last
-                      ? <>Last notified <span>{timeAgo(last.created_at)}</span></>
-                      : <span style={{ color: '#9ca3af' }}>Not notified yet</span>
+                      ? <>Last reminder <span>{timeAgo(last.created_at)}</span></>
+                      : <span style={{ color: '#9ca3af' }}>No reminder sent</span>
                     }
                   </div>
-                  {last && (Date.now() - new Date(last.created_at).getTime()) < (1000 * 60 * 60 * 24) && (
-                    <span style={{ fontSize: 11, color: '#6d28d9', marginRight: 8 }}>Reminder sent today</span>
+                  {canAdd && (
+                    <button
+                      className={`prob-notify-btn ${btnClass}`}
+                      disabled={coolingDown}
+                      title={coolingDown
+                        ? `Reminded ${timeAgo(last.created_at)} — you can remind again after ${new Date(new Date(last.created_at).getTime() + NOTIFY_COOLDOWN_MS).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+                        : 'Send a reminder to a colleague'}
+                      onClick={() => {
+                        setModalEmp(emp);
+                        setNotifyTo(emp.reporting_manager_id ? (emp.reporting_manager || '') : '');
+                        setNotifyToId(emp.reporting_manager_id || null);
+                        setNotifyType(
+                          prob?.status === 'overdue' || prob?.status === 'critical'
+                            ? 'probation_due'
+                            : prob?.status === 'warning'
+                            ? 'probation_warning'
+                            : 'approval'
+                        );
+                        setNotifyRemarks('');
+                        notifyTyped.current = false;
+                        setSuggestions([]);
+                      }}
+                    >
+                      <Bell size={12} />
+                      Remind
+                    </button>
                   )}
-                  <button
-                    className={`prob-notify-btn ${btnClass}`}
-                    disabled={coolingDown}
-                    title={coolingDown
-                      ? `Notified ${timeAgo(last.created_at)} — you can notify again after ${new Date(new Date(last.created_at).getTime() + NOTIFY_COOLDOWN_MS).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
-                      : undefined}
-                    onClick={() => {
-                      setModalEmp(emp);
-                      setNotifyTo(emp.reporting_manager_id ? (emp.reporting_manager || '') : '');
-                      setNotifyToId(emp.reporting_manager_id || null);
-                      setNotifyType(
-                        prob?.status === 'overdue' || prob?.status === 'critical'
-                          ? 'probation_due'
-                          : prob?.status === 'warning'
-                          ? 'probation_warning'
-                          : 'approval'
-                      );
-                      setNotifyRemarks('');
-                      notifyTyped.current = false;
-                      setSuggestions([]);
-                    }}
-                  >
-                    <Bell size={12} />
-                    Notify
-                  </button>
                 </div>
-                {extensionHistoryByEmp[emp.id]?.length > 0 && (
+                {extensions.length > 0 && (
                   <div style={{ marginTop: 10, fontSize: 11, color: '#6b7280', borderTop: '1px dashed #e5e7eb', paddingTop: 8 }}>
-                    Extension timeline: {extensionHistoryByEmp[emp.id]
-                      .sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
-                      .map((x, i) => `${i + 1}) ${fmtDate(x.created_at)}`)
+                    Extended {extensions.length} {extensions.length === 1 ? 'time' : 'times'}: {extensions
+                      .slice().sort((a, b) => new Date(a.decided_at) - new Date(b.decided_at))
+                      .map(x => `+${x.extension_months} mo to ${fmtDate(x.new_end_date)}`)
                       .join('  •  ')}
                   </div>
                 )}
@@ -662,8 +931,9 @@ export default function Probation() {
           })}
         </div>
       )}
+      </>}
 
-      {/* ── Notify modal ── */}
+      {/* ── Reminder modal ── */}
       {modalEmp && (() => {
         const prob = calcProbation(modalEmp, attentionDays);
         const cfg  = prob ? STATUS_CFG[prob.status] : STATUS_CFG.safe;
@@ -673,8 +943,8 @@ export default function Probation() {
             <div className="prob-modal" onClick={e => e.stopPropagation()}>
               <div className="prob-modal-head">
                 <div>
-                  <h2>Send Probation Notification</h2>
-                  <p>Notify manager or HR about this employee's probation status</p>
+                  <h2>Send Probation Reminder</h2>
+                  <p>Remind a manager or HR colleague about this employee&apos;s probation. To get the formal review, use Request review.</p>
                 </div>
                 <button className="prob-modal-close" onClick={() => setModalEmp(null)}>
                   <X size={14} />
@@ -682,7 +952,6 @@ export default function Probation() {
               </div>
 
               <div className="prob-modal-body">
-                {/* Employee card */}
                 <div className="prob-modal-emp">
                   <div className="prob-modal-emp-avatar" style={{ background: avatarBg }}>
                     {initials(modalEmp.first_name, modalEmp.last_name)}
@@ -723,9 +992,8 @@ export default function Probation() {
                   </div>
                 </div>
 
-                {/* Notify To */}
                 <div className="prob-field">
-                  <label>Notify To *</label>
+                  <label>Send To *</label>
                   <div className="prob-field-autocomplete">
                     <input
                       placeholder="Select an employee — or type a name or ID"
@@ -735,9 +1003,8 @@ export default function Probation() {
                       onBlur={() => setTimeout(() => setSuggestions([]), 160)}
                     />
                     {suggestions.length > 0 && (
-                      // preventDefault keeps focus in the input: otherwise pressing
-                      // on the list blurred it, the blur timer closed the list, and
-                      // a slow click or a scrollbar drag picked no one.
+                      // preventDefault keeps focus in the input, so a slow
+                      // click or a scrollbar drag still picks someone.
                       <div className="prob-suggestions" onMouseDown={e => e.preventDefault()}>
                         {suggestions.map(s => {
                           const [sb] = avatarColor(`${s.first_name}${s.last_name}`);
@@ -766,21 +1033,19 @@ export default function Probation() {
                   </div>
                 </div>
 
-                {/* Notification type */}
                 <div className="prob-field">
-                  <label>Notification Type</label>
+                  <label>Reminder Type</label>
                   <select value={notifyType} onChange={e => setNotifyType(e.target.value)}>
                     <option value="approval">General — Probation Review</option>
-                    <option value="probation_warning">Warning — Probation Due Soon (15 days)</option>
+                    <option value="probation_warning">Warning — Probation Due Soon</option>
                     <option value="probation_due">Final — Probation End Date Reached</option>
                   </select>
                 </div>
 
-                {/* Remarks */}
                 <div className="prob-field">
                   <label>Remarks (optional)</label>
                   <textarea
-                    placeholder="Add context or instructions for the reviewer…"
+                    placeholder="Add context for the recipient…"
                     value={notifyRemarks}
                     onChange={e => setNotifyRemarks(e.target.value)}
                   />
@@ -791,7 +1056,7 @@ export default function Probation() {
                 <button className="prob-modal-cancel" onClick={() => setModalEmp(null)}>Cancel</button>
                 <button className="prob-modal-send" onClick={handleSend} disabled={sending}>
                   <Send size={13} />
-                  {sending ? 'Sending…' : 'Send Notification'}
+                  {sending ? 'Sending…' : 'Send Reminder'}
                 </button>
               </div>
             </div>
@@ -799,79 +1064,104 @@ export default function Probation() {
         );
       })()}
 
-      {/* ── Decision modal ── */}
-      {decRecord && (
-        <div className="prob-modal-backdrop" onClick={() => setDecRecord(null)}>
-          <div className="prob-dec-modal" onClick={e => e.stopPropagation()}>
+      {/* ── HR decision modal ── */}
+      {decReview && (
+        <div className="prob-modal-backdrop" onClick={closeDecision}>
+          <div className="prob-dec-modal" role="dialog" aria-label="Record probation decision" onClick={e => e.stopPropagation()}>
             <div className="prob-dec-head">
               <div>
                 <h2>Record Probation Decision</h2>
                 <p style={{ fontSize: 12, opacity: .8, margin: '3px 0 0' }}>
-                  {decRecord.first_name} {decRecord.last_name}
+                  {decReview.employee} · {decReview.office_id} · probation ends {fmtDate(decCurrentEnd)}
                 </p>
               </div>
-              <button className="prob-modal-close" onClick={() => setDecRecord(null)}>
+              <button className="prob-modal-close" onClick={closeDecision} aria-label="Close">
                 <X size={14} />
               </button>
             </div>
             <div className="prob-dec-body">
+              <div className="prob-dec-summary">
+                <div className="prob-dec-summary-head">
+                  {decReview.reviewer}&apos;s review
+                  <span className="prob-dh-muted"> · submitted {fmtDate(decReview.submitted_at)}</span>
+                </div>
+                <div className="prob-rating-row" aria-label={`Rating ${decReview.rating} of 5`}>
+                  {[1,2,3,4,5].map(n => (
+                    <Star key={n} size={15} fill={decReview.rating >= n ? '#7c5cf0' : 'none'} color={decReview.rating >= n ? '#7c5cf0' : '#d1d5db'} />
+                  ))}
+                  <span style={{ fontSize: 12, color: '#6b7280', marginLeft: 6 }}>{decReview.rating}/5</span>
+                </div>
+                <div><strong>Recommends:</strong> {RECOMMENDATION_LABEL[decReview.recommendation] || decReview.recommendation}</div>
+                {decReview.comments && <p className="prob-dec-comments">{decReview.comments}</p>}
+              </div>
+
               <div className="prob-field">
-                <label>Decision *</label>
-                <select value={decision} onChange={e => setDecision(e.target.value)}>
+                <label htmlFor="prob-dec-decision">Decision *</label>
+                <select id="prob-dec-decision" value={decForm.decision}
+                  onChange={e => setDecForm(f => ({ ...f, decision: e.target.value }))}>
                   <option value="">— Select outcome —</option>
-                  <option value="confirmed">Confirmed — Employee Retained</option>
-                  <option value="extended">Extended — Probation Extended</option>
-                  <option value="terminated">Terminated — Employment Ended</option>
+                  <option value="confirmed">Confirm — employee becomes Active</option>
+                  <option value="extended">Extend — probation continues to a new end date</option>
+                  <option value="not_confirmed">Do not confirm — open an exit</option>
                 </select>
               </div>
-              <div className="prob-field">
-                <label>Performance Rating</label>
-                <div className="prob-rating-row">
-                  {[1,2,3,4,5].map(n => (
-                    <button
-                      key={n}
-                      className={`prob-star${rating >= n ? ' active' : ''}`}
-                      onClick={() => setRating(n)}
-                    >
-                      <Star size={16} fill={rating >= n ? '#7c5cf0' : 'none'} color={rating >= n ? '#7c5cf0' : '#d1d5db'} />
-                    </button>
-                  ))}
-                  <span style={{ fontSize: 12, color: '#6b7280', marginLeft: 6, alignSelf: 'center' }}>
-                    {rating ? `${rating}/5` : 'Not rated'}
+
+              {decForm.decision === 'confirmed' && (
+                <div className="prob-field">
+                  <label htmlFor="prob-dec-effective">Confirmation date</label>
+                  <input id="prob-dec-effective" type="date" max={todayIso()} value={decForm.effective_date}
+                    onChange={e => setDecForm(f => ({ ...f, effective_date: e.target.value }))} />
+                  <span className="prob-dh-muted">Leave empty for today.</span>
+                </div>
+              )}
+
+              {decForm.decision === 'extended' && (
+                <div className="prob-field">
+                  <label htmlFor="prob-dec-months">Extend by (months) *</label>
+                  <input id="prob-dec-months" type="number" min={1} max={24} value={decForm.extension_months}
+                    onChange={e => setDecForm(f => ({ ...f, extension_months: e.target.value }))} />
+                  <span className="prob-dh-muted">
+                    {decPreview ? `New end date: ${fmtDate(decPreview)}` : 'The new end date is counted from the day after the current end date.'}
                   </span>
                 </div>
-              </div>
+              )}
+
+              {decForm.decision === 'not_confirmed' && (
+                <>
+                  <div className="prob-field">
+                    <label htmlFor="prob-dec-lwd">Last working date *</label>
+                    <input id="prob-dec-lwd" type="date" min={todayIso()} value={decForm.last_working_date}
+                      onChange={e => setDecForm(f => ({ ...f, last_working_date: e.target.value }))} />
+                  </div>
+                  <div className="prob-field">
+                    <label htmlFor="prob-dec-notice">Notice period (days)</label>
+                    <input id="prob-dec-notice" type="number" min={0} max={365} value={decForm.notice_days}
+                      onChange={e => setDecForm(f => ({ ...f, notice_days: e.target.value }))} />
+                    <span className="prob-dh-muted">The employee moves to Notice now; the exit continues in Exit Management.</span>
+                  </div>
+                </>
+              )}
+
               <div className="prob-field">
-                <label>Comments</label>
-                <textarea
-                  placeholder="Notes on performance, reason for decision…"
-                  value={comments}
-                  onChange={e => setComments(e.target.value)}
-                />
+                <label htmlFor="prob-dec-notes">{decForm.decision && decForm.decision !== 'confirmed' ? 'Reason *' : 'Notes'}</label>
+                <textarea id="prob-dec-notes" maxLength={4000}
+                  placeholder="Why this decision — kept with the employee's probation history"
+                  value={decForm.notes}
+                  onChange={e => setDecForm(f => ({ ...f, notes: e.target.value }))} />
               </div>
             </div>
             <div className="prob-modal-footer">
-              <button className="prob-modal-cancel" onClick={() => setDecRecord(null)}>Cancel</button>
-              <button
-                className="prob-modal-send"
-                style={{ background: '#6B3FDB' }}
-                onClick={handleDecision}
-                disabled={decidingSending}
-              >
-                {decidingSending ? 'Saving…' : 'Save Decision'}
+              <button className="prob-modal-cancel" onClick={closeDecision}>Cancel</button>
+              <button className="prob-modal-send" onClick={saveDecision} disabled={decSaving}>
+                {decSaving ? 'Saving…' : 'Save Decision'}
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* Last, so it paints over the notify/decision modals. It shares their
-          z-index (10000), and while it sat above them in the tree every warning
-          or error raised from inside a modal ("Pick the person to notify",
-          "Failed to Send") rendered underneath it — Send looked dead. */}
+      {/* Last, so it paints over the modals (same z-index). */}
       <ResultDialog dialog={dialog} onClose={() => setDialog(null)} />
     </PageShell>
   );
 }
-
-

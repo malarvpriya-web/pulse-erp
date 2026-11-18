@@ -1,5 +1,5 @@
 import { lazy } from 'react';
-import { Download as IcDownload, FileText as IcFileText, FolderOpen as IcFolderOpen, Laptop as IcLaptop, Scale as IcScale } from 'lucide-react';
+import { Download as IcDownload, FolderOpen as IcFolderOpen, Laptop as IcLaptop, Scale as IcScale } from 'lucide-react';
 import { TabHub } from '@/components/pulse-ui';
 
 /**
@@ -11,13 +11,13 @@ import { TabHub } from '@/components/pulse-ui';
  * resolves it and every role gate behaves exactly as it did when each was its
  * own row. TabHub re-checks each tab with canRoleOpenPage() before drawing it.
  */
-const EmployeeDocuments = lazy(() => import('./EmployeeDocuments'));
 const EmployeeAssets = lazy(() => import('./EmployeeAssets'));
 const Policies = lazy(() => import('./Policies'));
 const Downloads = lazy(() => import('./Downloads'));
 
 export const TABS = [
-  { id: 'documents', label: 'Employee Documents', icon: IcFileText, page: 'EmployeeDocuments', Component: EmployeeDocuments },
+  // 'Employee Documents' removed 11 Nov 26 (owner): documents are collected on
+  // Add Employee, uploaded by HR only. /EmployeeDocuments redirects here.
   { id: 'assets', label: 'Asset Management', icon: IcLaptop, page: 'EmployeeAssets', Component: EmployeeAssets },
   { id: 'policies', label: 'Policies', icon: IcScale, page: 'Policies', Component: Policies },
   { id: 'downloads', label: 'HR Documents', icon: IcDownload, page: 'Downloads', Component: Downloads },
@@ -29,7 +29,7 @@ export default function EmployeeRecords({ setPage }) {
       icon={IcFolderOpen}
       eyebrow="Human Resources"
       title="Employee Records"
-      subtitle="Documents, allocated assets, company policies and downloadable forms"
+      subtitle="Allocated assets, company policies and downloadable forms"
       tabs={TABS}
       setPage={setPage}
     />

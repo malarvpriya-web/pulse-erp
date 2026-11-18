@@ -115,20 +115,6 @@ function actingEmployeeId(req) {
   return req.user?.employee_id ?? null;
 }
 
-// ── one-time inline DDL (idempotent safety net) ───────────────────────────────
-(async () => {
-  try {
-    await pool.query(`
-      ALTER TABLE project_milestones ADD COLUMN IF NOT EXISTS billing_milestone BOOLEAN DEFAULT FALSE;
-      ALTER TABLE project_milestones ADD COLUMN IF NOT EXISTS amount            NUMERIC(15,2) DEFAULT 0;
-      ALTER TABLE project_milestones ADD COLUMN IF NOT EXISTS owner_id          INTEGER REFERENCES employees(id) ON DELETE SET NULL;
-      ALTER TABLE project_milestones ADD COLUMN IF NOT EXISTS completed_date    DATE;
-      ALTER TABLE project_milestones ADD COLUMN IF NOT EXISTS invoice_id        INTEGER;
-      ALTER TABLE project_milestones ADD COLUMN IF NOT EXISTS invoice_created   BOOLEAN DEFAULT FALSE;
-    `);
-  } catch (e) { console.error('[projects] milestone migration error:', e.message); }
-})();
-
 // ── Employees dropdown ────────────────────────────────────────────────────────
 router.get('/employees', requirePermission('projects', 'view'), async (req, res) => {
   try {

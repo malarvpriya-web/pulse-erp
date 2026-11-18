@@ -10,18 +10,32 @@ import { PageHero, PageShell } from '@/components/pulse-ui';
 import { localDay } from '@/utils/dateFormatter';
 import { useAuth } from '@/context/AuthContext';
 import { heldGrant } from '@/config/menuCatalog';
+import StatutoryRuleRecorder from '../components/payroll/StatutoryRuleRecorder';
+import PayrollAdjustmentsPanel from '../components/payroll/PayrollAdjustmentsPanel';
+import SalesIncentivePanel from '../components/payroll/SalesIncentivePanel';
 
-const fmtRupee = n => { if(n>=100000) return `₹${(n/100000).toFixed(1)}L`; if(n>=1000) return `₹${(n/1000).toFixed(0)}K`; return `₹${n||0}`; };
+// Payroll figures are always exact rupees — never ₹1.2L.
 const fmtN = n => Number(n||0).toLocaleString('en-IN');
+const fmtRupee = n => `₹${fmtN(n)}`;
 
 const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 const FY_ORDER    = ['April','May','June','July','August','September','October','November','December','January','February','March'];
 
-// Builds the 12-month list for the current financial year (Apr–Mar)
+// This financial year and the last one (Apr–Mar), newest first, never a month
+// that has not started — payroll is often run after the month ends, and a
+// correction may reach back into last year.
 const getCurrentFYMonths = () => {
   const today  = new Date();
   const fyYear = today.getMonth() >= 3 ? today.getFullYear() : today.getFullYear() - 1;
-  return FY_ORDER.map((m, i) => `${m} ${i <= 8 ? fyYear : fyYear + 1}`);
+  const out = [];
+  for (const y of [fyYear, fyYear - 1]) {
+    FY_ORDER.forEach((m, i) => {
+      const yr = i <= 8 ? y : y + 1;
+      const key = yr * 100 + MONTH_NAMES.indexOf(m);
+      if (key <= today.getFullYear() * 100 + today.getMonth()) out.push([key, `${m} ${yr}`]);
+    });
+  }
+  return out.sort((a, b) => b[0] - a[0]).map(([, label]) => label);
 };
 
 const getCurrentFYMonth = () =>
@@ -36,11 +50,12 @@ const MONTHS = getCurrentFYMonths();
 
 const STATUS_COLOR = {
   paid:             { bg:'#d1fae5', color:'#065f46' },
-  pending:          { bg:'#ede9fe', color:'#5b21b6' },
-  processing:       { bg:'#dbeafe', color:'#1e40af' },
+  approved:         { bg:'#dbeafe', color:'#1e40af' },
+  pending:          { bg:'#fef3c7', color:'#92400e' },
   on_hold:          { bg:'#fee2e2', color:'#991b1b' },
-  pending_approval: { bg:'#ede9fe', color:'#5b21b6' },
 };
+// One word per status, everywhere on this page.
+const STATUS_LABEL = { pending: 'Draft', approved: 'Approved', paid: 'Paid', on_hold: 'On hold' };
 
 export default function Payroll({ setPage, embedded = false }) {
   // Each action is shown to whoever its API accepts (PC-01). Payment is read
@@ -50,11 +65,9 @@ export default function Payroll({ setPage, embedded = false }) {
   const may = (m, a) => typeof hasPermission === 'function' && hasPermission(m, a);
   const canGenerate = may('payroll', 'add');
   const canApprove  = may('payroll', 'approve');
+  const canRecordRule = may('payroll_statutory_config', 'edit');
+  const canAdjust   = may('payroll', 'edit');
   const canPay      = heldGrant(permissions, 'payroll_payment', 'approve');
-  // The NEFT export carries full account numbers, which only employee_bank:view
-  // holders receive from the server (PC-02a PD-16); for anyone else it would be
-  // a file of masked numbers.
-  const canExportBank = may('employee_bank', 'view');
   const [payrolls,        setPayrolls]        = useState([]);
   const [summary,         setSummary]         = useState({});
   const [trend,           setTrend]           = useState([]);
@@ -79,6 +92,12 @@ export default function Payroll({ setPage, embedded = false }) {
   // Which reads failed. allSettled used to drop them silently, so a 403/500 on
   // the list rendered "No payroll records" with a Generate button.
   const [loadErrors,      setLoadErrors]      = useState([]);
+  const [deptFilter,      setDeptFilter]      = useState('All');
+  const [issueFilter,     setIssueFilter]     = useState('all');   // all | issues | lop
+  const [bulkPay,         setBulkPay]         = useState(null);
+  const [reopenDialog,    setReopenDialog]    = useState(null);
+  const [holdDialog,      setHoldDialog]      = useState(null);
+  const [busy,            setBusy]            = useState(false);
 
   const isMounted = useRef(true);
   useEffect(() => {
@@ -135,16 +154,18 @@ export default function Payroll({ setPage, embedded = false }) {
   const inRunNotEligible  = eligibility ? payrolls.filter(p => !eligibleIds.has(p.employee_id)) : [];
 
   // Show confirm modal with pre-computed totals before generating
-  const handleGenerateClick = () => {
-    if (isLocked) {
-      showToast('This period is locked. Use the per-row Re-run button for corrections.', 'error');
-      return;
+  // The confirmation shows what Generate WILL save (computed by the server with
+  // today's inputs), not the old draft's totals — a first run used to show ₹0.
+  const handleGenerateClick = async () => {
+    const { month, year } = parseSelectedMonth(selectedMonth);
+    try {
+      const r = await api.get('/payroll/preview-run', { params: { month, year } });
+      const pv = r?.data?.data || {};
+      setConfirmModal({ gross: pv.gross, deductions: pv.total_deductions, net: pv.net_pay, count: pv.count,
+        finalised: pv.finalised, errors: pv.errors || [], data_issues: pv.data_issues });
+    } catch (e) {
+      showToast(e?.response?.data?.message || 'Could not work out the payroll totals', 'error');
     }
-    const gross      = summary.total_gross       || payrolls.reduce((s,p) => s+Number(p.gross||0),           0);
-    const deductions = summary.total_deductions  || payrolls.reduce((s,p) => s+Number(p.total_deductions||0),0);
-    const net        = summary.total_net         || payrolls.reduce((s,p) => s+Number(p.net_pay||0),         0);
-    const count      = eligibility?.summary?.eligible ?? (summary.total_employees || payrolls.length);
-    setConfirmModal({ gross, deductions, net, count });
   };
 
   const confirmGenerate = async () => {
@@ -183,7 +204,7 @@ export default function Payroll({ setPage, embedded = false }) {
       const blocked = e?.response?.data?.blocked;
       showToast(blocked?.length
         ? `${e.response.data.message} — ${blocked.map(b => `${b.employee_code}: ${b.issues.map(i => i.message).join(', ')}`).join(' | ')}`
-        : (e?.response?.data?.message || 'Approval failed — Finance Head role required'), 'error');
+        : (e?.response?.data?.message || 'Approval failed'), 'error');
     } finally { if (isMounted.current) setApprovalLoading(false); }
   };
 
@@ -238,43 +259,110 @@ export default function Payroll({ setPage, embedded = false }) {
     } catch { showToast('Could not load payslip', 'error'); }
   };
 
-  const exportNEFT = () => {
-    const payable = filtered.filter(p => p.status === 'approved');
-    if (!payable.length) { showToast('No approved records to export — approve payroll first', 'error'); return; }
-    const rows = [
-      ['Employee Name','Employee ID','Bank Account','IFSC Code','Net Pay (INR)','Payment Date'],
-      ...payable.map(p => [
-        `"${p.name || p.employee_name || ''}"`,
-        p.employee_code || '',
-        p.bank_account || '',
-        p.ifsc_code || '',
-        p.net_pay || 0,
-        localDay(),
-      ]),
-    ];
-    const csv  = rows.map(r => r.join(',')).join('\n');
-    const blob = new Blob([csv], { type:'text/csv' });
-    const url  = URL.createObjectURL(blob);
-    const a    = document.createElement('a');
-    a.href     = url;
-    a.download = `NEFT_${selectedMonth.replace(' ','_')}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-    showToast('NEFT file exported');
+  // Every approved, unpaid salary of the month — whatever the search or filters
+  // show — from the server, as .xlsx with account numbers kept as text (a CSV
+  // opened in Excel turned 16-digit accounts into 1.23E+15). Finance only.
+  const exportBankFile = async () => {
+    const { month, year } = parseSelectedMonth(selectedMonth);
+    try {
+      const r = await api.get('/payroll/bank-file', { params: { month, year }, responseType: 'blob' });
+      const url = URL.createObjectURL(r.data);
+      const a = document.createElement('a');
+      a.href = url; a.download = `Salary_transfers_${selectedMonth.replace(' ', '_')}.xlsx`; a.click();
+      URL.revokeObjectURL(url);
+      showToast('Salary transfer file downloaded. Copy it into your bank\'s bulk-payment format.');
+    } catch (e) {
+      let msg = 'Could not download the salary transfer file';
+      try { msg = JSON.parse(await e?.response?.data?.text?.())?.message || msg; } catch { /* not JSON */ }
+      showToast(msg, 'error');
+    }
   };
 
+  // Several payments at once: one UTR per employee, one value date.
+  const openBulkPay = () => setBulkPay({
+    value_date: localDay(), payment_mode: 'neft', saving: false, error: null,
+    rows: payrolls.filter(p => p.status === 'approved').map(p => ({ employee_id: p.employee_id, name: p.name, employee_code: p.employee_code, net_pay: p.net_pay, reference: '', result: null })),
+  });
+  const submitBulkPay = async () => {
+    if (!bulkPay || bulkPay.saving) return;
+    const todo = bulkPay.rows.filter(r => r.reference.trim() && r.result !== 'ok');
+    if (!todo.length) { setBulkPay(b => ({ ...b, error: 'Enter at least one bank reference (UTR).' })); return; }
+    setBulkPay(b => ({ ...b, saving: true, error: null }));
+    const { month, year } = parseSelectedMonth(selectedMonth);
+    const results = {};
+    for (const r of todo) {
+      try {
+        await api.post(`/payroll/${r.employee_id}/mark-paid`, { month, year, reference: r.reference.trim(), value_date: bulkPay.value_date, payment_mode: bulkPay.payment_mode });
+        results[r.employee_id] = 'ok';
+      } catch (e) { results[r.employee_id] = e?.response?.data?.message || 'Not recorded'; }
+    }
+    if (!isMounted.current) return;
+    setBulkPay(b => ({ ...b, saving: false, rows: b.rows.map(r => (results[r.employee_id] ? { ...r, result: results[r.employee_id] } : r)) }));
+    const ok = Object.values(results).filter(v => v === 'ok').length;
+    showToast(`${ok} payment(s) recorded${ok < todo.length ? `; ${todo.length - ok} refused — see the list` : ''}`, ok < todo.length ? 'error' : 'success');
+    load();
+  };
+
+  const submitReopen = async () => {
+    if (!reopenDialog || busy) return;
+    setBusy(true);
+    try {
+      const { month, year } = parseSelectedMonth(selectedMonth);
+      const r = await api.post('/payroll/reopen', { month, year, reason: reopenDialog.reason });
+      setReopenDialog(null);
+      showToast(r?.data?.message || 'Payroll reopened');
+      load();
+    } catch (e) {
+      setReopenDialog(d => d && ({ ...d, error: e?.response?.data?.message || 'Could not reopen' }));
+    } finally { if (isMounted.current) setBusy(false); }
+  };
+
+  const submitHold = async (p, hold, reason = '') => {
+    try {
+      const { month, year } = parseSelectedMonth(selectedMonth);
+      await api.post(`/payroll/${p.employee_id}/hold`, { month, year, hold, reason });
+      setHoldDialog(null);
+      showToast(hold ? `Salary of ${p.name} is on hold — left out of approval` : `Salary of ${p.name} is back in the draft`);
+      load();
+    } catch (e) {
+      if (hold) setHoldDialog(d => d && ({ ...d, error: e?.response?.data?.message || 'Could not hold' }));
+      else showToast(e?.response?.data?.message || 'Could not release', 'error');
+    }
+  };
+
+  const discardDrafts = async (employee) => {
+    const what = employee ? `the draft of ${employee.name}` : `every draft and held salary of ${selectedMonth}`;
+    if (!window.confirm(`Discard ${what}? Approved salaries are not touched. You can generate again afterwards.`)) return;
+    try {
+      const { month, year } = parseSelectedMonth(selectedMonth);
+      const r = await api.post('/payroll/discard', { month, year, employee_id: employee?.employee_id ?? null });
+      showToast(r?.data?.message || 'Draft discarded');
+      load();
+    } catch (e) { showToast(e?.response?.data?.message || 'Could not discard', 'error'); }
+  };
+
+  const departments = [...new Set(payrolls.map(p => p.department).filter(Boolean))].sort();
   const filtered = payrolls.filter(p => {
     const matchStatus = statusFilter==='All' || p.status===statusFilter;
+    const matchDept   = deptFilter==='All' || p.department===deptFilter;
+    const matchIssue  = issueFilter==='all' || (issueFilter==='issues' ? blockingOf(p).length > 0 : Number(p.lop_days) + Number(p.lop_carried_days || 0) > 0);
     const matchSearch = !search || [p.name, p.employee_code, p.department, p.designation]
       .some(v => (v||'').toLowerCase().includes(search.toLowerCase()));
-    return matchStatus && matchSearch;
+    return matchStatus && matchDept && matchIssue && matchSearch;
   });
+  const approvedCount = payrolls.filter(p => p.status === 'approved').length;
+  const paidCount     = payrolls.filter(p => p.status === 'paid').length;
+  const canReopen     = canApprove && approvedCount > 0 && paidCount === 0;
+  const hasDrafts     = payrolls.some(p => p.status === 'pending' || p.status === 'on_hold');
+  // Generate stays available for employees not yet in the run (a late joiner)
+  // even after part of the month is approved; approved salaries are never recalculated.
+  const canGenerateMore = !isLocked || eligibleNotInRun.length > 0 || hasDrafts;
 
   const kpis = [
-    { label:'Employees in Run', value: summary.total_employees ?? payrolls.length,                                                                       icon:Users,       color:'#6366f1' },
-    { label:'Total Gross',      value: fmtRupee(summary.total_gross      || payrolls.reduce((s,p)=>s+Number(p.gross||0),0)),                             icon:IndianRupee,  color:'#10b981', isText:true },
-    { label:'Total Deductions', value: fmtRupee(summary.total_deductions || payrolls.reduce((s,p)=>s+Number(p.total_deductions||0),0)),                  icon:TrendingUp,  color:'#7c5cf0', isText:true },
-    { label:'Net Payable',      value: fmtRupee(summary.total_net        || payrolls.reduce((s,p)=>s+Number(p.net_pay||0),0)),                           icon:CheckCircle, color:'#8b5cf6', isText:true },
+    { label:'Employees in Run', value: summary.total_employees ?? payrolls.length,                     icon:Users,       color:'#6366f1' },
+    { label:'Total Gross',      value: fmtRupee(payrolls.reduce((s,p)=>s+Number(p.gross||0),0)),            icon:IndianRupee,  color:'#10b981', isText:true },
+    { label:'Total Deductions', value: fmtRupee(payrolls.reduce((s,p)=>s+Number(p.total_deductions||0),0)), icon:TrendingUp,  color:'#7c5cf0', isText:true },
+    { label:'Net Payable',      value: fmtRupee(payrolls.reduce((s,p)=>s+Number(p.net_pay||0),0)),          icon:CheckCircle, color:'#8b5cf6', isText:true },
   ];
 
   return (
@@ -317,7 +405,8 @@ export default function Payroll({ setPage, embedded = false }) {
             </p>
             <div style={{ background:'#f9fafb', borderRadius:10, padding:16, marginBottom:16 }}>
               {[
-                ['Employees',        confirmModal.count],
+                ['Employees to (re)calculate', confirmModal.count],
+                ...(confirmModal.finalised ? [['Already approved (unchanged)', confirmModal.finalised]] : []),
                 ['Total Gross',      `₹${fmtN(confirmModal.gross)}`],
                 ['Total Deductions', `₹${fmtN(confirmModal.deductions)}`],
                 ['Net Payable',      `₹${fmtN(confirmModal.net)}`],
@@ -329,8 +418,14 @@ export default function Payroll({ setPage, embedded = false }) {
                 </div>
               ))}
             </div>
+            {(confirmModal.errors.length > 0 || confirmModal.data_issues > 0) && (
+              <div style={{ background:'#fef2f2', borderRadius:8, padding:'10px 14px', marginBottom:12, fontSize:12, color:'#991b1b', lineHeight:1.5 }}>
+                {confirmModal.errors.length > 0 && <div>{confirmModal.errors.length} employee(s) cannot be calculated: {confirmModal.errors.map(e => `${e.employee_code}: ${e.error}`).join('; ')}</div>}
+                {confirmModal.data_issues > 0 && <div>{confirmModal.data_issues} employee(s) have data errors that will block approval (shown on their rows).</div>}
+              </div>
+            )}
             <div style={{ background:'#ede9fe', borderRadius:8, padding:'10px 14px', marginBottom:20, fontSize:12, color:'#5b21b6', lineHeight:1.5 }}>
-              After generation, payroll enters <strong>pending approval</strong>. Finance Head must approve before payslips are emailed.
+              Generating saves a <strong>draft</strong>. A different authorised person then approves it; payslips are released, payable and emailable only after approval.
             </div>
             <div style={{ display:'flex', gap:10, justifyContent:'flex-end' }}>
               <button onClick={() => setConfirmModal(null)}
@@ -387,6 +482,69 @@ export default function Payroll({ setPage, embedded = false }) {
         </div>
       )}
 
+      {bulkPay && (
+        <div role="dialog" style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.55)', zIndex:3000, display:'flex', alignItems:'center', justifyContent:'center', padding:20 }}>
+          <div style={{ background:'#fff', borderRadius:16, padding:24, width:720, maxWidth:'95vw', maxHeight:'90vh', overflowY:'auto' }}>
+            <h2 style={{ fontSize:16, fontWeight:700, margin:'0 0 6px' }}>Record payments — {selectedMonth}</h2>
+            <p style={{ color:'#6b7280', fontSize:13, margin:'0 0 12px' }}>Enter each transfer's bank reference (UTR) from the bank's confirmation. Rows left blank are not recorded.</p>
+            <div style={{ display:'flex', gap:12, marginBottom:12 }}>
+              <label style={{ fontSize:12, fontWeight:600 }}>Value date <input type="date" value={bulkPay.value_date} max={localDay()} onChange={e => setBulkPay(b => ({ ...b, value_date: e.target.value }))} style={{ marginLeft:6 }} /></label>
+              <label style={{ fontSize:12, fontWeight:600 }}>Mode <select value={bulkPay.payment_mode} onChange={e => setBulkPay(b => ({ ...b, payment_mode: e.target.value }))} style={{ marginLeft:6 }}>
+                {[['neft','NEFT'],['rtgs','RTGS'],['imps','IMPS'],['bank_transfer','Bank transfer'],['cheque','Cheque']].map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+              </select></label>
+            </div>
+            <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
+              <thead><tr>{['Employee','Net pay','Bank reference (UTR)',''].map(h => <th key={h} style={{ textAlign:'left', padding:6, borderBottom:'1px solid #e5e7eb' }}>{h}</th>)}</tr></thead>
+              <tbody>{bulkPay.rows.map((r, i) => (
+                <tr key={r.employee_id}>
+                  <td style={{ padding:6 }}>{r.name} <span style={{ color:'#9ca3af' }}>{r.employee_code}</span></td>
+                  <td style={{ padding:6 }}>₹{fmtN(r.net_pay)}</td>
+                  <td style={{ padding:6 }}><input aria-label={`UTR for ${r.name}`} value={r.reference} disabled={r.result === 'ok'} maxLength={35}
+                    onChange={e => setBulkPay(b => ({ ...b, rows: b.rows.map((x, j) => j === i ? { ...x, reference: e.target.value, result: null } : x) }))}
+                    style={{ width:'100%', padding:'6px 8px', border:'1px solid #d1d5db', borderRadius:6, fontFamily:'monospace' }} /></td>
+                  <td style={{ padding:6, fontSize:12, color: r.result === 'ok' ? '#166534' : '#b91c1c' }}>{r.result === 'ok' ? 'Recorded' : r.result}</td>
+                </tr>))}</tbody>
+            </table>
+            {bulkPay.error && <p role="alert" style={{ color:'#b91c1c', fontSize:12 }}>{bulkPay.error}</p>}
+            <div style={{ display:'flex', gap:10, justifyContent:'flex-end', marginTop:16 }}>
+              <button className="pulse-btn-secondary" onClick={() => setBulkPay(null)} disabled={bulkPay.saving}>Close</button>
+              <button className="pulse-btn-primary" onClick={submitBulkPay} disabled={bulkPay.saving}>{bulkPay.saving ? 'Recording…' : 'Record entered payments'}</button>
+            </div>
+          </div></div>
+      )}
+
+      {reopenDialog && (
+        <div role="dialog" style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.55)', zIndex:3000, display:'flex', alignItems:'center', justifyContent:'center', padding:20 }}>
+          <div style={{ background:'#fff', borderRadius:16, padding:24, width:460 }}>
+            <h2 style={{ fontSize:16, fontWeight:700, margin:'0 0 6px' }}>Reopen {selectedMonth}</h2>
+            <p style={{ color:'#6b7280', fontSize:13, margin:'0 0 12px' }}>Every approved salary of the month goes back to draft, the accrual journal is reversed and loan recoveries are undone. Possible only while nothing has been paid or remitted.</p>
+            <label htmlFor="reopen-reason" style={{ fontSize:12, fontWeight:600 }}>Reason *</label>
+            <textarea id="reopen-reason" rows={3} value={reopenDialog.reason} onChange={e => setReopenDialog(d => ({ ...d, reason: e.target.value, error: null }))}
+              style={{ width:'100%', padding:8, border:'1px solid #d1d5db', borderRadius:8, marginTop:4 }} />
+            {reopenDialog.error && <p role="alert" style={{ color:'#b91c1c', fontSize:12 }}>{reopenDialog.error}</p>}
+            <div style={{ display:'flex', gap:10, justifyContent:'flex-end', marginTop:16 }}>
+              <button className="pulse-btn-secondary" onClick={() => setReopenDialog(null)} disabled={busy}>Cancel</button>
+              <button className="pulse-btn-primary" onClick={submitReopen} disabled={busy || reopenDialog.reason.trim().length < 10}>{busy ? 'Reopening…' : 'Reopen month'}</button>
+            </div>
+          </div></div>
+      )}
+
+      {holdDialog && (
+        <div role="dialog" style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.55)', zIndex:3000, display:'flex', alignItems:'center', justifyContent:'center', padding:20 }}>
+          <div style={{ background:'#fff', borderRadius:16, padding:24, width:440 }}>
+            <h2 style={{ fontSize:16, fontWeight:700, margin:'0 0 6px' }}>Hold the salary of {holdDialog.p.name}</h2>
+            <p style={{ color:'#6b7280', fontSize:13, margin:'0 0 12px' }}>A held salary is left out of approval and payment until it is released.</p>
+            <label htmlFor="hold-reason" style={{ fontSize:12, fontWeight:600 }}>Reason *</label>
+            <input id="hold-reason" value={holdDialog.reason} onChange={e => setHoldDialog(d => ({ ...d, reason: e.target.value, error: null }))}
+              style={{ width:'100%', padding:8, border:'1px solid #d1d5db', borderRadius:8, marginTop:4 }} />
+            {holdDialog.error && <p role="alert" style={{ color:'#b91c1c', fontSize:12 }}>{holdDialog.error}</p>}
+            <div style={{ display:'flex', gap:10, justifyContent:'flex-end', marginTop:16 }}>
+              <button className="pulse-btn-secondary" onClick={() => setHoldDialog(null)}>Cancel</button>
+              <button className="pulse-btn-primary" onClick={() => submitHold(holdDialog.p, true, holdDialog.reason)} disabled={holdDialog.reason.trim().length < 5}>Hold salary</button>
+            </div>
+          </div></div>
+      )}
+
       {/* Header */}
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20, flexWrap:'wrap', gap:12 }}>
         <div>
@@ -416,22 +574,29 @@ export default function Payroll({ setPage, embedded = false }) {
             </button>
           )}
 
-          {/* NEFT Export — bank-detail permission only (PD-16) */}
-          {canExportBank && <button onClick={exportNEFT}
-            style={{ display:'flex', alignItems:'center', gap:6, padding:'9px 14px', background:'#fff',
-              color:'#374151', border:'1px solid #e5e7eb', borderRadius:8, cursor:'pointer', fontSize:13, fontWeight:500 }}>
-            <CreditCard size={14}/> Export NEFT
+          {/* The payer's tools: the transfer file and payment entry (PC-02a) */}
+          {canPay && approvedCount > 0 && <>
+            <button onClick={exportBankFile} className="pulse-btn-secondary" style={{ display:'flex', alignItems:'center', gap:6 }}>
+              <CreditCard size={14}/> Salary transfer file
+            </button>
+            <button onClick={openBulkPay} className="pulse-btn-secondary" style={{ display:'flex', alignItems:'center', gap:6 }}>
+              <CheckCircle size={14}/> Record payments
+            </button>
+          </>}
+          {canReopen && <button onClick={() => setReopenDialog({ reason: '', error: null })} className="pulse-btn-secondary" style={{ display:'flex', alignItems:'center', gap:6 }}>
+            <RotateCcw size={14}/> Reopen month
           </button>}
+          {canGenerate && hasDrafts && <button onClick={() => discardDrafts(null)} className="pulse-btn-secondary">Discard drafts</button>}
 
-          {/* Generate / Period Locked */}
-          {canGenerate && <button onClick={handleGenerateClick} disabled={genLoading || isLocked}
+          {/* Generate — also for employees not yet in a partly approved month */}
+          {canGenerate && <button onClick={handleGenerateClick} disabled={genLoading || !canGenerateMore}
             style={{ display:'flex', alignItems:'center', gap:6, padding:'9px 18px',
-              background: isLocked ? '#9ca3af' : '#6B3FDB', color:'#fff', border:'none', borderRadius:8,
-              cursor: isLocked ? 'not-allowed' : 'pointer', fontSize:13, fontWeight:600, opacity:genLoading?0.7:1 }}>
-            {isLocked
+              background: !canGenerateMore ? '#9ca3af' : '#6B3FDB', color:'#fff', border:'none', borderRadius:8,
+              cursor: !canGenerateMore ? 'not-allowed' : 'pointer', fontSize:13, fontWeight:600, opacity:genLoading?0.7:1 }}>
+            {!canGenerateMore
               ? <Lock size={14}/>
               : <RefreshCw size={14} style={{ animation:genLoading?'spin 1s linear infinite':undefined }}/>}
-            {genLoading ? 'Generating…' : isLocked ? 'Period Locked' : 'Generate Payroll'}
+            {genLoading ? 'Generating…' : !canGenerateMore ? 'Month approved' : isLocked ? `Generate for remaining (${eligibleNotInRun.length})` : 'Generate Payroll'}
           </button>}
         </div>
       </div>
@@ -445,12 +610,19 @@ export default function Payroll({ setPage, embedded = false }) {
         </div>
       )}
 
+      {readiness?.warnings?.length > 0 && (
+        <div style={{ background:'#fffbeb', border:'1px solid #fde68a', borderRadius:10, padding:'10px 16px', marginBottom:16, fontSize:12, color:'#92400e' }}>
+          <strong>Check before paying:</strong>
+          <ul style={{ margin:'4px 0 0', paddingLeft:18 }}>{readiness.warnings.map((w, i) => <li key={i}>{w.message}</li>)}</ul>
+        </div>
+      )}
+
       {/* Approval Banner */}
       {hasPendingApproval && (
         <div style={{ background:'#ede9fe', border:'1px solid #c4b5fd', borderRadius:10, padding:'12px 16px',
           marginBottom:16, display:'flex', alignItems:'center', gap:10, fontSize:13, color:'#5b21b6' }}>
           <AlertCircle size={15}/>
-          <span><strong>Payroll for {selectedMonth} is a draft awaiting Finance approval.</strong> Payslips are released, payable and emailable only after "Approve &amp; Release".</span>
+          <span><strong>Payroll for {selectedMonth} is a draft awaiting approval.</strong> Payslips are released, payable and emailable only after "Approve &amp; Release", by someone other than the person who generated it.</span>
         </div>
       )}
 
@@ -486,7 +658,7 @@ export default function Payroll({ setPage, embedded = false }) {
           {(summary.cycle?.errors?.length > 0 || summary.settings_conflicts?.length > 0) && (
             <div style={{ marginTop:10, fontSize:12, color:'#b91c1c' }}>
               {summary.cycle?.errors?.map(e => <div key={e}>Pay cycle: {e}</div>)}
-              {summary.settings_conflicts?.length > 0 && <div>Payroll Settings and the Setup Wizard disagree on: {summary.settings_conflicts.map(c => c.key).join(', ')} — Payroll Settings values are used. Save Payroll Settings once to align them.</div>}
+              {summary.settings_conflicts?.length > 0 && <div>Two saved copies of the payroll settings disagree on: {summary.settings_conflicts.map(c => c.key).join(', ')} — Payroll Settings values are used. Save Payroll Settings once to align them.</div>}
             </div>
           )}
         </div>
@@ -499,13 +671,21 @@ export default function Payroll({ setPage, embedded = false }) {
             Release prerequisites — approval, payment and payslip release are blocked for {readiness.period} ({readiness.blockers.length})
           </div>
           <ul style={{ margin:0, paddingLeft:18 }}>
-            {readiness.blockers.map((b, i) => <li key={i} style={{ marginBottom:3 }}><strong>{b.code}</strong>{b.key ? ` · ${b.key}` : ''} — {b.message}</li>)}
+            {readiness.blockers.map((b, i) => <li key={i} style={{ marginBottom:3 }}><strong>{b.code}</strong>{b.key ? ` · ${b.key}` : ''} — {b.message}{canRecordRule && b.record_from && <StatutoryRuleRecorder key={`${b.code}-${b.key}`} blocker={b} onRecorded={load} />}</li>)}
           </ul>
           <div style={{ marginTop:6, color:'#6b7280' }}>
-            A rule blocker is cleared when an authorised payroll administrator records the confirmed rule with its notification reference (POST /payroll/statutory-rules — there is no screen for this yet). Drafts can still be generated and reviewed.
+            {canRecordRule ? 'Confirm a rule only after reading its source yourself. Your name and the source are recorded.' : 'A rule blocker is cleared when an authorised payroll administrator records the confirmed rule with its source.'} Drafts can still be generated and reviewed.
           </div>
         </div>
       )}
+
+      {/* One-time earnings & deductions for the month (§261) */}
+      <PayrollAdjustmentsPanel
+        month={parseSelectedMonth(selectedMonth).month} year={parseSelectedMonth(selectedMonth).year} period={selectedMonth}
+        employees={eligibility?.employees || []} canEdit={canAdjust} onChanged={load} notify={showToast} />
+      <SalesIncentivePanel
+        month={parseSelectedMonth(selectedMonth).month} year={parseSelectedMonth(selectedMonth).year} period={selectedMonth}
+        canEdit={canAdjust} onChanged={load} notify={showToast} />
 
       {/* KPIs */}
       <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(180px,1fr))', gap:16, marginBottom:24 }}>
@@ -527,13 +707,13 @@ export default function Payroll({ setPage, embedded = false }) {
       {/* Trend Chart */}
       {trend.length > 0 && (
         <div style={{ background:'#fff', borderRadius:12, border:'1px solid #f0f0f4', padding:20, marginBottom:20 }}>
-          <h2 style={{ fontSize:15, fontWeight:600, color:'#1f2937', margin:'0 0 16px' }}>Payroll Trend — Last 6 Months</h2>
+          <h2 style={{ fontSize:15, fontWeight:600, color:'#1f2937', margin:'0 0 16px' }}>Approved payroll — last 6 months</h2>
           <ResponsiveContainer width="100%" height={180}>
             <LineChart data={trend}>
               <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f4"/>
               <XAxis dataKey="month" tick={{ fontSize:11 }}/>
-              <YAxis tickFormatter={v=>`₹${(v/100000).toFixed(0)}L`} tick={{ fontSize:11 }}/>
-              <Tooltip formatter={v=>[fmtRupee(v)]}/>
+              <YAxis tickFormatter={v=>`₹${(v/100000).toFixed(1)}L`} tick={{ fontSize:11 }} width={60}/>
+              <Tooltip formatter={(v, n)=>[fmtRupee(v), n]}/>
               <Line type="monotone" dataKey="gross" stroke="#6B3FDB" strokeWidth={2} name="Gross" dot={false}/>
               <Line type="monotone" dataKey="net"   stroke="#10b981" strokeWidth={2} name="Net"   dot={false}/>
             </LineChart>
@@ -550,14 +730,27 @@ export default function Payroll({ setPage, embedded = false }) {
               style={{ width:'100%', paddingLeft:32, paddingRight:12, paddingTop:8, paddingBottom:8,
                 border:'1px solid #e5e7eb', borderRadius:8, fontSize:13, outline:'none', boxSizing:'border-box' }}/>
           </div>
-          {['All','pending','approved','paid'].map(s => (
+          {departments.length > 1 && (
+            <select aria-label="Department" value={deptFilter} onChange={e => setDeptFilter(e.target.value)}
+              style={{ padding:'7px 10px', border:'1px solid #e5e7eb', borderRadius:8, fontSize:12 }}>
+              <option value="All">All departments</option>
+              {departments.map(d => <option key={d} value={d}>{d}</option>)}
+            </select>
+          )}
+          <select aria-label="Show" value={issueFilter} onChange={e => setIssueFilter(e.target.value)}
+            style={{ padding:'7px 10px', border:'1px solid #e5e7eb', borderRadius:8, fontSize:12 }}>
+            <option value="all">Everyone</option>
+            <option value="issues">Data issues only</option>
+            <option value="lop">With loss of pay</option>
+          </select>
+          {['All','pending','on_hold','approved','paid'].map(s => (
             <button key={s} onClick={()=>setStatusFilter(s)}
               style={{ padding:'7px 14px', borderRadius:8, border:'1px solid', fontSize:12, fontWeight:500,
                 cursor:'pointer', textTransform:'capitalize',
                 borderColor: statusFilter===s?'#6B3FDB':'#e5e7eb',
                 background:  statusFilter===s?'#6B3FDB':'#fff',
                 color:       statusFilter===s?'#fff':'#374151' }}>
-              {s === 'All' ? 'All' : s.replace('_',' ')}
+              {s === 'All' ? 'All' : STATUS_LABEL[s]}
             </button>
           ))}
         </div>
@@ -604,7 +797,7 @@ export default function Payroll({ setPage, embedded = false }) {
             <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
               <thead>
                 <tr style={{ background:'#f9fafb' }}>
-                  {['Employee','Dept','Gross','PF','ESI','PT','TDS','Total Ded.','Net Pay','Status','Actions'].map(h => (
+                  {['Employee','Dept','Days paid','LOP','Gross','PF','ESI','PT','LWF','TDS','Loan / Adv.','Total Ded.','Net Pay','Status','Actions'].map(h => (
                     <th key={h} style={{ padding:'10px 14px', textAlign:'left', fontWeight:600, color:'#374151', borderBottom:'1px solid #f0f0f4', whiteSpace:'nowrap' }}>{h}</th>
                   ))}
                 </tr>
@@ -625,17 +818,24 @@ export default function Payroll({ setPage, embedded = false }) {
                         )}
                       </td>
                       <td style={{ padding:'10px 14px', color:'#6b7280' }}>{p.department||'—'}</td>
+                      <td style={{ padding:'10px 14px', color:'#374151' }}>{p.days_in_month ? `${p.paid_days ?? p.days_in_month}/${p.days_in_month}` : '—'}</td>
+                      <td style={{ padding:'10px 14px', color: Number(p.lop_days) + Number(p.lop_carried_days || 0) > 0 ? '#b45309' : '#374151' }}
+                        title={Number(p.lop_carried_days) > 0 ? `${fmtN(p.lop_carried_days)} day(s) from after last month's cutoff` : undefined}>
+                        {fmtN(p.lop_days)}{Number(p.lop_carried_days) > 0 && <> + {fmtN(p.lop_carried_days)}</>}
+                      </td>
                       <td style={{ padding:'10px 14px', fontWeight:600, color:'#1f2937' }}>₹{fmtN(p.gross)}</td>
                       <td style={{ padding:'10px 14px', color:'#374151' }}>₹{fmtN(p.employee_pf||p.pf)}</td>
                       <td style={{ padding:'10px 14px', color:'#374151' }}>₹{fmtN(p.employee_esi||p.esi)}</td>
                       <td style={{ padding:'10px 14px', color:'#374151' }}>₹{fmtN(p.pt||p.professional_tax)}</td>
+                      <td style={{ padding:'10px 14px', color:'#374151' }}>₹{fmtN(p.lwf_employee)}</td>
                       <td style={{ padding:'10px 14px', color:'#374151' }}>₹{fmtN(p.tds)}</td>
+                      <td style={{ padding:'10px 14px', color:'#374151' }}>₹{fmtN(Number(p.loan_deduction||0) + Number(p.advance_deduction||0))}</td>
                       <td style={{ padding:'10px 14px', color:'#ef4444', fontWeight:500 }}>₹{fmtN(p.total_deductions)}</td>
                       <td style={{ padding:'10px 14px', fontWeight:700, color:'#10b981' }}>₹{fmtN(p.net_pay)}</td>
                       <td style={{ padding:'10px 14px' }}>
                         <span style={{ background:sc.bg, color:sc.color, padding:'3px 10px', borderRadius:20,
                           fontSize:11, fontWeight:600, textTransform:'capitalize', whiteSpace:'nowrap' }}>
-                          {(p.status||'pending').replace(/_/g,' ')}
+                          {STATUS_LABEL[p.status] || p.status}
                         </span>
                       </td>
                       <td style={{ padding:'10px 14px' }}>
@@ -652,6 +852,12 @@ export default function Payroll({ setPage, embedded = false }) {
                               <CheckCircle size={12}/> Pay
                             </button>
                           )}
+                          {p.status === 'pending' && canGenerate && <button onClick={() => setHoldDialog({ p, reason: '', error: null })} title="Hold this salary out of approval"
+                            style={{ padding:'5px 8px', background:'#fee2e2', color:'#991b1b', border:'none', borderRadius:6, cursor:'pointer', fontSize:11, fontWeight:600 }}>Hold</button>}
+                          {p.status === 'on_hold' && canGenerate && <button onClick={() => submitHold(p, false)} title="Put this salary back in the draft"
+                            style={{ padding:'5px 8px', background:'#fee2e2', color:'#991b1b', border:'none', borderRadius:6, cursor:'pointer', fontSize:11, fontWeight:600 }}>Release</button>}
+                          {(p.status === 'pending' || p.status === 'on_hold') && canGenerate && <button onClick={() => discardDrafts(p)} title="Discard this draft"
+                            style={{ padding:'5px 8px', background:'#f3f4f6', color:'#374151', border:'none', borderRadius:6, cursor:'pointer', fontSize:11, fontWeight:600 }}>Discard</button>}
                           {p.status === 'pending' && canGenerate && <button onClick={()=>rerunEmployee(p.employee_id||p.id, p.name||p.employee_name)} title="Re-run payroll" disabled={isRerunning}
                             style={{ padding:'5px 8px', background:'#ede9fe', color:'#5b21b6', border:'none',
                               borderRadius:6, cursor:'pointer', display:'flex', alignItems:'center', gap:3, fontSize:11, fontWeight:600,
@@ -666,12 +872,14 @@ export default function Payroll({ setPage, embedded = false }) {
               </tbody>
               <tfoot>
                 <tr style={{ background:'#f5f3ff', borderTop:'2px solid #e9e4ff' }}>
-                  <td colSpan={2} style={{ padding:'10px 14px', fontWeight:700, color:'#1f2937' }}>TOTAL ({filtered.length} employees)</td>
+                  <td colSpan={4} style={{ padding:'10px 14px', fontWeight:700, color:'#1f2937' }}>TOTAL ({filtered.length} employees)</td>
                   <td style={{ padding:'10px 14px', fontWeight:700, color:'#1f2937' }}>₹{fmtN(filtered.reduce((s,p)=>s+Number(p.gross||0),0))}</td>
                   <td style={{ padding:'10px 14px', fontWeight:600 }}>₹{fmtN(filtered.reduce((s,p)=>s+Number(p.employee_pf||p.pf||0),0))}</td>
                   <td style={{ padding:'10px 14px', fontWeight:600 }}>₹{fmtN(filtered.reduce((s,p)=>s+Number(p.employee_esi||p.esi||0),0))}</td>
                   <td style={{ padding:'10px 14px', fontWeight:600 }}>₹{fmtN(filtered.reduce((s,p)=>s+Number(p.pt||p.professional_tax||0),0))}</td>
+                  <td style={{ padding:'10px 14px', fontWeight:600 }}>₹{fmtN(filtered.reduce((s,p)=>s+Number(p.lwf_employee||0),0))}</td>
                   <td style={{ padding:'10px 14px', fontWeight:600 }}>₹{fmtN(filtered.reduce((s,p)=>s+Number(p.tds||0),0))}</td>
+                  <td style={{ padding:'10px 14px', fontWeight:600 }}>₹{fmtN(filtered.reduce((s,p)=>s+Number(p.loan_deduction||0)+Number(p.advance_deduction||0),0))}</td>
                   <td style={{ padding:'10px 14px', fontWeight:700, color:'#ef4444' }}>₹{fmtN(filtered.reduce((s,p)=>s+Number(p.total_deductions||0),0))}</td>
                   <td style={{ padding:'10px 14px', fontWeight:700, color:'#10b981' }}>₹{fmtN(filtered.reduce((s,p)=>s+Number(p.net_pay||0),0))}</td>
                   <td colSpan={2}/>

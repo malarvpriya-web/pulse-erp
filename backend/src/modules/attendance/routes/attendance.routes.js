@@ -977,7 +977,7 @@ router.post('/clock', clockRateLimit, async (req, res) => {
                ORDER BY company_id DESC NULLS LAST LIMIT 1
             `, [companyId]).catch(() => ({ rows: [] }));
 
-            const otRules  = otPolicy.rows[0]?.rules || { requires_approval: true, weekday_multiplier: 1.5 };
+            const otRules  = otPolicy.rows[0]?.rules || { requires_approval: true, weekday_multiplier: 2.0 };
             const autoApprove = !otRules.requires_approval;
 
             // Apply OT caps (daily and monthly) from policy rules
@@ -1018,10 +1018,10 @@ router.post('/clock', clockRateLimit, async (req, res) => {
               isNightShift = !!otShift?.is_night_shift;
             } catch { /* non-blocking */ }
             let otType = 'weekday';
-            let otMultiplier = parseFloat(otRules.weekday_multiplier || 1.5);
+            let otMultiplier = parseFloat(otRules.weekday_multiplier || 2.0);
             if (isHoliday) { otType = 'holiday'; otMultiplier = parseFloat(otRules.holiday_multiplier || 2.0); }
             else if (isWeekend) { otType = 'weekend'; otMultiplier = parseFloat(otRules.weekend_multiplier || 2.0); }
-            else if (isNightShift) { otType = 'night'; otMultiplier = parseFloat(otRules.night_multiplier || 1.5); }
+            else if (isNightShift) { otType = 'night'; otMultiplier = parseFloat(otRules.night_multiplier || 2.0); }
 
             await pool.query(`
               INSERT INTO attendance_ot_records
@@ -1323,8 +1323,9 @@ router.post('/overtime', async (req, res) => {
       return res.status(400).json({ error: 'ot_hours must be between 0.5 and 16' });
     const companyId = scopeCompanyId(req);
     const safeType = ot_type || 'weekday';
-    const OT_MULTIPLIERS = { weekday: 1.5, weekend: 2.0, holiday: 2.0, night: 1.5 };
-    const multiplier = OT_MULTIPLIERS[safeType] ?? 1.5;
+    // Overtime is paid at twice the ordinary rate (Factories Act s.59 / OSH Code s.27).
+    const OT_MULTIPLIERS = { weekday: 2.0, weekend: 2.0, holiday: 2.0, night: 2.0 };
+    const multiplier = OT_MULTIPLIERS[safeType] ?? 2.0;
     const result = await pool.query(`
       INSERT INTO attendance_ot_records
         (company_id, employee_id, attendance_date, ot_hours, ot_type, multiplier, reason, status)
@@ -1750,7 +1751,7 @@ router.put('/regularize/:id/approve', requireAttendanceApprover, async (req, res
               `SELECT rules FROM attendance_policies WHERE policy_type='overtime' AND is_active=true AND (company_id=$1 OR company_id IS NULL) ORDER BY company_id DESC NULLS LAST LIMIT 1`,
               [before.company_id]
             ).catch(() => ({ rows: [] }));
-            const otRules = otPol.rows[0]?.rules || { requires_approval: true, weekday_multiplier: 1.5 };
+            const otRules = otPol.rows[0]?.rules || { requires_approval: true, weekday_multiplier: 2.0 };
             const weekendDaysRec = await getWeekendDays(before.company_id);
             const isWknd   = dayIsWeekend(before.date, weekendDaysRec);
             const holCheck = await pool.query(
@@ -1758,7 +1759,7 @@ router.put('/regularize/:id/approve', requireAttendanceApprover, async (req, res
               [before.date, before.company_id]
             ).catch(() => ({ rows: [] }));
             let otType = 'weekday';
-            let otMult = parseFloat(otRules.weekday_multiplier || 1.5);
+            let otMult = parseFloat(otRules.weekday_multiplier || 2.0);
             if (holCheck.rows.length > 0) { otType = 'holiday'; otMult = parseFloat(otRules.holiday_multiplier || 2.0); }
             else if (isWknd) { otType = 'weekend'; otMult = parseFloat(otRules.weekend_multiplier || 2.0); }
             await pool.query(`
@@ -2173,14 +2174,14 @@ router.get('/analytics/overtime-cost', async (req, res) => {
         ROUND(
           SUM(
             o.ot_hours::numeric
-            * COALESCE(o.multiplier, 1.5)
+            * COALESCE(o.multiplier, 2)
             * COALESCE(e.basic_salary, 0)::numeric / 26.0 / 9.0
           ) FILTER (WHERE o.status IN ('approved','auto_approved')), 0
         )                                                                          AS approved_ot_cost,
         ROUND(
           SUM(
             o.ot_hours::numeric
-            * COALESCE(o.multiplier, 1.5)
+            * COALESCE(o.multiplier, 2)
             * COALESCE(e.basic_salary, 0)::numeric / 26.0 / 9.0
           ), 0
         )                                                                          AS total_ot_cost
@@ -2535,9 +2536,10 @@ router.get('/audit-logs', async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 router.post('/payroll-sync', requireAttendanceAdmin, async (req, res) => {
   try {
-    const role = (req.user?.role || '').toLowerCase();
-    if (!['admin', 'super_admin', 'hr_admin', 'hr_manager', 'hr'].includes(role)) {
-      return res.status(403).json({ error: 'Only HR Admin or Admin can sync attendance to payroll' });
+    // Roles are many-to-many: any one of the user's roles may allow it.
+    const roles = [req.user?.role, ...(req.user?.roles || [])].map(r => String(r || '').toLowerCase());
+    if (!roles.some(r => ['admin', 'super_admin', 'hr_admin', 'hr_manager', 'hr', 'payroll_admin'].includes(r))) {
+      return res.status(403).json({ error: 'Only HR, payroll or an administrator can sync attendance to payroll' });
     }
 
     const { month, year, force = false, employee_ids } = req.body;
@@ -2610,19 +2612,66 @@ router.post('/payroll-sync', requireAttendanceAdmin, async (req, res) => {
     const startDate = `${y}-${pad2(m)}-01`;
     const endDate   = `${y}-${pad2(m)}-${daysInMonth}`;
 
-    // Subtract company holidays from working days
-    const holidayCount = await pool.query(`
-      SELECT COUNT(*) AS cnt FROM holidays
+    // Subtract company holidays from working days. Last month's holidays too:
+    // absence after last month's cutoff is counted here (carried forward).
+    const prevM = m === 1 ? 12 : m - 1, prevY = m === 1 ? y - 1 : y;
+    const prevStart = `${prevY}-${pad2(prevM)}-01`;
+    const prevEnd = `${prevY}-${pad2(prevM)}-${pad2(new Date(prevY, prevM, 0).getDate())}`;
+    const holidayDates = new Set((await pool.query(`
+      SELECT date::text AS d FROM holidays
        WHERE date BETWEEN $1 AND $2
          AND (company_id = $3 OR company_id IS NULL)
          AND EXTRACT(DOW FROM date) NOT IN (0, 6)
-    `, [startDate, endDate, companyId]).then(r => parseInt(r.rows[0]?.cnt || 0)).catch(() => 0);
-    workingDays = Math.max(0, workingDays - holidayCount);
+    `, [prevStart, endDate, companyId])).rows.map(r => r.d));
+    workingDays = Math.max(0, workingDays - [...holidayDates].filter(d => d >= startDate).length);
+    const todayIso = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+    const isoOf = (d) => (d == null ? null : (d instanceof Date ? d.toLocaleDateString('en-CA') : String(d).slice(0, 10)));
+    const nextDay = (ds) => { const d = new Date(`${ds}T00:00:00Z`); d.setUTCDate(d.getUTCDate() + 1); return d.toISOString().slice(0, 10); };
+    // Mon–Fri working days in [from, to], less company holidays.
+    const countWorking = (from, to) => {
+      let n = 0;
+      for (let d = new Date(`${from}T00:00:00Z`); d.toISOString().slice(0, 10) <= to; d.setUTCDate(d.getUTCDate() + 1)) {
+        const dow = d.getUTCDay(), ds = d.toISOString().slice(0, 10);
+        if (dow !== 0 && dow !== 6 && !holidayDates.has(ds)) n++;
+      }
+      return n;
+    };
+    // An employee's range inside [from, to]: never before joining or after exit.
+    const clip = (from, to, joining, exit) => [[from, isoOf(joining)].filter(Boolean).sort().pop(), [to, isoOf(exit)].filter(Boolean).sort()[0]];
+    // Loss of pay in [from, to]: working days not covered by attendance
+    // (present / late / WFH, half days as half) or approved paid leave.
+    const lopInRange = async (employeeId, from, to) => {
+      if (from > to) return { lop: 0, working: 0, leave: 0 };
+      const working = countWorking(from, to);
+      const { rows: [a] } = await pool.query(`
+        SELECT COUNT(*) FILTER (WHERE status IN ('present','late','wfh'))::int AS p,
+               COUNT(*) FILTER (WHERE status = 'half_day')::int AS h
+          FROM attendance_records WHERE employee_id = $1 AND attendance_date BETWEEN $2 AND $3 AND deleted_at IS NULL`, [employeeId, from, to]);
+      // Approved PAID leave: not loss-of-pay leave (the application's is_lop, or a
+      // leave type that is unpaid or LOP); a half-day leave counts as half. The old
+      // query read a column that does not exist (leave_type) and swallowed the
+      // error, so approved leave was always 0 days — people on paid leave lost pay.
+      const { rows: [l] } = await pool.query(`
+        SELECT COALESCE(SUM(CASE WHEN la.half_day THEN 0.5
+                                 ELSE LEAST(la.end_date, $3::date) - GREATEST(la.start_date, $2::date) + 1 END), 0)::numeric AS leave_days
+          FROM leave_applications la
+          LEFT JOIN leave_types lt ON lt.id = la.leave_type_id
+         WHERE la.employee_id = $1 AND LOWER(la.status) = 'approved' AND la.deleted_at IS NULL
+           AND NOT COALESCE(la.is_lop, false) AND COALESCE(lt.is_paid, true) AND NOT COALESCE(lt.is_lop_type, false)
+           AND la.start_date <= $3::date AND la.end_date >= $2::date`, [employeeId, from, to]);
+      const leave = Math.min(parseFloat(l.leave_days || 0), working);
+      const lop = Math.max(0, Math.round((working - (a.p + a.h * 0.5 + leave)) * 2) / 2);
+      return { lop, working, leave };
+    };
+    const { rows: existing } = await pool.query(
+      `SELECT employee_id, month, year, counted_to::text AS counted_to, carried_to_next FROM payroll_attendance_summary
+        WHERE ((month = $1 AND year = $2) OR (month = $3 AND year = $4)) AND company_id = $5`, [m, y, prevM, prevY, companyId]);
+    const summaryOf = (empId, mm, yy) => existing.find(r => r.employee_id === empId && r.month === mm && r.year === yy);
 
     // Step 4 — aggregate per-employee attendance stats
     const { rows: empStats } = await pool.query(`
       SELECT
-        e.id AS employee_id,
+        e.id AS employee_id, e.joining_date, e.exit_date,
         COUNT(*) FILTER (WHERE ar.status IN ('present','late')) AS present_days,
         COUNT(*) FILTER (WHERE ar.status = 'absent')           AS absent_days,
         COUNT(*) FILTER (WHERE ar.status = 'wfh')              AS wfh_days,
@@ -2637,7 +2686,7 @@ router.post('/payroll-sync', requireAttendanceAdmin, async (req, res) => {
       WHERE LOWER(e.status) IN ('active','probation','notice')
         AND e.deleted_at IS NULL ${cidEmp}
         ${empFilter.replace(/AND employee_id/, 'AND e.id')}
-      GROUP BY e.id
+      GROUP BY e.id, e.joining_date, e.exit_date
     `, [startDate, endDate]);
 
     // Step 5 — upsert payroll_attendance_summary + patch pending payroll_runs
@@ -2650,27 +2699,31 @@ router.post('/payroll-sync', requireAttendanceAdmin, async (req, res) => {
       const lateCount   = parseInt(row.late_count   || 0);
       const otHours     = parseFloat(row.ot_hours   || 0);
 
-      // Count approved PAID leave days (exclude LOP leave type — LOP is already absence)
-      // leave_applications stores dates as start_date/end_date (not from_date/to_date)
-      const approvedLeaveRows = await pool.query(`
-        SELECT COALESCE(SUM(
-          LEAST(end_date, $3::date) - GREATEST(start_date, $2::date) + 1
-        ), 0) AS leave_days
-        FROM leave_applications
-        WHERE employee_id = $1
-          AND status = 'approved'
-          AND COALESCE(leave_type, '') NOT IN ('lop', 'loss_of_pay', 'unpaid')
-          AND start_date <= $3::date
-          AND end_date >= $2::date
-      `, [row.employee_id, startDate, endDate]).catch(() => ({ rows: [{ leave_days: 0 }] }));
-      const approvedLeaveDays = Math.min(
-        parseFloat(approvedLeaveRows.rows[0]?.leave_days || 0),
-        workingDays
-      );
+      // This month: the employee's full working days (the value of a day of pay),
+      // and absence counted up to today — or, when next month has already carried
+      // this month's later days, only up to the day counted then.
+      const mine = summaryOf(row.employee_id, m, y);
+      const countedTo = mine?.carried_to_next && mine.counted_to ? mine.counted_to : [endDate, todayIso].sort()[0];
+      const [fFrom, fTo] = clip(startDate, endDate, row.joining_date, row.exit_date);
+      const empWorkingDays = fFrom > fTo ? 0 : countWorking(fFrom, fTo);
+      const [cFrom, cTo] = clip(startDate, countedTo, row.joining_date, row.exit_date);
+      const counted = await lopInRange(row.employee_id, cFrom, cTo);
+      const lopDays = counted.lop;
+      const approvedLeaveDays = counted.leave;
 
-      // LOP = working days not covered by present + WFH + half-days + approved leave
-      const effectivePresent = presentDays + wfhDays + halfDays * 0.5 + approvedLeaveDays;
-      const lopDays = Math.max(0, Math.round((workingDays - effectivePresent) * 2) / 2);
+      // Last month: days after the day its sync counted (e.g. after a cutoff on
+      // the 20th) were paid in full; their absence is deducted this month, at
+      // last month's per-day value, once.
+      let carriedLop = 0, carriedBase = null;
+      const prev = summaryOf(row.employee_id, prevM, prevY);
+      if (prev?.counted_to && prev.counted_to < prevEnd) {
+        const [gFrom, gTo] = clip(nextDay(prev.counted_to), prevEnd, row.joining_date, row.exit_date);
+        carriedLop = (await lopInRange(row.employee_id, gFrom, gTo)).lop;
+        const [pFrom, pTo] = clip(prevStart, prevEnd, row.joining_date, row.exit_date);
+        carriedBase = pFrom > pTo ? null : countWorking(pFrom, pTo);
+        await pool.query(`UPDATE payroll_attendance_summary SET carried_to_next = true
+                            WHERE employee_id = $1 AND month = $2 AND year = $3`, [row.employee_id, prevM, prevY]);
+      }
 
       // Night shift allowance: count nights worked this month
       let nightShiftDays = 0;
@@ -2685,39 +2738,30 @@ router.post('/payroll-sync', requireAttendanceAdmin, async (req, res) => {
         nightShiftDays = parseInt(nightQ.rows[0]?.cnt || 0);
       } catch { /* non-blocking */ }
 
-      // Post night shift allowance to payroll_runs if any nights worked
-      if (nightShiftDays > 0) {
-        await pool.query(`
-          UPDATE payroll_runs SET night_shift_days = $2, updated_at = NOW()
-           WHERE employee_id = $1 AND month = $3 AND year = $4 AND status IN ('draft', 'pending')
-             AND employee_id IN (SELECT id FROM employees WHERE company_id = $5)  -- drafts only: an approved run is posted to the GL and backs the payslip and payment (PAYROLL_DATA_FLOW_AUDIT.md Part 10)
-        `, [row.employee_id, nightShiftDays, m, y, companyId]).catch(() => {});
-      }
-
-      lopSummary.push({ employee_id: row.employee_id, lop_days: lopDays });
+      // Night shifts go to the attendance summary, which payroll reads. Drafts are
+      // NOT patched here: a figure changed without recomputing the money made a
+      // draft show 5 LOP days while still paying the full month. Payroll's release
+      // check finds drafts that no longer match and asks for a regenerate.
+      lopSummary.push({ employee_id: row.employee_id, lop_days: lopDays, carried_lop_days: carriedLop, counted_to: countedTo });
 
       await pool.query(`
         INSERT INTO payroll_attendance_summary
           (company_id, employee_id, month, year, working_days, present_days,
            absent_days, late_count, ot_hours, lop_days, wfh_days, half_days,
-           leave_days, synced_by, synced_at)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NOW())
+           leave_days, synced_by, night_shift_days, counted_to, carried_lop_days, carried_base_days, synced_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,NOW())
         ON CONFLICT (employee_id, month, year)
         DO UPDATE SET
           working_days = $5,  present_days = $6,  absent_days = $7,
           late_count   = $8,  ot_hours     = $9,  lop_days    = $10,
           wfh_days     = $11, half_days    = $12, leave_days  = $13,
-          synced_by    = $14, synced_at    = NOW()
-      `, [companyId, row.employee_id, m, y, workingDays,
+          synced_by    = $14, night_shift_days = $15, counted_to = $16,
+          carried_lop_days = $17, carried_base_days = $18, synced_at = NOW()
+      `, [companyId, row.employee_id, m, y, empWorkingDays,
           presentDays, absentDays, lateCount, otHours, lopDays,
           wfhDays, halfDays, approvedLeaveDays,
-          req.user?.userId || null]);
+          req.user?.userId || null, nightShiftDays, countedTo, carriedLop, carriedBase]);
 
-      await pool.query(`
-        UPDATE payroll_runs SET lop_days = $2, updated_at = NOW()
-         WHERE employee_id = $1 AND month = $3 AND year = $4 AND status IN ('draft', 'pending')
-           AND employee_id IN (SELECT id FROM employees WHERE company_id = $5)  -- drafts only: an approved run is posted to the GL and backs the payslip and payment (PAYROLL_DATA_FLOW_AUDIT.md Part 10)
-      `, [row.employee_id, lopDays, m, y, companyId]);
     }
 
     await writeAuditLog({
@@ -3574,179 +3618,6 @@ router.get('/trend/:employee_id', async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 // SHIFT MANAGEMENT — attendance-module-owned shift CRUD + employee assignment
 // ─────────────────────────────────────────────────────────────────────────────
-(async () => {
-  try {
-    await pool.query(`
-      ALTER TABLE hr_shifts ADD COLUMN IF NOT EXISTS ot_eligible        BOOLEAN        DEFAULT TRUE;
-      ALTER TABLE hr_shifts ADD COLUMN IF NOT EXISTS weekly_off         JSONB          DEFAULT '["Sat","Sun"]';
-      ALTER TABLE hr_shifts ADD COLUMN IF NOT EXISTS capacity           INTEGER        DEFAULT 0;
-      ALTER TABLE hr_shifts ADD COLUMN IF NOT EXISTS is_night_shift     BOOLEAN        DEFAULT FALSE;
-      ALTER TABLE hr_shifts ADD COLUMN IF NOT EXISTS break_duration     INTEGER        DEFAULT 30;
-      ALTER TABLE hr_shifts ADD COLUMN IF NOT EXISTS company_id         INTEGER;
-      ALTER TABLE hr_shifts ADD COLUMN IF NOT EXISTS deleted_at         TIMESTAMPTZ;
-      ALTER TABLE hr_shifts ADD COLUMN IF NOT EXISTS half_day_hours     NUMERIC(4,2)   DEFAULT 4;
-      ALTER TABLE hr_shifts ADD COLUMN IF NOT EXISTS role_grace_minutes JSONB          DEFAULT '{}';
-      ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS selfie_url TEXT;
-      ALTER TABLE attendance_general_settings ADD COLUMN IF NOT EXISTS geo_settings        JSONB DEFAULT '{}';
-      ALTER TABLE attendance_general_settings ADD COLUMN IF NOT EXISTS device_settings     JSONB DEFAULT '{}';
-      ALTER TABLE attendance_general_settings ADD COLUMN IF NOT EXISTS report_settings     JSONB DEFAULT '{}';
-      ALTER TABLE attendance_general_settings ADD COLUMN IF NOT EXISTS workcentre_settings JSONB DEFAULT '{}';
-      ALTER TABLE attendance_general_settings ADD COLUMN IF NOT EXISTS work_start_time     TIME DEFAULT '09:00';
-      ALTER TABLE attendance_general_settings ADD COLUMN IF NOT EXISTS work_end_time       TIME DEFAULT '18:00';
-      ALTER TABLE attendance_general_settings ADD COLUMN IF NOT EXISTS break_duration      INTEGER DEFAULT 60;
-      ALTER TABLE attendance_general_settings ADD COLUMN IF NOT EXISTS min_working_hours   NUMERIC(4,2) DEFAULT 9.0;
-      ALTER TABLE attendance_general_settings ADD COLUMN IF NOT EXISTS weekend_days        JSONB DEFAULT '["saturday","sunday"]';
-      ALTER TABLE payroll_attendance_summary ADD COLUMN IF NOT EXISTS wfh_days   INTEGER     NOT NULL DEFAULT 0;
-      ALTER TABLE payroll_attendance_summary ADD COLUMN IF NOT EXISTS half_days  INTEGER     NOT NULL DEFAULT 0;
-      ALTER TABLE payroll_attendance_summary ADD COLUMN IF NOT EXISTS leave_days NUMERIC(5,1) NOT NULL DEFAULT 0;
-      ALTER TABLE hr_shift_rotations ADD COLUMN IF NOT EXISTS week_3_shift_id INTEGER REFERENCES hr_shifts(id);
-      ALTER TABLE hr_shift_rotations ADD COLUMN IF NOT EXISTS week_4_shift_id INTEGER REFERENCES hr_shifts(id);
-      ALTER TABLE compensatory_off ADD COLUMN IF NOT EXISTS auto_granted BOOLEAN NOT NULL DEFAULT FALSE;
-      CREATE TABLE IF NOT EXISTS attendance_approval_delegations (
-        id           SERIAL PRIMARY KEY,
-        company_id   INTEGER,
-        delegator_id INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
-        delegate_id  INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
-        from_date    DATE NOT NULL,
-        to_date      DATE NOT NULL,
-        delegation_type TEXT NOT NULL DEFAULT 'all',
-        reason       TEXT,
-        is_active    BOOLEAN NOT NULL DEFAULT TRUE,
-        created_by   INTEGER,
-        created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        UNIQUE (delegator_id, from_date, to_date)
-      );
-    `);
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS attendance_face_settings (
-        id          SERIAL PRIMARY KEY,
-        company_id  INTEGER,
-        settings    JSONB NOT NULL DEFAULT '{}',
-        updated_by  INTEGER,
-        updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        UNIQUE (company_id)
-      )
-    `);
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS payroll_attendance_summary (
-        id           SERIAL PRIMARY KEY,
-        company_id   INTEGER,
-        employee_id  INTEGER NOT NULL,
-        month        INTEGER NOT NULL,
-        year         INTEGER NOT NULL,
-        working_days INTEGER NOT NULL DEFAULT 0,
-        present_days INTEGER NOT NULL DEFAULT 0,
-        absent_days  INTEGER NOT NULL DEFAULT 0,
-        late_count   INTEGER NOT NULL DEFAULT 0,
-        ot_hours     NUMERIC(8,2) NOT NULL DEFAULT 0,
-        lop_days     NUMERIC(5,1) NOT NULL DEFAULT 0,
-        wfh_days     INTEGER NOT NULL DEFAULT 0,
-        half_days    INTEGER NOT NULL DEFAULT 0,
-        leave_days   NUMERIC(5,1) NOT NULL DEFAULT 0,
-        synced_by    INTEGER,
-        synced_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        UNIQUE(employee_id, month, year)
-      )
-    `);
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS face_templates (
-        id          SERIAL PRIMARY KEY,
-        company_id  INTEGER NOT NULL DEFAULT 0,
-        employee_id INTEGER NOT NULL,
-        enrolled_by INTEGER,
-        enrolled_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        is_active   BOOLEAN NOT NULL DEFAULT TRUE,
-        notes       TEXT,
-        UNIQUE (company_id, employee_id)
-      )
-    `);
-    // descriptor = 128-float face embedding (from browser face-api). Nullable so
-    // legacy HR "flag-only" enrollments keep working; real recognition needs it.
-    await pool.query(`ALTER TABLE face_templates ADD COLUMN IF NOT EXISTS descriptor JSONB`);
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS face_locked_accounts (
-        id           SERIAL PRIMARY KEY,
-        company_id   INTEGER NOT NULL DEFAULT 0,
-        employee_id  INTEGER NOT NULL,
-        fail_count   INTEGER NOT NULL DEFAULT 0,
-        locked_until TIMESTAMPTZ,
-        last_attempt TIMESTAMPTZ DEFAULT NOW(),
-        UNIQUE (company_id, employee_id)
-      )
-    `);
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS attendance_workflow_config (
-        id              SERIAL PRIMARY KEY,
-        company_id      INTEGER,
-        workflow_type   VARCHAR(60) NOT NULL,
-        levels          JSONB NOT NULL DEFAULT '[]',
-        is_active       BOOLEAN NOT NULL DEFAULT TRUE,
-        updated_by      INTEGER,
-        updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        UNIQUE (company_id, workflow_type)
-      )
-    `);
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS attendance_general_settings (
-        id                SERIAL PRIMARY KEY,
-        company_id        INTEGER UNIQUE,
-        working_days      JSONB   DEFAULT '["monday","tuesday","wednesday","thursday","friday"]',
-        timezone          VARCHAR(80) DEFAULT 'Asia/Kolkata',
-        attendance_mode   VARCHAR(30) DEFAULT 'manual',
-        auto_checkout     BOOLEAN DEFAULT FALSE,
-        auto_checkout_time TIME DEFAULT '21:00',
-        half_day_hours    NUMERIC(4,2) DEFAULT 4.5,
-        full_day_hours    NUMERIC(4,2) DEFAULT 9.0,
-        updated_by        INTEGER,
-        updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      )
-    `);
-  } catch { /* already exists */ }
-
-  // Late-arrival warnings table
-  try {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS attendance_late_warnings (
-        id            SERIAL PRIMARY KEY,
-        company_id    INTEGER,
-        employee_id   INTEGER NOT NULL,
-        employee_name VARCHAR(200),
-        department    VARCHAR(100),
-        issued_by     INTEGER,
-        month         VARCHAR(7),
-        late_count    INTEGER,
-        warning_text  TEXT,
-        status        VARCHAR(20) NOT NULL DEFAULT 'issued',
-        acknowledged_at TIMESTAMPTZ,
-        created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      );
-      CREATE INDEX IF NOT EXISTS idx_late_warnings_emp_month
-        ON attendance_late_warnings (employee_id, month);
-    `);
-  } catch { /* already exists */ }
-
-  // Shift change requests table
-  try {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS shift_change_requests (
-        id                  SERIAL PRIMARY KEY,
-        company_id          INTEGER,
-        employee_id         INTEGER NOT NULL,
-        request_date        DATE NOT NULL,
-        current_shift_id    INTEGER,
-        requested_shift_id  INTEGER NOT NULL,
-        reason              TEXT,
-        status              VARCHAR(20) NOT NULL DEFAULT 'pending',
-        reviewed_by         INTEGER,
-        review_remarks      TEXT,
-        reviewed_at         TIMESTAMPTZ,
-        created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      )
-    `);
-  } catch { /* already exists */ }
-})();
 
 // ── List shifts (attendance module view with employee counts) ──────────────
 router.get('/shifts', async (req, res) => {
@@ -4472,7 +4343,7 @@ router.get('/general-settings', async (req, res) => {
       res.json({
         ...rows[0],
         default_grace_minutes: rows[0].default_grace_minutes ?? parseInt(p?.grace_minutes ?? 10),
-        ot_multiplier: rows[0].ot_multiplier ?? parseFloat(p?.ot_multiplier ?? 1.5),
+        ot_multiplier: rows[0].ot_multiplier ?? parseFloat(p?.ot_multiplier ?? 2),
       });
     } else {
       res.json({
@@ -4484,7 +4355,7 @@ router.get('/general-settings', async (req, res) => {
         half_day_hours: 4.5,
         full_day_hours: 9.0,
         default_grace_minutes: 10,
-        ot_multiplier: 1.5,
+        ot_multiplier: 2,
       });
     }
   } catch (err) {
@@ -4522,12 +4393,12 @@ router.put('/general-settings', requireAttendanceAdmin, async (req, res) => {
                updated_at = NOW()
          WHERE policy_type = 'late' AND is_active = true
            AND (company_id = $1 OR company_id IS NULL)
-      `, [companyId, String(default_grace_minutes ?? 10), String(ot_multiplier ?? 1.5)]).catch(() => {});
+      `, [companyId, String(default_grace_minutes ?? 10), String(ot_multiplier ?? 2)]).catch(() => {});
     }
     res.json({
       ...rows[0],
       default_grace_minutes: default_grace_minutes ?? 10,
-      ot_multiplier: ot_multiplier ?? 1.5,
+      ot_multiplier: ot_multiplier ?? 2,
     });
   } catch (err) {
     res.status(500).json({ error: err.message });

@@ -1841,7 +1841,7 @@ function EntryDrawer({ entry, onClose, onPost, onReverse }) {
   return (
     <>
       <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.3)', zIndex: 900 }} />
-      <div style={{ position: 'fixed', top: 0, right: 0, bottom: 0, width: 520, background: '#fff', boxShadow: '-4px 0 24px rgba(0,0,0,0.12)', zIndex: 950, display: 'flex', flexDirection: 'column' }}>
+      <div style={{ position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', maxHeight: 'calc(100vh - 48px)', borderRadius: 12, overflowY: 'auto', maxWidth: 'calc(100vw - 32px)', width: 520, background: '#fff', boxShadow: '0 20px 60px rgba(0,0,0,.18)', zIndex: 950, display: 'flex', flexDirection: 'column' }}>
         {/* Drawer header */}
         <div style={{ padding: '18px 24px', borderBottom: '1px solid #e9e4ff', display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#f5f3ff' }}>
           <div>

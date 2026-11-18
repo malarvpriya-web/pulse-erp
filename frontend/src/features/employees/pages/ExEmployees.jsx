@@ -2,10 +2,13 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   Search, X, Download, Eye, RefreshCw, UserCheck, ChevronUp,
-  ChevronDown, Calendar, Edit2, Users,
+  ChevronDown, Calendar, Edit2, Users, FileText,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import { SEPARATION_OPTIONS } from '@/features/hr/separationTypes';
+import { downloadExitLetter } from '@/features/hr/exitLetters';
+import EditExitDetailsModal from '@/features/hr/components/EditExitDetailsModal';
 
 const P      = '#6B3FDB';
 const LIGHT  = '#f5f3ff';
@@ -17,17 +20,15 @@ const EXIT_REASON_MAP = {
   resignation:  { label: 'Resignation',  bg: '#ede9fe', color: '#6d28d9' },
   termination:  { label: 'Termination',  bg: '#fee2e2', color: '#b91c1c' },
   retirement:   { label: 'Retirement',   bg: '#dbeafe', color: '#1d4ed8' },
+  // Legacy values kept for display; new records use the shared list (§274).
   contract_end: { label: 'Contract End', bg: '#f3f4f6', color: '#374151' },
   attrition:    { label: 'Attrition',    bg: '#fce7f3', color: '#9d174d' },
+  contract_expiry: { label: 'Contract end', bg: '#f3f4f6', color: '#374151' },
+  retrenchment: { label: 'Retrenchment', bg: '#fee2e2', color: '#b91c1c' },
+  absconding:   { label: 'Absconding',   bg: '#fee2e2', color: '#b91c1c' },
+  death:        { label: 'Death',        bg: '#f3f4f6', color: '#374151' },
+  disablement:  { label: 'Disablement',  bg: '#f3f4f6', color: '#374151' },
 };
-
-const SEPARATION_OPTIONS = [
-  { value: 'resignation',  label: 'Resignation' },
-  { value: 'termination',  label: 'Termination' },
-  { value: 'retirement',   label: 'Retirement' },
-  { value: 'contract_end', label: 'Contract End' },
-  { value: 'attrition',    label: 'Attrition' },
-];
 
 function normaliseType(raw) {
   return (raw || '').toLowerCase().replace(/[\s-]+/g, '_');
@@ -108,77 +109,7 @@ function Badge({ label, bg, color }) {
   );
 }
 
-// ── Edit Exit Details Modal ───────────────────────────────────────────────────
-function EditExitModal({ emp, onClose, onSaved }) {
-  const exitDate = emp.effective_exit_date || emp.exit_date;
-  const [form, setForm] = useState({
-    exit_date:       exitDate ? exitDate.slice(0, 10) : '',
-    exit_reason:     emp.effective_exit_reason || emp.exit_reason || '',
-    separation_type: normaliseType(emp.separation_type) || '',
-    last_working_date: exitDate ? exitDate.slice(0, 10) : '',
-  });
-  const [saving, setSaving] = useState(false);
-  const [err,    setErr]    = useState('');
-
-  async function save() {
-    setSaving(true); setErr('');
-    try {
-      await api.patch(`/employees/ex/${emp.id}/exit-details`, form);
-      onSaved();
-      onClose();
-    } catch (e) {
-      setErr(e.response?.data?.error || 'Save failed');
-    } finally { setSaving(false); }
-  }
-
-  const inp = { padding: '7px 10px', border: `1px solid ${BORDER}`, borderRadius: 7, fontSize: 13, width: '100%', boxSizing: 'border-box' };
-
-  return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.45)', zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <div style={{ background: '#fff', borderRadius: 12, width: 420, padding: 24, boxShadow: '0 20px 60px rgba(0,0,0,.2)' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-          <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: '#111827' }}>Edit Exit Details</h3>
-          <button onClick={onClose} style={{ border: 'none', background: 'none', cursor: 'pointer', fontSize: 18, color: '#6b7280' }}>×</button>
-        </div>
-        <p style={{ margin: '0 0 16px', fontSize: 13, color: '#6b7280' }}>
-          {emp.first_name} {emp.last_name} · {emp.office_id}
-        </p>
-
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          <div>
-            <label style={{ fontSize: 12, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 4 }}>Separation Type</label>
-            <select value={form.separation_type} onChange={e => setForm(f => ({ ...f, separation_type: e.target.value }))} style={inp}>
-              <option value="">— Not specified —</option>
-              {SEPARATION_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-            </select>
-          </div>
-          <div>
-            <label style={{ fontSize: 12, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 4 }}>Last Working Date</label>
-            <input type="date" value={form.last_working_date}
-              onChange={e => setForm(f => ({ ...f, last_working_date: e.target.value, exit_date: e.target.value }))}
-              style={inp} />
-          </div>
-          <div>
-            <label style={{ fontSize: 12, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 4 }}>Exit Reason / Details</label>
-            <textarea rows={3} value={form.exit_reason}
-              onChange={e => setForm(f => ({ ...f, exit_reason: e.target.value }))}
-              placeholder="Reason for leaving…"
-              style={{ ...inp, resize: 'vertical' }} />
-          </div>
-        </div>
-
-        {err && <p style={{ margin: '12px 0 0', color: '#b91c1c', fontSize: 12 }}>{err}</p>}
-
-        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 20 }}>
-          <button onClick={onClose} style={{ padding: '8px 16px', border: `1px solid ${BORDER}`, borderRadius: 7, background: '#fff', fontSize: 13, cursor: 'pointer' }}>Cancel</button>
-          <button onClick={save} disabled={saving} style={{ padding: '8px 16px', border: 'none', borderRadius: 7, background: P, color: '#fff', fontSize: 13, fontWeight: 600, cursor: saving ? 'default' : 'pointer', opacity: saving ? .7 : 1 }}>
-            {saving ? 'Saving…' : 'Save Changes'}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
+// Edit Exit Details: the shared dialog (features/hr/components/EditExitDetailsModal).
 
 // ── Rehire Modal ──────────────────────────────────────────────────────────────
 function RehireModal({ emp, onClose, onRehired }) {
@@ -354,7 +285,9 @@ export default function ExEmployees({ setPage, setSelectedEmployee }) {
     }>
 
       {/* Modals */}
-      {editEmp   && <EditExitModal emp={editEmp}   onClose={() => setEditEmp(null)}   onSaved={() => { load(); showToast('Exit details updated'); }} />}
+      {editEmp   && <EditExitDetailsModal employee={editEmp}
+        initial={{ separation_type: normaliseType(editEmp.separation_type), last_working_date: editEmp.effective_exit_date || editEmp.exit_date, exit_reason: editEmp.effective_exit_reason || editEmp.exit_reason }}
+        onClose={() => setEditEmp(null)} onSaved={() => { load(); showToast('Exit details updated'); }} />}
       {rehireEmp && <RehireModal   emp={rehireEmp} onClose={() => setRehireEmp(null)} onRehired={() => { load(); showToast(`${rehireEmp.first_name} rehired successfully`); }} />}
 
       {/* Toast */}
@@ -551,6 +484,17 @@ export default function ExEmployees({ setPage, setSelectedEmployee }) {
                           <button onClick={() => setEditEmp(emp)}
                             style={{ padding: '5px 9px', border: `1px solid ${BORDER}`, borderRadius: 6, background: '#fff', color: '#6b7280', cursor: 'pointer', fontSize: 11, display: 'flex', alignItems: 'center', gap: 3 }}>
                             <Edit2 size={11} /> Edit
+                          </button>
+                          {/* §276: relieving / experience letter PDFs (HR; the server says why when it refuses) */}
+                          {normaliseType(emp.separation_type) !== 'absconding' && (
+                            <button onClick={() => downloadExitLetter(emp.id, 'relieving', showToast)} title="Relieving letter (PDF)"
+                              style={{ padding: '5px 9px', border: `1px solid ${BORDER}`, borderRadius: 6, background: '#fff', color: P, cursor: 'pointer', fontSize: 11, display: 'flex', alignItems: 'center', gap: 3 }}>
+                              <FileText size={11} /> Relieving
+                            </button>
+                          )}
+                          <button onClick={() => downloadExitLetter(emp.id, 'experience', showToast)} title="Experience letter (PDF)"
+                            style={{ padding: '5px 9px', border: `1px solid ${BORDER}`, borderRadius: 6, background: '#fff', color: P, cursor: 'pointer', fontSize: 11, display: 'flex', alignItems: 'center', gap: 3 }}>
+                            <FileText size={11} /> Experience
                           </button>
                           {eligible && (
                             <button onClick={() => setRehireEmp(emp)}

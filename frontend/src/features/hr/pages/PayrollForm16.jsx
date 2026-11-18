@@ -29,6 +29,7 @@ export default function PayrollForm16({ setPage: _setPage, embedded = false }) {
   const [bulkLoading, setBulkLoading] = useState(false);
   const [toast,       setToast]       = useState(null);
   const [search,      setSearch]      = useState('');
+  const [statusFilter, setStatusFilter] = useState('all');
   const [lifecycle,   setLifecycle]   = useState(null);
   const [loadError,   setLoadError]   = useState(null);
   const name = certificateName(fy);
@@ -72,7 +73,7 @@ export default function PayrollForm16({ setPage: _setPage, embedded = false }) {
       const url  = URL.createObjectURL(new Blob([r.data], { type: 'application/pdf' }));
       const a    = document.createElement('a');
       a.href     = url;
-      a.download = `Form16_${empName.replace(/\s+/g, '_')}_${fy}.pdf`;
+      a.download = `${name.replace(/[^A-Za-z0-9]+/g, '_')}_${empName.replace(/\s+/g, '_')}_${fy}.pdf`;
       a.click();
       URL.revokeObjectURL(url);
       showToast(`${name} Part B downloaded for ${empName}`);
@@ -83,6 +84,24 @@ export default function PayrollForm16({ setPage: _setPage, embedded = false }) {
       showToast(msg, 'error');
     } finally {
       if (isMounted.current) setDlLoading(p => ({ ...p, [employeeId]: false }));
+    }
+  };
+
+  // Form No. 123 (formerly 12BA), the statement of perquisites — issued with the
+  // annual certificate for an employee whose salary exceeds ₹1,50,000.
+  const perqName = parseInt(fy, 10) >= 2026 ? 'Form No. 123' : 'Form 12BA';
+  const downloadPerq = async (employeeId, empName) => {
+    try {
+      const r = await api.get(`/payroll/form123/${employeeId}/pdf`, { params: { financial_year: fy }, responseType: 'blob' });
+      const url = URL.createObjectURL(new Blob([r.data], { type: 'application/pdf' }));
+      const a = document.createElement('a');
+      a.href = url; a.download = `${perqName.replace(/[^A-Za-z0-9]+/g, '')}_${empName.replace(/s+/g, '_')}_${fy}.pdf`; a.click();
+      URL.revokeObjectURL(url);
+      showToast(`${perqName} downloaded for ${empName}. Add any perquisite Pulse does not hold before issuing it.`);
+    } catch (e) {
+      let body = null;
+      try { body = JSON.parse(await e?.response?.data?.text?.()); } catch { /* not JSON */ }
+      showToast(body?.message || `${perqName} download failed for ${empName}`, 'error');
     }
   };
 
@@ -114,6 +133,7 @@ export default function PayrollForm16({ setPage: _setPage, embedded = false }) {
   };
 
   const filtered = employees.filter(e => {
+    if (statusFilter !== 'all' && e.status !== statusFilter) return false;
     if (!search) return true;
     const name = (e.name || e.employee_name || '').toLowerCase();
     const dept = (e.department || '').toLowerCase();
@@ -180,7 +200,7 @@ export default function PayrollForm16({ setPage: _setPage, embedded = false }) {
         <div style={{ fontSize: 13, color: '#374151' }}>
           {name} is the <strong>annual</strong> salary TDS certificate for {term} <strong>{fy}</strong> (April–March), built from
           approved payroll only. It can be issued only after the year ends{lifecycle ? <> — {lifecycle.fy_end} — and is due by <strong>{lifecycle.issue_due_by}</strong></> : null}.
-          Part A comes from TRACES; this produces Part B.
+          Part A comes from TRACES; this produces Part B. With it goes the statement of perquisites, <strong>{perqName}</strong>{perqName === 'Form No. 123' ? ' (formerly Form 12BA)' : ''}, for anyone paid more than ₹1,50,000 in the year — Pulse values loans below the SBI rate; add any other perquisite yourself.
           {lifecycle && !lifecycle.fy_ended && <><br /><strong style={{ color: '#b45309' }}>{term} {fy} is still in progress — no {name} can be final yet.</strong></>}
           {lifecycle && !lifecycle.tan_configured && <><br /><strong style={{ color: '#b91c1c' }}>Employer TAN is not configured (Company profile).</strong></>}
         </div>
@@ -193,6 +213,14 @@ export default function PayrollForm16({ setPage: _setPage, embedded = false }) {
             <Users size={16} color="#6B3FDB" />
             {loading ? 'Loading employees...' : `${filtered.length} employee${filtered.length !== 1 ? 's' : ''}`}
           </div>
+          <select aria-label="Status" value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
+            style={{ border: '1px solid #e5e7eb', borderRadius: 8, padding: '7px 10px', fontSize: 13 }}>
+            <option value="all">All statuses</option>
+            <option value="ready">Ready</option>
+            <option value="awaiting_data">Awaiting data</option>
+            <option value="in_progress">Year in progress</option>
+            <option value="no_salary">No finalised salary</option>
+          </select>
           <div style={{ position: 'relative' }}>
             <Search size={14} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: '#9ca3af' }} />
             <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search name, dept, code..."
@@ -254,6 +282,12 @@ export default function PayrollForm16({ setPage: _setPage, embedded = false }) {
                           <Download size={13} />
                           {isLoading ? 'Downloading...' : emp.can_generate ? 'Download' : 'Not ready'}
                         </button>
+                        {emp.can_generate && (
+                          <button style={{ ...btn('#fff', '#6B3FDB'), border: '1px solid #c4b5fd', marginTop: 6 }} onClick={() => downloadPerq(id, name)}
+                            title={`Statement of perquisites (${perqName})`}>
+                            <Download size={13} /> {perqName}
+                          </button>
+                        )}
                       </td>
                     </tr>
                   );

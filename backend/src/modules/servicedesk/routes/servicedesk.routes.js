@@ -17,6 +17,8 @@ import { editArticle, transition } from '../services/knowledgeWorkflow.service.j
 import { captureBefore } from '../../../middlewares/captureBefore.js';
 import { toCsvObjects } from '../../../shared/csv.js';
 import { deriveResponseFields } from '../services/voc.service.js';   // was used, never imported
+import { createCorrection, resolveCorrection, myCorrections } from '../recordCorrections.js';
+import { ownEmployeeId } from '../../payroll/payrollAccess.js';
 
 const router = express.Router();
 
@@ -109,167 +111,6 @@ async function matchAutoAssignmentRule(companyId, ticketData) {
     });
   }) || null;
 }
-
-// ── table init ────────────────────────────────────────────────────────────────
-(async () => {
-  try {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS service_engineers (
-        id         SERIAL PRIMARY KEY,
-        name       TEXT NOT NULL,
-        email      TEXT,
-        phone      TEXT,
-        skills     TEXT,
-        zone       TEXT,
-        status     TEXT DEFAULT 'Active',
-        company_id INTEGER,
-        created_at TIMESTAMPTZ DEFAULT NOW()
-      );
-      CREATE TABLE IF NOT EXISTS field_visits (
-        id            SERIAL PRIMARY KEY,
-        customer_name TEXT NOT NULL,
-        address       TEXT,
-        visit_date    DATE NOT NULL,
-        visit_time    TEXT,
-        engineer_name TEXT,
-        purpose       TEXT,
-        ticket_id     TEXT,
-        status        TEXT DEFAULT 'Scheduled',
-        notes         TEXT,
-        company_id    INTEGER,
-        created_at    TIMESTAMPTZ DEFAULT NOW(),
-        updated_at    TIMESTAMPTZ DEFAULT NOW()
-      );
-      CREATE TABLE IF NOT EXISTS service_contracts (
-        id                 SERIAL PRIMARY KEY,
-        customer_name      TEXT NOT NULL,
-        contract_type      TEXT DEFAULT 'AMC',
-        start_date         DATE NOT NULL,
-        end_date           DATE NOT NULL,
-        value              NUMERIC DEFAULT 0,
-        sla_response_hrs   INTEGER DEFAULT 4,
-        sla_resolution_hrs INTEGER DEFAULT 24,
-        status             TEXT DEFAULT 'Active',
-        notes              TEXT,
-        company_id         INTEGER,
-        created_at         TIMESTAMPTZ DEFAULT NOW()
-      );
-      CREATE TABLE IF NOT EXISTS sla_policies (
-        id                   SERIAL PRIMARY KEY,
-        name                 TEXT NOT NULL,
-        priority             TEXT NOT NULL,
-        first_response_hours NUMERIC NOT NULL DEFAULT 4,
-        resolution_hours     NUMERIC NOT NULL DEFAULT 24,
-        escalation_hours     NUMERIC DEFAULT 8,
-        business_hours_only  BOOLEAN DEFAULT true,
-        company_id           INTEGER,
-        created_at           TIMESTAMPTZ DEFAULT NOW()
-      );
-      CREATE TABLE IF NOT EXISTS auto_assignment_rules (
-        id                SERIAL PRIMARY KEY,
-        name              TEXT NOT NULL,
-        priority          INTEGER DEFAULT 10,
-        conditions        JSONB DEFAULT '[]',
-        assign_to_team    TEXT,
-        assign_to_user_id INTEGER,
-        round_robin_group TEXT,
-        is_active         BOOLEAN DEFAULT true,
-        company_id        INTEGER,
-        created_at        TIMESTAMPTZ DEFAULT NOW()
-      );
-      CREATE TABLE IF NOT EXISTS csat_responses (
-        id              SERIAL PRIMARY KEY,
-        ticket_id       INTEGER REFERENCES support_tickets(id) ON DELETE SET NULL,
-        ticket_subject  TEXT,
-        rating          INTEGER CHECK(rating >= 1 AND rating <= 5),
-        product_rating  INTEGER CHECK(product_rating  BETWEEN 1 AND 5),
-        engineer_rating INTEGER CHECK(engineer_rating BETWEEN 1 AND 5),
-        visited_on_time BOOLEAN,
-        resolved        BOOLEAN,
-        customer_name   TEXT,
-        complaint_id    INTEGER,
-        feedback        TEXT,
-        agent_name      TEXT,
-        company_id      INTEGER,
-        responded_at    TIMESTAMPTZ DEFAULT NOW()
-      );
-      CREATE TABLE IF NOT EXISTS service_master (
-        id          SERIAL PRIMARY KEY,
-        name        TEXT NOT NULL,
-        category    TEXT,
-        description TEXT,
-        price       NUMERIC DEFAULT 0,
-        is_active   BOOLEAN DEFAULT true,
-        company_id  INTEGER,
-        created_at  TIMESTAMPTZ DEFAULT NOW()
-      );
-      CREATE TABLE IF NOT EXISTS service_sites (
-        id            SERIAL PRIMARY KEY,
-        name          TEXT NOT NULL,
-        customer_id   INTEGER,
-        customer_name TEXT,
-        address       TEXT NOT NULL,
-        city          TEXT,
-        state         TEXT,
-        pincode       TEXT,
-        contact_name  TEXT,
-        contact_phone TEXT,
-        site_type     TEXT DEFAULT 'Office',
-        status        TEXT DEFAULT 'Active',
-        company_id    INTEGER,
-        created_at    TIMESTAMPTZ DEFAULT NOW()
-      );
-      CREATE TABLE IF NOT EXISTS delivery_notes (
-        id              SERIAL PRIMARY KEY,
-        dn_number       TEXT UNIQUE,
-        ticket_id       INTEGER,
-        customer_name   TEXT NOT NULL,
-        delivery_date   DATE NOT NULL,
-        delivered_by    TEXT,
-        items_delivered TEXT,
-        status          TEXT DEFAULT 'Pending',
-        notes           TEXT,
-        company_id      INTEGER,
-        created_at      TIMESTAMPTZ DEFAULT NOW()
-      );
-    `);
-
-    // Backfill company_id column on tables that may have been created before this column was added
-    await pool.query(`
-      ALTER TABLE service_engineers     ADD COLUMN IF NOT EXISTS company_id INTEGER;
-      ALTER TABLE service_engineers     ADD COLUMN IF NOT EXISTS employee_id INTEGER;
-      ALTER TABLE field_visits          ADD COLUMN IF NOT EXISTS company_id INTEGER;
-      ALTER TABLE service_contracts     ADD COLUMN IF NOT EXISTS company_id INTEGER;
-      ALTER TABLE sla_policies          ADD COLUMN IF NOT EXISTS company_id INTEGER;
-      ALTER TABLE auto_assignment_rules ADD COLUMN IF NOT EXISTS company_id INTEGER;
-      ALTER TABLE csat_responses        ADD COLUMN IF NOT EXISTS company_id INTEGER;
-      ALTER TABLE service_master        ADD COLUMN IF NOT EXISTS company_id INTEGER;
-      ALTER TABLE service_sites         ADD COLUMN IF NOT EXISTS company_id INTEGER;
-      ALTER TABLE delivery_notes        ADD COLUMN IF NOT EXISTS company_id INTEGER;
-    `);
-
-    // Self-heal the feedback->ticket FK on DBs where csat_responses was created
-    // before it carried the constraint (PG has no ADD CONSTRAINT IF NOT EXISTS).
-    // Mirrors migration 20260715000001; safe to run every boot.
-    await pool.query(`
-      DO $$
-      BEGIN
-        IF NOT EXISTS (
-          SELECT 1 FROM pg_constraint WHERE conname = 'fk_csat_responses_ticket'
-        ) THEN
-          UPDATE csat_responses SET ticket_id = NULL
-           WHERE ticket_id IS NOT NULL
-             AND NOT EXISTS (SELECT 1 FROM support_tickets t WHERE t.id = csat_responses.ticket_id);
-          ALTER TABLE csat_responses
-            ADD CONSTRAINT fk_csat_responses_ticket
-            FOREIGN KEY (ticket_id) REFERENCES support_tickets(id) ON DELETE SET NULL;
-        END IF;
-      END $$;
-    `);
-  } catch (e) {
-    console.error('Servicedesk table init error:', e.message);
-  }
-})();
 
 // ── helpers ────────────────────────────────────────────────────────────────────
 const safe = async (sql, params = []) => {
@@ -559,7 +400,9 @@ router.post('/tickets/:id/conversations', svcSelfService, async (req, res) => {
          (ticket_id, message, is_internal, created_by, created_by_name, channel)
        VALUES ($1,$2,$3,$4,$5,'web')
        RETURNING *`,
-      [req.params.id, String(message).trim(), internal, req.user?.userId ?? null,
+      // created_by references employees(id), not users(id): a users.id here
+      // failed the foreign key (or named the wrong person). 2026-11-11.
+      [req.params.id, String(message).trim(), internal, (await ownEmployeeId(req)) ?? null,
        req.user?.email ?? null]
     );
     logAudit({ userId: req.user?.userId, module: 'service', recordId: created.id,
@@ -594,6 +437,11 @@ router.get('/tickets/:id', svcSelfService, async (req, res) => {
 });
 
 // ── create ticket ───────────────────────────────────────────────────────────────
+// ── record corrections (2026-11-11) — see ../recordCorrections.js ───────────────
+router.get('/corrections/mine',          svcSelfService, myCorrections);
+router.post('/corrections',              svcSelfService, createCorrection);
+router.post('/corrections/:id/resolve',  svcSelfService, resolveCorrection);
+
 router.post('/tickets', svcSelfService, async (req, res) => {
   try {
     const { valid, errors } = await validate('service', req.body, { partial: false });
@@ -616,7 +464,15 @@ router.post('/tickets', svcSelfService, async (req, res) => {
     }
     // Staff may raise a ticket on behalf of any requester; a self-service user
     // is always recorded as the requester (can't spoof someone else).
-    const requester_name  = isServiceStaff(req) ? req.body.requester_name  : (req.user?.name  || req.body.requester_name);
+    // The login token carries no `name`, so req.user.name was always undefined
+    // and a self-service ticket fell back to the body (which MyTickets never
+    // sends) — 4 of 16 tickets had no requester name. Read it from the login.
+    let selfName = req.user?.name || null;
+    if (!isServiceStaff(req) && !selfName && req.user?.userId) {
+      const u = await pool.query(`SELECT name FROM users WHERE id = $1`, [req.user.userId]).catch(() => ({ rows: [] }));
+      selfName = u.rows[0]?.name || null;
+    }
+    const requester_name  = isServiceStaff(req) ? req.body.requester_name  : (selfName || req.body.requester_name);
     const requester_email = isServiceStaff(req) ? req.body.requester_email : (req.user?.email || req.body.requester_email);
 
     // helpdesk (TKT-####) vs field-service/IPS (IPS-#####). Only staff may raise
@@ -2078,27 +1934,6 @@ router.post('/feedback', svcAdmin('add'), async (req, res) => {
 });
 
 // ── Knowledge Base ─────────────────────────────────────────────────────────
-(async () => {
-  try {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS service_knowledge_base (
-        id           SERIAL PRIMARY KEY,
-        company_id   INTEGER,
-        title        TEXT NOT NULL,
-        content      TEXT,
-        category     TEXT DEFAULT 'General',
-        tags         TEXT[],
-        author_id    INTEGER,
-        views        INTEGER DEFAULT 0,
-        helpful_yes  INTEGER DEFAULT 0,
-        helpful_no   INTEGER DEFAULT 0,
-        is_published BOOLEAN DEFAULT TRUE,
-        created_at   TIMESTAMPTZ DEFAULT NOW(),
-        updated_at   TIMESTAMPTZ DEFAULT NOW()
-      )
-    `);
-  } catch (e) { console.error('[servicedesk] knowledge-base migration:', e.message); }
-})();
 
 router.get('/knowledge-base', svcKnowledgeBase, async (req, res) => {
   try {

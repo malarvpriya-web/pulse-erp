@@ -23,6 +23,7 @@ const SECTION_OF = {
   internship_type: 'internship', start_date: 'internship', end_date: 'internship',
   status: 'internship', status_reason: 'internship', project_work_area: 'internship',
   stipend: 'compensation', stipend_frequency: 'compensation', other_benefits: 'compensation',
+  bank_account_holder: 'compensation', bank_name: 'compensation', bank_account_number: 'compensation', bank_ifsc: 'compensation',
   notes: 'notes',
 };
 const SECTION_ORDER = ['personal', 'education', 'internship', 'compensation', 'completion', 'docs', 'notes'];
@@ -40,6 +41,7 @@ const BLANK = {
   department: '', designation: '', mentor_employee_id: '', internship_type: '',
   start_date: '', end_date: '', status: 'Selected', status_reason: '', project_work_area: '',
   stipend: '', stipend_frequency: '', other_benefits: '',
+  bank_account_holder: '', bank_name: '', bank_account_number: '', bank_ifsc: '',
   notes: '',
 };
 
@@ -424,9 +426,14 @@ export default function AddIntern({ setPage, intern = null }) {
                     </select>
                   </Field>
                   {text('other_benefits', 'Other Benefits', { textarea: true, placeholder: 'e.g. Laptop, meals, travel allowance' })}
+                  {text('bank_account_holder', 'Account Holder Name')}
+                  {text('bank_name', 'Bank Name')}
+                  {text('bank_account_number', 'Account Number', { inputMode: 'numeric', placeholder: '9 to 18 digits' })}
+                  {text('bank_ifsc', 'IFSC', { placeholder: 'AAAA0XXXXXX' })}
                 </div>
                 <p style={{ fontSize: 11, color: '#6b7280', margin: '10px 0 0' }}>
-                  A stipend is recorded on the internship only. It is not a salary and never reaches payroll.
+                  A stipend is not a salary and never reaches payroll. HR raises it each month in Internships → Stipends and
+                  Finance records the payment to this account.
                 </p>
               </>
             ))}

@@ -655,11 +655,11 @@ export default function ItemDetail() {
           {breakdown?.tco && (
             <div
               onClick={() => setBreakdown(null)}
-              style={{ position: 'fixed', inset: 0, background: 'rgba(17,24,39,0.45)', zIndex: 1000, display: 'flex', justifyContent: 'flex-end' }}
+              style={{ position: 'fixed', inset: 0, background: 'rgba(17,24,39,0.45)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}
             >
               <div
                 onClick={e => e.stopPropagation()}
-                style={{ background: '#fff', width: 'min(560px, 100%)', height: '100%', overflowY: 'auto', padding: 24, boxShadow: '-8px 0 32px rgba(0,0,0,0.15)' }}
+                style={{ background: '#fff', width: 'min(560px, 100%)', maxWidth: '100%', maxHeight: 'calc(100vh - 48px)', borderRadius: 12, overflowY: 'auto', padding: 24, boxShadow: '0 20px 60px rgba(0,0,0,.18)' }}
               >
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, marginBottom: 4 }}>
                   <div>

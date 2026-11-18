@@ -271,6 +271,29 @@ export default function PayrollForm24Q({ setPage: _setPage, embedded = false }) 
         </div>
       ))}
 
+      {data?.salary_details?.length > 0 && (
+        <div style={{ ...card, marginBottom: 16, overflowX: 'auto' }}>
+          <div style={{ fontWeight: 700, fontSize: 15, color: '#1f2937', marginBottom: 4 }}>Salary details for the year (Q4)</div>
+          <p style={{ fontSize: 12, color: '#6b7280', margin: '0 0 10px' }}>
+            Each employee's salary and tax for {term} {data.financial_year}: approved months plus any opening balance. A negative difference means too little tax was deducted — deduct it before the year closes.
+          </p>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+            <thead><tr style={{ background: '#f3f4f6' }}>
+              {['Employee', 'Regime', 'Gross salary', 'Perquisites', 'Standard ded.', 'Prof. tax', 'HRA/LTA exempt', 'Chapter VI-A', 'Taxable income', 'Tax', 'Surcharge', 'Cess', 'Tax payable', 'TDS deducted', 'Difference'].map(h => (
+                <th key={h} style={{ padding: '8px 10px', textAlign: 'left', fontWeight: 600, color: '#374151', whiteSpace: 'nowrap' }}>{h}</th>))}
+            </tr></thead>
+            <tbody>{data.salary_details.map(s => (
+              <tr key={s.employee_id} style={{ borderBottom: '1px solid #f3f4f6' }}>
+                <td style={{ padding: '8px 10px' }}><div style={{ fontWeight: 600 }}>{s.employee_name}</div><div style={{ fontSize: 11, color: '#9ca3af' }}>{s.employee_code} · {s.employee_pan || 'no PAN'}</div></td>
+                <td style={{ padding: '8px 10px' }}>{s.regime === 'old' ? 'Old' : 'New'}</td>
+                {['gross_salary', 'perquisites', 'standard_deduction', 'professional_tax', 'hra_lta', 'chapter_via', 'taxable_income', 'tax', 'surcharge', 'cess', 'tax_payable', 'tds_deducted'].map(k => (
+                  <td key={k} style={{ padding: '8px 10px', whiteSpace: 'nowrap' }}>{fmtRupee(k === 'hra_lta' ? (s.hra_exemption || 0) + (s.lta_exemption || 0) : s[k])}</td>))}
+                <td style={{ padding: '8px 10px', fontWeight: 600, color: s.difference < -1 ? '#b91c1c' : s.difference > 1 ? '#b45309' : '#166534' }}>{fmtRupee(s.difference)}</td>
+              </tr>))}</tbody>
+          </table>
+        </div>
+      )}
+
       {data && !data.quarters?.length && (
         <div style={{ ...card, textAlign: 'center', padding: 48, color: '#9ca3af' }}>
           <FileText size={40} style={{ marginBottom: 12, opacity: 0.3 }} />

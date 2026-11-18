@@ -47,7 +47,7 @@ async function insertReminder(userId, { referenceId, title, message }) {
 
 async function runInterviewReminderCheck() {
   const { rows } = await pool.query(`
-    SELECT s.id, s.candidate_id, s.interviewer_id, s.interview_date, s.interview_time,
+    SELECT s.id, s.candidate_id, s.interviewer_id, s.panel_employee_ids, s.interview_date, s.interview_time,
            s.interview_mode, s.meeting_link,
            c.full_name AS candidate_name, c.email AS candidate_email
       FROM interview_schedules s
@@ -62,12 +62,15 @@ async function runInterviewReminderCheck() {
       ? `${row.interview_date} at ${row.interview_time}`
       : `${row.interview_date}`;
 
-    if (row.interviewer_id) {
-      const { rows: u } = await pool
-        .query('SELECT id AS user_id FROM users WHERE employee_id = $1', [row.interviewer_id])
-        .catch(() => ({ rows: [] }));
-      const interviewerUserId = u[0]?.user_id;
-      if (interviewerUserId) {
+    // The lead interviewer and every panel member get the reminder.
+    const panelIds = [row.interviewer_id, ...(Array.isArray(row.panel_employee_ids) ? row.panel_employee_ids : [])]
+      .map(Number).filter(Number.isInteger);
+    const { rows: u } = panelIds.length
+      ? await pool.query('SELECT id AS user_id FROM users WHERE employee_id = ANY($1::int[])', [panelIds])
+          .catch(() => ({ rows: [] }))
+      : { rows: [] };
+    for (const { user_id: interviewerUserId } of u) {
+      {
         // notifications.reference_id is integer — interview_schedules.id is a
         // UUID PK (see recruitment.routes.js's own top-of-file note on this),
         // so it can't be used here. candidate_id (integer) is the same

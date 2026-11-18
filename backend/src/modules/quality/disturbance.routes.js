@@ -44,36 +44,6 @@ const EVENT_LABELS = {
   reactive_anomaly:   'Reactive Power Anomaly',
 };
 
-/* ── Schema bootstrap ────────────────────────────────────────────────────────
-   Creates table and indexes on first startup. Idempotent via IF NOT EXISTS.  */
-(async () => {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS disturbance_events (
-      id               SERIAL PRIMARY KEY,
-      company_id       INT,
-      equipment_id     INT,
-      event_type       TEXT NOT NULL,
-      severity         TEXT NOT NULL DEFAULT 'warning',
-      site_name        TEXT,
-      measured_value   NUMERIC,
-      threshold_value  NUMERIC,
-      unit             TEXT,
-      duration_ms      INT,
-      waveform_ref     TEXT,
-      event_ts         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      created_by       INT,
-      created_by_name  TEXT,
-      resolved_at      TIMESTAMPTZ,
-      resolved_by_name TEXT,
-      notes            TEXT,
-      created_at       TIMESTAMPTZ DEFAULT NOW()
-    );
-    CREATE INDEX IF NOT EXISTS idx_dist_evt_ts  ON disturbance_events(event_ts DESC);
-    CREATE INDEX IF NOT EXISTS idx_dist_evt_typ ON disturbance_events(event_type, severity);
-    CREATE INDEX IF NOT EXISTS idx_dist_evt_co  ON disturbance_events(company_id);
-  `).catch(e => console.error('[disturbance] schema init error:', e.message));
-})();
-
 /* ── GET / — paginated event list ────────────────────────────────────────────
    Query params: event_type, severity, site_name, from, to, resolved, page, limit */
 router.get('/', requirePermission('quality', 'view'), async (req, res) => {
