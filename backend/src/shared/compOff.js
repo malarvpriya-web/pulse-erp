@@ -86,3 +86,34 @@ export async function checkEligibility(pool, workDate, companyId) {
     holiday: null,
   };
 }
+
+/**
+ * Is comp off given to this employee? (§278.4, owner 2026-11-19: "we are not
+ * going to give comp off to everyone — production employees; for each employee
+ * we have to choose".) Chosen in Attendance → Configuration → Settings → Comp off.
+ */
+export async function isCompOffEligible(db, employeeId) {
+  const { rows: [e] } = await db.query(`SELECT comp_off_eligible FROM employees WHERE id = $1`, [employeeId])
+    .catch(() => ({ rows: [] }));
+  return e?.comp_off_eligible === true;
+}
+
+/**
+ * Grant comp off for a full day worked on a holiday — from the punch machine
+ * or the app. Does nothing unless comp off is switched on in Settings AND the
+ * employee is chosen for it. One open grant per employee per date (a rejected
+ * one may be raised again). Returns true when a grant was written.
+ */
+export async function autoGrantHolidayCompOff(db, { employeeId, companyId, date, hours, fullDayHours, enabled }) {
+  if (!enabled || !(Number(hours) >= Number(fullDayHours || FULL_DAY_HOURS))) return false;
+  if (!(await isCompOffEligible(db, employeeId))) return false;
+  const { rows: [h] } = await db.query(
+    `SELECT id FROM holidays WHERE date = $1::date AND (company_id = $2 OR company_id IS NULL) LIMIT 1`, [date, companyId]);
+  if (!h) return false;
+  const { rowCount } = await db.query(`
+    INSERT INTO compensatory_off (employee_id, work_date, hours_worked, holiday_id, reason, expires_on, company_id, auto_granted)
+    SELECT $1, $2::date, $3, $4, 'Auto-granted: worked a full day on a holiday', ($2::date + INTERVAL '3 months')::date, $5, TRUE
+     WHERE NOT EXISTS (SELECT 1 FROM compensatory_off WHERE employee_id = $1 AND work_date = $2::date AND status <> 'rejected')`,
+  [employeeId, date, Number(hours).toFixed(2), h.id, companyId]);
+  return rowCount > 0;
+}

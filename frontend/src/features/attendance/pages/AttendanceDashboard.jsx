@@ -389,7 +389,34 @@ const AttendanceDashboard = () => {
       .catch(() => setRegQuota(null));
   }, [user?.employee_id]);
 
+  // §278.3 (owner, 2026-11-19): a correction is asked for on the same day
+  // (Settings → Regularization → days allowed; 0 = same day only).
+  const [regWindowDays, setRegWindowDays] = useState(0);
+  useEffect(() => {
+    if (!user?.employee_id) return;
+    api.get(`/attendance/regularize/quota/${user.employee_id}`)
+      .then((r) => setRegWindowDays(Math.max(0, Number(r.data?.window_days ?? 0))))
+      .catch(() => {});
+  }, [user?.employee_id]);
+
+  // Late-coming penalties counted so far this month (§278.3).
+  const [penalties, setPenalties] = useState(null);
+  useEffect(() => {
+    if (!user?.employee_id) return;
+    const m = currentDate.getMonth() + 1; const y = currentDate.getFullYear();
+    api.get(`/attendance/penalties/${user.employee_id}?month=${m}&year=${y}`)
+      .then((r) => setPenalties(r.data)).catch(() => setPenalties(null));
+  }, [user?.employee_id, currentDate]);
+
   const openRegDrawer = (dateStr) => {
+    const earliest = new Date();
+    earliest.setDate(earliest.getDate() - regWindowDays);
+    if (dateStr < toYMD(earliest)) {
+      showToast(regWindowDays === 0
+        ? 'A correction must be asked for on the same day.'
+        : `A correction can be asked for up to ${regWindowDays} day${regWindowDays === 1 ? '' : 's'} later.`, 'error');
+      return;
+    }
     setRegForm({ date: dateStr, reason: '', check_in: '', check_out: '' });
     loadRegQuota(dateStr);
     setShowRegForm(true);
@@ -559,6 +586,11 @@ const AttendanceDashboard = () => {
         eyebrow="Attendance"
         title="My Attendance"
         actions={<>
+          {/* Owner, 2026-11-19: the correction is asked for here, on the same day. */}
+          <button className="plh-cta" data-testid="regularize-today" onClick={() => openRegDrawer(toYMD(new Date()))}
+            title="Ask for a correction to today's punches">
+            <FileEdit size={15} /> Regularize
+          </button>
           <button className="plh-cta plh-cta--ghost" onClick={prevMonth} title="Previous month">
             <ChevronLeft size={16} />
           </button>
@@ -1005,7 +1037,7 @@ const AttendanceDashboard = () => {
                 { label: 'On time', value: monthlySummary.on_time ?? 0, hint: 'at or before shift start', color: '#059669' },
                 { label: 'Inside grace time', value: monthlySummary.within_grace ?? 0, hint: `${monthlySummary.grace_minutes_used ?? 0} min of grace used`, color: '#b45309' },
                 { label: 'Late', value: monthlySummary.late ?? 0, hint: `${monthlySummary.late_minutes_total ?? 0} min late in total`, color: '#dc2626' },
-                { label: 'Left early', value: monthlySummary.early_exits ?? 0, hint: 'before shift end', color: '#7c3aed' },
+                { label: 'Left early', value: monthlySummary.early_exits ?? 0, hint: 'before shift end', color: '#6B3FDB' },
                 { label: 'Usual arrival', value: monthlySummary.avg_check_in || '--', hint: 'average check-in', color: '#374151' },
                 { label: 'Average hours', value: monthlySummary.avg_hours != null ? `${monthlySummary.avg_hours} h` : '--', hint: 'per day worked', color: '#374151' },
               ].map((k) => (
@@ -1016,6 +1048,23 @@ const AttendanceDashboard = () => {
                 </div>
               ))}
             </div>
+            {penalties && (penalties.rules?.length > 0) && (
+              <div data-testid="my-penalties" style={{ marginBottom: 14, padding: '10px 12px', borderRadius: 10,
+                background: penalties.penalty_days > 0 ? '#fef2f2' : '#faf9ff',
+                border: `1px solid ${penalties.penalty_days > 0 ? '#fecaca' : '#efeafd'}` }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: penalties.penalty_days > 0 ? '#b91c1c' : '#374151' }}>
+                  {penalties.penalty_days > 0
+                    ? `Salary cut this month so far: ${penalties.penalty_days} day${penalties.penalty_days === 1 ? '' : 's'}`
+                    : 'No salary cut for late coming this month'}
+                </div>
+                {penalties.lines?.map((l) => (
+                  <div key={l.rule_id} style={{ fontSize: 12, color: '#374151', marginTop: 4 }}>
+                    {l.text} — {l.occurrences} time{l.occurrences === 1 ? '' : 's'}{l.deduct_days > 0 ? `, ${l.deduct_days} day cut` : ', no cut yet'}
+                  </div>
+                ))}
+                <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 6 }}>Rules: {penalties.rules.join(' · ')}</div>
+              </div>
+            )}
             {attendanceRecords.length > 0 && (
               <div style={{ maxHeight: 320, overflowY: 'auto' }}>
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
@@ -1034,7 +1083,7 @@ const AttendanceDashboard = () => {
                         <tr key={r.date} style={{ borderTop: '1px solid #f3f4f6' }}>
                           <td style={{ padding: '6px 8px' }}>{fmtDate(r.date)}</td>
                           <td style={{ padding: '6px 8px' }}>{r.check_in || '—'}</td>
-                          <td style={{ padding: '6px 8px' }}>{r.check_out || '—'}{r.early_leave_minutes > 0 ? <span style={{ color: '#7c3aed', fontSize: 11 }}> (early {r.early_leave_minutes} min)</span> : null}</td>
+                          <td style={{ padding: '6px 8px' }}>{r.check_out || '—'}{r.early_leave_minutes > 0 ? <span style={{ color: '#6B3FDB', fontSize: 11 }}> (early {r.early_leave_minutes} min)</span> : null}</td>
                           <td style={{ padding: '6px 8px' }}>{r.hours_worked ? `${r.hours_worked} h` : '—'}</td>
                           <td style={{ padding: '6px 8px', color: arrival === '—' ? '#9ca3af' : tone, fontWeight: 600 }}>{arrival}</td>
                           <td style={{ padding: '6px 8px', textTransform: 'capitalize', color: '#374151' }}>{String(r.status || '').replace('_', ' ')}</td>
@@ -1105,7 +1154,7 @@ const AttendanceDashboard = () => {
           <div className="atd-drawer">
             <div className="atd-drawer-hd">
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                <FileEdit size={18} color="#6366f1" />
+                <FileEdit size={18} color="#6B3FDB" />
                 <span style={{ fontWeight: 600, fontSize: 15, color: '#111827' }}>
                   Regularization Request
                 </span>

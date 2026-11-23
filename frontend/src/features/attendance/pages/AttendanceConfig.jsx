@@ -1,5 +1,5 @@
 import { lazy } from 'react';
-import { Factory as IcFactory, HardHat as IcHardHat, MapPin as IcMapPin, RefreshCw as IcRefreshCw, Settings2 as IcSettings2 } from 'lucide-react';
+import { CalendarDays as IcCalendar, Fingerprint as IcFingerprint, Factory as IcFactory, MapPin as IcMapPin, RefreshCw as IcRefreshCw, Settings2 as IcSettings2 } from 'lucide-react';
 import { TabHub } from '@/components/pulse-ui';
 
 /**
@@ -19,15 +19,20 @@ import { TabHub } from '@/components/pulse-ui';
  * canRoleOpenPage() before drawing it.
  */
 const Shifts = lazy(() => import('../../hr/pages/Shifts'));
+const ShiftCalendar = lazy(() => import('./ShiftCalendar'));
+const PunchImport = lazy(() => import('./PunchImport'));
 const WorkCentres = lazy(() => import('./WorkCentres'));
-const ContractLabour = lazy(() => import('./ContractLabour'));
+// Contract Labour is its own Attendance menu row now (owner, 2026-11-19): marking
+// it is a daily task, not configuration.
 const GeoFencing = lazy(() => import('./GeoFencing'));
 const GeneralSettings = lazy(() => import('./settings/GeneralSettings'));
 
 export const TABS = [
   { id: 'shifts', label: 'Shifts & Rotations', icon: IcRefreshCw, page: 'Shifts', Component: Shifts },
+  // Shift Calendar and Punch Machines were menu rows of their own (owner, 2026-11-19).
+  { id: 'shiftcalendar', label: 'Shift Calendar', icon: IcCalendar, page: 'ShiftCalendar', Component: ShiftCalendar },
+  { id: 'punch', label: 'Punch Machines', icon: IcFingerprint, page: 'PunchImport', Component: PunchImport },
   { id: 'workcentres', label: 'Work Centres', icon: IcFactory, page: 'WorkCentres', Component: WorkCentres },
-  { id: 'contract', label: 'Contract Labour', icon: IcHardHat, page: 'ContractLabour', Component: ContractLabour },
   { id: 'geo', label: 'Geo Fencing (field staff)', icon: IcMapPin, page: 'GeoFencing', Component: GeoFencing },
   { id: 'settings', label: 'Settings', icon: IcSettings2, page: 'GeneralSettings', Component: GeneralSettings },
 ];
@@ -38,7 +43,7 @@ export default function AttendanceConfig({ setPage }) {
       icon={IcSettings2}
       eyebrow="Attendance"
       title="Attendance Configuration"
-      subtitle="Shifts, work centres, contract labour, field-staff geo fences and attendance rules"
+      subtitle="Shifts, shift calendar, punch machines, work centres, field-staff geo fences and attendance rules"
       tabs={TABS}
       setPage={setPage}
     />

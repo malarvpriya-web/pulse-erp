@@ -1,5 +1,5 @@
 import { lazy } from 'react';
-import { ArrowRightLeft as IcSwap, CalendarCheck as IcCalendarCheck, ClipboardCheck as IcClipboardCheck, Clock as IcClock, UserCog as IcUserCog } from 'lucide-react';
+import { ArrowRightLeft as IcSwap, CalendarCheck as IcCalendarCheck, ClipboardCheck as IcClipboardCheck, Clock as IcClock, UserCog as IcUserCog, Gift as IcGift } from 'lucide-react';
 import { TabHub } from '@/components/pulse-ui';
 
 /**
@@ -15,11 +15,14 @@ const RegularizationApprovals = lazy(() => import('./RegularizationApprovals'));
 const OvertimeApprovals = lazy(() => import('./OvertimeApprovals'));
 const ShiftChangeApprovals = lazy(() => import('./ShiftChangeApprovals'));
 const ApprovalDelegation = lazy(() => import('./ApprovalDelegation'));
+// Comp off (owner, 2026-11-19): only for the employees HR chooses in Settings.
+const CompOffPage = lazy(() => import('../../leaves/pages/CompOffPage'));
 
 export const TABS = [
   { id: 'regularization', label: 'Regularization', icon: IcCalendarCheck, page: 'RegularizationApprovals', Component: RegularizationApprovals },
   { id: 'overtime', label: 'Overtime', icon: IcClock, page: 'OvertimeApprovals', Component: OvertimeApprovals },
   { id: 'shift', label: 'Shift Change', icon: IcSwap, page: 'ShiftChangeApprovals', Component: ShiftChangeApprovals },
+  { id: 'compoff', label: 'Comp Off', icon: IcGift, page: 'CompOff', Component: CompOffPage },
   { id: 'delegation', label: 'Delegation', icon: IcUserCog, page: 'ApprovalDelegation', Component: ApprovalDelegation },
 ];
 
@@ -29,7 +32,7 @@ export default function AttendanceApprovals({ setPage }) {
       icon={IcClipboardCheck}
       eyebrow="Attendance"
       title="Attendance Approvals"
-      subtitle="Regularization, overtime and shift-change requests, and approver delegation"
+      subtitle="Regularization, overtime, shift-change and comp-off requests, and approver delegation"
       tabs={TABS}
       setPage={setPage}
     />

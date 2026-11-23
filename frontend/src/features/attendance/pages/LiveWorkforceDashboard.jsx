@@ -115,6 +115,45 @@ const StatusBadge = ({ status }) => {
   );
 };
 
+// Who came in late today, grouped "above 10 min", "above 15 min", "above 30 min"
+// (the minutes are Settings → Late arrival → late bands). A person late by 40
+// minutes is in every box they passed, as the owner asked ("above 15 minutes
+// who all came").
+function LateBands({ bands, people, isToday }) {
+  const late = people.filter((p) => Number(p.late_minutes) > 0);
+  return (
+    <div data-testid="late-bands" style={{ display: 'grid', gridTemplateColumns: `repeat(auto-fit, minmax(240px, 1fr))`, gap: 10, marginBottom: 12 }}>
+      {[...bands].sort((a, b) => a - b).map((min) => {
+        const list = late.filter((p) => Number(p.late_minutes) > min).sort((a, b) => Number(b.late_minutes) - Number(a.late_minutes));
+        return (
+          <div key={min} style={{ ...CARD, padding: 12 }}>
+            <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 6 }}>
+              <span style={{ fontSize: 13, fontWeight: 700, color: '#1f2937' }}>Late above {min} min</span>
+              <span style={{ fontSize: 20, fontWeight: 800, color: list.length ? '#dc2626' : '#9ca3af' }}>{list.length}</span>
+            </div>
+            {list.length === 0
+              ? <div style={{ fontSize: 12, color: '#9ca3af' }}>Nobody {isToday ? 'today' : 'that day'}</div>
+              : (
+                <div style={{ maxHeight: 140, overflowY: 'auto' }}>
+                  {list.map((p) => (
+                    <div key={p.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 12, padding: '3px 0', borderTop: '1px solid #f5f3ff' }}>
+                      <span style={{ color: '#374151', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {p.name}<span style={{ color: '#9ca3af' }}> · {p.department || '—'}</span>
+                      </span>
+                      <span style={{ color: '#6B3FDB', fontWeight: 600, whiteSpace: 'nowrap' }}>
+                        {String(p.check_in || '').slice(0, 5)} · {p.late_minutes} min
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 export default function LiveWorkforceDashboard() {
   const [data, setData]               = useState(null);
   const [loading, setLoading]         = useState(true);
@@ -168,7 +207,6 @@ export default function LiveWorkforceDashboard() {
   const present        = presence.present || 0;
   const absent         = presence.absent  || 0;
   const late           = presence.late    || 0;
-  const wfh            = presence.wfh     || 0;
   const field          = presence.field   || 0;
   const onOT           = presence.on_overtime || 0;
   const stillInside    = presence.still_inside || 0;
@@ -230,12 +268,15 @@ export default function LiveWorkforceDashboard() {
             <StatCard index={1} icon={CheckCircle}   label={isToday ? 'Present Today' : 'Present'}   value={present}  sub={`${attendancePct}% attendance`} color="#10b981" bg="#dcfce7" />
             <StatCard index={2} icon={XCircle}       label={isToday ? 'Absent Today' : 'Absent'}    value={absent}   color="#ef4444" bg="#fee2e2" />
             <StatCard index={3} icon={Clock}         label="Late Arrivals"   value={late}     color="#7c5cf0" bg="#ede9fe" />
-            <StatCard index={4} icon={MapPin}        label="WFH"             value={wfh}      color="#3b82f6" bg="#dbeafe" />
             <StatCard index={5} icon={Activity}      label="Field Engineers" value={field}    color="#0369a1" bg="#e0f2fe" />
             <StatCard index={6} icon={Zap}           label="On Overtime"     value={onOT}     color="#8b5cf6" bg="#ede9fe" />
             <StatCard index={7} icon={Building}      label={isToday ? 'Still Inside' : 'No punch-out'}    value={stillInside} sub={isToday ? 'not yet punched out' : 'missing punch-out'} color="#059669" bg="#ecfdf5" />
             <StatCard index={8} icon={AlertTriangle} label="Geo Violations"  value={geoViolations} sub={isToday ? 'today' : 'that day'} color="#6d28d9" bg="#ede9fe" />
           </div>
+
+          {/* Late arrivals by band (§278.4) — the minutes come from Settings →
+              Late arrival → late bands, so the boxes change with the setting. */}
+          <LateBands bands={data?.late_bands || [10, 15, 30]} people={data?.people || []} isToday={isToday} />
 
           {/* Attendance gauge */}
           <div className="dk-anim" style={{ ...CARD, marginBottom: 12, '--dk-i': 8 }}>
@@ -330,7 +371,7 @@ export default function LiveWorkforceDashboard() {
                       <td style={{ padding: '9px 12px' }}><StatusBadge status={r.today_status} />{r.inside && <span style={{ marginLeft: 6, fontSize: 11, color: '#059669' }}>inside</span>}</td>
                       <td style={{ padding: '9px 12px' }}>{String(r.check_in || '').slice(0, 5) || '—'}</td>
                       <td style={{ padding: '9px 12px' }}>{String(r.check_out || '').slice(0, 5) || '—'}</td>
-                      <td style={{ padding: '9px 12px', color: r.late_minutes > 0 ? '#7c3aed' : '#9ca3af' }}>{r.late_minutes > 0 ? `${r.late_minutes} min` : '—'}</td>
+                      <td style={{ padding: '9px 12px', color: r.late_minutes > 0 ? '#6B3FDB' : '#9ca3af' }}>{r.late_minutes > 0 ? `${r.late_minutes} min` : '—'}</td>
                       <td style={{ padding: '9px 12px', color: '#6b7280' }}>{SOURCE_LABEL[r.source] || (r.is_field_employee ? 'App (field)' : r.source ? r.source : '—')}</td>
                     </tr>
                   ))}
@@ -349,7 +390,6 @@ export default function LiveWorkforceDashboard() {
                   { label: 'Present',        value: present,     pct: totalEmployees > 0 ? Math.round(present/totalEmployees*100) : 0, color: '#10b981' },
                   { label: 'Absent',         value: absent,      pct: totalEmployees > 0 ? Math.round(absent/totalEmployees*100)  : 0, color: '#ef4444' },
                   { label: 'Late',           value: late,        pct: totalEmployees > 0 ? Math.round(late/totalEmployees*100)    : 0, color: '#7c5cf0' },
-                  { label: 'Work From Home', value: wfh,         pct: totalEmployees > 0 ? Math.round(wfh/totalEmployees*100)     : 0, color: '#3b82f6' },
                   { label: 'Field',          value: field,       pct: totalEmployees > 0 ? Math.round(field/totalEmployees*100)   : 0, color: '#0369a1' },
                   { label: 'Overtime',       value: onOT,        pct: totalEmployees > 0 ? Math.round(onOT/totalEmployees*100)    : 0, color: '#8b5cf6' },
                 ].map(item => (

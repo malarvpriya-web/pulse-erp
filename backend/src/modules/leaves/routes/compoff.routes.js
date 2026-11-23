@@ -10,6 +10,7 @@ import {
   checkEligibility,
   compOffLeaveTypeId,
   creditDaysFor,
+  isCompOffEligible,
 } from '../../../shared/compOff.js';
 
 const router = express.Router();
@@ -174,6 +175,11 @@ router.post('/', requirePermission('leaves', 'add'), async (req, res) => {
     }
     if (creditDaysFor(hours) === 0) {
       return res.status(422).json({ error: `Comp off needs at least ${HALF_DAY_HOURS} hours of work — ${hours}h earns no credit.` });
+    }
+
+    // §278.4: comp off only for employees HR has chosen (Attendance → Settings → Comp off).
+    if (!(await isCompOffEligible(pool, empId))) {
+      return res.status(403).json({ error: 'comp_off_not_given', message: 'Comp off is not given to you. Ask HR if you think it should be.' });
     }
 
     const eligibility = await checkEligibility(pool, date, companyId);

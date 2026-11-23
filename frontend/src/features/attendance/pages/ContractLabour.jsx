@@ -9,6 +9,8 @@ import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
 import { PageHero, PageShell } from '@/components/pulse-ui';
 import { localDay } from '@/utils/dateFormatter';
+import { useAuth } from '@/context/AuthContext';
+import ContractLabourFinance from '../components/ContractLabourFinance';
 
 const P = '#6B3FDB';
 const CARD = { background: '#fff', borderRadius: 12, border: '1px solid #f0f0f4', padding: 24 };
@@ -715,7 +717,10 @@ export default function ContractLabour() {
   const [deleteWorker,  setDeleteWorker]  = useState(null);
   const [showRegisters, setShowRegisters] = useState(false);
   const [msg,           setMsg]           = useState('');
-  const [mainView,      setMainView]      = useState('workers'); // 'workers' | 'attendance'
+  // Opens on Daily Attendance — the everyday task (owner, 2026-11-19); Workers is the register.
+  const [mainView,      setMainView]      = useState('attendance'); // 'attendance' | 'workers'
+  const { hasAnyRole } = useAuth();
+  const canSendToFinance = !!hasAnyRole?.('super_admin', 'admin', 'hr', 'hr_manager');
 
   // attendance tab state
   const [attDate,       setAttDate]       = useState(() => localDay());
@@ -852,8 +857,8 @@ export default function ContractLabour() {
         subtitle="Track contract workers, compliance, and statutory obligations under CLRA Act 1970"
         actions={<>
           {[
+              { key: 'attendance', label: 'Daily Attendance', Icon: CalendarCheck },
               { key: 'workers',    label: 'Workers',    Icon: Users },
-              { key: 'attendance', label: 'Attendance', Icon: CalendarCheck },
             ].map(({ key, label, Icon }) => (
               <button className="plh-cta plh-cta--ghost" key={key} onClick={() => setMainView(key)}>
                 <Icon size={14} /> {label}
@@ -916,6 +921,7 @@ export default function ContractLabour() {
       {/* ── Attendance Tab ───────────────────────────────────────────────── */}
       {mainView === 'attendance' && (
         <div>
+          <ContractLabourFinance canSend={canSendToFinance} flash={flash} />
           {/* Controls */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>

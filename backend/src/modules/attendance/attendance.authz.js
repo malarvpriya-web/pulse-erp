@@ -67,15 +67,120 @@ export const requireAttendanceAdmin = gate(
   'Only HR and administrators can change attendance configuration.',
 );
 
-export const requireAttendanceApprover = gate(
-  isAttendanceApprover,
-  'Your role cannot approve or reject attendance requests.',
-);
-
 export const requireAttendanceOperator = gate(
   isAttendanceOperator,
   'Your role cannot record attendance for other employees.',
 );
+
+// ─────────────────────────────────────────────────────────────────────────────
+// "My team" — one definition for every attendance read and decision (§278.2)
+// ─────────────────────────────────────────────────────────────────────────────
+// Go-live check 2026-11-18: the attendance router is mounted behind login only,
+// and most GET routes never checked whose records they returned, so a plain
+// employee could read every colleague's punches, late arrivals, monthly report,
+// analytics and audit log. Reads are now: HR/admin → whole company; anyone else
+// → their own record plus their team. A reporting manager who holds only the
+// `employee` role still has a team — approval follows the reporting line, not
+// the login's role (a manager of 4 used to see 0 requests and get 403).
+//
+// Team = direct reports (employees.reporting_manager_id or org_relationships),
+// employees reporting to someone who has delegated to me (active, in date),
+// and — for viewing only — everyone in a department I head.
+const toInt = (v) => {
+  const n = Number.parseInt(v, 10);
+  return Number.isFinite(n) ? n : null;
+};
+
+/**
+ * SQL boolean: the employee row `alias` is in `actorEmpId`'s team. The id is
+ * inlined as a validated integer so the fragment drops into the module's
+ * existing string-built queries without renumbering their $n parameters.
+ */
+export function teamSql(alias, actorEmpId, { departmentHeads = true } = {}) {
+  const me = toInt(actorEmpId);
+  if (me == null) return 'FALSE';
+  const a = alias;
+  return `(
+      ${a}.reporting_manager_id = ${me}
+      OR EXISTS (SELECT 1 FROM org_relationships t_o WHERE t_o.employee_id = ${a}.id AND t_o.manager_id = ${me})
+      OR EXISTS (SELECT 1 FROM attendance_approval_delegations t_d
+                  WHERE t_d.delegate_id = ${me} AND t_d.is_active = TRUE
+                    AND CURRENT_DATE BETWEEN t_d.from_date AND t_d.to_date
+                    AND (${a}.reporting_manager_id = t_d.delegator_id
+                         OR EXISTS (SELECT 1 FROM org_relationships t_o2
+                                     WHERE t_o2.employee_id = ${a}.id AND t_o2.manager_id = t_d.delegator_id)))${departmentHeads ? `
+      OR EXISTS (SELECT 1 FROM department_heads t_dh JOIN master_departments t_md ON t_md.id = t_dh.department_id
+                  WHERE t_dh.head_employee_id = ${me} AND t_dh.ended_at IS NULL
+                    AND LOWER(TRIM(t_md.name)) = LOWER(TRIM(${a}.department)))` : ''}
+    )`;
+}
+
+/**
+ * The extra WHERE text that limits an attendance read to what the caller may
+ * see: '' for HR/admin, ` AND (own record OR team)` for anyone else, and null
+ * when the login is not linked to an employee (nothing to scope to → deny).
+ */
+export function attendanceViewClause(req, alias = 'e') {
+  if (isAttendanceAdmin(req)) return '';
+  const me = toInt(req.user?.employee_id);
+  if (me == null) return null;
+  return ` AND (${alias}.id = ${me} OR ${teamSql(alias, me)})`;
+}
+
+const NOT_LINKED = {
+  error: 'Forbidden',
+  code: 'EMPLOYEE_LINK_REQUIRED',
+  message: 'Your login is not linked to an employee record. Ask HR to link it.',
+};
+
+/** May the caller see this one employee's attendance? null when yes. */
+export async function assertCanViewEmployee(pool, req, employeeId) {
+  if (!req.user) return { status: 401, body: { error: 'Unauthorized' } };
+  if (isAttendanceAdmin(req)) return null;
+  const me = toInt(req.user?.employee_id);
+  if (me == null) return { status: 403, body: NOT_LINKED };
+  const target = toInt(employeeId);
+  if (target == null) return { status: 400, body: { error: 'Invalid employee id' } };
+  if (target === me) return null;
+  const { rows } = await pool.query(
+    `SELECT 1 FROM employees e WHERE e.id = $1 AND ${teamSql('e', me)} LIMIT 1`, [target],
+  ).catch(() => ({ rows: [] }));
+  if (rows.length) return null;
+  return { status: 403, body: {
+    error: 'Forbidden', code: 'NOT_YOUR_TEAM',
+    message: 'You can only see your own attendance and your team’s.',
+  } };
+}
+
+/** Does the caller manage anyone (directly or by delegation)? */
+export async function hasDecisionTeam(pool, req) {
+  const me = toInt(req.user?.employee_id);
+  if (me == null) return false;
+  const { rows } = await pool.query(
+    `SELECT 1 FROM employees e
+      WHERE e.deleted_at IS NULL AND ${teamSql('e', me, { departmentHeads: false })}
+      LIMIT 1`,
+  ).catch(() => ({ rows: [] }));
+  return rows.length > 0;
+}
+
+/**
+ * Approve / reject gate. HR, admin and the manager roles pass as before; so
+ * does anyone who is a reporting manager or an active delegate, whatever their
+ * login role. Each decision route still calls assertCanDecideFor() for the
+ * specific employee, so passing this gate never widens WHOSE requests one can
+ * decide.
+ */
+export function makeRequireAttendanceApprover(pool) {
+  return async (req, res, next) => {
+    if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+    if (isAttendanceApprover(req) || await hasDecisionTeam(pool, req)) return next();
+    return res.status(403).json({
+      error: 'Forbidden', code: 'ATTENDANCE_ROLE_REQUIRED',
+      message: 'Only HR, administrators and reporting managers can approve or reject attendance requests.',
+    });
+  };
+}
 
 /**
  * May this caller decide an attendance request belonging to `employeeId`?
@@ -99,6 +204,16 @@ export const requireAttendanceOperator = gate(
  */
 export async function assertCanDecideFor(pool, req, employeeId, companyId, delegationType) {
   if (!req.user) return { status: 401, body: { error: 'Unauthorized' } };
+  // Never one's own request (admin / super_admin excepted, as on the
+  // regularization and shift routes). Overtime had no such check, and once a
+  // delegation counts, a delegate could otherwise approve their own overtime.
+  if (req.user?.employee_id != null && String(req.user.employee_id) === String(employeeId)
+      && !hasRole(req, 'admin', 'super_admin')) {
+    return { status: 403, body: {
+      error: 'Forbidden', code: 'SELF_APPROVAL',
+      message: 'You cannot decide your own attendance request.',
+    } };
+  }
   if (hasRole(req, 'hr', 'hr_manager', 'admin', 'super_admin')) return null;
 
   const actorEmpId = req.user?.employee_id ?? null;
@@ -110,13 +225,20 @@ export async function assertCanDecideFor(pool, req, employeeId, companyId, deleg
     } };
   }
 
+  // §278.2: the reporting line is read from employees.reporting_manager_id as
+  // well as org_relationships — the same two sources Team Attendance uses.
   const { rows } = await pool.query(
     `SELECT 1 FROM org_relationships
       WHERE employee_id = $1 AND manager_id = $2
       UNION
+     SELECT 1 FROM employees WHERE id = $1 AND reporting_manager_id = $2
+      UNION
      SELECT 1 FROM attendance_approval_delegations d
-       JOIN org_relationships org ON org.employee_id = $1 AND org.manager_id = d.delegator_id
+       JOIN employees emp ON emp.id = $1
       WHERE d.delegate_id = $2
+        AND (emp.reporting_manager_id = d.delegator_id
+             OR EXISTS (SELECT 1 FROM org_relationships org
+                         WHERE org.employee_id = $1 AND org.manager_id = d.delegator_id))
         AND d.delegation_type IN ($4, 'all')
         AND d.is_active = TRUE
         AND CURRENT_DATE BETWEEN d.from_date AND d.to_date

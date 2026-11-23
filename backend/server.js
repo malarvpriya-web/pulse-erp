@@ -314,6 +314,7 @@ import { startProcurementAlertsCron } from "./src/jobs/procurementAlerts.cron.js
 import { startPlanningRecalcCron } from "./src/jobs/planningRecalc.cron.js";
 import { startDepartmentDigestCron } from "./src/jobs/departmentDigest.cron.js";
 import { startDeviceSyncCron } from "./src/jobs/deviceSync.cron.js";
+import { startAttendanceReminderCrons } from "./src/jobs/attendanceReminders.cron.js"; // §278.3 punch reminders + team summary
 import './src/jobs/attendance.cron.js';
 import './src/jobs/leave.cron.js';
 import { logFeatureFlags } from "./src/config/featureFlags.js";
@@ -1196,6 +1197,7 @@ startCandidateRecontactCron();
     startDeviceSyncCron();
     startAnomalyDetectionCron();
     startQuotationExpiryCron();
+    startAttendanceReminderCrons();
     startCrmFollowupCron();
     startTenderDeadlineCron();
     startCampaignLifecycleCron();

@@ -10,18 +10,64 @@ import { loadPunchProfile, assertCanSelfPunch, describePunchMode } from '../../.
 import { parseTimeToMins, calcLateAndStatus, resolveEmployeeShift } from '../../../shared/shiftResolve.js';
 import {
   requireAttendanceAdmin,
-  requireAttendanceApprover,
+  makeRequireAttendanceApprover,
   requireAttendanceOperator,
   isAttendanceAdmin,
   isAttendanceOperator,
   assertSelfOrPrivileged,
   assertCanDecideFor,
+  assertCanViewEmployee,
+  attendanceViewClause,
+  teamSql,
 } from '../attendance.authz.js';
 import { captureBefore } from '../../../middlewares/captureBefore.js';
 import { toCsv } from '../../../shared/csv.js';
 import { companyOf } from '../../../shared/scope.js';
+import { normaliseRules, computePenalties, describeRule, loadPenaltyRules } from '../../../shared/attendancePenalties.js';
+import { teamMonthlySummary } from '../../../shared/attendanceTeamSummary.js';
+import { isCompOffEligible } from '../../../shared/compOff.js';
 
 const router = express.Router();
+
+// §278.2: reporting managers approve their team whatever their login role.
+const requireAttendanceApprover = makeRequireAttendanceApprover(pool);
+
+// §278.2: every attendance read is limited to the caller's own record and
+// their team unless they are HR/admin. Returns the extra WHERE text for an
+// employees alias, or null after sending 403 (login not linked).
+function viewFilter(req, res, alias = 'e') {
+  const clause = attendanceViewClause(req, alias);
+  if (clause === null) {
+    res.status(403).json({ error: 'Forbidden', code: 'EMPLOYEE_LINK_REQUIRED',
+      message: 'Your login is not linked to an employee record. Ask HR to link it.' });
+  }
+  return clause;
+}
+
+// HR / admin only — company-wide records with no per-employee meaning to scope.
+function adminOnly(req, res) {
+  if (isAttendanceAdmin(req)) return true;
+  res.status(403).json({ error: 'Forbidden', code: 'ATTENDANCE_ROLE_REQUIRED',
+    message: 'Only HR and administrators can see this.' });
+  return false;
+}
+
+// Request lists (regularization, shift change): own requests plus those of
+// the people the caller decides for — direct reports and delegations — read
+// from the reporting line, not the login role (a reporting manager holding
+// only `employee` used to see none of their team's requests). `ownCol` is the
+// request's employee column. Callers have already checked employee_id != null.
+function requestScopeSql(req, ownCol, alias = 'e') {
+  const me = Number.parseInt(req.user?.employee_id, 10);
+  return ` AND (${ownCol} = ${me} OR ${teamSql(alias, me, { departmentHeads: false })})`;
+}
+
+// One employee's records: self, their manager / department head / delegate, or HR.
+async function canView(req, res, employeeId) {
+  const denied = await assertCanViewEmployee(pool, req, employeeId);
+  if (denied) { res.status(denied.status).json(denied.body); return false; }
+  return true;
+}
 
 function scopeCompanyId(req) {
   return req.scope?.company_id ?? null;
@@ -155,7 +201,10 @@ router.get('/live-dashboard', async (req, res) => {
       return res.status(400).json({ error: 'date must be YYYY-MM-DD and not in the future' });
     }
     const today     = qd || nowDay;
-    const cidClause = companyId != null ? `AND e.company_id = ${parseInt(companyId)}` : '';
+    // §278.2: HR/admin see everyone; a manager / department head their team;
+    // anyone else only themselves.
+    const viewClause = viewFilter(req, res); if (viewClause === null) return;
+    const cidClause = (companyId != null ? `AND e.company_id = ${parseInt(companyId)}` : '') + viewClause;
     // Dashboard filter bar: ?department only. This is a LIVE view of today's
     // presence — a date range would contradict what the page is, so it renders
     // with showPeriod={false}.
@@ -184,7 +233,7 @@ router.get('/live-dashboard', async (req, res) => {
     let presenceResult = await presenceQuery(cidClause);
     if (parseInt(presenceResult.rows[0]?.total_employees || 0) === 0 && companyId != null) {
       // Employees may not have company_id set — fall back to unscoped count
-      const fallback = await presenceQuery('').catch(() => null);
+      const fallback = await presenceQuery(viewClause).catch(() => null);
       if (fallback && parseInt(fallback.rows[0]?.total_employees || 0) > 0) {
         presenceResult = fallback;
       }
@@ -204,7 +253,7 @@ router.get('/live-dashboard', async (req, res) => {
         LEFT JOIN attendance_records ar
           ON ar.employee_id = sa.employee_id AND ar.attendance_date = $1 AND ar.deleted_at IS NULL
         WHERE s.deleted_at IS NULL
-          ${companyId != null ? `AND EXISTS (SELECT 1 FROM employees e WHERE e.id = sa.employee_id AND e.company_id = ${parseInt(companyId)})` : ''}
+          ${(companyId != null || viewClause) ? `AND EXISTS (SELECT 1 FROM employees e WHERE e.id = sa.employee_id ${companyId != null ? `AND e.company_id = ${parseInt(companyId)}` : ''}${viewClause})` : ''}
         GROUP BY s.id, s.name, s.start_time, s.end_time
         ORDER BY s.start_time
         LIMIT 10
@@ -296,6 +345,9 @@ router.get('/live-dashboard', async (req, res) => {
       field_engineers: fieldEngineers.rows,
       latest_punches:  latestPunches.rows,
       is_weekly_off:   isWeekendToday,
+      // §278.4: Settings → Late arrival → late bands ("above 10 / 15 / 30 min");
+      // the page groups people[].late_minutes by these.
+      late_bands:      settingsResponse(await getAttendanceSettingsRow(companyId)).late_bands,
       is_today:        today === nowDay,
       people:          people.map((r) => ({ ...r, today_status: isWeekendToday && r.today_status === 'not_punched' ? 'weekly_off' : r.today_status })),
     });
@@ -405,6 +457,7 @@ router.post('/bulk-mark', requireAttendanceOperator, async (req, res) => {
 
 router.get('/employee/:employee_id', async (req, res) => {
   try {
+    if (!(await canView(req, res, req.params.employee_id))) return;
     const companyId = scopeCompanyId(req);
     const { month, year } = req.query;
     if (month && year) {
@@ -425,8 +478,9 @@ router.get('/employee/:employee_id', async (req, res) => {
 router.get('/date/:date', async (req, res) => {
   try {
     const companyId = scopeCompanyId(req);
+    const viewClause = viewFilter(req, res); if (viewClause === null) return;
     const records = await attendanceRepository.findByDate(
-      req.params.date, { ...req.query, company_id: companyId }
+      req.params.date, { ...req.query, company_id: companyId, __viewClause: viewClause }
     );
     res.json(records);
   } catch (err) {
@@ -436,6 +490,7 @@ router.get('/date/:date', async (req, res) => {
 
 router.get('/summary/:employee_id', async (req, res) => {
   try {
+    if (!(await canView(req, res, req.params.employee_id))) return;
     const companyId = scopeCompanyId(req);
     const { month, year } = req.query;
     const summary = await attendanceRepository.getEmployeeSummary(
@@ -506,6 +561,7 @@ router.get('/punch-mode', async (req, res) => {
 
 router.get('/today/:employee_id', async (req, res) => {
   try {
+    if (!(await canView(req, res, req.params.employee_id))) return;
     const data = await attendanceRepository.getTodayStatus(req.params.employee_id, scopeCompanyId(req));
     res.json(data);
   } catch (err) {
@@ -852,7 +908,8 @@ router.post('/clock', clockRateLimit, async (req, res) => {
           const { compOffEnabled } = await getAttendanceSwitches(companyId);
           const weekendDaysComp = await getWeekendDays(companyId);
           const isWeekend2 = dayIsWeekend(today, weekendDaysComp);
-          if (compOffEnabled && !isWeekend2) {
+          // §278.4: only employees chosen for comp off (Settings → Comp off).
+          if (compOffEnabled && !isWeekend2 && await isCompOffEligible(pool, employee_id)) {
             const hQ = await pool.query(
               `SELECT id FROM holidays WHERE date=$1::date AND (company_id=$2 OR company_id IS NULL) LIMIT 1`,
               [today, companyId]
@@ -921,8 +978,11 @@ router.post('/clock', clockRateLimit, async (req, res) => {
       // Detect early exit
       try {
         const { shift: coShift2 } = await resolveEmployeeShift(employee_id, today);
-        if (coShift2 && coShift2.end_time) {
-          const scheduledEndMins = parseTimeToMins(coShift2.end_time);
+        // §278.4: field staff with no shift assigned are measured against the
+        // default end time in Settings, as machine punches are.
+        const endTime = coShift2?.end_time || (await getAttendanceSettingsRow(companyId))?.work_end_time;
+        if (endTime && !coShift2?.is_night_shift) {
+          const scheduledEndMins = parseTimeToMins(endTime);
           const actualCheckoutMins = parseTimeToMins(time);
           if (scheduledEndMins && actualCheckoutMins && actualCheckoutMins < scheduledEndMins) {
             const earlyMins = scheduledEndMins - actualCheckoutMins;
@@ -995,6 +1055,7 @@ router.post('/break/end', async (req, res) => {
 
 router.get('/breaks/:employee_id', async (req, res) => {
   try {
+    if (!(await canView(req, res, req.params.employee_id))) return;
     const { date } = req.query;
     const targetDate = date || new Date().toISOString().slice(0, 10);
     const result = await pool.query(`
@@ -1019,19 +1080,22 @@ router.get('/overtime/stats', async (req, res) => {
     const companyId = scopeCompanyId(req);
     const m = parseInt(req.query.month) || new Date().getMonth() + 1;
     const y = parseInt(req.query.year)  || new Date().getFullYear();
+    const viewClause = viewFilter(req, res); if (viewClause === null) return;
     const { rows } = await pool.query(`
       SELECT
-        COUNT(*) FILTER (WHERE status = 'pending')                                       AS pending_count,
-        COUNT(*) FILTER (WHERE status IN ('approved','auto_approved'))                   AS approved_count,
-        COUNT(*) FILTER (WHERE status = 'rejected')                                      AS rejected_count,
-        COUNT(*)                                                                          AS total_records,
-        COALESCE(SUM(ot_hours), 0)                                                       AS total_ot_hours,
-        COALESCE(SUM(ot_hours) FILTER (WHERE status IN ('approved','auto_approved')), 0) AS approved_hours,
-        COALESCE(SUM(ot_hours) FILTER (WHERE status = 'pending'), 0)                     AS pending_hours
-      FROM attendance_ot_records
-      WHERE EXTRACT(MONTH FROM attendance_date) = $1
-        AND EXTRACT(YEAR  FROM attendance_date) = $2
-        AND ($3::integer IS NULL OR company_id = $3)
+        COUNT(*) FILTER (WHERE o.status = 'pending')                                         AS pending_count,
+        COUNT(*) FILTER (WHERE o.status IN ('approved','auto_approved'))                     AS approved_count,
+        COUNT(*) FILTER (WHERE o.status = 'rejected')                                        AS rejected_count,
+        COUNT(*)                                                                              AS total_records,
+        COALESCE(SUM(o.ot_hours), 0)                                                         AS total_ot_hours,
+        COALESCE(SUM(o.ot_hours) FILTER (WHERE o.status IN ('approved','auto_approved')), 0) AS approved_hours,
+        COALESCE(SUM(o.ot_hours) FILTER (WHERE o.status = 'pending'), 0)                     AS pending_hours
+      FROM attendance_ot_records o
+      JOIN employees e ON e.id = o.employee_id
+      WHERE EXTRACT(MONTH FROM o.attendance_date) = $1
+        AND EXTRACT(YEAR  FROM o.attendance_date) = $2
+        AND ($3::integer IS NULL OR o.company_id = $3)
+        ${viewClause}
     `, [m, y, companyId]);
     const s = rows[0] || {};
     res.json({
@@ -1109,6 +1173,10 @@ router.get('/overtime', async (req, res) => {
         LEFT JOIN employees a ON a.id = o.approved_by
        WHERE ($1::integer IS NULL OR o.company_id = $1)
     `;
+    // §278.2: this list had no narrowing at all — every employee saw the
+    // company's overtime. HR/admin: all; managers: their team; others: own.
+    const viewClause = viewFilter(req, res); if (viewClause === null) return;
+    q += viewClause;
     const params = [companyId];
     let n = 2;
     if (status)       { q += ` AND o.status = $${n++}`;                  params.push(status); }
@@ -1264,15 +1332,35 @@ router.post('/regularize', async (req, res) => {
     const { employee_id, date, check_in, check_out, reason } = req.body;
     const companyId = scopeCompanyId(req);
 
-    // Ownership: employees may only submit for themselves; privileged roles may submit on behalf
-    const ownership = assertSelfOrPrivileged(req, employee_id);
-    if (ownership) return res.status(ownership.status).json(ownership.body);
+    // §278.3 (owner, 2026-11-19): the EMPLOYEE asks, for their own record —
+    // nobody raises one on someone else's behalf (HR corrects a record
+    // directly with Team Attendance → Edit). The request then goes to the
+    // reporting manager and, after them, HR.
+    if (req.user?.employee_id == null || String(req.user.employee_id) !== String(employee_id)) {
+      return res.status(403).json({ error: 'Forbidden', code: 'NOT_YOUR_RECORD',
+        message: 'Only the employee can ask for an attendance correction, from My Attendance.' });
+    }
 
     if (!employee_id || !YMD.test(String(date || ''))) {
       return res.status(400).json({ error: 'employee_id and date (YYYY-MM-DD) are required' });
     }
-    if (String(date) > new Date().toISOString().slice(0, 10)) {
+    // The business day (process clock pinned to APP_TIMEZONE), not the UTC date.
+    const todayLocal = new Date().toLocaleDateString('en-CA');
+    if (String(date) > todayLocal) {
       return res.status(400).json({ error: 'A regularization can only be raised for a past or current day' });
+    }
+    // Same day only by default (Settings → Regularization → days allowed).
+    const regSettings = await getAttendanceSettingsRow(companyId);
+    const windowDays = Math.max(0, Number(regSettings?.regularization_window_days ?? 0));
+    const earliest = new Date(`${todayLocal}T00:00:00`);
+    earliest.setDate(earliest.getDate() - windowDays);
+    if (String(date) < earliest.toLocaleDateString('en-CA')) {
+      return res.status(400).json({
+        error: 'regularization_window',
+        message: windowDays === 0
+          ? 'A correction must be asked for on the same day.'
+          : `A correction can be asked for up to ${windowDays} day${windowDays === 1 ? '' : 's'} later.`,
+      });
     }
     if (!String(reason || '').trim()) return res.status(400).json({ error: 'Give a reason for the correction' });
     if (!check_in && !check_out) return res.status(400).json({ error: 'Give the correct check-in and/or check-out time' });
@@ -1315,8 +1403,13 @@ router.get('/regularize/quota/:employee_id', async (req, res) => {
   try {
     const ownership = assertSelfOrPrivileged(req, req.params.employee_id);
     if (ownership) return res.status(ownership.status).json(ownership.body);
-    const date = YMD.test(String(req.query.date || '')) ? req.query.date : new Date().toISOString().slice(0, 10);
-    res.json(await regularizationQuota(req.params.employee_id, date, scopeCompanyId(req)));
+    const date = YMD.test(String(req.query.date || '')) ? req.query.date : new Date().toLocaleDateString('en-CA');
+    const s = await getAttendanceSettingsRow(scopeCompanyId(req));
+    res.json({
+      ...(await regularizationQuota(req.params.employee_id, date, scopeCompanyId(req))),
+      // §278.3: how many days back a correction may be asked for (0 = same day).
+      window_days: Math.max(0, Number(s?.regularization_window_days ?? 0)),
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1343,12 +1436,7 @@ router.get('/regularize/stats', async (req, res) => {
           message: 'Your login is not linked to an employee record.',
         });
       }
-      if (hasRole(req, 'manager', 'department_head')) {
-        where += ` AND e.reporting_manager_id = $2`;
-      } else {
-        where += ` AND r.employee_id = $2`;
-      }
-      params.push(actorEmpId);
+      where += requestScopeSql(req, 'r.employee_id');
     }
 
     const result = await pool.query(`
@@ -1417,10 +1505,7 @@ router.get('/regularize/list', async (req, res) => {
           message: 'Your login is not linked to an employee record.',
         });
       }
-      q += hasRole(req, 'manager', 'department_head')
-        ? ` AND e.reporting_manager_id = $${n++}`
-        : ` AND r.employee_id = $${n++}`;
-      params.push(actorEmpId);
+      q += requestScopeSql(req, 'r.employee_id');
     }
     if (department) { q += ` AND e.department = $${n++}`;  params.push(department); }
     if (from)       { q += ` AND r.date >= $${n++}`;       params.push(from); }
@@ -1490,10 +1575,7 @@ router.get('/regularize/pending', async (req, res) => {
           message: 'Your login is not linked to an employee record.',
         });
       }
-      q += hasRole(req, 'manager', 'department_head')
-        ? ` AND e.reporting_manager_id = $${n++}`
-        : ` AND r.employee_id = $${n++}`;
-      params.push(actorEmpId);
+      q += requestScopeSql(req, 'r.employee_id');
     }
     if (department) { q += ` AND e.department = $${n++}`; params.push(department); }
     q += ` ORDER BY r.created_at DESC LIMIT 100`;
@@ -1897,6 +1979,7 @@ router.delete('/geo-rules/:id', requireAttendanceAdmin, captureBefore('attendanc
 // Heatmap — per-employee attendance matrix for a month
 router.get('/analytics/heatmap', async (req, res) => {
   try {
+    const viewClause = viewFilter(req, res); if (viewClause === null) return;
     const companyId = scopeCompanyId(req);
     const { month, year, department } = req.query;
     const m = parseInt(month) || new Date().getMonth() + 1;
@@ -1904,7 +1987,7 @@ router.get('/analytics/heatmap', async (req, res) => {
     const pad2 = n => String(n).padStart(2, '0');
     const startDate = `${y}-${pad2(m)}-01`;
     const endDate   = `${y}-${pad2(m)}-${new Date(y, m, 0).getDate()}`;
-    const cidClause = companyId != null ? `AND e.company_id = ${parseInt(companyId)}` : '';
+    const cidClause = (companyId != null ? `AND e.company_id = ${parseInt(companyId)}` : '') + viewClause;
     const deptClause = department ? `AND e.department = '${department.replace(/'/g,"''")}'` : '';
 
     const { rows } = await pool.query(`
@@ -1945,6 +2028,7 @@ router.get('/analytics/heatmap', async (req, res) => {
 // rate; late and half-day count as attended (shared/statusSets.js).
 router.get('/analytics/absenteeism', async (req, res) => {
   try {
+    const viewClause = viewFilter(req, res); if (viewClause === null) return;
     const companyId = scopeCompanyId(req);
     const department = dimension(req.query, 'department');
     const now = new Date();
@@ -1973,7 +2057,7 @@ router.get('/analytics/absenteeism', async (req, res) => {
           JOIN employees e ON e.id = ar.employee_id
          WHERE ar.attendance_date >= $1::date AND ar.attendance_date < ($2::date + INTERVAL '1 month')
            AND ar.deleted_at IS NULL
-           AND ($3::int IS NULL OR e.company_id = $3)
+           AND ($3::int IS NULL OR e.company_id = $3) ${viewClause}
            AND ($4::text IS NULL OR e.department = $4)
       )
       SELECT EXTRACT(YEAR FROM mo.m)::int AS year, EXTRACT(MONTH FROM mo.m)::int AS month,
@@ -2004,6 +2088,7 @@ router.get('/analytics/absenteeism', async (req, res) => {
 // Department absenteeism breakdown — with prev-month delta and department filter
 router.get('/analytics/department-absenteeism', async (req, res) => {
   try {
+    const viewClause = viewFilter(req, res); if (viewClause === null) return;
     const companyId = scopeCompanyId(req);
     const { month, year, department } = req.query;
     const m      = parseInt(month) || new Date().getMonth() + 1;
@@ -2033,7 +2118,7 @@ router.get('/analytics/department-absenteeism', async (req, res) => {
           AND ar.deleted_at IS NULL
         WHERE e.deleted_at IS NULL
           AND LOWER(e.status) IN ('active','probation','notice')
-          AND ($3::integer IS NULL OR e.company_id = $3)
+          AND ($3::integer IS NULL OR e.company_id = $3) ${viewClause}
           AND ($6::text IS NULL OR e.department = $6)
         GROUP BY e.department
       ),
@@ -2052,7 +2137,7 @@ router.get('/analytics/department-absenteeism', async (req, res) => {
           AND ar.deleted_at IS NULL
         WHERE e.deleted_at IS NULL
           AND LOWER(e.status) IN ('active','probation','notice')
-          AND ($3::integer IS NULL OR e.company_id = $3)
+          AND ($3::integer IS NULL OR e.company_id = $3) ${viewClause}
           AND ($6::text IS NULL OR e.department = $6)
         GROUP BY e.department
       )
@@ -2075,6 +2160,7 @@ router.get('/analytics/department-absenteeism', async (req, res) => {
 // company used to read every tenant's.
 router.get('/analytics/overtime-cost', async (req, res) => {
   try {
+    const viewClause = viewFilter(req, res); if (viewClause === null) return;
     const companyId = scopeCompanyId(req);
     if (companyId == null && !req.scope?.isGlobal) return res.status(403).json({ error: 'No company context for this login' });
     const { month, year } = req.query;
@@ -2108,7 +2194,7 @@ router.get('/analytics/overtime-cost', async (req, res) => {
       JOIN employees e ON e.id = o.employee_id
       WHERE EXTRACT(MONTH FROM o.attendance_date) = $1
         AND EXTRACT(YEAR  FROM o.attendance_date) = $2
-        AND ($3::integer IS NULL OR o.company_id = $3)
+        AND ($3::integer IS NULL OR o.company_id = $3) ${viewClause}
       GROUP BY e.department
       ORDER BY total_ot_hours DESC
     `, [m, y, companyId]).catch(() => ({ rows: [] }));
@@ -2122,11 +2208,12 @@ router.get('/analytics/overtime-cost', async (req, res) => {
 // Shift efficiency
 router.get('/analytics/shift-efficiency', async (req, res) => {
   try {
+    const viewClause = viewFilter(req, res); if (viewClause === null) return;
     const companyId = scopeCompanyId(req);
     const { month, year } = req.query;
     const m = parseInt(month) || new Date().getMonth() + 1;
     const y = parseInt(year)  || new Date().getFullYear();
-    const cidClause = companyId != null ? `AND e.company_id = ${parseInt(companyId)}` : '';
+    const cidClause = (companyId != null ? `AND e.company_id = ${parseInt(companyId)}` : '') + viewClause;
 
     const { rows } = await pool.query(`
       SELECT
@@ -2186,6 +2273,7 @@ router.get('/analytics/departments', async (req, res) => {
 // Top absentees for the selected month
 router.get('/analytics/top-absentees', async (req, res) => {
   try {
+    const viewClause = viewFilter(req, res); if (viewClause === null) return;
     const companyId = scopeCompanyId(req);
     const { month, year, department, limit } = req.query;
     const m   = parseInt(month) || new Date().getMonth() + 1;
@@ -2216,7 +2304,7 @@ router.get('/analytics/top-absentees', async (req, res) => {
         AND ar.deleted_at IS NULL
       WHERE e.deleted_at IS NULL
         AND LOWER(e.status) IN ('active','probation','notice')
-        AND ($3::integer IS NULL OR e.company_id = $3)
+        AND ($3::integer IS NULL OR e.company_id = $3) ${viewClause}
         ${deptClause}
       GROUP BY e.id, e.name, e.first_name, e.last_name, e.department, e.designation
       HAVING COUNT(*) FILTER (WHERE ar.status = 'absent') > 0
@@ -2232,6 +2320,7 @@ router.get('/analytics/top-absentees', async (req, res) => {
 // Perfect attendance — employees with zero absences in the selected month (min 10 days tracked)
 router.get('/analytics/perfect-attendance', async (req, res) => {
   try {
+    const viewClause = viewFilter(req, res); if (viewClause === null) return;
     const companyId = scopeCompanyId(req);
     const { month, year, department } = req.query;
     const m = parseInt(month) || new Date().getMonth() + 1;
@@ -2256,7 +2345,7 @@ router.get('/analytics/perfect-attendance', async (req, res) => {
         AND ar.deleted_at IS NULL
       WHERE e.deleted_at IS NULL
         AND LOWER(e.status) IN ('active','probation','notice')
-        AND ($3::integer IS NULL OR e.company_id = $3)
+        AND ($3::integer IS NULL OR e.company_id = $3) ${viewClause}
         ${deptClause}
       GROUP BY e.id, e.name, e.first_name, e.last_name, e.department, e.designation
       HAVING COUNT(*) FILTER (WHERE ar.status = 'absent') = 0
@@ -2273,6 +2362,7 @@ router.get('/analytics/perfect-attendance', async (req, res) => {
 // Leave vs Attendance Reconciliation — GET /attendance/reports/leave-reconciliation
 router.get('/reports/leave-reconciliation', async (req, res) => {
   try {
+    const viewClause = viewFilter(req, res); if (viewClause === null) return;
     const companyId = scopeCompanyId(req);
     const m = parseInt(req.query.month) || new Date().getMonth() + 1;
     const y = parseInt(req.query.year)  || new Date().getFullYear();
@@ -2291,7 +2381,7 @@ router.get('/reports/leave-reconciliation', async (req, res) => {
       FROM attendance_records ar
       JOIN employees e ON e.id = ar.employee_id
       WHERE ar.status = 'absent'
-        AND ($1::integer IS NULL OR ar.company_id = $1)
+        AND ($1::integer IS NULL OR ar.company_id = $1) ${viewClause}
         AND EXTRACT(MONTH FROM ar.attendance_date) = $2
         AND EXTRACT(YEAR  FROM ar.attendance_date) = $3
         AND ($4::text IS NULL OR e.department = $4)
@@ -2324,7 +2414,7 @@ router.get('/reports/leave-reconciliation', async (req, res) => {
        AND ar.attendance_date BETWEEN la.start_date AND la.end_date
       LEFT JOIN leave_types lt ON lt.id = la.leave_type_id
       WHERE ar.status IN ('present','half_day','late')
-        AND ($1::integer IS NULL OR ar.company_id = $1)
+        AND ($1::integer IS NULL OR ar.company_id = $1) ${viewClause}
         AND EXTRACT(MONTH FROM ar.attendance_date) = $2
         AND EXTRACT(YEAR  FROM ar.attendance_date) = $3
         AND ($4::text IS NULL OR e.department = $4)
@@ -2351,11 +2441,14 @@ router.get('/reports/leave-reconciliation', async (req, res) => {
 // Early Exit Report — GET /attendance/reports/early-exit
 router.get('/reports/early-exit', async (req, res) => {
   try {
+    const viewClause = viewFilter(req, res); if (viewClause === null) return;
     const companyId = scopeCompanyId(req);
     const m = parseInt(req.query.month) || new Date().getMonth() + 1;
     const y = parseInt(req.query.year)  || new Date().getFullYear();
     const department = req.query.department || null;
-    const minEarlyMins = parseInt(req.query.min_early_minutes) || 15;
+    // §278.5: the cut-off is Settings → Late arrival → "early exit counts from".
+    const minEarlyMins = parseInt(req.query.min_early_minutes)
+      || Number((await getAttendanceSettingsRow(scopeCompanyId(req)))?.early_exit_minutes) || 15;
 
     const { rows } = await pool.query(`
       SELECT
@@ -2379,7 +2472,7 @@ router.get('/reports/early-exit', async (req, res) => {
       JOIN hr_shifts s ON s.id = best.shift_id
       WHERE ar.check_out_time IS NOT NULL
         AND s.end_time IS NOT NULL
-        AND ($1::integer IS NULL OR ar.company_id = $1)
+        AND ($1::integer IS NULL OR ar.company_id = $1) ${viewClause}
         AND EXTRACT(MONTH FROM ar.attendance_date) = $2
         AND EXTRACT(YEAR  FROM ar.attendance_date) = $3
         AND ($4::text IS NULL OR e.department = $4)
@@ -2425,6 +2518,7 @@ router.get('/reports/early-exit', async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/audit-logs', async (req, res) => {
   try {
+    const viewClause = viewFilter(req, res); if (viewClause === null) return;
     const companyId = scopeCompanyId(req);
     const { action, employee_id, from_date, to_date } = req.query;
     let q = `
@@ -2434,7 +2528,7 @@ router.get('/audit-logs', async (req, res) => {
         FROM attendance_audit_logs al
         LEFT JOIN employees e ON e.id = al.employee_id
         LEFT JOIN employees p ON p.id = al.performed_by
-       WHERE ($1::integer IS NULL OR al.company_id = $1)
+       WHERE ($1::integer IS NULL OR al.company_id = $1) ${viewClause}
     `;
     const params = [companyId];
     let n = 2;
@@ -2608,6 +2702,11 @@ router.post('/payroll-sync', requireAttendanceAdmin, async (req, res) => {
       GROUP BY e.id, e.joining_date, e.exit_date
     `, [startDate, endDate]);
 
+    // Late-coming penalties (§278.3, Settings → Late-coming penalties): extra
+    // loss-of-pay days for the month so far, per the company's rules.
+    const penalties = await computePenalties(companyId, empStats.map((r) => r.employee_id),
+      startDate, [endDate, todayIso].sort()[0]);
+
     // Step 5 — upsert payroll_attendance_summary + patch pending payroll_runs
     const lopSummary = [];
     for (const row of empStats) {
@@ -2627,7 +2726,8 @@ router.post('/payroll-sync', requireAttendanceAdmin, async (req, res) => {
       const empWorkingDays = fFrom > fTo ? 0 : countWorking(fFrom, fTo);
       const [cFrom, cTo] = clip(startDate, countedTo, row.joining_date, row.exit_date);
       const counted = await lopInRange(row.employee_id, cFrom, cTo);
-      const lopDays = counted.lop;
+      const pen = penalties.get(Number(row.employee_id)) || { days: 0, lines: [] };
+      const lopDays = counted.lop + pen.days;
       const approvedLeaveDays = counted.leave;
 
       // Last month: days after the day its sync counted (e.g. after a cutoff on
@@ -2661,25 +2761,28 @@ router.post('/payroll-sync', requireAttendanceAdmin, async (req, res) => {
       // NOT patched here: a figure changed without recomputing the money made a
       // draft show 5 LOP days while still paying the full month. Payroll's release
       // check finds drafts that no longer match and asks for a regenerate.
-      lopSummary.push({ employee_id: row.employee_id, lop_days: lopDays, carried_lop_days: carriedLop, counted_to: countedTo });
+      lopSummary.push({ employee_id: row.employee_id, lop_days: lopDays, penalty_lop_days: pen.days, carried_lop_days: carriedLop, counted_to: countedTo });
 
       await pool.query(`
         INSERT INTO payroll_attendance_summary
           (company_id, employee_id, month, year, working_days, present_days,
            absent_days, late_count, ot_hours, lop_days, wfh_days, half_days,
-           leave_days, synced_by, night_shift_days, counted_to, carried_lop_days, carried_base_days, synced_at)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,NOW())
+           leave_days, synced_by, night_shift_days, counted_to, carried_lop_days, carried_base_days,
+           penalty_lop_days, penalty_detail, synced_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20::jsonb,NOW())
         ON CONFLICT (employee_id, month, year)
         DO UPDATE SET
           working_days = $5,  present_days = $6,  absent_days = $7,
           late_count   = $8,  ot_hours     = $9,  lop_days    = $10,
           wfh_days     = $11, half_days    = $12, leave_days  = $13,
           synced_by    = $14, night_shift_days = $15, counted_to = $16,
-          carried_lop_days = $17, carried_base_days = $18, synced_at = NOW()
+          carried_lop_days = $17, carried_base_days = $18,
+          penalty_lop_days = $19, penalty_detail = $20::jsonb, synced_at = NOW()
       `, [companyId, row.employee_id, m, y, empWorkingDays,
           presentDays, absentDays, lateCount, otHours, lopDays,
           wfhDays, halfDays, approvedLeaveDays,
-          req.user?.userId || null, nightShiftDays, countedTo, carriedLop, carriedBase]);
+          req.user?.userId || null, nightShiftDays, countedTo, carriedLop, carriedBase,
+          pen.days, JSON.stringify(pen.lines)]);
 
     }
 
@@ -2748,7 +2851,7 @@ router.get('/sync-status', async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 // 13. SHIFT OCCUPANCY — real-time shift fill rate
 // ─────────────────────────────────────────────────────────────────────────────
-router.get('/shift-occupancy', async (req, res) => {
+router.get('/shift-occupancy', requireAttendanceAdmin, async (req, res) => {  // §278.2: HR / admin only (no page calls it)
   try {
     const companyId = scopeCompanyId(req);
     const { date } = req.query;
@@ -2820,57 +2923,13 @@ router.get('/work-centres', async (req, res) => {
   }
 });
 
-// Create a work centre from the attendance UI
-router.post('/work-centres', requireAttendanceAdmin, async (req, res) => {
-  try {
-    const companyId = scopeCompanyId(req);
-    const { name, capacity_hours_per_day = 8, cost_per_hour = 0, department } = req.body;
-    if (!name || !String(name).trim()) return res.status(400).json({ error: 'Name is required' });
-    const { rows } = await pool.query(
-      `INSERT INTO work_centres (company_id, name, capacity_hours_per_day, cost_per_hour, department)
-       VALUES ($1,$2,$3,$4,$5) RETURNING *`,
-      [companyId, String(name).trim(), capacity_hours_per_day, cost_per_hour, department || null]
-    );
-    res.status(201).json(rows[0]);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// PUT /attendance/work-centres/:id — edit work centre definition
-router.put('/work-centres/:id', requireAttendanceAdmin, captureBefore('work_centres'), async (req, res) => {
-  try {
-    const { name, capacity_hours_per_day, cost_per_hour, department } = req.body;
-    const companyId = scopeCompanyId(req);
-    const { rows } = await pool.query(
-      `UPDATE work_centres SET name=$1, capacity_hours_per_day=$2, cost_per_hour=$3, department=$4, updated_at=NOW()
-        WHERE id=$5 AND (company_id=$6 OR company_id IS NULL) RETURNING *`,
-      [name, capacity_hours_per_day || 8, cost_per_hour || 0, department || null, req.params.id, companyId]
-    ).catch(() => ({ rows: [] }));
-    if (!rows[0]) return res.status(404).json({ error: 'Work centre not found' });
-    res.json(rows[0]);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Soft-delete a work centre
-router.delete('/work-centres/:id', requireAttendanceAdmin, captureBefore('work_centres'), async (req, res) => {
-  try {
-    const companyId = scopeCompanyId(req);
-    await pool.query(
-      `UPDATE work_centres SET status='inactive'
-        WHERE id=$1 AND (company_id=$2 OR company_id IS NULL)`,
-      [req.params.id, companyId]
-    ).catch(() => {});
-    res.json({ ok: true });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+// Work centres are Production's master list (routing, MRP, scheduling read it).
+// Owner, 2026-11-19: Attendance only picks from it — the create / edit / delete
+// routes that lived here are removed; Production → Work Centre Planning
+// (/bom/work-centres) is the one place to change them.
 
 // Attendance logs for a given date
-router.get('/work-centre', async (req, res) => {
+router.get('/work-centre', requireAttendanceOperator, async (req, res) => {  // §278.2: managers / HR only
   try {
     const companyId = scopeCompanyId(req);
     const { date, work_centre_id } = req.query;
@@ -3036,7 +3095,7 @@ router.delete('/work-centre/:id', requireAttendanceAdmin, captureBefore('work_ce
 });
 
 // Work Centre Analytics — GET /attendance/work-centre/analytics
-router.get('/work-centre/analytics', async (req, res) => {
+router.get('/work-centre/analytics', requireAttendanceOperator, async (req, res) => {  // §278.2: managers / HR only
   try {
     const companyId = scopeCompanyId(req);
     const today    = new Date().toISOString().slice(0, 10);
@@ -3150,7 +3209,7 @@ const CL_COMPLIANCE = `(
   AND (cl.safety_cert_expiry IS NULL OR cl.safety_cert_expiry >= CURRENT_DATE)
 )`;
 
-router.get('/contract-labour/stats', async (req, res) => {
+router.get('/contract-labour/stats', requireAttendanceOperator, async (req, res) => {  // §278.2: managers / HR only
   try {
     const companyId = scopeCompanyId(req);
     const { rows } = await pool.query(`
@@ -3174,7 +3233,7 @@ router.get('/contract-labour/stats', async (req, res) => {
   }
 });
 
-router.get('/contract-labour', async (req, res) => {
+router.get('/contract-labour', requireAttendanceOperator, async (req, res) => {  // §278.2: managers / HR only
   try {
     const companyId = scopeCompanyId(req);
     const { status, search } = req.query;
@@ -3322,7 +3381,8 @@ router.get('/departments', async (req, res) => {
 router.get('/late-arrivals/export', async (req, res) => {
   try {
     const companyId = scopeCompanyId(req);
-    const records   = await attendanceRepository.getLateArrivals({ ...req.query, company_id: companyId });
+    const viewClause = viewFilter(req, res); if (viewClause === null) return;
+    const records   = await attendanceRepository.getLateArrivals({ ...req.query, company_id: companyId, __viewClause: viewClause });
 
     const headers = ['Employee', 'Department', 'Date', 'Scheduled In', 'Actual Check-in', 'Delay (mins)', 'Occurrence #'];
     const csvRows = records.map(r => [
@@ -3354,12 +3414,19 @@ router.get('/late-arrivals/warnings', async (req, res) => {
   try {
     const companyId = scopeCompanyId(req);
     const { month, employee_id } = req.query;
+    const viewClause = viewFilter(req, res); if (viewClause === null) return;
     let q = `
       SELECT w.*,
+             -- The warning keeps the name it was issued under; show the
+             -- employee's CURRENT name and department (owner, 2026-11-19:
+             -- a rename must show everywhere).
+             COALESCE(e.name, w.employee_name) AS employee_name,
+             COALESCE(e.department, w.department) AS department,
              COALESCE(i.name, CONCAT(i.first_name,' ',COALESCE(i.last_name,''))) AS issued_by_name
         FROM attendance_late_warnings w
+        JOIN employees e ON e.id = w.employee_id
         LEFT JOIN employees i ON i.id = w.issued_by
-       WHERE ($1::integer IS NULL OR w.company_id = $1)
+       WHERE ($1::integer IS NULL OR w.company_id = $1) ${viewClause}
     `;
     const params = [companyId];
     let n = 2;
@@ -3415,7 +3482,8 @@ router.post('/late-arrivals/warning', requireAttendanceOperator, async (req, res
 router.get('/late-arrivals', async (req, res) => {
   try {
     const companyId  = scopeCompanyId(req);
-    const lateArrivals = await attendanceRepository.getLateArrivals({ ...req.query, company_id: companyId });
+    const viewClause = viewFilter(req, res); if (viewClause === null) return;
+    const lateArrivals = await attendanceRepository.getLateArrivals({ ...req.query, company_id: companyId, __viewClause: viewClause });
     res.json(lateArrivals);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -3424,6 +3492,7 @@ router.get('/late-arrivals', async (req, res) => {
 
 router.get('/monthly-report', async (req, res) => {
   try {
+    const viewClause = viewFilter(req, res); if (viewClause === null) return;
     const companyId  = scopeCompanyId(req);
     const { month, year, department } = req.query;
     const m = parseInt(month) || new Date().getMonth() + 1;
@@ -3443,7 +3512,7 @@ router.get('/monthly-report', async (req, res) => {
     const params = [startDate, endDate];
     let deptClause = '';
     if (department) { deptClause = ` AND e.department = $3`; params.push(department); }
-    const cidClause = companyId != null ? ` AND e.company_id = ${parseInt(companyId)}` : '';
+    const cidClause = (companyId != null ? ` AND e.company_id = ${parseInt(companyId)}` : '') + viewClause;
 
     const { rows } = await pool.query(`
       SELECT
@@ -3510,7 +3579,99 @@ router.get('/monthly-report', async (req, res) => {
       };
     });
 
+    // Late-coming penalty days (§278.3) — what Payroll Sync will add to LOP.
+    const todayDay = new Date().toLocaleDateString('en-CA');
+    const pen = await computePenalties(companyId, records.map((r) => r.employee_id), startDate, [endDate, todayDay].sort()[0]);
+    for (const r of records) {
+      const p = pen.get(Number(r.employee_id));
+      r.penalty_days = p?.days || 0;
+      r.penalty_lines = p?.lines?.map(({ text, occurrences, deduct_days }) => ({ text, occurrences, deduct_days })) || [];
+    }
+
     res.json({ month: m, year: y, working_days: workingDays, start_date: startDate, end_date: endDate, records });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Comp off is given only to chosen employees (§278.4, owner 2026-11-19:
+// production staff, not everyone). GET lists current employees with the
+// choice; PUT { employee_ids } sets exactly those as eligible. HR/admin only.
+router.get('/comp-off-eligibility', requireAttendanceAdmin, async (req, res) => {
+  try {
+    const companyId = scopeCompanyId(req);
+    const { rows } = await pool.query(`
+      SELECT e.id, e.office_id AS emp_code,
+             COALESCE(e.name, CONCAT(e.first_name, ' ', COALESCE(e.last_name, ''))) AS name,
+             e.department, e.designation, e.comp_off_eligible
+        FROM employees e
+       WHERE e.deleted_at IS NULL AND LOWER(e.status) IN ('active','probation','notice')
+         AND ($1::int IS NULL OR e.company_id = $1)
+       ORDER BY e.department NULLS LAST, name`, [companyId]);
+    res.json(rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+router.put('/comp-off-eligibility', requireAttendanceAdmin, async (req, res) => {
+  try {
+    const companyId = scopeCompanyId(req);
+    const ids = Array.isArray(req.body?.employee_ids) ? req.body.employee_ids.map(Number).filter(Number.isFinite) : null;
+    if (!ids) return res.status(400).json({ error: 'employee_ids must be a list' });
+    const { rows: before } = await pool.query(
+      `SELECT id FROM employees WHERE comp_off_eligible = TRUE AND ($1::int IS NULL OR company_id = $1)`, [companyId]);
+    await pool.query(`
+      UPDATE employees SET comp_off_eligible = (id = ANY($2::int[]))
+       WHERE deleted_at IS NULL AND ($1::int IS NULL OR company_id = $1)
+         AND comp_off_eligible IS DISTINCT FROM (id = ANY($2::int[]))`, [companyId, ids]);
+    await writeAuditLog({
+      companyId, action: 'comp_off_eligibility_updated',
+      beforeData: { employee_ids: before.map((r) => r.id) }, afterData: { employee_ids: ids },
+      performedBy: req.user?.userId, req,
+    });
+    res.json({ employee_ids: ids });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /attendance/team-summary?month=&year= — one row per team member for the
+// month: leaves, late (up to 15 / 15–30 / over 30 min), early exits, geo fence,
+// penalty days (§278.3). HR/admin: everyone; a manager / department head:
+// their team (not themselves); anyone else: an empty team.
+router.get('/team-summary', async (req, res) => {
+  try {
+    const now = new Date();
+    const m = parseInt(req.query.month) || now.getMonth() + 1;
+    const y = parseInt(req.query.year) || now.getFullYear();
+    let employeeWhere = '';
+    if (!isAttendanceAdmin(req)) {
+      const me = Number.parseInt(req.user?.employee_id, 10);
+      if (!Number.isFinite(me)) return res.status(403).json({ error: 'Forbidden', code: 'EMPLOYEE_LINK_REQUIRED' });
+      employeeWhere = ` AND e.id <> ${me} AND ${teamSql('e', me)}`;
+    }
+    const department = dimension(req.query, 'department');
+    if (department) employeeWhere += ` AND e.department = '${String(department).replace(/'/g, "''")}'`;
+    res.json(await teamMonthlySummary({ companyId: scopeCompanyId(req), month: m, year: y, employeeWhere }));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /attendance/penalties/:employee_id?month=&year= — the late-coming
+// penalties counted so far this month (§278.3), so the employee sees them
+// before payroll does. Self, their manager / department head, or HR.
+router.get('/penalties/:employee_id', async (req, res) => {
+  try {
+    if (!(await canView(req, res, req.params.employee_id))) return;
+    const companyId = scopeCompanyId(req);
+    const now = new Date();
+    const m = parseInt(req.query.month) || now.getMonth() + 1;
+    const y = parseInt(req.query.year) || now.getFullYear();
+    const pad = (n) => String(n).padStart(2, '0');
+    const from = `${y}-${pad(m)}-01`;
+    const to = [`${y}-${pad(m)}-${pad(new Date(y, m, 0).getDate())}`, now.toLocaleDateString('en-CA')].sort()[0];
+    const empId = Number(req.params.employee_id);
+    const result = (await computePenalties(companyId, [empId], from, to)).get(empId) || { days: 0, lines: [] };
+    const rules = (await loadPenaltyRules(companyId)).filter((r) => r.active !== false).map(describeRule);
+    res.json({ month: m, year: y, penalty_days: result.days, lines: result.lines, rules });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -3610,7 +3771,53 @@ const SETTINGS_FIELDS = {
   regularization_monthly_limit: 'int',
   regularization_needs_hr:      'bool',
   device_settings:              'jsonb',
+  // §278.3 (owner, 2026-11-19)
+  regularization_window_days:   'int',
+  punch_reminder_enabled:       'bool',
+  punch_reminder_minutes:       'int',
+  punch_out_reminder_enabled:   'bool',
+  team_summary_enabled:         'bool',
+  // §278.4
+  late_bands:                   'jsonb',
+  punctuality_bands:            'jsonb',
+  // §278.5
+  leave_rating_bands:           'jsonb',
+  late_warning_count:           'int',
+  early_exit_minutes:           'int',
 };
+
+// Leave rating: days off in the review period at most max_days = rating; the
+// last band (max_days null) is "more than that".
+function cleanLeaveBands(v) {
+  const list = (Array.isArray(v) ? v : [])
+    .map((b) => ({ max_days: b?.max_days === null || b?.max_days === '' ? null : Math.round(Number(b?.max_days)), rating: Math.round(Number(b?.rating)) }));
+  const capped = list.filter((b) => b.max_days != null);
+  if (!list.length || list.length > 10 || list.some((b) => !(b.rating >= 1 && b.rating <= 5))
+      || capped.some((b) => !(b.max_days >= 0 && b.max_days <= 366))) {
+    throw Object.assign(new Error('Each leave band needs days (0–366) and a rating (1–5)'), { status: 400 });
+  }
+  capped.sort((a, b) => a.max_days - b.max_days);
+  const last = list.find((b) => b.max_days == null) || { max_days: null, rating: 1 };
+  return [...capped, last];
+}
+
+// Late bands: 1–5 whole minutes, ascending ("above 10 / 15 / 30 min").
+function cleanLateBands(v) {
+  const list = [...new Set((Array.isArray(v) ? v : []).map((x) => Math.round(Number(x))))]
+    .filter((x) => Number.isFinite(x) && x >= 1 && x <= 240).sort((a, b) => a - b);
+  if (!list.length || list.length > 5) throw Object.assign(new Error('Give 1 to 5 late bands, in minutes (1–240)'), { status: 400 });
+  return list;
+}
+// Punctuality → rating: on time on at least min_pct % of days present = rating.
+function cleanPunctualityBands(v) {
+  const list = (Array.isArray(v) ? v : []).map((b) => ({ min_pct: Math.round(Number(b?.min_pct)), rating: Math.round(Number(b?.rating)) }));
+  if (!list.length || list.length > 10 || list.some((b) => !(b.min_pct >= 0 && b.min_pct <= 100) || !(b.rating >= 1 && b.rating <= 5))) {
+    throw Object.assign(new Error('Each punctuality band needs a % (0–100) and a rating (1–5)'), { status: 400 });
+  }
+  list.sort((a, b) => b.min_pct - a.min_pct);
+  if (list[list.length - 1].min_pct !== 0) list.push({ min_pct: 0, rating: 1 });
+  return list;
+}
 const DEVICE_DEFAULTS = { auto_sync: true, sync_interval_minutes: 15 };
 
 function settingsResponse(row, policies = {}) {
@@ -3631,6 +3838,20 @@ function settingsResponse(row, policies = {}) {
     comp_off_enabled:             r.comp_off_enabled === true,
     regularization_monthly_limit: r.regularization_monthly_limit != null ? Number(r.regularization_monthly_limit) : 3,
     regularization_needs_hr:      r.regularization_needs_hr === true,
+    regularization_window_days:   r.regularization_window_days != null ? Number(r.regularization_window_days) : 0,
+    punch_reminder_enabled:       r.punch_reminder_enabled !== false,
+    punch_reminder_minutes:       r.punch_reminder_minutes != null ? Number(r.punch_reminder_minutes) : 15,
+    punch_out_reminder_enabled:   r.punch_out_reminder_enabled !== false,
+    team_summary_enabled:         r.team_summary_enabled !== false,
+    late_bands:                   Array.isArray(r.late_bands) && r.late_bands.length ? r.late_bands : [10, 15, 30],
+    punctuality_bands:            Array.isArray(r.punctuality_bands) && r.punctuality_bands.length ? r.punctuality_bands
+      : [{ min_pct: 95, rating: 5 }, { min_pct: 90, rating: 4 }, { min_pct: 80, rating: 3 }, { min_pct: 70, rating: 2 }, { min_pct: 0, rating: 1 }],
+    leave_rating_bands:           Array.isArray(r.leave_rating_bands) && r.leave_rating_bands.length ? r.leave_rating_bands
+      : [{ max_days: 6, rating: 5 }, { max_days: 12, rating: 4 }, { max_days: 18, rating: 3 }, { max_days: 24, rating: 2 }, { max_days: null, rating: 1 }],
+    late_warning_count:           r.late_warning_count != null ? Number(r.late_warning_count) : 3,
+    early_exit_minutes:           r.early_exit_minutes != null ? Number(r.early_exit_minutes) : 15,
+    // Late-coming penalty rules (attendance_policies 'penalty'), §278.3.
+    penalty_rules:                Array.isArray(policies.penalty?.rules) ? policies.penalty.rules : [],
     device_settings:              { ...DEVICE_DEFAULTS, ...(r.device_settings || {}) },
     // Late rules and overtime rules live in attendance_policies (the engine reads them there).
     grace_minutes:                Number(policies.late?.grace_minutes ?? 10),
@@ -3648,7 +3869,7 @@ function settingsResponse(row, policies = {}) {
 async function loadPolicies(companyId) {
   const { rows } = await pool.query(`
     SELECT DISTINCT ON (policy_type) policy_type, rules FROM attendance_policies
-     WHERE is_active = true AND policy_type IN ('late', 'clock_window', 'overtime')
+     WHERE is_active = true AND policy_type IN ('late', 'clock_window', 'overtime', 'penalty')
        AND (company_id = $1 OR company_id IS NULL)
      ORDER BY policy_type, company_id DESC NULLS LAST, id`, [companyId ?? null]).catch(() => ({ rows: [] }));
   return Object.fromEntries(rows.map((r) => [r.policy_type, r.rules || {}]));
@@ -3688,6 +3909,15 @@ async function saveAttendanceSettings(companyId, body, userId) {
       sets.push(`weekend_days = $${vals.length}::jsonb`);
     }
     if (k === 'device_settings') v = { ...DEVICE_DEFAULTS, ...(v || {}) };
+    if (k === 'late_bands') v = cleanLateBands(v);
+    if (k === 'punctuality_bands') v = cleanPunctualityBands(v);
+    if (k === 'leave_rating_bands') v = cleanLeaveBands(v);
+    if (k === 'late_warning_count' && !(Number(v) >= 1 && Number(v) <= 31)) {
+      throw Object.assign(new Error('Late warning after: 1 to 31 late arrivals'), { status: 400 });
+    }
+    if (k === 'early_exit_minutes' && !(Number(v) >= 1 && Number(v) <= 240)) {
+      throw Object.assign(new Error('Early exit counts from: 1 to 240 minutes'), { status: 400 });
+    }
     if (kind === 'num' || kind === 'int') {
       v = Number(v);
       if (!Number.isFinite(v) || v < 0) throw Object.assign(new Error(`${k} must be a number`), { status: 400 });
@@ -3743,6 +3973,10 @@ async function saveAttendanceSettings(companyId, body, userId) {
   await savePolicyRules(companyId, 'late', 'Late arrival rules', late, userId);
   await savePolicyRules(companyId, 'clock_window', 'Clock-in window', win, userId);
   await savePolicyRules(companyId, 'overtime', 'Overtime rules', ot, userId);
+  // Late-coming penalties (§278.3): the whole list is replaced on save.
+  if (body.penalty_rules !== undefined) {
+    await savePolicyRules(companyId, 'penalty', 'Late-coming penalties', { rules: normaliseRules(body.penalty_rules) }, userId);
+  }
 }
 
 async function readAttendanceSettings(companyId) {
@@ -3839,8 +4073,11 @@ router.get('/approval-delegations', async (req, res) => {
       JOIN employees dor ON dor.id = d.delegator_id
       JOIN employees del ON del.id = d.delegate_id
       WHERE ($1::integer IS NULL OR d.company_id = $1)
+        -- §278.2: HR/admin see every delegation; anyone else only the ones
+        -- they gave or received.
+        AND ($2::int IS NULL OR d.delegator_id = $2 OR d.delegate_id = $2)
       ORDER BY d.is_active DESC, d.from_date DESC
-    `, [companyId]);
+    `, [companyId, isAttendanceAdmin(req) ? null : (Number.parseInt(req.user?.employee_id, 10) || -1)]);
     res.json(rows);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -3956,10 +4193,7 @@ router.get('/shift-change-requests', async (req, res) => {
     if (!isAttendanceAdmin(req)) {
       const me = req.user?.employee_id ?? null;
       if (me == null) return res.status(403).json({ error: 'Forbidden', code: 'EMPLOYEE_LINK_REQUIRED' });
-      q += hasRole(req, 'manager', 'department_head')
-        ? ` AND (r.employee_id = $${n} OR e.reporting_manager_id = $${n})`
-        : ` AND r.employee_id = $${n}`;
-      params.push(me); n++;
+      q += requestScopeSql(req, 'r.employee_id');
     }
     if (employee_id) { q += ` AND r.employee_id = $${n++}`; params.push(employee_id); }
     if (status)      { q += ` AND r.status = $${n++}`;      params.push(status); }
@@ -4119,6 +4353,7 @@ router.get('/geo-violations', async (req, res) => {
     const { from_date, to_date, employee_id, department } = req.query;
     const fromDate = from_date || new Date(Date.now() - 30 * 86400000).toISOString().split('T')[0];
     const toDate   = to_date   || new Date().toISOString().split('T')[0];
+    const viewClause = viewFilter(req, res); if (viewClause === null) return;
     let q = `
       SELECT al.employee_id,
              COALESCE(e.name, CONCAT(e.first_name,' ',e.last_name)) AS employee_name,
@@ -4138,6 +4373,7 @@ router.get('/geo-violations', async (req, res) => {
        WHERE al.action = 'clock_in_geo_blocked'
          AND ($1::integer IS NULL OR al.company_id = $1)
          AND DATE(al.performed_at) BETWEEN $2 AND $3
+         ${viewClause}
     `;
     const params = [companyId, fromDate, toDate];
     let n = 4;
@@ -4148,12 +4384,14 @@ router.get('/geo-violations', async (req, res) => {
     // Also get summary counts
     const summaryQ = await pool.query(`
       SELECT COUNT(*) AS total_violations,
-             COUNT(DISTINCT employee_id) AS employees_affected,
-             COUNT(*) FILTER (WHERE DATE(performed_at) = CURRENT_DATE) AS today_violations
-        FROM attendance_audit_logs
-       WHERE action = 'clock_in_geo_blocked'
-         AND ($1::integer IS NULL OR company_id = $1)
-         AND DATE(performed_at) BETWEEN $2 AND $3
+             COUNT(DISTINCT al.employee_id) AS employees_affected,
+             COUNT(*) FILTER (WHERE DATE(al.performed_at) = CURRENT_DATE) AS today_violations
+        FROM attendance_audit_logs al
+        JOIN employees e ON e.id = al.employee_id
+       WHERE al.action = 'clock_in_geo_blocked'
+         AND ($1::integer IS NULL OR al.company_id = $1)
+         AND DATE(al.performed_at) BETWEEN $2 AND $3
+         ${viewClause}
     `, [companyId, fromDate, toDate]).catch(() => ({ rows: [{}] }));
     const s = summaryQ.rows[0] || {};
     res.json({
@@ -4175,7 +4413,7 @@ router.get('/geo-violations', async (req, res) => {
 // CONTRACT LABOUR ATTENDANCE (separate from regular attendance)
 // ─────────────────────────────────────────────────────────────────────────────
 
-router.get('/contract-labour/attendance', async (req, res) => {
+router.get('/contract-labour/attendance', requireAttendanceOperator, async (req, res) => {  // §278.2: managers / HR only
   try {
     const companyId = scopeCompanyId(req);
     const { date, contract_id, work_centre_id } = req.query;
@@ -4203,7 +4441,7 @@ router.get('/contract-labour/attendance', async (req, res) => {
   }
 });
 
-router.get('/contract-labour/attendance/monthly', async (req, res) => {
+router.get('/contract-labour/attendance/monthly', requireAttendanceOperator, async (req, res) => {  // §278.2: managers / HR only
   try {
     const companyId = scopeCompanyId(req);
     const { month, year, contract_id } = req.query;
@@ -4235,6 +4473,93 @@ router.get('/contract-labour/attendance/monthly', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// Contract labour → Finance (§278.4, owner 2026-11-19: "contract labour daily
+// attendance … has to be sent to Finance"). The month's attendance per
+// contractor — workers, man-days (half day = 0.5), hours — is saved as a
+// statement and every Finance user is notified, for the contractor's bill.
+// Sending the same month again replaces that month's figures.
+router.post('/contract-labour/send-to-finance', requireAttendanceAdmin, async (req, res) => {
+  try {
+    const companyId = scopeCompanyId(req);
+    const m = parseInt(req.body?.month); const y = parseInt(req.body?.year);
+    if (!(m >= 1 && m <= 12) || !(y >= 2000)) return res.status(400).json({ error: 'month and year required' });
+    const pad = (n) => String(n).padStart(2, '0');
+    const start = `${y}-${pad(m)}-01`; const end = `${y}-${pad(m)}-${pad(new Date(y, m, 0).getDate())}`;
+    const { rows } = await pool.query(`
+      SELECT COALESCE(NULLIF(TRIM(cl.contractor_company), ''), 'No contractor') AS contractor,
+             cl.id, cl.employee_name, cl.employee_code,
+             COUNT(*) FILTER (WHERE cla.status IN ('present','late'))  AS present_days,
+             COUNT(*) FILTER (WHERE cla.status = 'half_day')           AS half_days,
+             COUNT(*) FILTER (WHERE cla.status = 'absent')             AS absent_days,
+             COALESCE(SUM(cla.hours_worked), 0)                        AS hours
+        FROM contract_labour cl
+        JOIN contract_labour_attendance cla ON cla.contract_id = cl.id AND cla.attendance_date BETWEEN $1 AND $2
+       WHERE ($3::int IS NULL OR cl.company_id = $3)
+       GROUP BY 1, cl.id, cl.employee_name, cl.employee_code
+       ORDER BY 1, cl.employee_name`, [start, end, companyId]);
+    if (!rows.length) return res.status(409).json({ error: 'no_attendance', message: 'No contract labour attendance is marked for that month.' });
+
+    const byContractor = new Map();
+    for (const r of rows) {
+      const k = r.contractor;
+      if (!byContractor.has(k)) byContractor.set(k, { contractor: k, workers: [], present_days: 0, hours: 0 });
+      const c = byContractor.get(k);
+      const days = Number(r.present_days) + Number(r.half_days) * 0.5;
+      c.workers.push({ contract_id: r.id, name: r.employee_name, code: r.employee_code, man_days: days,
+        half_days: Number(r.half_days), absent_days: Number(r.absent_days), hours: Number(r.hours) });
+      c.present_days += days; c.hours += Number(r.hours);
+    }
+    const statements = [];
+    for (const c of byContractor.values()) {
+      const { rows: [s] } = await pool.query(`
+        INSERT INTO contract_labour_finance_statements
+          (company_id, month, year, contractor_company, workers, present_days, hours, detail, sent_by, sent_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,NOW())
+        ON CONFLICT (company_id, month, year, contractor_company) DO UPDATE SET
+          workers = EXCLUDED.workers, present_days = EXCLUDED.present_days, hours = EXCLUDED.hours,
+          detail = EXCLUDED.detail, sent_by = EXCLUDED.sent_by, sent_at = NOW()
+        RETURNING *`,
+      [companyId, m, y, c.contractor, c.workers.length, c.present_days, c.hours.toFixed(2), JSON.stringify(c.workers), req.user?.userId ?? null]);
+      statements.push(s);
+    }
+
+    const label = new Date(y, m - 1, 1).toLocaleString('en-GB', { month: 'long', year: 'numeric' });
+    const message = [`Contract labour attendance for ${label}:`,
+      ...statements.map((s) => `${s.contractor_company}: ${s.workers} workers · ${Number(s.present_days)} man-days · ${Number(s.hours)} h`),
+      'For the contractors’ bills.'].join('\n');
+    const { rows: finance } = await pool.query(`
+      SELECT DISTINCT u.id FROM users u
+        JOIN user_roles ur ON ur.user_id = u.id JOIN roles r ON r.id = ur.role_id
+       WHERE u.is_active = TRUE AND LOWER(r.code) IN ('finance', 'finance_manager', 'accounts_exec')
+         AND ($1::int IS NULL OR u.company_id = $1 OR u.company_id IS NULL)`, [companyId]).catch(() => ({ rows: [] }));
+    for (const u of finance) {
+      await pool.query(`
+        INSERT INTO notifications (user_id, title, message, module_name, reference_id, notification_type)
+        VALUES ($1, $2, $3, 'finance', $4, 'contract_labour_statement')`,
+      [u.id, `Contract labour attendance — ${label}`, message, `${y}-${pad(m)}`]).catch(() => {});
+    }
+    await writeAuditLog({ companyId, action: 'contract_labour_sent_to_finance',
+      afterData: { month: m, year: y, contractors: statements.length, finance_notified: finance.length }, performedBy: req.user?.userId, req });
+    res.json({ month: m, year: y, statements, finance_notified: finance.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /attendance/contract-labour/finance-statements?month=&year= — what was sent.
+router.get('/contract-labour/finance-statements', requireAttendanceOperator, async (req, res) => {
+  try {
+    const companyId = scopeCompanyId(req);
+    const m = parseInt(req.query.month); const y = parseInt(req.query.year);
+    const { rows } = await pool.query(`
+      SELECT s.*, COALESCE(u.name, u.email) AS sent_by_name FROM contract_labour_finance_statements s
+        LEFT JOIN users u ON u.id = s.sent_by
+       WHERE ($1::int IS NULL OR s.company_id = $1) AND ($2::int IS NULL OR s.month = $2) AND ($3::int IS NULL OR s.year = $3)
+       ORDER BY s.year DESC, s.month DESC, s.contractor_company`, [companyId, Number.isFinite(m) ? m : null, Number.isFinite(y) ? y : null]);
+    res.json(rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 router.post('/contract-labour/attendance', requireAttendanceOperator, async (req, res) => {

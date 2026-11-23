@@ -98,6 +98,11 @@ beforeAll(async () => {
   await pool.query(`UPDATE users SET employee_id = $1 WHERE id = $2`, [E.HREXEC, U.hr_exec.userId]);
   U.hr_exec = { ...U.hr_exec, token: () => jwt.sign({ userId: U.hr_exec.userId, role: 'hr_exec', company_id: co.companyId, employee_id: E.HREXEC }, process.env.JWT_SECRET, { expiresIn: '1h' }) };
 
+  // §278.2: attendance analytics show a non-HR caller only their own team, so
+  // the `employee` login is made the OT earner's reporting manager — the case
+  // PC-01 is about: a manager who sees the hours but holds no payroll:view.
+  await pool.query(`UPDATE employees SET reporting_manager_id = $1 WHERE id = $2`, [E.SELF, E.A]);
+
   // One OT earner in the department: the cost would give their Basic back.
   await pool.query(
     `INSERT INTO attendance_ot_records (employee_id, attendance_date, ot_hours, multiplier, status, ot_type, company_id)
@@ -198,6 +203,12 @@ describe('PC-01 overtime cost', () => {
     const row = res.body.find(r => r.department === 'Assembly');
     expect(Number(row.total_ot_hours)).toBe(4);
     expect(row).toMatchObject({ approved_ot_cost: null, total_ot_cost: null, cost_restricted: true });
+  });
+
+  it('someone outside that team does not see the department’s overtime at all (§278.2)', async () => {
+    const res = await call(U.hr_exec, 'get', path);
+    expect(res.status).toBe(200);
+    expect(res.body.find(r => r.department === 'Assembly')).toBeUndefined();
   });
 
   it('a payroll:view holder gets the cost (= one Basic recoverable from it)', async () => {

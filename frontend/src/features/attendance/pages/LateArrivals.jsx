@@ -26,7 +26,7 @@ function riskBadge(count) {
   if (count >= 5)  return { label: 'Medium', bg: '#ede9fe', color: '#5b21b6' };
   return                   { label: 'Low',   bg: '#dcfce7', color: '#166534' };
 }
-const REPEAT_THRESHOLD = 3;   // highlight + warn button threshold
+// The warning threshold is Settings → Late arrival → "warning letter after" (§278.5; was a fixed 3).
 
 // ─── Warning Letter Modal ─────────────────────────────────────────────────────
 function WarningModal({ employee, month, onClose, onIssued }) {
@@ -163,8 +163,8 @@ function WarningModal({ employee, month, onClose, onIssued }) {
             Cancel
           </button>
           <button onClick={handlePrint} style={{
-            padding:'8px 16px', border:'1px solid #6366f1', borderRadius:8,
-            cursor:'pointer', background:'#fff', fontSize:13, color:'#6366f1',
+            padding:'8px 16px', border:'1px solid #6B3FDB', borderRadius:8,
+            cursor:'pointer', background:'#fff', fontSize:13, color:'#6B3FDB',
             display:'flex', alignItems:'center', gap:6,
           }}>
             <Printer size={14} /> Print Preview
@@ -209,6 +209,13 @@ function WeekTooltip({ active, payload, label }) {
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 export default function LateArrivals() {
+  // Late arrivals in a month before a warning letter is offered (Settings, default 3).
+  const [repeatThreshold, setRepeatThreshold] = useState(3);
+  useEffect(() => {
+    api.get('/attendance/general-settings')
+      .then((r) => setRepeatThreshold(Math.max(1, Number(r.data?.late_warning_count) || 3)))
+      .catch(() => {});
+  }, []);
   const [records,       setRecords]       = useState([]);
   const [warnings,      setWarnings]      = useState([]);
   const [loading,       setLoading]       = useState(false);
@@ -372,7 +379,7 @@ export default function LateArrivals() {
       bg:     '#ede9fe', border: '#ddd6fe',
     },
     {
-      icon:   <Users size={20} color="#6366f1" />,
+      icon:   <Users size={20} color="#6B3FDB" />,
       label:  'Unique Employees',
       value:  stats.employees,
       bg:     '#ede9fe', border: '#c4b5fd',
@@ -394,7 +401,7 @@ export default function LateArrivals() {
   const TAB_STYLE = active => ({
     padding: '7px 18px', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600,
     border: 'none',
-    background: active ? '#6366f1' : 'transparent',
+    background: active ? '#6B3FDB' : 'transparent',
     color:       active ? '#fff'   : '#6b7280',
     transition: 'all .15s',
   });
@@ -464,7 +471,7 @@ export default function LateArrivals() {
             onClick={downloadCSV}
             style={{
               padding:'8px 12px', border:'none', borderRadius:8, fontSize:13,
-              cursor:'pointer', background:'#6366f1', color:'#fff',
+              cursor:'pointer', background:'#6B3FDB', color:'#fff',
               display:'flex', alignItems:'center', gap:6,
             }}
           >
@@ -614,7 +621,7 @@ export default function LateArrivals() {
                     const delay    = Number(r.late_minutes || 0);
                     const sev      = delaySeverity(delay);
                     const occNum   = Number(r.occurrence_rank || 0);
-                    const isRepeat = occNum >= REPEAT_THRESHOLD;
+                    const isRepeat = occNum >= repeatThreshold;
                     const rowBg    = isRepeat
                       ? (i % 2 === 0 ? '#fff5f5' : '#fff0f0')
                       : (i % 2 === 0 ? '#fff'    : '#fafafa');
@@ -651,11 +658,11 @@ export default function LateArrivals() {
                         <td style={{ padding:'10px 14px' }}>
                           {occNum > 0 && (
                             <span style={{
-                              background: occNum >= REPEAT_THRESHOLD ? '#fee2e2' : '#f3f4f6',
-                              color:      occNum >= REPEAT_THRESHOLD ? '#991b1b' : '#374151',
+                              background: occNum >= repeatThreshold ? '#fee2e2' : '#f3f4f6',
+                              color:      occNum >= repeatThreshold ? '#991b1b' : '#374151',
                               borderRadius:20, padding:'2px 8px', fontSize:11, fontWeight:700,
                             }}>
-                              #{occNum} {occNum >= REPEAT_THRESHOLD ? '⚠' : ''}
+                              #{occNum} {occNum >= repeatThreshold ? '⚠' : ''}
                             </span>
                           )}
                         </td>
@@ -685,10 +692,10 @@ export default function LateArrivals() {
           background:'#fff', borderRadius:12, border:'1px solid #f0f0f4', overflow:'hidden',
         }}>
           <div style={{ padding:'14px 20px', borderBottom:'1px solid #f0f0f4', display:'flex', alignItems:'center', gap:8 }}>
-            <Users size={16} color="#6366f1" />
+            <Users size={16} color="#6B3FDB" />
             <span style={{ fontWeight:700, fontSize:14, color:'#111827' }}>Employee Summary</span>
             <span style={{ fontSize:12, color:'#9ca3af', marginLeft:4 }}>
-              Repeat offenders (≥{REPEAT_THRESHOLD}×) highlighted — issue warning from here
+              Repeat offenders (≥{repeatThreshold}×) highlighted — issue warning from here
             </span>
           </div>
 
@@ -712,7 +719,7 @@ export default function LateArrivals() {
                 <tbody>
                   {employeeSummary.map((emp, i) => {
                     const risk      = riskBadge(emp.count);
-                    const isRepeat  = emp.count >= REPEAT_THRESHOLD;
+                    const isRepeat  = emp.count >= repeatThreshold;
                     const hasWarning = warnedIds.has(String(emp.id));
                     const rowBg     = isRepeat
                       ? (i % 2 === 0 ? '#fff5f5' : '#fff0f0')
@@ -783,7 +790,7 @@ export default function LateArrivals() {
           background:'#fff', borderRadius:12, border:'1px solid #f0f0f4', overflow:'hidden',
         }}>
           <div style={{ padding:'14px 20px', borderBottom:'1px solid #f0f0f4', display:'flex', alignItems:'center', gap:8 }}>
-            <BarChart2 size={16} color="#6366f1" />
+            <BarChart2 size={16} color="#6B3FDB" />
             <span style={{ fontWeight:700, fontSize:14, color:'#111827' }}>Weekly Trend</span>
             <span style={{ fontSize:12, color:'#9ca3af', marginLeft:4 }}>
               Late arrivals per week in {month}
@@ -846,7 +853,7 @@ export default function LateArrivals() {
                       height:4, background:'#e5e7eb', borderRadius:2, marginTop:8,
                     }}>
                       <div style={{
-                        height:4, background:'#6366f1', borderRadius:2,
+                        height:4, background:'#6B3FDB', borderRadius:2,
                         width:`${pct}%`, transition:'width .4s',
                       }} />
                     </div>

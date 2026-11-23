@@ -87,10 +87,10 @@ export default function PayrollSync({ setPage } = {}) {
   };
 
   const exportCSV = () => {
-    const headers = ['Employee','Department','Designation','Present Days','Absent Days','Late Days','Working Days','Total Hours','OT Hours','Mid-Month Joiner','Status'];
+    const headers = ['Employee','Department','Designation','Present Days','Absent Days','Late Days','Penalty Days','Working Days','Total Hours','OT Hours','Mid-Month Joiner','Status'];
     const rows = records.map(r => [
       r.employee_name, r.department, r.designation,
-      r.present_days, r.absent_days, r.late_days,
+      r.present_days, r.absent_days, r.late_days, r.penalty_days ?? 0,
       r.is_mid_month_joiner ? r.prorated_working_days : r.working_days,
       parseFloat(r.total_hours || 0).toFixed(1),
       parseFloat(r.total_ot_hours || 0).toFixed(1),
@@ -263,7 +263,7 @@ export default function PayrollSync({ setPage } = {}) {
             <thead>
               <tr style={{ borderBottom: '1px solid #f0f0f4' }}>
                 {!isFrozen && <th style={{ padding: '10px 12px', width: 36 }}></th>}
-                {['Employee', 'Department', 'Present', 'Absent', 'Late', 'Working Days', 'Total Hours', 'OT Hours', 'Status'].map(h => (
+                {['Employee', 'Department', 'Present', 'Absent', 'Late', 'Penalty (days)', 'Working Days', 'Total Hours', 'OT Hours', 'Status'].map(h => (
                   <th key={h} style={{ padding: '10px 12px', textAlign: 'left', fontWeight: 600, color: '#6b7280', fontSize: 11, textTransform: 'uppercase' }}>{h}</th>
                 ))}
               </tr>
@@ -293,10 +293,15 @@ export default function PayrollSync({ setPage } = {}) {
                   <td style={{ padding: '10px 12px', color: '#10b981', fontWeight: 500 }}>{r.present_days}</td>
                   <td style={{ padding: '10px 12px', color: r.absent_days > 0 ? '#ef4444' : '#9ca3af', fontWeight: r.absent_days > 0 ? 600 : 400 }}>{r.absent_days}</td>
                   <td style={{ padding: '10px 12px', color: r.late_days > 0 ? '#7c5cf0' : '#9ca3af' }}>{r.late_days}</td>
+                  {/* Late-coming penalty days (§278.3) — added to LOP when synced. */}
+                  <td style={{ padding: '10px 12px', color: r.penalty_days > 0 ? '#dc2626' : '#9ca3af', fontWeight: r.penalty_days > 0 ? 600 : 400 }}
+                    title={(r.penalty_lines || []).map((l) => `${l.text}: ${l.occurrences} time(s)`).join(' · ') || 'No late-coming penalty'}>
+                    {r.penalty_days ?? 0}
+                  </td>
                   <td style={{ padding: '10px 12px' }}>
                     {r.is_mid_month_joiner ? (
                       <span title={`Prorated from joining date (full month: ${r.working_days} days)`}>
-                        <span style={{ fontWeight: 600, color: '#1d4ed8' }}>{r.prorated_working_days}</span>
+                        <span style={{ fontWeight: 600, color: '#6B3FDB' }}>{r.prorated_working_days}</span>
                         <span style={{ fontSize: 10, color: '#9ca3af', marginLeft: 4 }}>/ {r.working_days}</span>
                       </span>
                     ) : (

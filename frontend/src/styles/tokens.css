@@ -2,9 +2,17 @@
    Pulse ERP — Design Tokens
    Import this in any component that needs design tokens.
    All tokens are also available via global-overrides.css :root.
+
+   Scoped to the Home page root (.hm-root), 2026-11-19. This file is imported
+   only by pages/Home.css, but it declared its tokens on :root — so once Home
+   had been opened, its blue --color-primary (#1e40af) replaced the brand
+   purple everywhere for the rest of the session, and every button drawn
+   with var(--color-primary) on other pages turned blue (Team Attendance
+   Export CSV, Payroll Sync, Shift override …). Home keeps exactly the same
+   values inside .hm-root; the rest of the app keeps global-overrides.css.
    ============================================================ */
 
-:root {
+.hm-root {
   /* ── Colours ── */
   --color-primary:        #1e40af;
   --color-primary-hov:    #1d4ed8;

@@ -25,7 +25,6 @@ import pool from '../../config/db.js';
 import { permissionFor, rolesOf, hasRole } from '../../middlewares/auth.middleware.js';
 import { isExitedSql } from '../../shared/employeeStatus.js';
 import { canOverride, canClaimCategory, isApproverRole } from './approvals.authz.js';
-import { isAttendanceApprover } from '../attendance/attendance.authz.js';
 import { assertCanDecideAmount, assertNotSelfApproval } from '../procurement/procurement.authz.js';
 import { isCurrentSql } from '../../shared/employeeStatus.js';
 import { canApproveRequisition, canApproveOffer } from '../recruitment/requisitionAccess.js';
@@ -146,6 +145,9 @@ function attendanceDecides(ctx, employeeId, companyId, delegationType) {
   if (hasRole(ctx.req, 'hr', 'hr_manager', 'admin', 'super_admin')) return true;
   if (ctx.jwtEmployeeId == null) return false;
   if (ctx.orgReports.has(String(employeeId))) return true;
+  // §278.2: the reporting line in employees.reporting_manager_id counts too —
+  // the same two sources attendance's assertCanDecideFor() reads.
+  if (ctx.directReports.has(String(employeeId))) return true;
   return ctx.attDelegations.some(d =>
     String(d.employee_id) === String(employeeId)
     && (d.delegation_type === delegationType || d.delegation_type === 'all')
@@ -263,7 +265,8 @@ const regularization = {
   },
   stage: (r) => REG_STAGE[r.stage_key] || r.stage_key,
   canAct(ctx, r) {
-    if (!isAttendanceApprover(ctx.req)) return false;
+    // §278.2: no role precondition — a reporting manager decides their team
+    // whatever their login role; attendanceDecides() checks the reporting line.
     const isHR = hasRole(ctx.req, 'hr', 'hr_manager', 'admin', 'super_admin');
     if (r.stage_key === 'hr') return isHR;
     return isHR || attendanceDecides(ctx, r.requester_emp_id, r.company_id, 'regularization');
@@ -316,7 +319,7 @@ const overtime = {
        WHERE o.status = 'pending' ${cf(companyId, 'o.company_id')}`, cp(companyId));
   },
   stage: () => 'Reporting manager',
-  canAct: (ctx, r) => isAttendanceApprover(ctx.req) && attendanceDecides(ctx, r.requester_emp_id, r.company_id, 'overtime'),
+  canAct: (ctx, r) => attendanceDecides(ctx, r.requester_emp_id, r.company_id, 'overtime'),
   actions: (r) => ({
     approve: req_('put', `/attendance/overtime/${r.source_id}/approve`, {}, 'remarks'),
     reject:  req_('put', `/attendance/overtime/${r.source_id}/reject`,  {}, 'remarks', { commentRequired: true }),
@@ -365,7 +368,7 @@ const shiftChange = {
        WHERE r.status = 'pending' ${cf(companyId, 'r.company_id')}`, cp(companyId));
   },
   stage: () => 'Reporting manager',
-  canAct: (ctx, r) => isAttendanceApprover(ctx.req) && attendanceDecides(ctx, r.requester_emp_id, r.company_id, 'shift'),
+  canAct: (ctx, r) => attendanceDecides(ctx, r.requester_emp_id, r.company_id, 'shift'),
   actions: (r) => ({
     approve: req_('put', `/attendance/shift-change-requests/${r.source_id}/approve`, {}, 'remarks'),
     reject:  req_('put', `/attendance/shift-change-requests/${r.source_id}/reject`,  {}, 'remarks', { commentRequired: true }),

@@ -101,7 +101,7 @@ export default function MonthlyAttendanceReport() {
     ]);
 
     let table = `<table border="1" style="border-collapse:collapse">`;
-    table += `<tr><th colspan="${headers.length}" style="background:#1e40af;color:white;padding:8px">Attendance Report — ${MONTH_NAMES[month - 1]} ${year}</th></tr>`;
+    table += `<tr><th colspan="${headers.length}" style="background:#6B3FDB;color:white;padding:8px">Attendance Report — ${MONTH_NAMES[month - 1]} ${year}</th></tr>`;
     table += `<tr>${headers.map(h => `<th style="background:#dbeafe;padding:4px">${h}</th>`).join('')}</tr>`;
     rows.forEach(row => {
       table += `<tr>${row.map(v => `<td style="padding:4px">${v}</td>`).join('')}</tr>`;

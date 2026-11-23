@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   Layers, Plus, Clock, Package, RefreshCw, X, Check, Pencil, Trash2,
-  Settings, ChevronDown, ChevronUp, AlertTriangle, Moon, BarChart2,
+  AlertTriangle, Moon, BarChart2,
   TrendingUp, Award, Activity, Users, Factory,
 } from 'lucide-react';
 import api from '@/services/api/client';
@@ -182,7 +182,7 @@ function RecordModal({ editRecord, workCentres, onSave, onClose }) {
             </select>
             {workCentres.length === 0 && (
               <p style={{ fontSize: 11, color: '#7c5cf0', margin: '4px 0 0' }}>
-                No work centres configured — use "Manage Work Centres" to add them first.
+                No work centres yet — add them in Production → Planning → Work Centre Planning.
               </p>
             )}
           </div>
@@ -230,7 +230,7 @@ function RecordModal({ editRecord, workCentres, onSave, onClose }) {
             </label>
             <input type="time" style={inp} value={form.check_out} onChange={e => set('check_out', e.target.value)} />
             {isOvernight && (
-              <p style={{ fontSize: 11, color: '#6366f1', margin: '4px 0 0', display: 'flex', alignItems: 'center', gap: 4 }}>
+              <p style={{ fontSize: 11, color: '#6B3FDB', margin: '4px 0 0', display: 'flex', alignItems: 'center', gap: 4 }}>
                 <Moon size={11} /> Night shift — spans midnight
               </p>
             )}
@@ -328,7 +328,7 @@ function AnalyticsTab() {
             {[
               { label: 'Total Units Produced', value: data.summary.total_units.toLocaleString(), icon: Package, color: '#7c5cf0' },
               { label: 'Total Hours Worked', value: `${parseFloat(data.summary.total_hours).toFixed(1)}h`, icon: Clock, color: '#10b981' },
-              { label: 'Avg Utilization', value: `${data.summary.avg_utilization}%`, icon: Activity, color: '#6366f1' },
+              { label: 'Avg Utilization', value: `${data.summary.avg_utilization}%`, icon: Activity, color: '#6B3FDB' },
               { label: 'Active Work Centres', value: data.summary.active_work_centres, icon: Layers, color: P },
             ].map(k => (
               <div key={k.label} style={{ ...CARD, padding: 16, display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -393,7 +393,7 @@ function AnalyticsTab() {
             {/* Shift breakdown */}
             <div style={{ ...CARD, padding: 0, overflow: 'hidden' }}>
               <div style={{ padding: '14px 20px', borderBottom: '1px solid #f0f0f4', display: 'flex', alignItems: 'center', gap: 8 }}>
-                <TrendingUp size={16} color='#6366f1' />
+                <TrendingUp size={16} color='#6B3FDB' />
                 <span style={{ fontWeight: 700, fontSize: 14, color: '#1f2937' }}>Shift-wise Breakdown</span>
               </div>
               {data.shifts.length === 0 ? (
@@ -465,100 +465,6 @@ function AnalyticsTab() {
   );
 }
 
-// ─── Work Centre management panel ────────────────────────────────────────────
-function WorkCentrePanel({ workCentres, onAdd, onRemove }) {
-  const [form, setForm]   = useState({ name: '', department: '', capacity_hours_per_day: 8 });
-  const [saving, setSaving] = useState(false);
-  const [err, setErr]       = useState('');
-  const [removingId, setRemovingId] = useState(null);
-
-  const inp = { border: '1px solid #e9e4ff', borderRadius: 8, padding: '7px 10px', fontSize: 13, outline: 'none' };
-
-  const handleAdd = async () => {
-    if (!form.name.trim()) { setErr('Name is required'); return; }
-    setSaving(true); setErr('');
-    try {
-      const res = await api.post('/attendance/work-centres', form);
-      onAdd(res.data);
-      setForm({ name: '', department: '', capacity_hours_per_day: 8 });
-    } catch (e) {
-      setErr(e.response?.data?.error || 'Failed to add work centre');
-    } finally { setSaving(false); }
-  };
-
-  const handleRemove = async (id) => {
-    setRemovingId(id);
-    try {
-      await api.delete(`/attendance/work-centres/${id}`);
-      onRemove(id);
-    } catch { /* silent */ } finally { setRemovingId(null); }
-  };
-
-  return (
-    <div style={{ ...CARD, marginBottom: 16, padding: 16 }}>
-      <div style={{ fontSize: 13, fontWeight: 600, color: '#374151', marginBottom: 12 }}>
-        Configured Work Centres
-      </div>
-
-      {workCentres.length === 0 ? (
-        <p style={{ fontSize: 13, color: '#9ca3af', margin: '0 0 14px' }}>
-          No work centres yet. Add one below.
-        </p>
-      ) : (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 14 }}>
-          {workCentres.map(wc => (
-            <div key={wc.id} style={{ display: 'flex', alignItems: 'center', gap: 6, background: '#f5f3ff', border: '1px solid #e9e4ff', borderRadius: 8, padding: '5px 10px', fontSize: 13 }}>
-              <span style={{ fontWeight: 600, color: P }}>{wc.name}</span>
-              {wc.department && <span style={{ color: '#9ca3af', fontSize: 11 }}>· {wc.department}</span>}
-              <span style={{ color: '#c4b5fd', fontSize: 11 }}>· {wc.capacity_hours_per_day}h/day</span>
-              <button
-                onClick={() => handleRemove(wc.id)}
-                disabled={removingId === wc.id}
-                title="Remove work centre"
-                style={{ border: 'none', background: 'none', cursor: 'pointer', color: '#ef4444', padding: '0 0 0 4px', display: 'flex', alignItems: 'center', opacity: removingId === wc.id ? 0.4 : 1 }}
-              >
-                <X size={12} />
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {err && <p style={{ fontSize: 12, color: '#dc2626', margin: '0 0 10px' }}>{err}</p>}
-
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-        <input
-          placeholder="Name *"
-          value={form.name}
-          onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
-          onKeyDown={e => e.key === 'Enter' && handleAdd()}
-          style={{ ...inp, minWidth: 160 }}
-        />
-        <input
-          placeholder="Department"
-          value={form.department}
-          onChange={e => setForm(f => ({ ...f, department: e.target.value }))}
-          style={{ ...inp, minWidth: 120 }}
-        />
-        <input
-          type="number"
-          placeholder="Hrs/day"
-          value={form.capacity_hours_per_day}
-          onChange={e => setForm(f => ({ ...f, capacity_hours_per_day: e.target.value }))}
-          style={{ ...inp, width: 80 }}
-        />
-        <button
-          onClick={handleAdd}
-          disabled={saving}
-          style={{ padding: '7px 14px', borderRadius: 8, border: 'none', background: P, color: '#fff', fontSize: 13, fontWeight: 600, cursor: saving ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', gap: 6, opacity: saving ? 0.7 : 1 }}
-        >
-          <Plus size={13} /> Add
-        </button>
-      </div>
-    </div>
-  );
-}
-
 // ─── Main page ────────────────────────────────────────────────────────────────
 export default function WorkCentres() {
   const [activeTab, setActiveTab]     = useState('records');
@@ -567,7 +473,7 @@ export default function WorkCentres() {
   const [loading, setLoading]         = useState(true);
   const [showForm, setShowForm]       = useState(false);
   const [editRecord, setEditRecord]   = useState(null);
-  const [showPanel, setShowPanel]     = useState(false);
+
   const [filterDate, setFilterDate]   = useState(localDay());
   const [filterWC, setFilterWC]       = useState('');
   const [msg, setMsg]                 = useState({ text: '', ok: true });
@@ -646,11 +552,6 @@ export default function WorkCentres() {
               <RefreshCw size={13} /> Refresh
             </button>
             <button className="plh-cta"
-              onClick={() => setShowPanel(p => !p)}>
-              <Settings size={13} /> Manage Work Centres
-              {showPanel ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
-            </button>
-            <button className="plh-cta"
               onClick={() => { setEditRecord(null); setShowForm(true); }}>
               <Plus size={16} /> Log Attendance
             </button>
@@ -724,14 +625,11 @@ export default function WorkCentres() {
         ))}
       </div>
 
-      {/* Work Centre management panel */}
-      {showPanel && (
-        <WorkCentrePanel
-          workCentres={workCentres}
-          onAdd={wc => setWorkCentres(prev => [...prev, wc])}
-          onRemove={id => setWorkCentres(prev => prev.filter(w => w.id !== id))}
-        />
-      )}
+      {/* Work centres are Production's master list (routing, MRP, scheduling
+          use it). Owner, 2026-11-19: Attendance only picks from it. */}
+      <div style={{ ...CARD, marginBottom: 16, padding: '10px 14px', fontSize: 12, color: '#6b7280' }}>
+        Work centres come from Production. To add or change one, go to Production → Planning → Work Centre Planning.
+      </div>
 
       {/* Filters */}
       <div style={{ display: 'flex', gap: 10, marginBottom: 20, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -801,7 +699,7 @@ export default function WorkCentres() {
                         {r.check_out
                           ? <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                               {r.check_out}
-                              {isNight && <Moon size={11} color="#6366f1" title="Night shift" />}
+                              {isNight && <Moon size={11} color="#6B3FDB" title="Night shift" />}
                             </span>
                           : isActive
                             ? <span style={{ color: '#10b981', fontWeight: 600, fontSize: 12 }}>On Duty</span>

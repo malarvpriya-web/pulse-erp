@@ -148,6 +148,11 @@ const attendanceRepository = {
       paramCount++;
     }
 
+    // §278.2: team / self limit from attendance.authz.js attendanceViewClause()
+    // (an inlined integer id). The route always sets this key AFTER spreading
+    // req.query, so a caller cannot supply it.
+    if (typeof filters.__viewClause === 'string') query += filters.__viewClause;
+
     query += ` ORDER BY e.name`;
 
     const result = await pool.query(query, params);
@@ -295,6 +300,10 @@ const attendanceRepository = {
     if (filters.department) {
       conditions.push(`e.department = $${p++}`);
       params.push(filters.department);
+    }
+    // §278.2: team / self limit (see findByDate). Set by the route after req.query.
+    if (typeof filters.__viewClause === 'string' && filters.__viewClause) {
+      conditions.push(filters.__viewClause.replace(/^\s*AND\s+/, ''));
     }
 
     const whereClause = conditions.join(' AND ');

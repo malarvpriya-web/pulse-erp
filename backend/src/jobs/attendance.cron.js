@@ -21,8 +21,21 @@ async function auditLog(companyId, employeeId, action, data) {
   } catch { /* non-blocking */ }
 }
 
+// Did today's machine / CSV punches reach Pulse for this company? (§278.2)
+export async function todaysPunchesArrived(companyId, day) {
+  const { rows } = await pool.query(`
+    SELECT
+      EXISTS (SELECT 1 FROM biometric_devices
+               WHERE company_id = $1 AND NULLIF(TRIM(ip_address), '') IS NOT NULL
+                 AND last_sync IS NOT NULL AND last_sync::date = $2::date) AS synced_today,
+      EXISTS (SELECT 1 FROM biometric_logs
+               WHERE company_id = $1 AND punch_time::date = $2::date) AS punches_today
+  `, [companyId, day]).catch(() => ({ rows: [] }));
+  return !!(rows[0]?.synced_today && rows[0]?.punches_today);
+}
+
 // ── Auto-absent: mark all employees without a record for today as absent ────
-async function runAutoAbsent() {
+export async function runAutoAbsent() {
   // The business-day date (the process clock is pinned to APP_TIMEZONE), not
   // the UTC date — they differ between 00:00 and 05:30 IST.
   const today = new Date().toLocaleDateString('en-CA');
@@ -51,6 +64,22 @@ async function runAutoAbsent() {
         `SELECT 1 FROM biometric_devices WHERE company_id = $1 AND NULLIF(TRIM(ip_address), '') IS NOT NULL LIMIT 1`,
         [companyId]).catch(() => ({ rows: [] }));
       if (!machines.length) continue;
+
+      // §278.2: a machine that was offline, unplugged or failing to sync all day
+      // looks exactly like "nobody came in" — and this job would then mark the
+      // whole office absent (LOP in payroll). Only mark absences when today's
+      // punches actually reached Pulse: a machine synced successfully today
+      // (last_sync is set only on success) AND at least one punch for today
+      // arrived (machine or CSV). Otherwise skip and leave a note in the
+      // attendance audit log so HR sees why nobody was marked.
+      if (!(await todaysPunchesArrived(companyId, today))) {
+        console.warn(`[attendance.cron] Auto-absent SKIPPED for company ${companyId} on ${today}: no successful machine sync / no punches today`);
+        await auditLog(companyId, null, 'auto_absent_skipped', {
+          date: today,
+          reason: 'No punch machine synced successfully today, or no punches arrived — absences were not marked. Check the machine, sync it or import a CSV, then mark absences if needed.',
+        });
+        continue;
+      }
 
       // Skip if today is a holiday
       const holidayCheck = await pool.query(

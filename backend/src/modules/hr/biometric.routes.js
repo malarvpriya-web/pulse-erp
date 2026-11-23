@@ -9,8 +9,9 @@ import { companyOf } from '../../shared/scope.js';
 import { CURRENT_STATUSES, sqlList } from '../../shared/employeeStatus.js';
 import { LEAVE_APPROVED } from '../../shared/statusSets.js';
 import { getWeekendDays, dayIsWeekend } from '../../shared/weekend.js';
-import { getFullDayHours, isPeriodFrozen, recordOvertime, notifyLateArrival } from '../../shared/attendanceRules.js';
-import { resolveEmployeeShift, calcLateAndStatus } from '../../shared/shiftResolve.js';
+import { getFullDayHours, isPeriodFrozen, recordOvertime, notifyLateArrival, getAttendanceSwitches } from '../../shared/attendanceRules.js';
+import { autoGrantHolidayCompOff } from '../../shared/compOff.js';
+import { resolveEmployeeShift, calcLateAndStatus, parseTimeToMins } from '../../shared/shiftResolve.js';
 import { blank, listPage, dateRange, positiveIntOrNull } from './listQuery.js';
 
 const router = express.Router();
@@ -372,11 +373,45 @@ async function applyPunch(client, p, ctx) {
       }
     }
   }
+  // Leaving early, against the shift end (§278.3). Only the in-app clock-out
+  // ever set early_leave_minutes, so the "leaving early" penalty rule and My
+  // Attendance could not see a machine punch. The latest punch-out decides it.
+  // Night shifts that end after midnight are skipped: their punch-out falls on
+  // the next calendar day's row.
+  if (punchType !== 'in') {
+    const { rows: [rec] } = await client.query(
+      `SELECT check_out_time::text AS cout FROM attendance_records WHERE employee_id = $1 AND attendance_date = $2`,
+      [employeeId, day]);
+    const { shift } = await resolveEmployeeShift(employeeId, day);
+    const end = parseTimeToMins(shift?.end_time || ctx.workEnd || '18:00');
+    const start = parseTimeToMins(shift?.start_time || ctx.workStart || '09:00');
+    const out = parseTimeToMins(rec?.cout);
+    if (out != null && end != null && start != null && !shift?.is_night_shift && end > start) {
+      await client.query(
+        `UPDATE attendance_records SET early_leave_minutes = $3 WHERE employee_id = $1 AND attendance_date = $2`,
+        [employeeId, day, Math.max(0, end - out)]);
+    }
+  }
+
   // Overtime request (nothing happens while overtime is switched off).
   const { rows: [h] } = await client.query(
     `SELECT ot_hours FROM attendance_records WHERE employee_id = $1 AND attendance_date = $2`, [employeeId, day]);
   if (Number(h?.ot_hours) >= 0.5) {
     await recordOvertime(client, { companyId, employeeId, date: day, otHours: Number(h.ot_hours) });
+  }
+
+  // Comp off for a full day on a holiday (§278.4) — production staff punch on
+  // the machine, and this path never granted it. Only when comp off is on in
+  // Settings and the employee is chosen for it.
+  if (punchType !== 'in') {
+    const { rows: [t] } = await client.query(
+      `SELECT total_hours FROM attendance_records WHERE employee_id = $1 AND attendance_date = $2`, [employeeId, day]);
+    // Its own connection: a failure here must not abort the punch's transaction.
+    const { compOffEnabled } = await getAttendanceSwitches(companyId);
+    await autoGrantHolidayCompOff(pool, {
+      employeeId, companyId, date: day, hours: Number(t?.total_hours || 0),
+      fullDayHours: ctx.fullDayHours.get(companyId), enabled: compOffEnabled,
+    }).catch(() => {});
   }
 
   await client.query(
@@ -386,7 +421,7 @@ async function applyPunch(client, p, ctx) {
 
 const newIngestContext = (companyId, tz, rules = {}) => ({
   companyId, tz, frozenMonths: new Map(), fullDayHours: new Map(),
-  workStart: rules.workStart, graceMinutes: rules.graceMinutes,
+  workStart: rules.workStart, workEnd: rules.workEnd, graceMinutes: rules.graceMinutes,
   today: new Date().toLocaleDateString('en-CA', { timeZone: tz || 'Asia/Kolkata' }),
 });
 

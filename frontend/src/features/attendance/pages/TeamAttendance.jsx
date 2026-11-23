@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '@/services/api/client';
+import TeamMonthlySummary from '../components/TeamMonthlySummary';
 import { useAuth } from '@/context/AuthContext';
-import { Users, CheckCircle, Clock, XCircle, Search, Download, X, Calendar, FileEdit } from 'lucide-react';
+import { Users, CheckCircle, Clock, XCircle, Search, Download, X, Calendar } from 'lucide-react';
 import { useToast } from '@/context/ToastContext';
 import { PageHero, PageShell } from '@/components/pulse-ui';
 import { localDay, localDayOf } from '@/utils/dateFormatter';
@@ -22,8 +23,9 @@ const STATUS_CONFIG = {
   Unknown:    { bg: '#f3f4f6', color: '#374151', icon: Clock },
 };
 
-const ALL_STATUSES    = ['Present', 'Absent', 'Late', 'On Leave', 'Half Day', 'WFH'];
-const FILTER_STATUSES = ['All', 'Present', 'Absent', 'Late', 'On Leave', 'Half Day', 'WFH', 'Weekend', 'Pending'];
+// WFH removed 2026-11-19 (owner: office staff punch on the machine, field staff in the app; no record was ever WFH).
+const ALL_STATUSES    = ['Present', 'Absent', 'Late', 'On Leave', 'Half Day'];
+const FILTER_STATUSES = ['All', 'Present', 'Absent', 'Late', 'On Leave', 'Half Day', 'Weekend', 'Pending'];
 const HOLIDAY_TYPES   = ['National', 'Optional', 'Restricted'];
 const DAY_LABELS      = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
 
@@ -152,12 +154,8 @@ export default function TeamAttendance() {
   const [editStatus, setEditStatus] = useState('');
   const [editSaving, setEditSaving] = useState(false);
 
-  // ── Regularize ──────────────────────────────────────────────────────────────
-  const [regRow, setRegRow]           = useState(null);
-  const [regCheckIn, setRegCheckIn]   = useState('');
-  const [regCheckOut, setRegCheckOut] = useState('');
-  const [regReason, setRegReason]     = useState('');
-  const [regSaving, setRegSaving]     = useState(false);
+  // (Regularize on behalf removed 2026-11-19, owner: only the employee asks,
+  //  from My Attendance, on the same day; HR corrects a record with Edit.)
 
   const isMounted = useRef(true);
   useEffect(() => {
@@ -238,7 +236,6 @@ export default function TeamAttendance() {
     absent:  records.filter(r => r.status === 'Absent').length,
     late:    records.filter(r => r.status === 'Late').length,
     leave:   records.filter(r => r.status === 'On Leave').length,
-    wfh:     records.filter(r => r.work_mode === 'WFH' || r.status === 'WFH').length,
     weekend: records.filter(r => r.status === 'Weekend').length,
     pending: records.filter(r => r.status === 'Pending').length,
   };
@@ -279,25 +276,6 @@ export default function TeamAttendance() {
   }
 
 
-  async function handleRegularize() {
-    if (!regReason.trim()) { toast.error('Reason is required'); return; }
-    setRegSaving(true);
-    try {
-      await api.post('/attendance/regularize', {
-        employee_id: regRow.employee_id,
-        date,
-        check_in:  regCheckIn  || null,
-        check_out: regCheckOut || null,
-        reason: regReason.trim(),
-      });
-      toast.success('Regularization request submitted');
-      setRegRow(null); setRegCheckIn(''); setRegCheckOut(''); setRegReason('');
-    } catch (e) {
-      toast.error('Regularization failed: ' + (e?.response?.data?.error || e.message));
-    } finally {
-      if (isMounted.current) setRegSaving(false);
-    }
-  }
 
   function getWeekEmployees() {
     const map = new Map();
@@ -337,12 +315,12 @@ export default function TeamAttendance() {
 
           {/* View toggle */}
           <div style={{ display: 'flex', background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8, overflow: 'hidden' }}>
-            {['daily', 'weekly'].map(v => (
+            {['daily', 'weekly', 'monthly'].map(v => (
               <button key={v} onClick={() => setViewMode(v)}
                 style={{ padding: '7px 16px', border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 600, textTransform: 'capitalize',
-                  background: viewMode === v ? '#6366f1' : 'transparent',
+                  background: viewMode === v ? '#6B3FDB' : 'transparent',
                   color: viewMode === v ? '#fff' : '#6b7280' }}>
-                {v}
+                {v === 'monthly' ? 'Monthly summary' : v}
               </button>
             ))}
           </div>
@@ -370,17 +348,19 @@ export default function TeamAttendance() {
           {/* Bulk mark — admin only */}
           {isAdmin && (
             <button onClick={() => { setBulkDate(date); setShowBulkModal(true); }}
-              style={{ padding: '7px 14px', background: '#7c5cf0', color: '#fff', border: 'none', borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+              style={{ padding: '7px 14px', background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap' }}>
               Bulk Mark
             </button>
           )}
 
-          {/* CSV export */}
+          {/* CSV export (the monthly summary has its own) */}
+          {viewMode !== 'monthly' && (
           <button
             onClick={() => viewMode === 'daily' ? exportDailyCSV(filtered, date) : exportWeeklyCSV(weekData, weekDates)}
-            style={{ padding: '7px 14px', background: 'var(--color-primary, #6B3FDB)', color: '#fff', border: 'none', borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4 }}>
+            style={{ padding: '7px 14px', background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4 }}>
             <Download size={13} /> Export CSV
           </button>
+          )}
         </div>
       </div>
 
@@ -388,12 +368,11 @@ export default function TeamAttendance() {
       {viewMode === 'daily' && (
         <div style={{ display: 'grid', gridTemplateColumns: `repeat(${6 + (stats.weekend > 0 ? 1 : 0) + (stats.pending > 0 ? 1 : 0)}, 1fr)`, gap: 12, marginBottom: 20 }}>
           {[
-            { label: 'Total',    value: stats.total,   color: '#6366f1' },
+            { label: 'Total',    value: stats.total,   color: '#6B3FDB' },
             { label: 'Present',  value: stats.present, color: '#10b981' },
             { label: 'Absent',   value: stats.absent,  color: '#ef4444' },
             { label: 'Late',     value: stats.late,    color: '#7c5cf0' },
             { label: 'On Leave', value: stats.leave,   color: '#3b82f6' },
-            { label: 'WFH',      value: stats.wfh,     color: '#0ea5e9' },
             ...(stats.weekend > 0 ? [{ label: 'Weekend', value: stats.weekend, color: '#6b7280' }] : []),
             ...(stats.pending > 0 ? [{ label: 'Pending', value: stats.pending, color: '#6B3FDB' }] : []),
           ].map(s => (
@@ -446,7 +425,7 @@ export default function TeamAttendance() {
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
               <thead>
                 <tr style={{ background: '#f9fafb' }}>
-                  {['Employee', 'Department', 'Check In', 'Check Out', 'Hours', 'WFH', 'Status', 'Actions'].map(h => (
+                  {['Employee', 'Department', 'Check In', 'Check Out', 'Hours', 'Status', 'Actions'].map(h => (
                     <th key={h} style={{ padding: '10px 16px', textAlign: 'left', fontWeight: 600, color: '#374151', borderBottom: '1px solid #f0f0f4', whiteSpace: 'nowrap' }}>{h}</th>
                   ))}
                 </tr>
@@ -464,11 +443,6 @@ export default function TeamAttendance() {
                       <td style={{ padding: '10px 16px', fontWeight: 600, color: '#1f2937' }}>
                         {r.total_hours ? `${Number(r.total_hours).toFixed(1)}h` : '—'}
                       </td>
-                      <td style={{ padding: '10px 16px', color: '#6b7280', textAlign: 'center' }}>
-                        {r.work_mode === 'WFH'
-                          ? <span style={{ color: '#0ea5e9', fontWeight: 600, fontSize: 11 }}>WFH</span>
-                          : '—'}
-                      </td>
                       <td style={{ padding: '10px 16px' }}>
                         <span style={{ background: sc.bg, color: sc.color, padding: '3px 10px', borderRadius: 20, fontSize: 11, fontWeight: 600 }}>
                           {r.status}
@@ -482,7 +456,7 @@ export default function TeamAttendance() {
                               {ALL_STATUSES.map(s => <option key={s}>{s}</option>)}
                             </select>
                             <button onClick={() => saveRowStatus(r)} disabled={editSaving}
-                              style={{ fontSize: 11, padding: '3px 8px', background: '#6366f1', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}>
+                              style={{ fontSize: 11, padding: '3px 8px', background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}>
                               {editSaving ? '…' : 'Save'}
                             </button>
                             <button onClick={() => setEditingRow(null)}
@@ -498,18 +472,6 @@ export default function TeamAttendance() {
                                 Edit
                               </button>
                             )}
-                            {(isAdmin || hasAnyRole?.('manager', 'department_head')) && r.status !== 'Weekend' && (
-                              <button
-                                onClick={() => {
-                                  setRegRow(r);
-                                  setRegCheckIn(r.check_in_time ? String(r.check_in_time).slice(0, 5) : '');
-                                  setRegCheckOut(r.check_out_time ? String(r.check_out_time).slice(0, 5) : '');
-                                  setRegReason('');
-                                }}
-                                style={{ fontSize: 11, padding: '3px 10px', background: '#ede9fe', color: '#5b21b6', border: '1px solid #ddd6fe', borderRadius: 6, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 3 }}>
-                                <FileEdit size={11} /> Regularize
-                              </button>
-                            )}
                           </div>
                         )}
                       </td>
@@ -521,6 +483,9 @@ export default function TeamAttendance() {
           )}
         </div>
       )}
+
+      {/* ── Monthly summary (§278.3): leaves, late bands, early exits, geo fence, salary cut ── */}
+      {viewMode === 'monthly' && <TeamMonthlySummary department={isAdmin ? deptFilter : ''} />}
 
       {/* ── Weekly table ── */}
       {viewMode === 'weekly' && (
@@ -535,7 +500,7 @@ export default function TeamAttendance() {
                   <th style={{ padding: '10px 16px', textAlign: 'left', fontWeight: 600, color: '#374151', borderBottom: '1px solid #f0f0f4', minWidth: 110 }}>Department</th>
                   {weekDates.map((d, i) => (
                     <th key={d} style={{ padding: '10px 16px', textAlign: 'center', fontWeight: 600,
-                      color: d === TODAY ? '#6366f1' : '#374151',
+                      color: d === TODAY ? '#6B3FDB' : '#374151',
                       borderBottom: '1px solid #f0f0f4', minWidth: 90 }}>
                       <div>{DAY_LABELS[i]}</div>
                       <div style={{ fontSize: 10, color: '#9ca3af', fontWeight: 400 }}>{d.slice(5)}</div>
@@ -612,50 +577,6 @@ export default function TeamAttendance() {
         </div>
       )}
 
-      {/* ── Regularize Modal ── */}
-      {regRow && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
-          <div style={{ background: '#fff', borderRadius: 14, padding: 28, width: 400, boxShadow: '0 20px 60px rgba(0,0,0,0.15)' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-              <h2 style={{ fontSize: 16, fontWeight: 700, color: '#1f2937', margin: 0 }}>Regularize Attendance</h2>
-              <button onClick={() => setRegRow(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#9ca3af', padding: 4 }}><X size={18} /></button>
-            </div>
-            <div style={{ background: '#f5f3ff', borderRadius: 8, padding: '10px 14px', marginBottom: 18 }}>
-              <p style={{ margin: 0, fontSize: 13, color: '#5b21b6', fontWeight: 600 }}>{regRow.employee_name}</p>
-              <p style={{ margin: '2px 0 0', fontSize: 12, color: '#6B3FDB' }}>{regRow.department} · {date}</p>
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 14 }}>
-              <div>
-                <label style={labelStyle}>Check In Time</label>
-                <input type="time" value={regCheckIn} onChange={e => setRegCheckIn(e.target.value)} style={inputStyle} />
-              </div>
-              <div>
-                <label style={labelStyle}>Check Out Time</label>
-                <input type="time" value={regCheckOut} onChange={e => setRegCheckOut(e.target.value)} style={inputStyle} />
-              </div>
-            </div>
-            <div style={{ marginBottom: 22 }}>
-              <label style={labelStyle}>Reason *</label>
-              <input value={regReason} onChange={e => setRegReason(e.target.value)}
-                placeholder="Reason for regularization"
-                style={inputStyle} />
-            </div>
-            <p style={{ fontSize: 11, color: '#9ca3af', margin: '-14px 0 16px' }}>
-              This request will go through the standard approval workflow.
-            </p>
-            <div style={{ display: 'flex', gap: 10 }}>
-              <button onClick={() => setRegRow(null)}
-                style={{ flex: 1, padding: '9px 0', background: '#f3f4f6', color: '#374151', border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
-                Cancel
-              </button>
-              <button onClick={handleRegularize} disabled={regSaving}
-                style={{ flex: 1, padding: '9px 0', background: regSaving ? '#a78bfa' : '#6366f1', color: '#fff', border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: regSaving ? 'not-allowed' : 'pointer' }}>
-                {regSaving ? 'Submitting…' : 'Submit Request'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </PageShell>
   );
 }

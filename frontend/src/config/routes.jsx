@@ -307,7 +307,8 @@ export const ROUTES = {
   LeaveApprovals:        { module: 'leaves', component: lazy(() => import('@/features/leaves/pages/LeaveApprovals')) },
   LeaveCalendar:         { module: 'leaves', component: lazy(() => import('@/features/leaves/pages/LeaveCalendar')) },
   LeaveReports:          { module: 'leaves', component: lazy(() => import('@/features/leaves/pages/LeaveReports')) },
-  CompOff:               { module: 'leaves', component: lazy(() => import('@/features/leaves/pages/CompOffPage')) },
+  // In Attendance → Approvals (owner, 2026-11-19); the /comp-off API still checks leaves permissions.
+  CompOff:               { module: 'attendance', component: lazy(() => import('@/features/leaves/pages/CompOffPage')) },
   LeaveEncashment:       { module: 'leaves', component: lazy(() => import('@/features/leaves/pages/LeaveEncashmentPage')) },
   // Legacy page keys — redirect to unified LeaveApprovals with pre-selected queue
   HRApprovalLeave:       { module: 'leaves', component: lazy(() => import('@/features/leaves/pages/LeaveApprovals')), props: () => ({ initialQueue: 'hr' }) },
@@ -1395,12 +1396,11 @@ export const NAV_ITEMS = [
     { name: 'Team & Monitoring',         separator: true },
     { name: 'Live Workforce',            page: 'LiveWorkforceDashboard' },
     { name: 'Team Attendance',           page: 'TeamAttendance' },
-    { name: 'Shift Calendar',            page: 'ShiftCalendar' },
-    // Punch machines: add/configure devices, sync now / automatic sync, CSV
-    // import and the punch log. moduleActions: only attendance:edit holders.
-    { name: 'Punch Machines',            page: 'PunchImport', module: 'attendance', moduleActions: ['edit'] },
+    // Daily contract-labour attendance is an everyday task, not configuration (owner, 2026-11-19).
+    { name: 'Contract Labour',           page: 'ContractLabour' },
+    // Shift Calendar and Punch Machines are Configuration tabs (owner, 2026-11-19: fewer menu rows).
     { name: 'Approvals',                 separator: true },
-    { name: 'Approvals',                 page: 'AttendanceApprovals' },   // Regularization·Overtime·Shift change·Delegation
+    { name: 'Approvals',                 page: 'AttendanceApprovals' },   // Regularization·Overtime·Shift change·Comp off·Delegation
     { name: 'Reporting',                 separator: true },
     { name: 'Reports',                   page: 'AttendanceReportsHub' },
     { name: 'Audit Logs',                page: 'AttendanceAuditLogs' },
@@ -1408,7 +1408,7 @@ export const NAV_ITEMS = [
     // and hands it to Payroll Center. It was hidden inside Configuration.
     { name: 'Payroll Sync',              page: 'PayrollSync', module: 'attendance', moduleActions: ['edit'] },
     { name: 'Configuration',             separator: true },
-    { name: 'Configuration',             page: 'AttendanceConfig' },   // Shifts·Work Centres·Contract Labour·Geo Fencing·Settings
+    { name: 'Configuration',             page: 'AttendanceConfig' },   // Shifts·Shift Calendar·Punch Machines·Work Centres·Geo Fencing·Settings
 
     // ── Consolidated into the hubs above (2026-09-16 IA pass) ──────────
     // These rows are NOT drawn in the sidebar — Sidebar.jsx skips any entry
@@ -1421,9 +1421,14 @@ export const NAV_ITEMS = [
     { name: 'OvertimeApprovals',         page: 'OvertimeApprovals', inHub: 'AttendanceApprovals' },
     { name: 'ShiftChangeApprovals',      page: 'ShiftChangeApprovals', inHub: 'AttendanceApprovals' },
     { name: 'ApprovalDelegation',        page: 'ApprovalDelegation', inHub: 'AttendanceApprovals' },
+    // Comp off moved from Leaves to Attendance → Approvals (owner, 2026-11-19).
+    { name: 'CompOff',                   page: 'CompOff', inHub: 'AttendanceApprovals' },
     { name: 'Shifts',                    page: 'Shifts', inHub: 'AttendanceConfig' },
+    { name: 'ShiftCalendar',             page: 'ShiftCalendar', inHub: 'AttendanceConfig' },
+    // Punch machines: add/configure devices, sync now / automatic sync, CSV
+    // import and the punch log. moduleActions: only attendance:edit holders.
+    { name: 'PunchImport',               page: 'PunchImport', inHub: 'AttendanceConfig', module: 'attendance', moduleActions: ['edit'] },
     { name: 'WorkCentres',               page: 'WorkCentres', inHub: 'AttendanceConfig' },
-    { name: 'ContractLabour',            page: 'ContractLabour', inHub: 'AttendanceConfig' },
     { name: 'GeoFencing',                page: 'GeoFencing', inHub: 'AttendanceConfig' },
     { name: 'GeneralSettings',           page: 'GeneralSettings', inHub: 'AttendanceConfig' },
     { name: 'AttendanceAnalytics',       page: 'AttendanceAnalytics', inHub: 'AttendanceReportsHub' },
@@ -1438,7 +1443,6 @@ export const NAV_ITEMS = [
     { name: 'Apply Leave',       page: 'ApplyLeave' },
     { name: 'Leave Calendar',    page: 'LeaveCalendar' },
     { name: 'Holiday Calendar',  page: 'HolidayCalendar' },
-    { name: 'Comp Off',          page: 'CompOff' },
     { name: 'Approvals',         separator: true },
     { name: 'Leave Approvals',   page: 'LeaveApprovals' },
     { name: 'Team Leaves',       page: 'TeamLeaves' },

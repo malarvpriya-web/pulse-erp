@@ -104,6 +104,8 @@ describe('Attendance Settings — one row per company', () => {
     const res = await request(admin()).put('/api/attendance/general-settings').send({
       working_days: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'],
       full_day_hours: 8, break_duration: 30, regularization_monthly_limit: 3, ot_enabled: false,
+      // §278.3: the default is same-day only; these tests ask about last month.
+      regularization_window_days: 62,
     });
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body.weekend_days).toEqual(['sunday']);

@@ -27,6 +27,54 @@ const ACTION_STYLES = {
 
 const KNOWN_ACTIONS = Object.keys(ACTION_STYLES);
 
+// Before / after as a readable table (owner, 2026-11-19: the raw JSON with
+// ids like "id: 31" was not readable). Only the fields that changed are
+// listed when both sides exist; ids and timestamps are left out.
+const HIDDEN = new Set(['id', 'company_id', 'created_at', 'updated_at', 'created_by', 'updated_by', 'deleted_at']);
+const parse = (v) => { if (v == null) return null; if (typeof v === 'string') { try { return JSON.parse(v); } catch { return { value: v }; } } return v; };
+const label = (k) => k.replace(/_/g, ' ').replace(/\bot\b/g, 'OT').replace(/^\w/, (c) => c.toUpperCase());
+function show(v) {
+  if (v == null || v === '') return '—';
+  if (typeof v === 'boolean') return v ? 'Yes' : 'No';
+  if (Array.isArray(v)) {
+    if (v.every((x) => typeof x !== 'object')) return v.join(', ') || '—';
+    return `${v.length} item${v.length === 1 ? '' : 's'}`;
+  }
+  if (typeof v === 'object') return Object.entries(v).map(([k, x]) => `${label(k)}: ${show(x)}`).join(' · ');
+  const s = String(v);
+  if (/^\d{4}-\d{2}-\d{2}T/.test(s)) { const d = new Date(s); return Number.isNaN(d.getTime()) ? s : d.toLocaleString('en-GB', { day: '2-digit', month: 'short', year: '2-digit', hour: '2-digit', minute: '2-digit' }); }
+  if (/^\d{2}:\d{2}:\d{2}$/.test(s)) return s.slice(0, 5);
+  return s;
+}
+function ChangeTable({ before, after }) {
+  const b = parse(before) || {}; const a = parse(after) || {};
+  const both = before != null && after != null;
+  const keys = [...new Set([...Object.keys(b), ...Object.keys(a)])].filter((k) => !HIDDEN.has(k))
+    .filter((k) => !both || JSON.stringify(b[k]) !== JSON.stringify(a[k]));
+  const cell = { padding: '6px 10px', borderBottom: '1px solid #f0f0f4', fontSize: 12, verticalAlign: 'top' };
+  if (!keys.length) return <div style={{ fontSize: 12, color: '#9ca3af' }}>No field changed.</div>;
+  return (
+    <table style={{ width: '100%', borderCollapse: 'collapse', background: '#fff', border: '1px solid #f0f0f4', borderRadius: 6 }}>
+      <thead>
+        <tr style={{ textAlign: 'left', color: '#9ca3af', fontSize: 11, textTransform: 'uppercase' }}>
+          <th style={cell}>Field</th>
+          {both ? <><th style={cell}>Before</th><th style={cell}>After</th></> : <th style={cell}>{after != null ? 'Value' : 'Was'}</th>}
+        </tr>
+      </thead>
+      <tbody>
+        {keys.map((k) => (
+          <tr key={k}>
+            <td style={{ ...cell, fontWeight: 600, color: '#374151', whiteSpace: 'nowrap' }}>{label(k)}</td>
+            {both
+              ? <><td style={{ ...cell, color: '#9ca3af' }}>{show(b[k])}</td><td style={{ ...cell, color: '#6B3FDB', fontWeight: 600 }}>{show(a[k])}</td></>
+              : <td style={cell}>{show(after != null ? a[k] : b[k])}</td>}
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
 function LogRow({ log }) {
   const [expanded, setExpanded] = useState(false);
   const st = ACTION_STYLES[log.action] || { bg: '#f3f4f6', color: '#6b7280', label: log.action };
@@ -76,24 +124,7 @@ function LogRow({ log }) {
       {expanded && hasDiff && (
         <tr style={{ background: '#f9fafb', borderBottom: '1px solid #f0f0f4' }}>
           <td colSpan={7} style={{ padding: '12px 14px' }}>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-              {log.before_data && (
-                <div>
-                  <div style={{ fontSize: 11, fontWeight: 600, color: '#9ca3af', marginBottom: 6, textTransform: 'uppercase' }}>Before</div>
-                  <pre style={{ fontSize: 12, background: '#fff', border: '1px solid #f0f0f4', borderRadius: 6, padding: 10, margin: 0, overflow: 'auto', maxHeight: 150, color: '#374151' }}>
-                    {JSON.stringify(typeof log.before_data === 'string' ? JSON.parse(log.before_data) : log.before_data, null, 2)}
-                  </pre>
-                </div>
-              )}
-              {log.after_data && (
-                <div>
-                  <div style={{ fontSize: 11, fontWeight: 600, color: '#9ca3af', marginBottom: 6, textTransform: 'uppercase' }}>After</div>
-                  <pre style={{ fontSize: 12, background: '#fff', border: '1px solid #f0f0f4', borderRadius: 6, padding: 10, margin: 0, overflow: 'auto', maxHeight: 150, color: '#374151' }}>
-                    {JSON.stringify(typeof log.after_data === 'string' ? JSON.parse(log.after_data) : log.after_data, null, 2)}
-                  </pre>
-                </div>
-              )}
-            </div>
+            <ChangeTable before={log.before_data} after={log.after_data} />
           </td>
         </tr>
       )}

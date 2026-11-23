@@ -8,6 +8,8 @@ import { captureBefore } from '../../../middlewares/captureBefore.js';
 import { employeeOf } from '../../../shared/scope.js';
 import { ratingProblem } from '../../../shared/ratings.js';
 import { hasRole } from '../../../middlewares/auth.middleware.js';
+import { punctualityFor } from '../../../shared/attendancePunctuality.js';
+import { assertCanViewEmployee } from '../../attendance/attendance.authz.js';
 
 const router = express.Router();
 
@@ -563,6 +565,13 @@ router.post('/reviews/:id/manager-review', async (req, res) => {
         });
       }
     }
+    // §278.3: keep the attendance & punctuality figures the manager saw.
+    const att = await reviewAttendance(rev).catch(() => null);
+    if (att) {
+      await client.query(`UPDATE performance_reviews SET attendance_score = $2, attendance_summary = $3::jsonb WHERE id = $1`,
+        [rev.id, att.score, JSON.stringify(att)]);
+      rev.attendance_score = att.score; rev.attendance_summary = att;
+    }
     await client.query('COMMIT');
     res.json(rev);
   } catch (err) {
@@ -721,6 +730,37 @@ router.get('/reviews', async (req, res) => {
     }
     const reviews = await performanceRepository.findReviews(filters);
     res.json(reviews);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Attendance & punctuality for a review's period (§278.3, owner 2026-11-19):
+// the review cycle's dates, or the last 12 months when the review has no
+// cycle; never past today. See shared/attendancePunctuality.js for the score.
+async function reviewAttendance(review) {
+  const today = new Date().toLocaleDateString('en-CA');
+  let from = null; let to = null;
+  if (review.review_cycle_id) {
+    const { rows: [c] } = await pool.query(
+      `SELECT start_date::text AS s, end_date::text AS e FROM review_cycles WHERE id = $1`, [review.review_cycle_id]);
+    from = c?.s || null; to = c?.e || null;
+  }
+  if (!from || !to) {
+    const d = new Date(); d.setFullYear(d.getFullYear() - 1);
+    from = d.toLocaleDateString('en-CA'); to = today;
+  }
+  return punctualityFor(review.employee_id, from, [to, today].sort()[0], review.company_id);
+}
+
+router.get('/reviews/:id/attendance', async (req, res) => {
+  try {
+    const review = await performanceRepository.findReviewById(req.params.id, cid(req));
+    if (!review) return res.status(404).json({ error: 'Review not found' });
+    // HR, the employee, or their manager / department head / delegate.
+    const denied = await assertCanViewEmployee(pool, req, review.employee_id);
+    if (denied) return res.status(denied.status).json(denied.body);
+    res.json(await reviewAttendance(review));
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

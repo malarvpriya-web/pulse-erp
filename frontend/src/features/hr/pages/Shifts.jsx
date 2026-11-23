@@ -1,10 +1,31 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Plus, X, Clock, Edit2, CalendarClock } from 'lucide-react';
+import { Plus, X, Clock, Edit2, CalendarClock, ChevronDown } from 'lucide-react';
 import api from '@/services/api/client';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
 import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+// Owner, 2026-11-19: the page was one long scroll. Each section below the
+// shift cards is a line with a count; clicking it opens the section.
+function Panel({ title, summary, hint, open, onToggle, children }) {
+  return (
+    <div style={{ marginTop: 12, border: '1px solid #ece9f8', borderRadius: 12, background: '#fff' }}>
+      <button type="button" onClick={onToggle} aria-expanded={open}
+        style={{ display: 'flex', alignItems: 'center', gap: 10, width: '100%', padding: '13px 16px', background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left' }}>
+        <span style={{ fontSize: 15, fontWeight: 700, color: '#1f2937' }}>{title}</span>
+        <span style={{ flex: 1, fontSize: 12, color: '#6b7280' }}>{summary}</span>
+        <ChevronDown size={16} color="#6B3FDB" style={{ transition: 'transform .15s', transform: open ? 'rotate(180deg)' : 'none' }} />
+      </button>
+      {open && (
+        <div style={{ padding: '0 16px 14px' }}>
+          {hint && <p style={{ margin: '0 0 10px', fontSize: 12, color: '#64748b' }}>{hint}</p>}
+          {children}
+        </div>
+      )}
+    </div>
+  );
+}
 const DEFAULT_ROLE_GRACE = { office: 15, field: 25, manager: 10 };
 
 const emptyForm = () => ({
@@ -12,7 +33,7 @@ const emptyForm = () => ({
   start: '09:00',
   end: '18:00',
   grace_minutes: 15,
-  color: '#6366f1',
+  color: '#6B3FDB',
   break_duration: 30,
   half_day_hours: 4,
   departments: [],
@@ -24,7 +45,9 @@ const emptyForm = () => ({
 /**
  * @param {Function} setPage - navigate to another page key
  */
-export default function Shifts({ setPage: _setPage }) {
+export default function Shifts({ setPage: _setPage, embedded }) {
+  const [openPanel, setOpenPanel] = useState(null);
+  const panel = (key) => ({ open: openPanel === key, onToggle: () => setOpenPanel((k) => (k === key ? null : key)) });
   const [shifts, setShifts]           = useState([]);
   const [departments, setDepartments] = useState([]);
   const [loading, setLoading]         = useState(false);
@@ -267,17 +290,31 @@ export default function Shifts({ setPage: _setPage }) {
     }
   };
 
-  return (
+  // Inside Attendance → Configuration the hub already draws the purple header,
+  // so the page shows a plain toolbar instead of a second hero (owner, 2026-11-19).
+  const wrap = (children) => (embedded ? (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 12 }}>
+        <div style={{ fontSize: 13, color: '#6b7280' }}>{shifts.length} shift{shifts.length === 1 ? '' : 's'}</div>
+        <button className="pulse-btn-primary" onClick={openCreate}><Plus size={14} /> Add Shift</button>
+      </div>
+      {children}
+    </div>
+  ) : (
     <PageShell dock={
       <PageHero
         icon={CalendarClock}
-        eyebrow="Human Resources"
+        eyebrow="Attendance"
         title="Shift Management"
         actions={<button className="plh-cta" onClick={openCreate}>
           <Plus size={14} /> Add Shift
         </button>}
       />
-    }>
+    }>{children}</PageShell>
+  ));
+
+  return wrap(
+    <>
       <ConfirmDialog
         open={!!pendingCancelAssignment}
         title="Remove Assignment"
@@ -370,8 +407,8 @@ export default function Shifts({ setPage: _setPage }) {
         <strong>Attendance Color Legend:</strong> Shift color band is used as the attendance calendar tag for that shift and in shift-wise late report filters.
       </div>
 
-      <div style={{ marginTop: 22, border: '1px solid #e5e7eb', borderRadius: 12, padding: 14 }}>
-        <h3 style={{ margin: '0 0 10px', fontSize: 16 }}>Individual Employee Shift Override</h3>
+      <Panel title="Assign a shift to an employee" summary={`${assignments.length} active assignment${assignments.length === 1 ? '' : 's'}`}
+        hint="The employee's regular shift from the chosen date." {...panel('assign')}>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
           <select value={assignForm.employee_id} onChange={e => setAssignForm(f => ({ ...f, employee_id: e.target.value }))} style={{ padding: 8, borderRadius: 8, border: '1px solid #d1d5db' }}>
             <option value="">Select employee</option>
@@ -383,7 +420,7 @@ export default function Shifts({ setPage: _setPage }) {
           </select>
           <input type="date" value={assignForm.effective_from} onChange={e => setAssignForm(f => ({ ...f, effective_from: e.target.value }))} style={{ padding: 8, borderRadius: 8, border: '1px solid #d1d5db' }} />
           <input value={assignForm.note} onChange={e => setAssignForm(f => ({ ...f, note: e.target.value }))} placeholder="Reason/note" style={{ padding: 8, borderRadius: 8, border: '1px solid #d1d5db' }} />
-          <button onClick={handleAssignEmployee} style={{ border: 'none', borderRadius: 8, background: 'var(--color-primary, #6B3FDB)', color: '#fff', fontWeight: 600 }}>Assign Override</button>
+          <button onClick={handleAssignEmployee} style={{ border: 'none', borderRadius: 8, background: '#6B3FDB', color: '#fff', fontWeight: 600 }}>Assign Shift</button>
         </div>
         {assignments.length > 0 && (
           <div style={{ marginTop: 12, borderTop: '1px solid #f1f5f9', paddingTop: 10 }}>
@@ -396,7 +433,7 @@ export default function Shifts({ setPage: _setPage }) {
                   <span style={{ color: '#1e293b' }}>
                     <strong>{emp?.name || emp?.full_name || a.employee_id}</strong>
                     <span style={{ color: '#94a3b8', margin: '0 6px' }}>→</span>
-                    <span style={{ color: '#0f766e', fontWeight: 600 }}>{sh?.name || `Shift #${a.shift_id}`}</span>
+                    <span style={{ color: '#6B3FDB', fontWeight: 600 }}>{sh?.name || `Shift #${a.shift_id}`}</span>
                     {a.effective_from && <span style={{ color: '#64748b', marginLeft: 6 }}>from {a.effective_from}</span>}
                     {a.note && <span style={{ color: '#94a3b8', marginLeft: 6, fontStyle: 'italic' }}>{a.note}</span>}
                   </span>
@@ -410,10 +447,10 @@ export default function Shifts({ setPage: _setPage }) {
             {assignments.length > 8 && <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>+{assignments.length - 8} more</div>}
           </div>
         )}
-      </div>
+      </Panel>
 
-      <div style={{ marginTop: 16, border: '1px solid #e5e7eb', borderRadius: 12, padding: 14 }}>
-        <h3 style={{ margin: '0 0 10px', fontSize: 16 }}>Shift Rotation Schedule (Week 1 / Week 2)</h3>
+      <Panel title="Rotation (Week 1 / Week 2)" summary={`${rotations.length} active rotation${rotations.length === 1 ? '' : 's'}`}
+        hint="A team alternates between two shifts every week." {...panel('rotation')}>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
           <select value={rotationForm.team} onChange={e => setRotationForm(f => ({ ...f, team: e.target.value }))} style={{ padding: 8, borderRadius: 8, border: '1px solid #d1d5db' }}>
             <option value="">Select team/department</option>
@@ -438,7 +475,7 @@ export default function Shifts({ setPage: _setPage }) {
                 <span style={{ color: '#1e293b' }}>
                   <strong>{r.team}</strong>
                   <span style={{ color: '#94a3b8', margin: '0 6px' }}>·</span>
-                  <span>W1: <span style={{ fontWeight: 600, color: '#1d4ed8' }}>{findShift(r.week_1_shift_id)?.name || `#${r.week_1_shift_id}`}</span></span>
+                  <span>W1: <span style={{ fontWeight: 600, color: '#6B3FDB' }}>{findShift(r.week_1_shift_id)?.name || `#${r.week_1_shift_id}`}</span></span>
                   <span style={{ color: '#94a3b8', margin: '0 6px' }}>·</span>
                   <span>W2: <span style={{ fontWeight: 600, color: '#6B3FDB' }}>{findShift(r.week_2_shift_id)?.name || `#${r.week_2_shift_id}`}</span></span>
                   {r.effective_from && <span style={{ color: '#64748b', marginLeft: 6 }}>from {r.effective_from}</span>}
@@ -452,16 +489,11 @@ export default function Shifts({ setPage: _setPage }) {
             {rotations.length > 8 && <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>+{rotations.length - 8} more</div>}
           </div>
         )}
-      </div>
+      </Panel>
 
       {/* ── Single-Date Override ─────────────────────────────────────────── */}
-      <div style={{ marginTop: 16, border: '1px solid #e5e7eb', borderRadius: 12, padding: 14 }}>
-        <div style={{ marginBottom: 10 }}>
-          <h3 style={{ margin: '0 0 2px', fontSize: 16 }}>Single-Date Shift Override</h3>
-          <p style={{ margin: 0, fontSize: 12, color: '#64748b' }}>
-            Override the shift for one specific date — highest priority, overrides permanent assignment and rotation.
-          </p>
-        </div>
+      <Panel title="One-day shift change" summary={`${overrides.length} upcoming`}
+        hint="A different shift for one date only — it wins over the regular shift and any rotation." {...panel('override')}>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
           <select value={overrideForm.employee_id} onChange={e => setOverrideForm(f => ({ ...f, employee_id: e.target.value }))}
             style={{ padding: 8, borderRadius: 8, border: '1px solid #d1d5db' }}>
@@ -513,7 +545,7 @@ export default function Shifts({ setPage: _setPage }) {
             {overrides.length > 10 && <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>+{overrides.length - 10} more</div>}
           </div>
         )}
-      </div>
+      </Panel>
 
       {drawer !== null && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
@@ -566,7 +598,7 @@ export default function Shifts({ setPage: _setPage }) {
                       style={{ width: '40px', height: '36px', padding: '2px', borderRadius: '6px', border: '1px solid #e5e7eb', cursor: 'pointer' }} />
                     <input value={form.color} onChange={e => setForm(f => ({ ...f, color: e.target.value }))}
                       style={{ flex: 1, padding: '8px 10px', borderRadius: '8px', border: '1px solid #e5e7eb', fontSize: '12px', fontFamily: 'monospace' }}
-                      placeholder="#6366f1" maxLength={7} />
+                      placeholder="#6B3FDB" maxLength={7} />
                   </div>
                 </div>
               </div>
@@ -584,9 +616,9 @@ export default function Shifts({ setPage: _setPage }) {
                   {DAYS.map(day => (
                     <button key={day} onClick={() => toggleOffDay(day)}
                       style={{ padding: '4px 10px', borderRadius: '20px', fontSize: '12px', fontWeight: 600, cursor: 'pointer', border: '1px solid',
-                        background: form.weekly_off_days?.includes(day) ? '#334155' : '#f3f4f6',
+                        background: form.weekly_off_days?.includes(day) ? '#6B3FDB' : '#f3f4f6',
                         color: form.weekly_off_days?.includes(day) ? '#fff' : '#374151',
-                        borderColor: form.weekly_off_days?.includes(day) ? '#334155' : '#e5e7eb' }}>
+                        borderColor: form.weekly_off_days?.includes(day) ? '#6B3FDB' : '#e5e7eb' }}>
                       {day}
                     </button>
                   ))}
@@ -604,9 +636,9 @@ export default function Shifts({ setPage: _setPage }) {
                   {departments.map(d => (
                     <button key={d} onClick={() => toggleDept(d)}
                       style={{ padding: '4px 12px', borderRadius: '20px', fontSize: '12px', fontWeight: 600, cursor: 'pointer', border: '1px solid',
-                        background: form.departments.includes(d) ? '#6366f1' : '#f3f4f6',
+                        background: form.departments.includes(d) ? '#6B3FDB' : '#f3f4f6',
                         color: form.departments.includes(d) ? '#fff' : '#374151',
-                        borderColor: form.departments.includes(d) ? '#6366f1' : '#e5e7eb' }}>
+                        borderColor: form.departments.includes(d) ? '#6B3FDB' : '#e5e7eb' }}>
                       {d}
                     </button>
                   ))}
@@ -615,13 +647,13 @@ export default function Shifts({ setPage: _setPage }) {
             </div>
             <div style={{ display: 'flex', gap: '10px', marginTop: '20px', justifyContent: 'flex-end' }}>
               <button onClick={() => setDrawer(null)} style={{ padding: '8px 16px', borderRadius: '8px', border: '1px solid #e5e7eb', background: '#fff', fontSize: '13px', cursor: 'pointer' }}>Cancel</button>
-              <button onClick={handleSave} style={{ padding: '8px 16px', borderRadius: '8px', border: 'none', background: '#6366f1', color: '#fff', fontWeight: 600, fontSize: '13px', cursor: 'pointer' }}>
+              <button onClick={handleSave} style={{ padding: '8px 16px', borderRadius: '8px', border: 'none', background: '#6B3FDB', color: '#fff', fontWeight: 600, fontSize: '13px', cursor: 'pointer' }}>
                 {drawer === 'create' ? 'Create Shift' : 'Save Changes'}
               </button>
             </div>
           </div>
         </div>
       )}
-    </PageShell>
+    </>
   );
 }

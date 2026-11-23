@@ -8,7 +8,7 @@
  * it afterwards. Used by My Reviews as a tab, and on its own for a manager who
  * has no review of their own.
  */
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Star, X, Users, CheckCircle, Clock } from 'lucide-react';
 import api from '@/services/api/client';
 import { submitErrorMessage } from '../submitErrorMessage';
@@ -31,6 +31,54 @@ function Stars({ value, onChange, label }) {
       ))}
       {value ? <span className="prf-star-label">{RATING[value]}</span> : null}
     </div>
+  );
+}
+
+// Attendance & punctuality for the review period (§278.3, owner 2026-11-19):
+// shown to the manager while rating, and saved with the manager's review.
+export function ReviewAttendance({ reviewId }) {
+  const [a, setA] = useState(null);
+  const [err, setErr] = useState('');
+  useEffect(() => {
+    setA(null); setErr('');
+    api.get(`/performance/reviews/${reviewId}/attendance`)
+      .then((r) => setA(r.data)).catch(() => setErr('Attendance could not be loaded'));
+  }, [reviewId]);
+  if (err) return <section className="prf-self-summary"><label className="prf-field-label">Attendance & punctuality</label><p>{err}</p></section>;
+  if (!a) return null;
+  const tile = (label, value, bad) => (
+    <div style={{ background: '#faf9ff', border: '1px solid #efeafd', borderRadius: 8, padding: '6px 10px', minWidth: 92 }}>
+      <div style={{ fontSize: 16, fontWeight: 800, color: bad && value > 0 ? '#dc2626' : '#1f2937' }}>{value ?? '—'}</div>
+      <div style={{ fontSize: 11, color: '#6b7280' }}>{label}</div>
+    </div>
+  );
+  return (
+    <section className="prf-self-summary" data-testid="review-attendance">
+      <label className="prf-field-label">Attendance & punctuality ({a.from} to {a.to})</label>
+      <p style={{ margin: '4px 0 8px' }}>
+        <b>Punctuality rating (default): {a.score != null ? `${a.score} / 5` : 'not enough attendance yet'}</b>
+        {a.punctuality_pct != null && <> · on time {a.punctuality_pct}% of days present · present {a.attendance_pct}% of working days</>}
+        <br />
+        <b>Leave rating (default): {a.leave_rating != null ? `${a.leave_rating} / 5` : '—'}</b>
+        {' '}· {a.days_off ?? 0} days off ({a.leave_days ?? 0} leave + {Number(a.days_off ?? 0) - Number(a.leave_days ?? 0)} absent)
+      </p>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        {tile('Days present', a.present_days)}
+        {tile('Leave days', a.leave_days)}
+        {tile('Absent', a.absent_days, true)}
+        {tile('On time', a.on_time)}
+        {tile('Late ≤15 min', a.late_upto_15)}
+        {tile('Late 15–30 min', a.late_15_30, true)}
+        {tile('Late >30 min', a.late_over_30, true)}
+        {tile('Early exits', a.early_exits, true)}
+        {tile('Salary cut (days)', a.penalty_days, true)}
+      </div>
+      <p style={{ fontSize: 11, color: '#9ca3af', margin: '6px 0 0' }}>
+        Punctuality from on-time %: {(a.bands || []).map((b) => `≥${b.min_pct}% = ${b.rating}`).join(' · ')}.
+        {' '}Leave from days off: {(a.leave_bands || []).map((b) => (b.max_days == null ? `more = ${b.rating}` : `≤${b.max_days} = ${b.rating}`)).join(' · ')}.
+        {' '}Both tables: Attendance → Configuration → Settings. Saved with your review.
+      </p>
+    </section>
   );
 }
 
@@ -120,6 +168,7 @@ export default function TeamReviews({ team, reload, onToast }) {
                 {open.learnings && <p><b>Learnings:</b> {open.learnings}</p>}
                 {open.next_goals && <p><b>Next period:</b> {open.next_goals}</p>}
               </section>
+              <ReviewAttendance reviewId={open.id} />
               <section>
                 <label className="prf-field-label">Your rating *</label>
                 <Stars label="Manager rating" value={form.manager_rating} onChange={v => setForm(f => ({ ...f, manager_rating: v }))} />

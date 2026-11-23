@@ -134,7 +134,7 @@ try {
 
   // ── 2b. Shifts (API) and assignments ────────────────────────────────────
   const general = await call(HR, 'POST', '/hr/shifts', { name: 'General Shift (Sample)', start: '09:00', end: '17:30', grace_minutes: 10, color: '#6B3FDB', weekly_off: ['saturday', 'sunday'], break_duration: 30, half_day_hours: 4, ot_eligible: true });
-  const night = await call(HR, 'POST', '/hr/shifts', { name: 'Night Shift (Sample)', start: '21:00', end: '05:30', grace_minutes: 10, color: '#0E9F8E', weekly_off: ['saturday', 'sunday'], is_night_shift: true, break_duration: 30, half_day_hours: 4, ot_eligible: true });
+  const night = await call(HR, 'POST', '/hr/shifts', { name: 'Night Shift (Sample)', start: '21:00', end: '05:30', grace_minutes: 10, color: '#4C1D95', weekly_off: ['saturday', 'sunday'], is_night_shift: true, break_duration: 30, half_day_hours: 4, ot_eligible: true });
   const generalId = general.id ?? general.shift?.id; const nightId = night.id ?? night.shift?.id;
   const everyone = [1, 2, 3, ...people.map((p) => p.id)];
   for (const id of everyone) {
