@@ -106,7 +106,7 @@ describe('LeaveApprovals — queue visibility must fail CLOSED', () => {
     await renderWithAuth(<LeaveApprovals />);
     await waitFor(() => expect(screen.getByText('Leave Approvals')).toBeDefined());
     // Used to fail OPEN — an employee matching no queue role saw every queue.
-    expect(screen.queryByText('L1 — Manager')).toBeNull();
+    expect(screen.queryByText('Manager (L1)')).toBeNull();
     expect(screen.getByText('Team View')).toBeDefined();
   }, 20000);
 
@@ -114,7 +114,7 @@ describe('LeaveApprovals — queue visibility must fail CLOSED', () => {
     seedSession('employee', ['employee', 'manager']);
     const LeaveApprovals = (await import('@/features/leaves/pages/LeaveApprovals')).default;
     await renderWithAuth(<LeaveApprovals />);
-    await waitFor(() => expect(screen.getByText('L1 — Manager')).toBeDefined());
+    await waitFor(() => expect(screen.getByText('Manager (L1)')).toBeDefined());
   }, 20000);
 });
 

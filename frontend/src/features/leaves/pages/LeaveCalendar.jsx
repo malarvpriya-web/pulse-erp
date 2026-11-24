@@ -4,6 +4,7 @@ import { useAuth } from '@/context/AuthContext';
 import { ChevronLeft, ChevronRight, Users, Calendar, X, CalendarDays } from 'lucide-react';
 import './LeaveCalendar.css';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import { isWeeklyOff } from '../components/SaturdayOffPicker';
 
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 const DAYS   = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
@@ -20,8 +21,10 @@ const FILTER_SELECT = {
 
 export default function LeaveCalendar() {
   const now = new Date();
-  const { user, role } = useAuth();
-  const isAdmin = ADMIN_ROLES.includes((role || '').toLowerCase());
+  // hasAnyRole, not the primary `role`: someone holding HR or manager as a
+  // second role got the self-only view while the server sent everyone.
+  const { user, hasAnyRole } = useAuth();
+  const isAdmin = hasAnyRole(...ADMIN_ROLES);
 
   const [year,       setYear]       = useState(now.getFullYear());
   const [month,      setMonth]      = useState(now.getMonth());
@@ -36,6 +39,8 @@ export default function LeaveCalendar() {
   const [filterDept, setFilterDept] = useState('');
   const [filterEmp,  setFilterEmp]  = useState('');
   const abortRef = useRef(null);
+  const [weekCfg, setWeekCfg] = useState(null);
+  useEffect(() => { api.get('/leaves/settings').then(r => setWeekCfg(r.data || null)).catch(() => {}); }, []);
 
   // Fetch leave types once for legend + color map
   useEffect(() => {
@@ -65,7 +70,8 @@ export default function LeaveCalendar() {
 
     const pad = n => String(n).padStart(2, '0');
     const start = `${year}-${pad(month + 1)}-01`;
-    const end   = new Date(year, month + 1, 0).toISOString().slice(0, 10);
+    // Local date: toISOString() is UTC and gave the day before the month end in IST.
+    const end   = `${year}-${pad(month + 1)}-${pad(new Date(year, month + 1, 0).getDate())}`;
 
     setLoading(true);
     setError(null);
@@ -77,7 +83,7 @@ export default function LeaveCalendar() {
 
     Promise.all([
       api.get('/leaves/calendar', { params: leavesParams,                  signal: ctrl.signal }),
-      api.get('/holidays',        { params: { company_id: user?.company_id }, signal: ctrl.signal }),
+      api.get('/holidays',        { params: { year }, signal: ctrl.signal }),
     ])
       .then(([lRes, hRes]) => {
         if (ctrl.signal.aborted) return;
@@ -146,10 +152,9 @@ export default function LeaveCalendar() {
     return counts;
   }, [leaves]);
 
-  const isWeekend = (day) => {
-    const dow = new Date(year, month, day).getDay();
-    return dow === 0 || dow === 6;
-  };
+  // Company weekly offs (incl. 2nd/4th-Saturday offs), not a fixed Sat + Sun.
+  const isWeekend = (day) =>
+    isWeeklyOff(`${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`, weekCfg);
 
   const prev = () => { if (month === 0) { setMonth(11); setYear(y => y - 1); } else setMonth(m => m - 1); };
   const next = () => { if (month === 11){ setMonth(0);  setYear(y => y + 1); } else setMonth(m => m + 1); };
@@ -217,7 +222,9 @@ export default function LeaveCalendar() {
                   <div
                     key={d}
                     className="lc-day-hdr"
-                    style={{ color: (i === 0 || i === 6) ? '#f87171' : undefined }}
+                    // Red only for a day that is off every week (company settings),
+                    // not a fixed Sat + Sun.
+                    style={{ color: (weekCfg?.weekend_days || ['saturday', 'sunday']).includes(['sunday','monday','tuesday','wednesday','thursday','friday','saturday'][i]) ? '#f87171' : undefined }}
                   >
                     {d}
                   </div>
@@ -290,7 +297,7 @@ export default function LeaveCalendar() {
 
               {/* Legend — built from DB leave types */}
               <div className="lc-legend">
-                {leaveTypes.map(lt => (
+                {leaveTypes.filter(lt => monthlySummary[lt.leave_name]).map(lt => (
                   <div key={lt.id} className="lc-legend-item">
                     <div className="lc-legend-dot" style={{ background: colorForId(lt.id) }}/>
                     {lt.leave_name}

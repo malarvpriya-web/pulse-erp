@@ -1,5 +1,6 @@
 import pool from '../../shared/db.js';
 import { openingAllocation } from '../services/leaveAccrual.service.js';
+import { isExitedSql } from '../../../shared/employeeStatus.js';
 
 function workflowError(message, code) {
   return Object.assign(new Error(message), { code });
@@ -139,17 +140,64 @@ const leavesRepository = {
         COALESCE(e.name, CONCAT(e.first_name, ' ', e.last_name)) AS employee_name,
         e.first_name, e.last_name, e.department, e.designation, e.office_id AS employee_code,
         lt.leave_name, lt.leave_name AS leave_type, lt.leave_code,
+        COALESCE(lt.l2_required, false) AS l2_required,
         la.number_of_days AS days,
         COALESCE(m.name, CONCAT(m.first_name, ' ', m.last_name)) AS manager_name,
-        COALESCE(h.name, CONCAT(h.first_name, ' ', h.last_name)) AS hr_name
+        COALESCE(h.name, CONCAT(h.first_name, ' ', h.last_name)) AS hr_name,
+        COALESCE(l2.name, CONCAT(l2.first_name, ' ', l2.last_name)) AS l2_name,
+        -- Days of this (full-day) leave the person punched in on (2026-11-24).
+        -- Attendance keeps the punch, so payroll pays the day as worked, but
+        -- the leave still uses balance: HR sees it and cancels or corrects.
+        CASE WHEN la.half_day THEN 0 ELSE (
+          SELECT COUNT(*)::int FROM attendance_records ar
+           WHERE ar.employee_id = la.employee_id AND ar.deleted_at IS NULL
+             AND ar.attendance_date BETWEEN la.start_date AND la.end_date
+             AND ar.status IN ('present', 'late')) END AS worked_days,
+        -- HR / admin may take the manager step: it was escalated, or there is
+        -- no manager who can act (none, left, or no active login) — the same
+        -- rule leaves.routes.js authorizeL1 applies (2026-11-24).
+        (la.escalation_step = 'l1' OR NOT EXISTS (
+           SELECT 1 FROM employees rm JOIN users ru ON ru.employee_id = rm.id AND ru.is_active = TRUE
+            WHERE rm.id = e.reporting_manager_id AND rm.id <> e.id AND rm.deleted_at IS NULL
+              AND NOT (${isExitedSql('rm.status')})
+        )) AS hr_may_decide_l1
       FROM leave_applications la
       JOIN employees e  ON la.employee_id = e.id
       JOIN leave_types lt ON la.leave_type_id = lt.id
       LEFT JOIN employees m ON la.manager_id = m.id
       LEFT JOIN employees h ON la.hr_id = h.id
+      LEFT JOIN employees l2 ON la.l2_approver_id = l2.id
       WHERE la.deleted_at IS NULL
         AND e.status IS DISTINCT FROM 'Left'${cidClause}
     `;
+
+    // Approval queues, decided here so the L2 and HR tabs never list the same
+    // leave: L2 only for types that need a department head; HR once L1 (and,
+    // where required, L2) has approved.
+    if (filters.queue === 'l2') {
+      query += ` AND la.status = 'pending' AND la.manager_status = 'approved'
+                 AND COALESCE(lt.l2_required, false) = true
+                 AND (la.l2_status IS NULL OR la.l2_status = 'pending')`;
+    } else if (filters.queue === 'hr') {
+      query += ` AND la.status = 'pending' AND la.manager_status = 'approved'
+                 AND (COALESCE(lt.l2_required, false) = false OR la.l2_status = 'approved')`;
+    }
+    if (filters.leave_type_id) {
+      query += ` AND la.leave_type_id = $${paramCount}`;
+      params.push(parseInt(filters.leave_type_id, 10));
+      paramCount++;
+    }
+    if (filters.year) {
+      query += ` AND EXTRACT(YEAR FROM la.start_date) = $${paramCount}`;
+      params.push(parseInt(filters.year, 10));
+      paramCount++;
+    }
+    // Overlap window (any leave touching [from, to]) — the register's date filter.
+    if (filters.from && filters.to) {
+      query += ` AND la.start_date <= $${paramCount + 1}::date AND la.end_date >= $${paramCount}::date`;
+      params.push(filters.from, filters.to);
+      paramCount += 2;
+    }
 
     if (filters.employee_id) {
       query += ` AND la.employee_id = $${paramCount}`;

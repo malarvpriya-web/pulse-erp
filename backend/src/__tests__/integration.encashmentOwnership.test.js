@@ -37,6 +37,7 @@ const claim = async (id) => (await pool.query('SELECT status, approved_by, payro
 async function sweep(companyId) {
   const emps = `(SELECT id FROM employees WHERE company_id = $1)`;
   await pool.query(`DELETE FROM leave_encashments WHERE employee_id IN ${emps} OR company_id = $1`, [companyId]);
+  await pool.query(`DELETE FROM payroll_adjustments WHERE employee_id IN ${emps} OR company_id = $1`, [companyId]);
   await pool.query(`DELETE FROM payroll_runs WHERE employee_id IN ${emps}`, [companyId]);
   await pool.query(`DELETE FROM employees WHERE company_id = $1`, [companyId]);
 }

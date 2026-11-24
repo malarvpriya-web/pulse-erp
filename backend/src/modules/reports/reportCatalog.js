@@ -92,6 +92,16 @@ export const REPORTS = Object.freeze([
     measures: ['total_employees', 'total_applications', 'approved', 'rejected', 'pending', 'total_days_taken', 'avg_days_per_employee'],
   },
   {
+    id: 'leave/credits', category: 'HR & People', label: 'Leave Credit History',
+    desc: 'Every leave credit — monthly, yearly, by days worked — with when it ran and who ran it.',
+    filters: ['year', 'department'], permission: ['hr', 'view'], grain: 'detail', measures: ['days_accrued'],
+  },
+  {
+    id: 'leave/carry-forward', category: 'HR & People', label: 'Carried-Forward Leave',
+    desc: 'Days carried into the year per employee and leave type, and when they expire.',
+    filters: ['year', 'department'], permission: ['hr', 'view'], grain: 'detail', measures: ['carried_forward_days'],
+  },
+  {
     id: 'leave/approval-performance', category: 'HR & People', label: 'Approval Turnaround',
     desc: 'Approver response times and outcomes, from the leave approval history.',
     filters: ['start_date', 'end_date'], permission: ['hr', 'view'], grain: 'summary',
@@ -119,9 +129,9 @@ export const REPORTS = Object.freeze([
   },
   {
     id: 'leave/lop', category: 'Payroll', label: 'Loss of Pay',
-    desc: 'LOP days and deduction value per employee per payroll month.',
+    desc: 'LOP days and deduction value per employee per month — approved Loss of Pay leave, and the payroll figure once attendance is synced.',
     filters: ['year', 'month'], permission: ['payroll', 'view'], grain: 'detail',
-    measures: ['working_days', 'present_days', 'absent_days', 'lop_days', 'lop_amount'],
+    measures: ['working_days', 'present_days', 'absent_days', 'leave_lop_days', 'lop_days', 'lop_amount'],
   },
 
   // ── Sales & Revenue ────────────────────────────────────────────────────────

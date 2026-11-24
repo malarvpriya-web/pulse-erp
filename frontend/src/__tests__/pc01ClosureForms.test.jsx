@@ -123,8 +123,8 @@ describe('Leave Encashment — claims and amounts (decision 3)', () => {
     auth.grants = new Set();
     withRecords([{ id: 1, employee_id: 8, employee_name: 'Ravi M', status: 'approved', days_encashed: 2, year: new Date().getFullYear() }]);
     render(<LeaveEncashmentPage />);
-    expect(await screen.findByText(/Total Days/)).toBeTruthy();
-    expect(screen.queryByText('Gross Encashment')).toBeNull();
-    expect(screen.queryByText('Net Payable')).toBeNull();
+    expect(await screen.findByText(/days encashed/)).toBeTruthy();
+    expect(screen.queryByText('Approved amount')).toBeNull();
+    expect(screen.queryByText('Paid in payroll')).toBeNull();
   });
 });

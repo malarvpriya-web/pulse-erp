@@ -37,6 +37,7 @@ let co, empId, leaveTypeId;
 async function sweep(companyId) {
   const emps = `(SELECT id FROM employees WHERE company_id = $1)`;
   await pool.query(`DELETE FROM leave_encashments WHERE employee_id IN ${emps}`, [companyId]);
+  await pool.query(`DELETE FROM payroll_adjustments WHERE employee_id IN ${emps}`, [companyId]);
   await pool.query(`DELETE FROM payroll_runs WHERE employee_id IN ${emps}`, [companyId]);
   await pool.query(`DELETE FROM employees WHERE company_id = $1`, [companyId]);
 }
@@ -64,26 +65,35 @@ const encash = async (month) => {
     `INSERT INTO leave_encashments (employee_id, leave_type_id, year, days_encashed, net_amount, encashment_month, encashment_year, status, company_id)
      VALUES ($1, $2, 2027, 2, 3000, $3, 2027, 'pending', $4) RETURNING id`, [empId, leaveTypeId, month, co.companyId]);
   const r = await request(app).post(`/api/encashment/approve/${x.id}`).set('Authorization', `Bearer ${co.token()}`);
-  const { rows: [after] } = await pool.query('SELECT payroll_run_id FROM leave_encashments WHERE id = $1', [x.id]);
-  return { status: r.status, payroll_run_id: after.payroll_run_id };
+  const { rows: [after] } = await pool.query('SELECT payroll_run_id, payroll_adjustment_id, status AS claim_status FROM leave_encashments WHERE id = $1', [x.id]);
+  return { status: r.status, body: r.body, ...after };
 };
 const run = async (month) => (await pool.query(
   'SELECT status, leave_encashment_amount, gross, net_pay FROM payroll_runs WHERE employee_id = $1 AND month = $2 AND year = 2027', [empId, month])).rows[0];
 
 describe('leave encashment never writes into an approved run', () => {
-  it('approving an encashment for an APPROVED month leaves the run untouched and unlinked', async () => {
+  // Since 2026-11-23 approval adds a one-time EARNING (payroll_adjustments)
+  // that Generate Payroll picks up; it never edits a payroll run itself.
+  it('approving for an APPROVED month is refused; the run and the claim stay as they were', async () => {
     const before = await run(1);
     const r = await encash(1);
-    expect(r.status).toBe(200);
-    expect(r.payroll_run_id).toBeNull();
+    expect(r.status).toBe(409);
+    expect(r.body.code).toBe('PERIOD_FINALISED');
+    expect(r.payroll_adjustment_id).toBeNull();
     expect(await run(1)).toEqual(before);
+    const { rows } = await pool.query('SELECT 1 FROM payroll_adjustments WHERE employee_id = $1 AND month = 1 AND year = 2027', [empId]);
+    expect(rows).toHaveLength(0);
   });
 
-  it('a DRAFT month still receives the encashment', async () => {
+  it('a DRAFT month gets a payroll earning; the draft run itself is not edited', async () => {
+    const before = await run(2);
     const r = await encash(2);
-    expect(r.status).toBe(200);
-    expect(r.payroll_run_id).not.toBeNull();
-    expect(Number((await run(2)).leave_encashment_amount)).toBe(3000);
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect(r.payroll_adjustment_id).not.toBeNull();
+    expect(await run(2)).toEqual(before);
+    const { rows: [adj] } = await pool.query('SELECT kind, amount, month, year FROM payroll_adjustments WHERE id = $1', [r.payroll_adjustment_id]);
+    expect(adj).toMatchObject({ kind: 'earning', month: 2, year: 2027 });
+    expect(Number(adj.amount)).toBe(3000);
   });
 });
 

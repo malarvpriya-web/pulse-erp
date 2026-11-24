@@ -28,7 +28,7 @@
 import pool from '../config/db.js';
 import { computePenalties } from './attendancePenalties.js';
 import { getAttendanceSettingsRow } from './attendanceRules.js';
-import { getWeekendDays } from './weekend.js';
+import { getWeekendDays, weekendSql, weekendSqlParams } from './weekend.js';
 
 export const DEFAULT_LEAVE_BANDS = [
   { max_days: 6, rating: 5 }, { max_days: 12, rating: 4 }, { max_days: 18, rating: 3 },
@@ -80,14 +80,14 @@ export async function punctualityFor(employeeId, from, to, companyId, db = pool)
   const punctualityPct = punctuality == null ? null : Math.round(punctuality * 100);
   const score = ratingFor(punctualityPct, bands);
   const pen = (await computePenalties(companyId, [Number(employeeId)], from, to, db)).get(Number(employeeId));
-  const weekend = (await getWeekendDays(companyId)).map((d) => String(d).toLowerCase());
+  const weekend = await getWeekendDays(companyId);
   const { rows: [lv] } = await db.query(`
     SELECT COALESCE(SUM(CASE WHEN la.half_day THEN 0.5 ELSE 1 END), 0) AS days
       FROM leave_applications la
       CROSS JOIN LATERAL generate_series(GREATEST(la.start_date, $2::date), LEAST(la.end_date, $3::date), INTERVAL '1 day') d
      WHERE la.employee_id = $1 AND LOWER(la.status) = 'approved'
        AND la.start_date <= $3::date AND la.end_date >= $2::date
-       AND NOT (LOWER(TRIM(TO_CHAR(d, 'day'))) = ANY($4::text[]))`, [employeeId, from, to, weekend]).catch(() => ({ rows: [{ days: 0 }] }));
+       AND NOT ${weekendSql('d', 4)}`, [employeeId, from, to, ...weekendSqlParams(weekend)]).catch(() => ({ rows: [{ days: 0 }] }));
   const leaveDays = Number(lv?.days || 0);
   const daysOff = leaveDays + n('absent_days') + n('half_days') * 0.5;
   const leaveBands = Array.isArray(settings?.leave_rating_bands) && settings.leave_rating_bands.length

@@ -21,7 +21,7 @@
  * by the 1st-of-month notification to each manager (jobs/attendance.cron.js).
  */
 import pool from '../config/db.js';
-import { getWeekendDays } from './weekend.js';
+import { getWeekendDays, weekendSql, weekendSqlParams } from './weekend.js';
 import { computePenalties } from './attendancePenalties.js';
 
 const pad = (n) => String(n).padStart(2, '0');
@@ -56,16 +56,16 @@ export async function teamMonthlySummary({ companyId, month, year, employeeWhere
               CROSS JOIN LATERAL generate_series(GREATEST(la.start_date, $1::date), LEAST(la.end_date, $2::date), INTERVAL '1 day') d
              WHERE la.employee_id = e.id AND LOWER(la.status) = 'approved'
                AND la.start_date <= $2::date AND la.end_date >= $1::date
-               AND NOT (LOWER(TRIM(TO_CHAR(d, 'day'))) = ANY($3::text[])))                    AS leave_days
+               AND NOT ${weekendSql('d', 3)})                                            AS leave_days
       FROM employees e
       LEFT JOIN attendance_records ar
         ON ar.employee_id = e.id AND ar.attendance_date BETWEEN $1::date AND $2::date AND ar.deleted_at IS NULL
      WHERE e.deleted_at IS NULL AND LOWER(e.status) IN ('active', 'probation', 'notice')
-       AND ($4::int IS NULL OR e.company_id = $4)
+       AND ($5::int IS NULL OR e.company_id = $5)
        ${employeeWhere}
      GROUP BY e.id
      ORDER BY e.department NULLS LAST, employee_name`,
-  [from, to, weekend.map((d) => String(d).toLowerCase()), companyId ?? null]);
+  [from, to, ...weekendSqlParams(weekend), companyId ?? null]);
 
   const today = new Date().toLocaleDateString('en-CA');
   const pen = await computePenalties(companyId, rows.map((r) => r.employee_id), from, [to, today].sort()[0], db);

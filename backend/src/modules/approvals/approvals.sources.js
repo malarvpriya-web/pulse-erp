@@ -76,7 +76,7 @@ export async function buildContext(req) {
   // buttons its own endpoint refuses.
   const jwtEmployeeId = req.user?.employee_id ?? null;
 
-  const [directReports, orgReports, attDelegations] = jwtEmployeeId == null ? [[], [], []] : await Promise.all([
+  const [directReports, orgReports, attDelegations, activeReports] = jwtEmployeeId == null ? [[], [], [], []] : await Promise.all([
     q('SELECT id FROM employees WHERE reporting_manager_id = $1', [jwtEmployeeId]),
     q('SELECT employee_id FROM org_relationships WHERE manager_id = $1', [jwtEmployeeId]),
     q(`SELECT org.employee_id, d.delegation_type, d.company_id
@@ -84,6 +84,10 @@ export async function buildContext(req) {
          JOIN org_relationships org ON org.manager_id = d.delegator_id
         WHERE d.delegate_id = $1 AND d.is_active = TRUE
           AND CURRENT_DATE BETWEEN d.from_date AND d.to_date`, [jwtEmployeeId]),
+    // Reports still employed — "is this person someone's manager now?". The
+    // set above keeps exited reports so their open requests stay decidable.
+    q(`SELECT id FROM employees WHERE reporting_manager_id = $1 AND id <> $1
+         AND deleted_at IS NULL AND NOT (${isExitedSql('status')})`, [jwtEmployeeId]),
   ]);
 
   // The LIVE login link — what the review queues (intern evaluation, probation
@@ -97,6 +101,8 @@ export async function buildContext(req) {
   const managed = await q(
     `SELECT e.id FROM employees e JOIN employees m ON m.id = e.reporting_manager_id
       WHERE m.id <> e.id AND m.deleted_at IS NULL AND NOT (${isExitedSql('m.status')})
+        -- a manager with no active login cannot act: HR/admin fallback applies
+        AND EXISTS (SELECT 1 FROM users u WHERE u.employee_id = m.id AND u.is_active = TRUE)
         AND ($1::int IS NULL OR e.company_id = $1)`, [req.scope?.company_id ?? null]);
 
   const perms = {};
@@ -117,6 +123,7 @@ export async function buildContext(req) {
     primaryRole: String(req.user?.role || '').toLowerCase(),
     roles: rolesOf(req),
     directReports: new Set(directReports.map(r => String(r.id))),
+    activeReportCount: activeReports.length,
     hasActiveManager: new Set(managed.map(r => String(r.id))),
     orgReports: new Set(orgReports.map(r => String(r.employee_id))),
     attDelegations,
@@ -130,11 +137,14 @@ const holds = (ctx, ...codes) => ctx.roles.some(r => codes.includes(r));
 // Mirror of shared/managerApprovalAuthz.js authorizeManagerApproval() (§203):
 // never one's own; delegate; reporting manager; HR/admin (PRIMARY role, as the
 // endpoints pass it) only when the requester has no active reporting manager.
-function managerApproves(ctx, requesterEmpId, delegateEmpId) {
+// allRoles: the endpoint passes every role held (leave, 2026-11-24); the
+// other sources' endpoints still pass the primary role only.
+function managerApproves(ctx, requesterEmpId, delegateEmpId, allRoles = false) {
   if (ctx.jwtEmployeeId != null && requesterEmpId != null && String(requesterEmpId) === String(ctx.jwtEmployeeId)) return false;
   if (ctx.jwtEmployeeId != null && delegateEmpId != null && Number(delegateEmpId) === Number(ctx.jwtEmployeeId)) return true;
   if (ctx.jwtEmployeeId != null && requesterEmpId != null && ctx.directReports.has(String(requesterEmpId))) return true;
-  if (['admin', 'super_admin', 'hr', 'hr_manager', 'hr_exec'].includes(ctx.primaryRole)) {
+  const OVERRIDE = ['admin', 'super_admin', 'hr', 'hr_manager', 'hr_exec'];
+  if (allRoles ? holds(ctx, ...OVERRIDE) : OVERRIDE.includes(ctx.primaryRole)) {
     return requesterEmpId != null && !ctx.hasActiveManager.has(String(requesterEmpId));
   }
   return false;
@@ -169,7 +179,7 @@ const leave = {
              la.reason AS description, la.number_of_days AS amount, 'days' AS amount_unit,
              e.id AS requester_emp_id, ${name('e')} AS requested_by, e.company_email AS requester_email,
              e.department, la.applied_at AS request_date, e.company_id,
-             la.delegate_approver_id AS delegate_emp_id,
+             la.delegate_approver_id AS delegate_emp_id, la.escalation_step,
              CASE WHEN la.manager_status = 'pending' THEN 'l1'
                   WHEN lt.l2_required AND (la.l2_status IS NULL OR la.l2_status = 'pending') THEN 'l2'
                   ELSE 'hr' END AS stage_key
@@ -181,13 +191,18 @@ const leave = {
   },
   stage: (r) => LEAVE_STAGE[r.stage_key],
   canAct(ctx, r) {
-    if (!can(ctx, 'leaves', 'can_approve')) return false;
     // Nobody decides their own leave, at any level (leaves.routes.js
     // blockOwnLeaveDecision) — so it is not in their own inbox either.
     if (ctx.employeeId != null && String(ctx.employeeId) === String(r.requester_emp_id)) return false;
+    // L1: the reporting line is the authority, no 'leaves.approve' grant
+    // needed (leaves.routes.js, 2026-11-24). L2/HR still need it.
+    // ...and an ESCALATED manager step may be taken by HR / admin too
+    // (leaves.routes.js authorizeL1).
+    if (r.stage_key === 'l1') return managerApproves(ctx, r.requester_emp_id, r.delegate_emp_id, true)
+      || (r.escalation_step === 'l1' && holds(ctx, 'admin', 'super_admin', 'hr', 'hr_manager', 'hr_exec', 'hr_admin'));
+    if (!can(ctx, 'leaves', 'can_approve')) return false;
     // L2/HR queues are role-gated in LeaveApprovals.jsx; the endpoints check
     // only the permission, so the queue roles are the narrower, honest mirror.
-    if (r.stage_key === 'l1') return managerApproves(ctx, r.requester_emp_id, r.delegate_emp_id);
     if (r.stage_key === 'l2') return holds(ctx, 'department_head', 'l2_approver', 'admin', 'super_admin', 'hr_manager');
     return holds(ctx, 'hr', 'hr_manager', 'admin', 'super_admin');
   },

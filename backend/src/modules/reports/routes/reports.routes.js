@@ -168,6 +168,8 @@ const RUNNERS = {
   'leave/lop':                   'getLOPReport',
   'leave/department':            'getDepartmentLeaveReport',
   'leave/approval-performance':  'getApprovalPerformanceReport',
+  'leave/credits':               'getLeaveCreditReport',
+  'leave/carry-forward':         'getCarryForwardReport',
   'headcount':                   'getHeadcountReport',
   'payroll-summary':             'getPayrollSummaryReport',
   'sales':                       'getSalesReport',

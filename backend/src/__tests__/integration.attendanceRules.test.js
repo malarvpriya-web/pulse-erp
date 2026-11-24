@@ -168,6 +168,45 @@ describe('penalty arithmetic (owner’s three rules)', () => {
   });
 });
 
+describe('Payroll Sync counts leave in working days and charges clubbed days (2026-11-24)', () => {
+  let typeId, leaveId;
+  afterAll(async () => {
+    if (leaveId) await pool.query('DELETE FROM leave_applications WHERE id = $1', [leaveId]);
+    if (typeId) await pool.query('DELETE FROM leave_types WHERE id = $1', [typeId]);
+    await pool.query('DELETE FROM attendance_records WHERE employee_id = $1', [ids.other]);
+    await pool.query('DELETE FROM payroll_attendance_summary WHERE employee_id = $1', [ids.other]);
+  });
+
+  it('a Fri–Mon paid leave is 2 leave days, and its weekend is 2 days of LOP', async () => {
+    const { rows: hol } = await pool.query(
+      `SELECT date::text AS d FROM holidays WHERE date BETWEEN $1::date AND $2::date AND (company_id = $3 OR company_id IS NULL)`,
+      [prevDay(1), prevDay(new Date(prev.y, prev.m, 0).getDate()), CO]);
+    const holidays = new Set(hol.map(h => h.d.slice(0, 10)));
+    const wd = weekdaysOfPrev().filter(d => !holidays.has(d));
+    // a Friday whose Monday is in the same month and neither is a holiday
+    const fri = wd.find(d => new Date(`${d}T00:00:00Z`).getUTCDay() === 5
+      && wd.includes(new Date(Date.parse(`${d}T00:00:00Z`) + 3 * 86400000).toISOString().slice(0, 10)));
+    const mon = new Date(Date.parse(`${fri}T00:00:00Z`) + 3 * 86400000).toISOString().slice(0, 10);
+    for (const d of wd) if (d !== fri && d !== mon) await att(ids.other, d, 'present');
+    typeId = (await pool.query(
+      `INSERT INTO leave_types (leave_name, leave_code, annual_quota, company_id, is_paid, is_active)
+       VALUES ('ZZATR Paid', 'ZZATRPAID', 10, $1, true, true) RETURNING id`, [CO])).rows[0].id;
+    leaveId = (await pool.query(
+      `INSERT INTO leave_applications (employee_id, leave_type_id, start_date, end_date, number_of_days, lop_days,
+                                       status, manager_status, hr_status, reason, company_id, clubbing_flag)
+       VALUES ($1, $2, $3, $4, 2, 2, 'approved', 'approved', 'approved', 'test', $5, true) RETURNING id`,
+      [ids.other, typeId, fri, mon, CO])).rows[0].id;
+    const res = await request(admin()).post('/api/attendance/payroll-sync')
+      .send({ month: prev.m, year: prev.y, force: true, employee_ids: [ids.other] });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const { rows: [s] } = await pool.query(
+      `SELECT lop_days FROM payroll_attendance_summary WHERE employee_id = $1 AND month = $2 AND year = $3`,
+      [ids.other, prev.m, prev.y]);
+    // Old: 4 calendar days of leave, 0 LOP. Now: Fri + Mon paid, Sat + Sun LOP.
+    expect(Number(s.lop_days)).toBe(2);
+  });
+});
+
 describe('Payroll Sync adds the penalty to loss of pay', () => {
   it('3 lates over 15 min + one over 60 min → 1 day penalty, stored and in lop_days', async () => {
     const wd = weekdaysOfPrev();

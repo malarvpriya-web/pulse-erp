@@ -143,13 +143,21 @@ export const EMPLOYEE_SELF_SERVICE_PAGES = new Set([
 // True if an employee may render `page`. Pages inside a shared (restricted)
 // menu are allowed only when they are self-service; pages outside those menus
 // are governed by the normal module / Page-Access gates.
-export function canEmployeeAccessPage(page) {
+export function canEmployeeAccessPage(page, { hasDirectReports = false } = {}) {
   const section = getSectionForPage(page);
   if (section && EMPLOYEE_RESTRICTED_SECTIONS.has(section)) {
-    return EMPLOYEE_SELF_SERVICE_PAGES.has(page);
+    return EMPLOYEE_SELF_SERVICE_PAGES.has(page)
+      || (hasDirectReports && REPORTING_MANAGER_PAGES.has(page));
   }
   return true;
 }
+
+// Pages an employee-only login also opens when they are someone's reporting
+// manager (2026-11-24). The L1 leave decision needs no role grant — being the
+// reporting manager is the authority (leaves.routes.js) — so a team lead who
+// holds only the employee role must still reach the screen to take it.
+// `hasDirectReports` comes from GET /approvals/stats (useApproverStatus).
+export const REPORTING_MANAGER_PAGES = new Set(['LeaveApprovals']);
 
 // ── Finance scoping within the shared 'Leaves'/'Attendance'/'Timesheets' menus ──
 // Finance gets its own domain in full (the entire 'Finance' section), but
@@ -165,7 +173,9 @@ export const FINANCE_RESTRICTED_SECTIONS = new Set(['Leaves', 'Attendance', 'Tim
 export const FINANCE_SELF_SERVICE_PAGES = new Set([
   // Leaves ('Leave Approvals'/'Team Leaves'/'All Leaves'/'Leave Reports'/
   // 'Encashment'/'Leave Settings' intentionally excluded)
-  'MyLeaves', 'ApplyLeave', 'LeaveCalendar', 'HolidayCalendar', 'CompOff',
+  // LeaveCalendar (company-wide, a manager view) and CompOff (now inside
+  // Attendance → Approvals) removed 2026-11-23 — same as the employee list.
+  'MyLeaves', 'ApplyLeave', 'HolidayCalendar',
   // Attendance ('Live Workforce'/'Team Attendance'/'Shift Calendar'/
   // 'Regularization'/'Overtime'/etc. intentionally excluded)
   'AttendanceDashboard',
@@ -790,7 +800,7 @@ export function canRoleAccessPageBySection(role, page) {
 // enforces at the route level. `menuAccess` is the admin Page-Access override
 // lookup from useAuth() — pass it so an explicit grant/revoke on a section is
 // honored here exactly as it is in the sidebar and at the route.
-export function canRoleOpenPage(role, page, { menuAccess } = {}) {
+export function canRoleOpenPage(role, page, { menuAccess, hasDirectReports = false } = {}) {
   const section = getSectionForPage(page);
   // ALWAYS_VISIBLE sections cannot be restricted (see its definition) — the same
   // rule Sidebar.jsx applies, so a drawn row never resolves to nowhere.
@@ -798,7 +808,7 @@ export function canRoleOpenPage(role, page, { menuAccess } = {}) {
   if (override === 'hidden') return false;
   if (override === 'view' || override === 'edit') return true;
 
-  if (role === 'employee' && !canEmployeeAccessPage(page)) return false;
+  if (role === 'employee' && !canEmployeeAccessPage(page, { hasDirectReports })) return false;
   if (role === 'hr' && !canHrAccessPage(page)) return false;
   if ((role === 'finance' || role === 'finance_manager' || role === 'accounts_exec') && !canFinanceAccessPage(page)) return false;
   if (role === 'hr_exec' && !canHrExecAccessPage(page)) return false;
@@ -847,7 +857,7 @@ export function holdsModuleGrant(hasPermission, module, actions) {
   return list.some(a => hasPermission(module, a));
 }
 
-export function canRenderPage(role, page, { route, menuAccess, hasPermission } = {}) {
+export function canRenderPage(role, page, { route, menuAccess, hasPermission, hasDirectReports = false } = {}) {
   const section = getSectionForPage(page);
   // ALWAYS_VISIBLE sections (Home, Approvals) cannot be
   // restricted by Page Access. Sidebar.jsx already draws them regardless; without
@@ -857,7 +867,7 @@ export function canRenderPage(role, page, { route, menuAccess, hasPermission } =
   const financeRole = role === 'finance' || role === 'finance_manager' || role === 'accounts_exec';
 
   if (sectionAccess === 'hidden') return false;
-  if (role === 'employee' && !canEmployeeAccessPage(page)) return false;
+  if (role === 'employee' && !canEmployeeAccessPage(page, { hasDirectReports })) return false;
   if (role === 'hr' && !granted && !canHrAccessPage(page)) return false;
   if (financeRole && !granted && !canFinanceAccessPage(page)) return false;
   if (role === 'hr_exec' && !granted && !canHrExecAccessPage(page)) return false;

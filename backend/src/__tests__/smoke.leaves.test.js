@@ -89,8 +89,11 @@ describe('POST /api/leaves — submit leave request', () => {
     mockAuthWithFullPermission();
     // Post-permission queries (balance, policy, overlap) default to empty so the
     // happy path proceeds to applyLeave. leave_type_id is supplied so the
-    // leave-type resolution query is skipped.
-    pool.query.mockResolvedValue({ rows: [] });
+    // leave-type resolution query is skipped. The type-is-offered check
+    // (2026-11-24) must find the type, or the request is refused.
+    pool.query.mockImplementation(async (sql) =>
+      (/FROM leave_types lt\s+WHERE lt\.id = \$1 AND lt\.deleted_at IS NULL AND lt\.is_active = true/.test(String(sql))
+        ? { rows: [{ ok: 1 }] } : { rows: [] }));
     leavesRepo.applyLeave.mockResolvedValue(pendingLeave);
 
     const res = await request(app).post('/api/leaves')

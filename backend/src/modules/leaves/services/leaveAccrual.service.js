@@ -258,6 +258,13 @@ export async function runMonthlyAccrual({ companyId = null, month, year, runMode
 
   const leaveTypes = await monthlyAccrualTypes(companyId);
   const result = { credited: 0, skipped: 0, failed: 0, employees: 0, leave_types: leaveTypes.length };
+  // "1 day per N days worked" types earn on a month that is OVER: running for
+  // month m credits month m−1 (the 1st-of-month job, the catch-up and the
+  // manual button all come through here).
+  const pm = m === 1 ? 12 : m - 1, py = m === 1 ? y - 1 : y;
+  const worked = await runWorkedAccrual({ companyId, month: pm, year: py, runMode, runBy });
+  result.credited += worked.credited; result.skipped += worked.skipped; result.failed += worked.failed;
+  result.leave_types += worked.leave_types;
   if (!leaveTypes.length) return result;
 
   const employees = await accrualEmployees(companyId);
@@ -296,6 +303,65 @@ export async function runMonthlyAccrual({ companyId = null, month, year, runMode
   return result;
 }
 
+// ── "1 day for every N days worked" (owner, 2026-11-23; Factories Act s.79: 20) ──
+// Days worked in the month = present / late / WFH / on duty, a half day as ½,
+// plus approved PAID leave (the Act counts leave as days worked). Credited to
+// the balance of the month's year, to 2 decimals, once per employee per month
+// (leave_accrual_log, accrual_type 'worked').
+export const ACCRUAL_WORKED = 'worked';
+
+export async function runWorkedAccrual({ companyId = null, month, year, runMode = 'cron', runBy = null }) {
+  const result = { credited: 0, skipped: 0, failed: 0, leave_types: 0 };
+  const { rows: types } = await pool.query(
+    `SELECT id, days_worked_per_leave_day AS per FROM leave_types
+      WHERE accrual_type = 'worked' AND is_active = true AND deleted_at IS NULL
+        AND (company_id IS NULL OR company_id = $1)`, [companyId ?? null]);
+  result.leave_types = types.length;
+  if (!types.length) return result;
+  const from = `${year}-${String(month).padStart(2, '0')}-01`;
+  const to = `${year}-${String(month).padStart(2, '0')}-${String(new Date(year, month, 0).getDate()).padStart(2, '0')}`;
+  // Only a finished month (the business day, IST).
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: process.env.APP_TIMEZONE || 'Asia/Kolkata' }).format(new Date());
+  if (to >= today) return result;
+  const { rows: emps } = await pool.query(`
+    SELECT e.id,
+           COALESCE((SELECT SUM(CASE WHEN LOWER(ar.status) = 'half_day' THEN 0.5 ELSE 1 END)
+                       FROM attendance_records ar
+                      WHERE ar.employee_id = e.id AND ar.deleted_at IS NULL
+                        AND ar.attendance_date BETWEEN $2::date AND $3::date
+                        AND LOWER(ar.status) IN ('present','late','wfh','work_from_home','on_duty','half_day')), 0)
+         -- Paid leave (its own day count when it lies inside the month; the
+         -- overlapping calendar days when it spans months). Leave rows in
+         -- attendance are 'on_leave', so nothing is counted twice.
+         + COALESCE((SELECT SUM(CASE WHEN la.start_date >= $2::date AND la.end_date <= $3::date
+                                     THEN la.number_of_days - COALESCE(la.lop_days, 0)
+                                     ELSE LEAST(la.end_date, $3::date) - GREATEST(la.start_date, $2::date) + 1 END)
+                       FROM leave_applications la JOIN leave_types lt ON lt.id = la.leave_type_id
+                      WHERE la.employee_id = e.id AND la.status = 'approved' AND la.deleted_at IS NULL
+                        AND NOT COALESCE(la.is_lop, false) AND COALESCE(lt.is_paid, true) AND NOT COALESCE(lt.is_lop_type, false)
+                        AND la.start_date <= $3::date AND la.end_date >= $2::date), 0) AS worked
+      FROM employees e
+     WHERE e.status IS DISTINCT FROM 'Left' AND e.deleted_at IS NULL
+       AND ($1::int IS NULL OR e.company_id = $1)`, [companyId ?? null, from, to]);
+  for (const emp of emps) {
+    for (const t of types) {
+      const days = Math.floor((Number(emp.worked) / Number(t.per || 20)) * 100) / 100;
+      if (!(days > 0)) continue;
+      try {
+        const outcome = await creditAccrual({
+          employeeId: emp.id, leaveTypeId: t.id, year, month, days,
+          accrualType: ACCRUAL_WORKED, runMode, runBy, companyId,
+        });
+        if (outcome === 'credited') result.credited++; else result.skipped++;
+      } catch (err) {
+        result.failed++;
+        console.error(`[leaveAccrual] worked: employee ${emp.id} / type ${t.id} ${year}-${month}: ${err.message}`);
+      }
+    }
+  }
+  return result;
+}
+
 // ── How a leave type is credited (Leave Settings → Accrual Type) ──────────────
 //   monthly                 accrual_days_per_month on the 1st of each month
 //   yearly / joining_date   the whole year's annual_quota at once (in January, or on
@@ -318,7 +384,7 @@ export function proRatedQuota(quota, joiningDate, year) {
 /** The days a NEW balance row starts with. */
 export function openingAllocation(leaveType, joiningDate, year) {
   const kind = leaveType?.accrual_type || 'manual';
-  if (kind === 'monthly' || kind === 'quarterly') return 0;
+  if (kind === 'monthly' || kind === 'quarterly' || kind === 'worked') return 0;
   if (YEARLY_KINDS.includes(kind)) return proRatedQuota(leaveType.annual_quota, joiningDate, year);
   return Number(leaveType?.annual_quota) || 0;
 }

@@ -105,8 +105,9 @@ function HolidayFormFields({ values, onChange, zones }) {
 
 export default function HolidayCalendar() {
   const currentYear = new Date().getFullYear();
-  const { role } = useAuth();
-  const canEdit = HOLIDAY_EDITOR_ROLES.has(String(role || "").toLowerCase());
+  // Every role held, not just the primary one (roles are many-to-many).
+  const { hasAnyRole } = useAuth();
+  const canEdit = hasAnyRole(...HOLIDAY_EDITOR_ROLES);
   const [holidays, setHolidays]       = useState([]);
   const [zones, setZones]             = useState([]);
   const [viewMode, setViewMode]       = useState("list");

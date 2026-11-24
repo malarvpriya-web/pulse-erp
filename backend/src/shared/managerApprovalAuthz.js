@@ -13,7 +13,8 @@
 //   3. the requester's reporting manager;
 //   4. HR or an admin ONLY as a fallback, when the requester has no ACTIVE
 //      reporting manager (none set, the manager left or was deleted, or the
-//      record points at the requester themself).
+//      record points at the requester themself) — or the manager has no
+//      active login, so could never decide it (2026-11-24).
 // Step 4 used to be a blanket override: any hr / hr_manager / hr_exec / admin
 // could take every employee's level-1 decision, even one whose manager was
 // right there. It stays as a fallback because most employees have no manager
@@ -37,6 +38,14 @@ export async function activeReportingManagerId(requesterEmployeeId) {
         AND NOT (${isExitedSql('m.status')})`,
     [requesterEmployeeId]);
   return rows[0]?.id ?? null;
+}
+
+/** Whether this employee has an active login (users.is_active) to decide with. */
+export async function managerCanLogIn(managerEmployeeId) {
+  if (managerEmployeeId == null) return false;
+  const { rows } = await pool.query(
+    'SELECT 1 FROM users WHERE employee_id = $1 AND is_active = TRUE LIMIT 1', [managerEmployeeId]);
+  return rows.length > 0;
 }
 
 /**
@@ -67,9 +76,11 @@ export async function authorizeManagerApproval({ actorEmployeeId, actorRole, act
 
   const overrideRole = roles.some(r => ADMIN_OVERRIDE_ROLES.has(r) || HR_OVERRIDE_ROLES.has(r));
   if (overrideRole) {
-    return managerId == null
-      ? { authorized: true, reason: 'no_manager_fallback' }
-      : { authorized: false, reason: 'has_manager' };
+    if (managerId == null) return { authorized: true, reason: 'no_manager_fallback' };
+    // A manager with no working login can never act, so the request would
+    // have no possible approver (2026-11-24) — HR/admin may take it then too.
+    if (!(await managerCanLogIn(managerId))) return { authorized: true, reason: 'manager_cannot_log_in' };
+    return { authorized: false, reason: 'has_manager' };
   }
   return { authorized: false, reason: null };
 }

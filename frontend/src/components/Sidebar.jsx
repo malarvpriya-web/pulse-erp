@@ -23,7 +23,7 @@ import { useProbationReviewerStatus } from '@/features/hr/probationReviewerStatu
 import { useApproverStatus } from '@/features/approvals/approverStatus';
 import { useTimesheetEligibility } from '@/features/timesheets/timesheetEligibility';
 import {
-  EMPLOYEE_SELF_SERVICE_PAGES, ADMIN_ONLY_PAGES, SUPER_ADMIN_ONLY_PAGES,
+  EMPLOYEE_SELF_SERVICE_PAGES, REPORTING_MANAGER_PAGES, ADMIN_ONLY_PAGES, SUPER_ADMIN_ONLY_PAGES,
   ROLE_SECTION_ALLOWLIST, roleHasSectionAllowlist, HR_SCOPED_PAGES,
   FINANCE_RESTRICTED_SECTIONS, FINANCE_SELF_SERVICE_PAGES,
   FINANCE_ANALYTICS_SCOPED_PAGES, MANAGER_ANALYTICS_SCOPED_PAGES,
@@ -399,7 +399,10 @@ export default function Sidebar() {
     // manager keeps the full submenu.
     if (isEmployeeOnly && Array.isArray(item.submenu)) {
       const submenu = item.submenu.filter(
-        sub => !sub.separator && EMPLOYEE_SELF_SERVICE_PAGES.has(sub.page)
+        sub => !sub.separator && (EMPLOYEE_SELF_SERVICE_PAGES.has(sub.page)
+            // A team lead with only the employee role still decides their
+            // reports' leave at the manager step (2026-11-24).
+            || (approver.has_direct_reports === true && REPORTING_MANAGER_PAGES.has(sub.page)))
           && (sub.page !== 'MyTimesheet' || timesheet.on_project === true)
       );
       if (submenu.length === 0) return acc; // nothing self-service left → hide menu

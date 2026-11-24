@@ -196,8 +196,8 @@ describe('one-time adjustments', () => {
     expect(s.total_deductions).toBe(s.employee_pf + s.employee_esi + s.professional_tax + s.lwf_employee + s.tds + 1500);
     expect(s.net_pay).toBe(s.gross - s.total_deductions);
     expect(s.adjustment_lines).toEqual([
-      { id: 1, kind: 'earning', label: 'Sales incentive', amount: 10000, account_code: null },
-      { id: 2, kind: 'deduction', label: 'Canteen', amount: 1500, account_code: '4003' },
+      { id: 1, kind: 'earning', label: 'Sales incentive', amount: 10000, account_code: null, tds_rate: null, in_wages: true },
+      { id: 2, kind: 'deduction', label: 'Canteen', amount: 1500, account_code: '4003', tds_rate: null, in_wages: true },
     ]);
   });
   it('a deduction larger than pay is refused, never paid as a negative salary', () => {
@@ -209,6 +209,27 @@ describe('one-time adjustments', () => {
     const flat = [{ name: 'Basic', type: 'earning', calculation_type: 'percentage_of_ctc', value: 100 }];
     const s = computePayroll(emp(10000), base({ structureComponents: flat, adjustments: [{ kind: 'earning', label: 'Incentive', amount: 30000 }] }));
     expect(s.pf_wage).toBe(20000);
+  });
+  // Leave encashment (2026-11-23): a flat-% TDS earning outside PF/ESI wages.
+  it('a flat-TDS earning is taxed at its own rate, not through the slab', () => {
+    const slab = computePayroll(emp(26000), base({ adjustments: [{ kind: 'earning', label: 'Encashment', amount: 10000 }] }));
+    const flat = computePayroll(emp(26000), base({ adjustments: [{ kind: 'earning', label: 'Encashment', amount: 10000, tds_rate: 20, in_wages: false }] }));
+    expect(flat.gross).toBe(slab.gross);
+    expect(flat.tds_flat).toBe(2000);
+    expect(flat.tds).toBe(plain.tds + 2000);
+    expect(flat.net_pay).toBe(flat.gross - flat.total_deductions);
+  });
+  it('the flat TDS applies even when slab TDS is not auto-calculated', () => {
+    const s = computePayroll(emp(26000), base({ tds_auto_calculate: false, adjustments: [{ kind: 'earning', label: 'Encashment', amount: 5000, tds_rate: 20, in_wages: false }] }));
+    expect(s.tds).toBe(1000);
+  });
+  it('an earning outside wages does not raise the PF wage or the ESI wage', () => {
+    const flat = [{ name: 'Basic', type: 'earning', calculation_type: 'percentage_of_ctc', value: 100 }];
+    const inWages = computePayroll(emp(10000), base({ structureComponents: flat, adjustments: [{ kind: 'earning', label: 'Incentive', amount: 30000 }] }));
+    const notWages = computePayroll(emp(10000), base({ structureComponents: flat, adjustments: [{ kind: 'earning', label: 'Encashment', amount: 30000, in_wages: false }] }));
+    expect(inWages.pf_wage).toBe(20000);
+    expect(notWages.pf_wage).toBe(computePayroll(emp(10000), base({ structureComponents: flat })).pf_wage);
+    expect(notWages.employee_esi).toBe(computePayroll(emp(10000), base({ structureComponents: flat })).employee_esi);
   });
 });
 

@@ -207,61 +207,25 @@ cron.schedule('30 0 * * *', async () => {
   }
 }, { timezone: 'Asia/Kolkata' });
 
-// ── 5. Approval SLA Escalation ────────────────────────────────────────────────
-// Runs weekdays at 09:00. Flags leave applications pending > 3 days and sends
-// escalation notifications to HR / the approver's manager.
+// ── 5. Approval escalation (2026-11-24) ──────────────────────────────────────
+// Weekdays 09:00. A request that has waited longer than Leave Settings →
+// "escalate after N days" at its current step is escalated once for that step
+// (leaveEscalation.service.js): next level up + HR are told, and an escalated
+// manager step may be decided by HR. The old sweep re-notified the same
+// manager every morning and never moved the request.
 
 cron.schedule('0 9 * * 1-5', async () => {
-  log('sla-escalation', 'Checking pending approvals');
+  log('escalation', 'Checking pending approvals');
   try {
-    const { rows: stale } = await pool.query(`
-      SELECT la.id, la.employee_id, la.manager_id, la.applied_at,
-             COALESCE(e.name, CONCAT(e.first_name,' ',e.last_name)) AS employee_name,
-             lt.leave_name,
-             EXTRACT(DAY FROM NOW() - la.applied_at)::int AS pending_days
-      FROM leave_applications la
-      JOIN employees e  ON la.employee_id = e.id
-      JOIN leave_types lt ON la.leave_type_id = lt.id
-      WHERE la.status = 'pending'
-        AND la.deleted_at IS NULL
-        AND la.applied_at < NOW() - INTERVAL '3 days'
-      ORDER BY la.applied_at ASC
-    `);
-
-    if (!stale.length) {
-      log('sla-escalation', 'No SLA breaches');
-      return;
-    }
-
-    const { notifyWorkflowEvent } = await import('../services/WorkflowNotificationService.js').catch(() => ({ notifyWorkflowEvent: null }));
-    for (const app of stale) {
-      if (notifyWorkflowEvent) {
-        // notifyWorkflowEvent is fire-and-forget and returns undefined (phase3
-        // test pins that). The `await …(…).catch()` that was here threw a
-        // TypeError on `undefined.catch`, aborting this loop after the FIRST
-        // stale application — every later one was never escalated.
-        notifyWorkflowEvent('escalated', {
-          module: 'Leave',
-          recordId: app.id,
-          actorId: null,
-          actorName: 'System',
-          context: {
-            employee_name: app.employee_name,
-            leave_type: app.leave_name,
-            pending_days: app.pending_days,
-          },
-          recipientIds: [app.manager_id].filter(Boolean),
-        });
-      }
-    }
-
-    log('sla-escalation', `Escalated ${stale.length} application(s) pending > 3 days`);
+    const { runLeaveEscalation } = await import('../modules/leaves/services/leaveEscalation.service.js');
+    const { escalated } = await runLeaveEscalation();
+    log('escalation', escalated.length ? `Escalated ${escalated.length} step(s)` : 'Nothing overdue');
   } catch (err) {
-    log('sla-escalation', `Error: ${err.message}`);
+    log('escalation', `Error: ${err.message}`);
   }
 }, { timezone: 'Asia/Kolkata' });
 
-log('init', 'Leave cron jobs registered: monthly-accrual, carry-forward, cf-expiry, compoff-expiry, sla-escalation');
+log('init', 'Leave cron jobs registered: monthly-accrual, carry-forward, cf-expiry, compoff-expiry, escalation');
 
 // ── 6. Accrual catch-up ───────────────────────────────────────────────────────
 // The 1st-of-month jobs above only fire if the server is up at that minute; a month

@@ -27,8 +27,8 @@ function fetchStatus(force = false) {
   if (!token) return Promise.resolve({ is_approver: false });
   if (!force && cache.token === token && cache.promise) return cache.promise;
   const promise = api.get('/approvals/stats')
-    .then(r => ({ is_approver: r?.data?.isApprover === true }))
-    .catch(() => ({ is_approver: false }))
+    .then(r => ({ is_approver: r?.data?.isApprover === true, has_direct_reports: r?.data?.hasDirectReports === true }))
+    .catch(() => ({ is_approver: false, has_direct_reports: false }))
     .then(v => { if (cache.promise === promise) cache.value = v; return v; });
   cache = { token, promise, value: cache.token === token ? cache.value : null };
   return promise;

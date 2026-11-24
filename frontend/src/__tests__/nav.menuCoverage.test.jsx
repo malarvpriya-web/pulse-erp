@@ -161,7 +161,6 @@ const NOT_IN_MENU = {
   // is a legacy re-export kept only so old links and bookmarks resolve.
   NativeSignature:         'route key loads DocumentSigning.jsx',
   FieldService:            'route key loads FieldVisitScheduler.jsx',
-  TeamLeaves:             "route key loads LeaveApprovals.jsx with initialQueue:'team'",
   MasterConfig:            'merged into MasterSetup; file is a re-export',
   ReportPDC:               're-export of PDCOutstanding',
   PDCOutstanding:          'subset of PDCManagement, live as PaymentBatch → PDC Management',

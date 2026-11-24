@@ -137,6 +137,31 @@ export const EVENT_MAP = {
     },
     notify: 'submitter',
   },
+  // Leave: one step of a multi-step approval done, the final decision still to
+  // come (2026-11-23). The employee used to get "Leave Approved" here while the
+  // leave was still pending HR.
+  // Leave waited too long at one step (leaveEscalation.service.js, 2026-11-24).
+  leave_escalated: {
+    notification_type: 'alert',
+    event_key: 'approval.pending',
+    title: (ctx) => `Leave waiting for a decision: ${ctx.context?.employee_name || 'an employee'}`,
+    message: (ctx) => {
+      const c = ctx.context || {};
+      return `${c.employee_name || 'An employee'}'s ${c.leave_type || 'leave'} (${c.days ?? '?'} day(s) from ${c.start_date || '?'}, #${ctx.recordId}) `
+        + `has waited ${c.waited_days || 'several'} days for ${c.step || 'a decision'}.`
+        + (c.hr_may_decide ? ' HR may now take the manager decision in Leave Approvals.' : ' Please decide it in Leave Approvals.');
+    },
+    notify: 'approver',
+  },
+  leave_step_approved: {
+    notification_type: 'info',
+    title: () => 'Leave approved by your manager',
+    message: (ctx) => {
+      const c = ctx.context || {};
+      return `Your ${c.leave_type || 'leave'} request (#${ctx.recordId}) was approved by ${c.step || 'your manager'}. It now waits for ${c.next || 'HR'} to give the final decision.`;
+    },
+    notify: 'submitter',
+  },
   // HR → Policies → Send reminder (HR audit 2026-11-16): staff who have not
   // accepted the policy's current version. Was a stub that sent nothing.
   policy_ack_reminder: {

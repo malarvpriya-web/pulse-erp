@@ -1,4 +1,6 @@
 import express from 'express';
+import multer from 'multer';
+import { uploadFile } from '../../../services/StorageService.js';
 import pool from '../../../config/db.js';
 import leavesRepository from '../repositories/leaves.repository.js';
 import { openingAllocation } from '../services/leaveAccrual.service.js';
@@ -7,8 +9,11 @@ import { validate } from '../../../services/ValidationEngineService.js';
 import { evaluateRules } from '../../../services/RuleEngineService.js';
 import { logAudit } from '../../../services/AuditService.js';
 import { authorizeManagerApproval, DENIED_MESSAGE } from '../../../shared/managerApprovalAuthz.js';
-import { hasRole } from '../../../middlewares/auth.middleware.js';
+import { hasRole, rolesOf } from '../../../middlewares/auth.middleware.js';
 import { employeeOf, companyOf } from '../../../shared/scope.js';
+import { CLOSED_EXIT_STATUSES } from '../../hr/exitCase.js';
+import { NOTICE_STATUSES, isCurrentSql } from '../../../shared/employeeStatus.js';
+import { getWeekendDays, dayIsWeekend } from '../../../shared/weekend.js';
 
 const router = express.Router();
 
@@ -48,12 +53,15 @@ async function syncLeaveToAttendance(application, poolRef) {
     }
 
     // Iterate each date in the leave range
-    const start = new Date(startDate);
-    const end   = new Date(endDate);
+    // Weekly offs from Attendance Settings (incl. 2nd/4th-Saturday offs), on
+    // local calendar dates — toISOString() gave the previous day in IST.
+    const weekend = await getWeekendDays(resolvedCompanyId);
+    const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    const start = new Date(`${String(startDate instanceof Date ? iso(startDate) : startDate).slice(0, 10)}T00:00:00`);
+    const end   = new Date(`${String(endDate instanceof Date ? iso(endDate) : endDate).slice(0, 10)}T00:00:00`);
     for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-      const dow = d.getDay();
-      if (dow === 0 || dow === 6) continue; // Skip weekends
-      const dateStr = d.toISOString().split('T')[0];
+      const dateStr = iso(d);
+      if (dayIsWeekend(dateStr, weekend)) continue; // weekly off
 
       // Skip holidays
       const isHoliday = await poolRef.query(
@@ -109,12 +117,23 @@ async function reverseLeaveAttendance(application, poolRef) {
 }
 
 // ── Post LOP deduction to active payroll run (non-blocking) ──────────────────
-async function postLopToPayroll(application, poolRef) {
+/**
+ * Post (sign +1) or take back (sign −1) a leave's Loss of Pay on the employee's
+ * DRAFT payroll run for the leave's month. An approved run is posted to the GL
+ * and backs the payslip and payment, so it is never touched: the result says
+ * so, and the caller tells HR to correct it in Payroll.
+ *   → { days, finalised: boolean } | null when there is no LOP to post
+ * The amount uses the Basic in force (latest salary assignment, else the
+ * employee master) — the same source encashment and payroll read; it used to
+ * read only the master's basic_salary (2026-11-24).
+ */
+async function postLopToPayroll(application, poolRef, sign = 1) {
   try {
-    if (!application) return;
-    // Only post once the leave is actually approved — a mid-workflow approval
-    // (manager approved, L2/HR still pending) must not charge payroll yet.
-    if (application.status && application.status !== 'approved') return;
+    if (!application) return null;
+    // Posting happens only once the leave is approved — a mid-workflow approval
+    // (manager approved, L2/HR still pending) must not charge payroll yet. A
+    // reversal is for a leave that WAS approved and is now cancelled.
+    if (sign > 0 && application.status && application.status !== 'approved') return null;
     // Full-LOP application (probation block or LOP leave type): the whole
     // request is unpaid. Otherwise a paid leave may still carry a clubbing
     // LOP portion (weekend/holiday days auto-charged) in lop_days.
@@ -122,42 +141,47 @@ async function postLopToPayroll(application, poolRef) {
     const days = isFullLop
       ? Number(application.number_of_days || 0)
       : Number(application.lop_days || 0);
-    if (days <= 0) return;
-    const startDate = application.start_date || application.from_date;
-    if (!startDate) return;
-    const month = new Date(startDate).getMonth() + 1;
-    const year  = new Date(startDate).getFullYear();
+    if (days <= 0) return null;
+    const startDate = String(application.start_date || application.from_date || '').slice(0, 10);
+    if (!startDate) return null;
+    const month = Number(startDate.slice(5, 7));
+    const year  = Number(startDate.slice(0, 4));
 
-    // Fetch employee's daily rate (basic_salary / 26)
-    const { rows: empRows } = await poolRef.query(
-      `SELECT basic_salary FROM employees WHERE id = $1 LIMIT 1`, [application.employee_id]
-    ).catch(() => ({ rows: [] }));
-    const basicSalary = Number(empRows[0]?.basic_salary || 0);
+    const { rows: [sal] } = await poolRef.query(`
+      SELECT COALESCE(
+        (SELECT basic_salary FROM employee_salary_assignments
+          WHERE employee_id = $1 AND effective_from <= $2::date
+          ORDER BY effective_from DESC, created_at DESC LIMIT 1),
+        (SELECT basic_salary FROM employees WHERE id = $1)) AS basic`, [application.employee_id, startDate]);
+    const basicSalary = Number(sal?.basic || 0);
     const lopAmount = basicSalary > 0 ? Number(((basicSalary / 26) * days).toFixed(2)) : 0;
 
-    // Find active payroll run for this employee and period
     const { rows: runRows } = await poolRef.query(`
-      SELECT id FROM payroll_runs
-      WHERE employee_id = $1 AND month = $2 AND year = $3 AND status IN ('draft', 'pending')  -- drafts only: an approved run is posted to the GL and backs the payslip and payment (PAYROLL_DATA_FLOW_AUDIT.md Part 10)
+      SELECT id, status FROM payroll_runs
+      WHERE employee_id = $1 AND month = $2 AND year = $3
+      ORDER BY (status IN ('draft', 'pending')) DESC
       LIMIT 1
-    `, [application.employee_id, month, year]).catch(() => ({ rows: [] }));
-
-    if (runRows.length) {
-      await poolRef.query(`
-        UPDATE payroll_runs
-        SET lop_days   = COALESCE(lop_days, 0) + $1,
-            lop_amount = COALESCE(lop_amount, 0) + $2,
-            updated_at = NOW()
-        WHERE id = $3
-      `, [days, lopAmount, runRows[0].id]).catch(() => {});
-    }
-  } catch {
-    // Non-blocking — do not break approval flow
+    `, [application.employee_id, month, year]);
+    const run = runRows[0];
+    if (!run) return { days, finalised: false };
+    if (!['draft', 'pending'].includes(run.status)) return { days, finalised: true };
+    await poolRef.query(`
+      UPDATE payroll_runs
+      SET lop_days   = GREATEST(COALESCE(lop_days, 0)   + $1, 0),
+          lop_amount = GREATEST(COALESCE(lop_amount, 0) + $2, 0),
+          updated_at = NOW()
+      WHERE id = $3
+    `, [sign * days, sign * lopAmount, run.id]);
+    return { days, finalised: false };
+  } catch (err) {
+    // Non-blocking — do not break the approval / cancel flow.
+    console.warn('[leaves] LOP payroll post failed:', err.message);
+    return null;
   }
 }
 
 // ── Notification helper (non-blocking) ───────────────────────────────────────
-async function notifyLeaveEvent(event, application, actor, recipients = []) {
+async function notifyLeaveEvent(event, application, actor, recipients = [], extra = {}) {
   try {
     const { notifyWorkflowEvent } = await import('../../../services/WorkflowNotificationService.js');
     const ctx = {
@@ -172,6 +196,7 @@ async function notifyLeaveEvent(event, application, actor, recipients = []) {
         from: application.start_date,
         to: application.end_date,
         reason: application.reason || '',
+        ...extra,
       },
       recipientIds: recipients.filter(Boolean),
     };
@@ -295,6 +320,43 @@ function normalizeApplicationPayload(body, employee_id, leave_type_id) {
   };
 }
 
+/**
+ * Leave days in [start, end] for a company: working days (not a weekly off,
+ * not a holiday) and the non-working days sandwiched between the first and
+ * last working day (clubbing → Loss of Pay). Same rule as ApplyLeave.jsx's
+ * preview. Returns { error, code } for a request that cannot be a leave.
+ */
+async function countLeaveDays({ companyId, start, end, halfDay = false }) {
+  const s = String(start || '').slice(0, 10), e = String(end || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s) || !/^\d{4}-\d{2}-\d{2}$/.test(e)) {
+    return { error: 'Start and end dates are required (YYYY-MM-DD).', code: 'DATES_REQUIRED' };
+  }
+  if (e < s) return { error: 'The end date is before the start date.', code: 'END_BEFORE_START' };
+  const span = (Date.parse(`${e}T00:00:00Z`) - Date.parse(`${s}T00:00:00Z`)) / 86400000 + 1;
+  if (span > 366) return { error: 'A leave request cannot be longer than a year.', code: 'RANGE_TOO_LONG' };
+  const weekend = await getWeekendDays(companyId);
+  const { rows: hol } = await pool.query(
+    `SELECT date::text AS d FROM holidays
+      WHERE date BETWEEN $1::date AND $2::date AND (company_id = $3 OR company_id IS NULL)`,
+    [s, e, companyId]);
+  const holidays = new Set(hol.map(h => h.d.slice(0, 10)));
+  const days = [];
+  for (let t = Date.parse(`${s}T00:00:00Z`); t <= Date.parse(`${e}T00:00:00Z`); t += 86400000) {
+    const d = new Date(t).toISOString().slice(0, 10);   // UTC-built, so the calendar date is exact
+    days.push(!dayIsWeekend(d, weekend) && !holidays.has(d));
+  }
+  const first = days.indexOf(true), last = days.lastIndexOf(true);
+  if (first === -1) {
+    return { error: halfDay
+      ? 'A half day must be on a working day — that date is a weekly off or a holiday.'
+      : 'Those dates are all weekly offs or holidays — there is no working day to take leave on.', code: 'NO_WORKING_DAYS' };
+  }
+  if (halfDay) return { workingDays: 0.5, clubbedDays: 0 };
+  let clubbedDays = 0;
+  for (let i = first; i <= last; i++) if (!days[i]) clubbedDays++;
+  return { workingDays: days.filter(Boolean).length, clubbedDays };
+}
+
 function statusForWorkflowError(error) {
   return error.code === 'LEAVE_NOT_ACTIONABLE' ? 409 : 500;
 }
@@ -316,8 +378,9 @@ async function resolveLeaveTypeId(leave_type, company_id = null) {
 }
 
 // ── Role helpers ──────────────────────────────────────────────────────────────
-const ADMIN_HR_ROLES = new Set(['admin', 'super_admin', 'hr', 'hr_manager', 'hr_admin', 'hr_exec']);
-const isAdminOrHR = (role) => ADMIN_HR_ROLES.has((role || '').toLowerCase());
+const ADMIN_HR_ROLES = (['admin', 'super_admin', 'hr', 'hr_manager', 'hr_admin', 'hr_exec']);
+// Union of ALL roles held (user_roles), never the primary `req.user.role` alone.
+const isAdminOrHR = (req) => hasRole(req, ...ADMIN_HR_ROLES);
 
 /**
  * Force a non-privileged caller's list query onto their OWN employee_id.
@@ -342,15 +405,17 @@ const isAdminOrHR = (role) => ADMIN_HR_ROLES.has((role || '').toLowerCase());
  * see, so they get none — never the unfiltered set.
  */
 function scopeToSelf(req, filters) {
-  if (isAdminOrHR((req.user?.role || '').toLowerCase())) return filters;
+  if (isAdminOrHR(req)) return filters;
   if (filters.manager_status) return filters;          // approver queue, pinned below
+  // Department-head queue: pinned to the head's own department in /applications.
+  if (filters.queue === 'l2' && hasRole(req, ...L2_APPROVER_ROLES) && filters.department) return filters;
   const self = req.user?.employee_id ?? null;
   return { ...filters, employee_id: self ?? -1 };
 }
 
 /** Single-record counterpart of scopeToSelf(): own row, or one you approve. */
 function canSeeApplication(req, application) {
-  if (isAdminOrHR((req.user?.role || '').toLowerCase())) return true;
+  if (isAdminOrHR(req)) return true;
   const self = req.user?.employee_id ?? null;
   if (self == null) return false;
   return Number(application.employee_id) === Number(self)
@@ -410,6 +475,26 @@ const L1_OVERRIDE_ROLES = ['admin', 'super_admin', 'hr', 'hr_manager', 'hr_exec'
  * another eligible approver at the same level. The message says whether one
  * exists — if none does, an administrator has to provide one.
  */
+/**
+ * May this caller take the manager (L1) decision on this leave? The shared
+ * reporting-line rule (managerApprovalAuthz.js), plus: once the manager step
+ * has been ESCALATED (leaveEscalation.service.js — it waited past Leave
+ * Settings → "escalate after N days"), HR / admin may take it too (2026-11-24).
+ */
+async function authorizeL1(req, leave) {
+  const auth = await authorizeManagerApproval({
+    actorEmployeeId: req.user?.employee_id,
+    actorRole: req.user?.role,
+    actorRoles: rolesOf(req),
+    requesterEmployeeId: leave.employee_id,
+    delegateApproverId: leave.delegate_approver_id,
+  });
+  if (!auth.authorized && auth.reason === 'has_manager' && leave.escalation_step === 'l1' && isAdminOrHR(req)) {
+    return { authorized: true, reason: 'escalated' };
+  }
+  return auth;
+}
+
 async function blockOwnLeaveDecision(req, res, leave, level) {
   const userId = req.user?.userId ?? req.user?.id ?? null;
   const { rows: [me] } = userId == null ? { rows: [] }
@@ -469,7 +554,7 @@ export async function handleStatusUpdate(req, res) {
   }
   // Only admin/HR roles may use the generic status update; managers must use
   // the typed /approve/manager or /reject/manager endpoints.
-  if (!isAdminOrHR(role) && normalized !== 'cancelled') {
+  if (!isAdminOrHR(req) && normalized !== 'cancelled') {
     return res.status(403).json({ error: 'Use the specific approve/reject endpoints for your role' });
   }
   try {
@@ -477,7 +562,7 @@ export async function handleStatusUpdate(req, res) {
     if (!existing) return res.status(404).json({ error: 'Leave application not found' });
     // A non-HR caller reaches this only to cancel, and only their own leave —
     // the same rule PUT /:id/cancel applies. It used to cancel ANY leave.
-    if (!isAdminOrHR(role) && String(existing.employee_id) !== String(req.user?.employee_id)) {
+    if (!isAdminOrHR(req) && String(existing.employee_id) !== String(req.user?.employee_id)) {
       return res.status(403).json({ error: 'You can only cancel your own leave applications' });
     }
     if (normalized !== 'cancelled' && await blockOwnLeaveDecision(req, res, existing, 'hr')) return;
@@ -511,6 +596,8 @@ router.get('/types', requirePermission('leaves', 'view'), async (req, res) => {
     // catalogue so the picker is never empty. Without the flag (e.g. the
     // Settings admin view) the full global + company catalogue is returned.
     const applicable = ['1', 'true', 'yes'].includes(String(req.query.applicable || '').toLowerCase());
+    // Leave Settings lists switched-off types too, so they can be switched back on.
+    const includeInactive = !applicable && ['1', 'true'].includes(String(req.query.include_inactive || '')) && isAdminOrHR(req);
     const scopeClause = applicable
       ? `AND (
              CASE
@@ -544,12 +631,14 @@ router.get('/types', requirePermission('leaves', 'view'), async (req, res) => {
              COALESCE(is_paid, true)                     AS is_paid,
              COALESCE(l2_required, false)                AS l2_required,
              COALESCE(max_encash_days_per_year, 0)       AS max_encash_days_per_year,
-             COALESCE(sandwich_rule, false)              AS sandwich_rule
+             COALESCE(sandwich_rule, false)              AS sandwich_rule,
+             carry_forward_expiry_months,
+             COALESCE(days_worked_per_leave_day, 20)     AS days_worked_per_leave_day
       FROM leave_types
-      WHERE deleted_at IS NULL AND is_active = true
+      WHERE deleted_at IS NULL AND (is_active = true OR $2::boolean)
         ${scopeClause}
-      ORDER BY leave_name
-    `, [companyId]);
+      ORDER BY is_active DESC, leave_name
+    `, [companyId, includeInactive]);
     res.json(rows);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -559,11 +648,78 @@ router.get('/types', requirePermission('leaves', 'view'), async (req, res) => {
 // GET /probation-status — tells the Apply Leave screen whether the target
 // employee is currently in their probation period (paid leave blocked, LOP
 // only). Employees may only query themselves; HR/Admin may pass ?employee_id.
+// ── Leave rules (owner, 2026-11-23) ─────────────────────────────────────────
+// company_settings module 'leaves'. encashment_tds_pct: flat income-tax % on a
+// leave encashment (default 20 — change it when the government rule changes).
+// escalation_days (2026-11-24): a request that waits this many days at one
+// approval step is escalated (leaveEscalation.service.js); 0 = never.
+export const LEAVE_SETTING_DEFAULTS = { encashment_tds_pct: 20, escalation_days: 3 };
+export async function leaveSettingsOf(companyId, db = pool) {
+  if (companyId == null) return { ...LEAVE_SETTING_DEFAULTS };
+  const { rows: [r] } = await db.query(
+    `SELECT settings FROM company_settings WHERE company_id = $1 AND module = 'leaves'`, [companyId]);
+  return { ...LEAVE_SETTING_DEFAULTS, ...(r?.settings || {}) };
+}
+
+router.get('/settings', requirePermission('leaves', 'view'), async (req, res) => {
+  try {
+    const companyId = companyOf(req);
+    const weekend = await getWeekendDays(companyId);
+    res.json({ ...(await leaveSettingsOf(companyId)), weekend_days: [...weekend], saturday_off_weeks: weekend.saturdayWeeks || [] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.put('/settings', requireLeaveAdmin, requirePermission('leaves', 'edit'), async (req, res) => {
+  try {
+    const companyId = companyOf(req);
+    if (companyId == null) return res.status(400).json({ error: 'Company context required' });
+    const before = await leaveSettingsOf(companyId);
+    const next = { ...before };
+    if (req.body.encashment_tds_pct !== undefined) {
+      const pct = Number(req.body.encashment_tds_pct);
+      if (!(pct >= 0 && pct <= 100)) return res.status(400).json({ error: 'Encashment TDS must be between 0 and 100 %' });
+      next.encashment_tds_pct = Math.round(pct * 100) / 100;
+    }
+    if (req.body.escalation_days !== undefined) {
+      const d = Number(req.body.escalation_days);
+      if (!(Number.isInteger(d) && d >= 0 && d <= 30)) return res.status(400).json({ error: 'Escalate after must be a whole number of days from 0 (never) to 30' });
+      next.escalation_days = d;
+    }
+    await pool.query(`
+      INSERT INTO company_settings (company_id, module, settings) VALUES ($1, 'leaves', $2::jsonb)
+      ON CONFLICT (company_id, module) DO UPDATE SET settings = EXCLUDED.settings, updated_at = NOW()`,
+    [companyId, JSON.stringify(next)]);
+    logAudit({ userId: req.user?.userId, module: 'leaves', recordId: null, recordType: 'leave_settings', action: 'update', oldData: before, newData: next, req });
+    res.json(next);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Serving notice = an exit (HR → Exit Management) that is still open. Leave
+// taken while one is open is Loss of Pay only (same rule as probation).
+async function openNoticePeriod(employeeId) {
+  if (!employeeId) return null;
+  const { rows: [emp] } = await pool.query(
+    `SELECT status, exit_date::text AS exit_date FROM employees WHERE id = $1`, [employeeId]);
+  if (emp && NOTICE_STATUSES.includes(String(emp.status || '').trim().toLowerCase())) {
+    return { id: null, last_working_date: emp.exit_date || null };
+  }
+  const { rows: [open] } = await pool.query(
+    `SELECT id, last_working_date::text AS last_working_date FROM exit_requests
+      WHERE employee_id = $1 AND status <> ALL($2::text[])
+      ORDER BY id DESC LIMIT 1`,
+    [employeeId, CLOSED_EXIT_STATUSES]);
+  return open || null;
+}
+
 router.get('/probation-status', requirePermission('leaves', 'view'), async (req, res) => {
   try {
     const role = (req.user?.role || '').toLowerCase();
     let empId = req.query.employee_id;
-    if (!isAdminOrHR(role) || !empId) empId = req.user?.employee_id;
+    if (!isAdminOrHR(req) || !empId) empId = req.user?.employee_id;
     if (!empId || isNaN(parseInt(empId, 10))) {
       return res.json({ in_probation: false, probation_end: null });
     }
@@ -578,14 +734,17 @@ router.get('/probation-status', requirePermission('leaves', 'view'), async (req,
        LIMIT 1`,
       [empId, companyOf(req)]
     );
-    if (!rows.length) return res.json({ in_probation: false, probation_end: null });
+    if (!rows.length) return res.json({ in_probation: false, probation_end: null, in_notice: false, last_working_date: null });
     const { status, prob_end } = rows[0];
     const statusProbation = String(status || '').toLowerCase() === 'probation';
     const dateProbation = prob_end ? new Date(prob_end) >= new Date(new Date().toDateString()) : false;
     const inProbation = statusProbation || dateProbation;
+    const notice = await openNoticePeriod(empId);
     res.json({
       in_probation: inProbation,
       probation_end: prob_end ? String(prob_end).slice(0, 10) : null,
+      in_notice: !!notice,
+      last_working_date: notice?.last_working_date ?? null,
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -600,7 +759,7 @@ router.post('/types', requireLeaveAdmin, requirePermission('leaves', 'add'), asy
       allow_half_day, requires_attachment, requires_medical_cert_days,
       allow_negative_balance, min_notice_days, max_consecutive_days,
       accrual_type, accrual_days_per_month, gender_restriction, allowed_in_probation,
-      l2_required, max_encash_days_per_year, sandwich_rule,
+      l2_required, max_encash_days_per_year, sandwich_rule, days_worked_per_leave_day,
     } = req.body;
     const trimmed = (leave_name || '').trim();
     if (!trimmed) return res.status(400).json({ error: 'leave_name is required' });
@@ -615,9 +774,9 @@ router.post('/types', requireLeaveAdmin, requirePermission('leaves', 'add'), asy
         allow_half_day, requires_attachment, requires_medical_cert_days,
         allow_negative_balance, min_notice_days, max_consecutive_days,
         accrual_type, accrual_days_per_month, gender_restriction, allowed_in_probation,
-        l2_required, max_encash_days_per_year, sandwich_rule
+        l2_required, max_encash_days_per_year, sandwich_rule, days_worked_per_leave_day
       )
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
       ON CONFLICT DO NOTHING
       RETURNING id, leave_name, annual_quota AS default_days, description
     `, [
@@ -628,6 +787,7 @@ router.post('/types', requireLeaveAdmin, requirePermission('leaves', 'add'), asy
       accrual_type || 'manual', Number(accrual_days_per_month) || 0,
       gender_restriction || null, allowed_in_probation ?? true,
       l2_required ?? false, max_encash_days_per_year ? Number(max_encash_days_per_year) : null, sandwich_rule ?? false,
+      Number(days_worked_per_leave_day) > 0 ? Number(days_worked_per_leave_day) : 20,
     ]);
     if (!rows.length) return res.status(409).json({ error: 'A leave type with this name already exists' });
     logAudit({ userId: req.user?.userId, module: 'leaves', recordId: rows[0].id, recordType: 'leave_type', action: 'create', newData: rows[0], req });
@@ -701,9 +861,13 @@ router.put('/types/:id', requireLeaveAdmin, requirePermission('leaves', 'edit'),
       allow_negative_balance, min_notice_days, max_consecutive_days,
       accrual_type, accrual_days_per_month, gender_restriction, allowed_in_probation,
       l2_required, max_encash_days_per_year, sandwich_rule,
+      is_paid, is_lop_type, is_active, carry_forward_expiry_months, days_worked_per_leave_day,
     } = req.body;
     if (!leave_name?.trim()) return res.status(400).json({ error: 'leave_name is required' });
-    const { rows: oldRows } = await pool.query(`SELECT * FROM leave_types WHERE id = $1 AND deleted_at IS NULL`, [req.params.id]);
+    // Own company's types only (a global seed type is not editable per tenant).
+    const { rows: oldRows } = await pool.query(
+      `SELECT * FROM leave_types WHERE id = $1 AND deleted_at IS NULL AND ($2::int IS NULL OR company_id = $2)`,
+      [req.params.id, companyOf(req)]);
     if (!oldRows.length) return res.status(404).json({ error: 'Leave type not found' });
     await pool.query(`
       UPDATE leave_types
@@ -713,7 +877,8 @@ router.put('/types/:id', requireLeaveAdmin, requirePermission('leaves', 'edit'),
           allow_negative_balance = $10, min_notice_days = $11, max_consecutive_days = $12,
           accrual_type = $13, accrual_days_per_month = $14, gender_restriction = $15,
           allowed_in_probation = $16, l2_required = $17, max_encash_days_per_year = $18,
-          sandwich_rule = $19, updated_at = NOW()
+          sandwich_rule = $19, is_paid = $21, is_lop_type = $22, is_active = $23,
+          carry_forward_expiry_months = $24, days_worked_per_leave_day = $25, updated_at = NOW()
       WHERE id = $20 AND deleted_at IS NULL
     `, [
       leave_name.trim(), Number(default_days) || 0, description?.trim() || '',
@@ -734,6 +899,12 @@ router.put('/types/:id', requireLeaveAdmin, requirePermission('leaves', 'edit'),
       max_encash_days_per_year != null ? Number(max_encash_days_per_year) : oldRows[0].max_encash_days_per_year,
       sandwich_rule ?? oldRows[0].sandwich_rule ?? false,
       req.params.id,
+      is_paid ?? oldRows[0].is_paid ?? true,
+      is_lop_type ?? oldRows[0].is_lop_type ?? false,
+      is_active ?? oldRows[0].is_active ?? true,
+      carry_forward_expiry_months === '' ? null
+        : carry_forward_expiry_months != null ? Number(carry_forward_expiry_months) : oldRows[0].carry_forward_expiry_months,
+      Number(days_worked_per_leave_day) > 0 ? Number(days_worked_per_leave_day) : (oldRows[0].days_worked_per_leave_day ?? 20),
     ]);
     logAudit({ userId: req.user?.userId, module: 'leaves', recordId: req.params.id, recordType: 'leave_type', action: 'update', oldData: oldRows[0], newData: req.body, req });
     res.json({ success: true });
@@ -744,8 +915,21 @@ router.put('/types/:id', requireLeaveAdmin, requirePermission('leaves', 'edit'),
 
 router.delete('/types/:id', requireLeaveAdmin, requirePermission('leaves', 'delete'), async (req, res) => {
   try {
-    const { rows: oldRows } = await pool.query(`SELECT * FROM leave_types WHERE id = $1 AND deleted_at IS NULL`, [req.params.id]);
+    const { rows: oldRows } = await pool.query(
+      `SELECT * FROM leave_types WHERE id = $1 AND deleted_at IS NULL AND ($2::int IS NULL OR company_id = $2)`,
+      [req.params.id, companyOf(req)]);
     if (!oldRows.length) return res.status(404).json({ error: 'Leave type not found' });
+    // In use → refuse; switching it off (Active = No) keeps the history.
+    const { rows: [use] } = await pool.query(`
+      SELECT (SELECT COUNT(*) FROM leave_applications WHERE leave_type_id = $1 AND deleted_at IS NULL)::int AS apps,
+             (SELECT COUNT(*) FROM leave_balances WHERE leave_type_id = $1 AND COALESCE(allocated_days,0) > 0)::int AS balances`,
+      [req.params.id]);
+    if (use.apps > 0 || use.balances > 0) {
+      return res.status(409).json({
+        code: 'LEAVE_TYPE_IN_USE',
+        error: `"${oldRows[0].leave_name}" is in use (${use.apps} application(s), ${use.balances} balance(s) with days). Edit it and set Active to No instead of deleting it.`,
+      });
+    }
     await pool.query(`UPDATE leave_types SET deleted_at = NOW(), is_active = false WHERE id = $1`, [req.params.id]);
     logAudit({ userId: req.user?.userId, module: 'leaves', recordId: req.params.id, recordType: 'leave_type', action: 'delete', oldData: oldRows[0], req });
     res.json({ success: true });
@@ -765,13 +949,19 @@ router.get('/balance/:employee_id', requirePermission('leaves', 'view'), async (
     if (!empId || empId === 'null' || empId === 'undefined' || isNaN(parseInt(empId, 10))) {
       return res.json([]);
     }
-    const role = (req.user?.role || '').toLowerCase();
     const callerEmpId = req.user?.employee_id;
-    // Employees may only fetch their own balance
-    if (!isAdminOrHR(role) && !['manager','department_head','l2_approver'].includes(role)) {
-      if (String(callerEmpId) !== String(req.params.employee_id)) {
-        return res.status(403).json({ error: 'You can only view your own leave balance' });
-      }
+    // Only inside the caller's company.
+    const cid = companyOf(req);
+    const { rows: [target] } = await pool.query(
+      `SELECT id, reporting_manager_id FROM employees WHERE id = $1 AND ($2::int IS NULL OR company_id = $2)`,
+      [parseInt(empId, 10), cid]);
+    if (!target) return res.status(404).json({ error: 'Employee not found' });
+    // Own balance; HR/admin; a department head / L2 approver; or the person's
+    // reporting manager (so an approver sees the balance before deciding).
+    const isSelf = String(callerEmpId) === String(empId);
+    const isReportingManager = callerEmpId != null && String(target.reporting_manager_id) === String(callerEmpId);
+    if (!isSelf && !isAdminOrHR(req) && !hasRole(req, 'department_head', 'l2_approver') && !isReportingManager) {
+      return res.status(403).json({ error: 'You can only view your own leave balance' });
     }
     const { year } = req.query;
     const balance = await leavesRepository.getLeaveBalance(req.params.employee_id, year);
@@ -862,6 +1052,9 @@ router.get('/allocations', requirePermission('leaves', 'view'), async (req, res)
     if (isAdmin) {
       scopeEmployeeId = Number.isInteger(requested) ? requested : null;
     } else if (isManager) {
+      // A manager login with no employee record has no team: nothing to show
+      // (a null manager filter returned every row in the company, 2026-11-24).
+      if (me == null) return res.json([]);
       scopeManagerId = me;
       if (Number.isInteger(requested)) scopeEmployeeId = requested;   // still bounded by the manager filter below
     } else {
@@ -874,37 +1067,38 @@ router.get('/allocations', requirePermission('leaves', 'view'), async (req, res)
     }
 
     const { rows } = await pool.query(`
-      SELECT lb.id, lb.employee_id, lb.leave_type_id, lb.year,
-             lb.allocated_days,
-             COALESCE(lb.used_days, 0)                              AS used_days,
-             COALESCE(
-               (SELECT SUM(la.number_of_days)
-                FROM leave_applications la
-                WHERE la.employee_id = lb.employee_id
-                  AND la.leave_type_id = lb.leave_type_id
-                  AND la.status = 'pending'
-                  AND EXTRACT(YEAR FROM la.start_date) = lb.year
-                  AND la.deleted_at IS NULL), 0
-             )                                                      AS pending_days,
-             lb.allocated_days - COALESCE(lb.used_days, 0) - COALESCE(
-               (SELECT SUM(la2.number_of_days)
-                FROM leave_applications la2
-                WHERE la2.employee_id = lb.employee_id
-                  AND la2.leave_type_id = lb.leave_type_id
-                  AND la2.status = 'pending'
-                  AND EXTRACT(YEAR FROM la2.start_date) = lb.year
-                  AND la2.deleted_at IS NULL), 0
-             )                                                      AS remaining_days,
-             CONCAT(e.first_name, ' ', e.last_name)                 AS employee_name,
-             lt.leave_name
-      FROM   leave_balances lb
-      JOIN   employees  e  ON lb.employee_id   = e.id
-      JOIN   leave_types lt ON lb.leave_type_id = lt.id
-      WHERE  lb.year = $1
-        AND ($2::integer IS NULL OR e.company_id = $2)
-        AND ($3::integer IS NULL OR lb.employee_id = $3)
-        AND ($4::integer IS NULL OR e.reporting_manager_id = $4)
-      ORDER  BY employee_name, lt.leave_name
+      -- Same balance formula as the employee's own cards (getLeaveBalance):
+      -- used = approved leave; remaining = allocated + carried forward − used
+      -- − pending − encashed. People who have left and switched-off types are
+      -- not listed.
+      WITH x AS (
+        SELECT lb.id, lb.employee_id, lb.leave_type_id, lb.year,
+               lb.allocated_days,
+               COALESCE(lb.carried_forward_days, 0) AS carried_forward_days,
+               COALESCE(lb.encashed_days, 0)        AS encashed_days,
+               COALESCE((SELECT SUM(la.number_of_days) FROM leave_applications la
+                          WHERE la.employee_id = lb.employee_id AND la.leave_type_id = lb.leave_type_id
+                            AND la.status = 'approved' AND EXTRACT(YEAR FROM la.start_date) = lb.year
+                            AND la.deleted_at IS NULL), 0) AS used_days,
+               COALESCE((SELECT SUM(la.number_of_days) FROM leave_applications la
+                          WHERE la.employee_id = lb.employee_id AND la.leave_type_id = lb.leave_type_id
+                            AND la.status = 'pending' AND EXTRACT(YEAR FROM la.start_date) = lb.year
+                            AND la.deleted_at IS NULL), 0) AS pending_days,
+               TRIM(CONCAT(e.first_name, ' ', e.last_name)) AS employee_name,
+               e.office_id AS employee_code, e.department,
+               lt.leave_name
+        FROM   leave_balances lb
+        JOIN   employees  e  ON lb.employee_id   = e.id
+        JOIN   leave_types lt ON lb.leave_type_id = lt.id
+        WHERE  lb.year = $1
+          AND  ${isCurrentSql('e.status')}
+          AND  lt.is_active = true AND lt.deleted_at IS NULL
+          AND ($2::integer IS NULL OR e.company_id = $2)
+          AND ($3::integer IS NULL OR lb.employee_id = $3)
+          AND ($4::integer IS NULL OR e.reporting_manager_id = $4)
+      )
+      SELECT *, allocated_days + carried_forward_days - used_days - pending_days - encashed_days AS remaining_days
+        FROM x ORDER BY employee_name, leave_name
     `, [year, companyId, scopeEmployeeId, scopeManagerId]);
     res.json(rows);
   } catch (error) {
@@ -944,7 +1138,7 @@ router.get('/applications', requirePermission('leaves', 'view'), async (req, res
 
     // For manager-queue requests: if no manager_id provided, resolve from JWT user_id.
     // This avoids frontend sending the wrong ID type (user.userId vs employee_id).
-    if (filters.manager_status && !isAdminOrHR(role) && !filters.manager_id) {
+    if (filters.manager_status && !isAdminOrHR(req) && !filters.manager_id) {
       const empId = req.user?.employee_id;
       if (empId) {
         filters.manager_id = empId;
@@ -956,9 +1150,22 @@ router.get('/applications', requirePermission('leaves', 'view'), async (req, res
            WHERE u.id = $1 AND e.status IS DISTINCT FROM 'Left' LIMIT 1`,
           [req.user?.userId || req.user?.id]
         );
-        if (rows[0]?.id) filters.manager_id = rows[0].id;
+        // -1 when there is no employee: findApplications skips a falsy
+        // manager_id, which handed an unlinked login every pending request.
+        filters.manager_id = rows[0]?.id ?? -1;
       }
     }
+
+    // A department head (not HR/admin) works the L2 queue for their own
+    // department only — whatever department the request named.
+    if (filters.queue === 'l2' && !isAdminOrHR(req)) {
+      const me = await employeeOf(req, pool);
+      const { rows: [dep] } = me == null ? { rows: [] }
+        : await pool.query('SELECT department FROM employees WHERE id = $1', [me]);
+      filters.department = dep?.department || '__none__';
+    }
+    // The HR queue is HR's alone.
+    if (filters.queue === 'hr' && !hasRole(req, ...HR_FINAL_ROLES)) filters.employee_id = -1;
 
     const applications = await leavesRepository.findApplications(scopeToSelf(req, filters));
     res.json(applications);
@@ -1018,7 +1225,7 @@ async function handleApplyLeave(req, res) {
 
     // Always use authenticated user as the employee (unless HR/Admin submitting for another)
     const role = (req.user?.role || '').toLowerCase();
-    if (!isAdminOrHR(role)) {
+    if (!isAdminOrHR(req)) {
       normalizedPayload.employee_id = req.user?.employee_id;
       employee_id = req.user?.employee_id;
     }
@@ -1044,7 +1251,7 @@ async function handleApplyLeave(req, res) {
      */
     if (!normalizedPayload.employee_id) {
       return res.status(400).json({
-        error: isAdminOrHR(role)
+        error: isAdminOrHR(req)
           ? 'Specify which employee this leave application is for (employee_id).'
           : 'Your login is not linked to an employee record, so leave cannot be applied for. Please contact HR.',
         code: 'EMPLOYEE_LINK_REQUIRED',
@@ -1053,27 +1260,27 @@ async function handleApplyLeave(req, res) {
     }
 
     /**
-     * Same class of defect, one column over.
-     *
-     * `leave_applications.number_of_days` is NOT NULL, and
-     * `normalizeApplicationPayload` only PASSES IT THROUGH — `body.number_of_days
-     * ?? days ?? total_days ?? numberOfDays`. A caller who sends dates but no day
-     * count reached the INSERT with NULL and got another bare 500.
-     *
-     * Validated rather than derived, deliberately. The dates are right there and
-     * `end - start` looks obvious, but how many LEAVE days that is depends on
-     * weekends, the holiday calendar and half-days — policy the Apply Leave form
-     * already owns and sends (`number_of_days: days`). Computing a second answer
-     * here would be a second opinion on leave policy, and the two would drift.
-     * So: the UI is unaffected, and an integration that omits it is told what is
-     * missing instead of being handed a 500.
+     * The day count is the SERVER's (2026-11-24). It used to be taken from the
+     * request as sent, so any client could book a 10-day range as 0.5 days and
+     * pass the balance check, or a half day on a Sunday. The rule is the one
+     * the Apply Leave form previews: weekly offs (incl. the company's off
+     * Saturdays) and holidays are not leave days; those sandwiched between the
+     * first and last working day of the leave are Loss of Pay (clubbing); a
+     * half day must fall on a working day. Whatever the client sent is ignored.
      */
-    if (normalizedPayload.number_of_days == null || normalizedPayload.number_of_days === '') {
-      return res.status(400).json({
-        error: 'number_of_days is required — send the leave-day count for this date range.',
-        code: 'NUMBER_OF_DAYS_REQUIRED',
-        module: 'leaves',
+    {
+      const { rows: [empCo] } = await pool.query('SELECT company_id FROM employees WHERE id = $1', [normalizedPayload.employee_id]);
+      const count = await countLeaveDays({
+        companyId: empCo?.company_id ?? req.scope?.company_id ?? null,
+        start: normalizedPayload.start_date,
+        end: normalizedPayload.half_day ? normalizedPayload.start_date : normalizedPayload.end_date,
+        halfDay: !!normalizedPayload.half_day,
       });
+      if (count.error) return res.status(400).json({ error: count.error, code: count.code, module: 'leaves' });
+      if (normalizedPayload.half_day) normalizedPayload.end_date = normalizedPayload.start_date;
+      normalizedPayload.number_of_days = count.workingDays;
+      normalizedPayload.lop_days = count.clubbedDays;     // full-LOP requests are set below, once the type is known
+      normalizedPayload.clubbing_flag = count.clubbedDays > 0;
     }
 
     // Auto-resolve manager_id
@@ -1103,14 +1310,31 @@ async function handleApplyLeave(req, res) {
     if (!leave_type_id) {
       return res.status(400).json({ error: `Leave type "${leave_type || 'unknown'}" not found. Please contact HR to set up leave types.` });
     }
+    // A type picked by id must be one this employee's company offers and has
+    // not switched off — the name lookup above already insisted on that, the
+    // id path did not (2026-11-24).
+    {
+      const { rows: [okType] } = await pool.query(
+        `SELECT 1 FROM leave_types lt
+          WHERE lt.id = $1 AND lt.deleted_at IS NULL AND lt.is_active = true
+            AND (lt.company_id IS NULL OR lt.company_id = (SELECT company_id FROM employees WHERE id = $2))`,
+        [leave_type_id, normalizedPayload.employee_id]);
+      if (!okType) return res.status(400).json({ error: 'That leave type is not offered (it is switched off or belongs to another company).', code: 'LEAVE_TYPE_NOT_AVAILABLE' });
+    }
 
     // ── Backend balance validation ──────────────────────────────────────────
     const requestedDays = Number(normalizedPayload.number_of_days) || 0;
     const applyYear = new Date(normalizedPayload.start_date).getFullYear();
+    // Same formula as the balance cards (getLeaveBalance): allocated + carried
+    // forward − approved − pending − encashed. lb.used_days is not used: the
+    // encashment approval also adds to it, so it double-counted encashed days.
     const { rows: balRows } = await pool.query(`
       SELECT
-        COALESCE(lb.allocated_days, lt.annual_quota, 0) AS allocated,
-        COALESCE(lb.used_days, 0) AS used,
+        COALESCE(lb.allocated_days, lt.annual_quota, 0) + COALESCE(lb.carried_forward_days, 0)
+          - COALESCE(lb.encashed_days, 0) AS allocated,
+        COALESCE((SELECT SUM(la1.number_of_days) FROM leave_applications la1
+                   WHERE la1.employee_id = $1 AND la1.leave_type_id = $2 AND la1.status = 'approved'
+                     AND EXTRACT(YEAR FROM la1.start_date) = $3 AND la1.deleted_at IS NULL), 0) AS used,
         COALESCE(
           (SELECT SUM(la2.number_of_days)
            FROM leave_applications la2
@@ -1149,6 +1373,10 @@ async function handleApplyLeave(req, res) {
     );
     if (typeRows.length) {
       const lt = typeRows[0];
+      // Unpaid or not is the TYPE's, not the client's say. A Loss of Pay type
+      // is unpaid for every day of it, not only the clubbed ones.
+      normalizedPayload.is_lop = !!lt.is_lop_type;
+      if (lt.is_lop_type) normalizedPayload.lop_days = normalizedPayload.number_of_days;
       const today = new Date(); today.setHours(0,0,0,0);
       const startDate = new Date(normalizedPayload.start_date);
       const endDate   = new Date(normalizedPayload.end_date);
@@ -1212,22 +1440,41 @@ async function handleApplyLeave(req, res) {
             });
           }
         }
-      }
-
-      // Sandwich rule: if leave starts on Tuesday or ends on Thursday, adjacent
-      // weekend days get counted as leave days (per Indian labour law convention).
-      if (lt.sandwich_rule) {
-        const dayBefore = new Date(startDate); dayBefore.setDate(dayBefore.getDate() - 1);
-        const dayAfter  = new Date(endDate);   dayAfter.setDate(dayAfter.getDate() + 1);
-        const dowBefore = dayBefore.getDay();
-        const dowAfter  = dayAfter.getDay();
-        if ((dowBefore === 0 || dowBefore === 6) && (dowAfter === 0 || dowAfter === 6)) {
+        // Notice period (an open exit): Loss of Pay only, like probation.
+        if (await openNoticePeriod(employee_id)) {
           return res.status(422).json({
-            error: 'Sandwich rule applies: leave cannot be flanked by weekends for this leave type.',
-            code: 'SANDWICH_RULE_VIOLATION',
+            error: 'You are serving your notice period. Paid leave is not available — only Loss of Pay (unpaid) leave can be applied.',
+            code: 'NOTICE_RESTRICTED',
           });
         }
       }
+
+      // Supporting document. The type can demand one always, or once the
+      // request is longer than N days (medical certificate). These flags were
+      // read here before but never checked, so any request went through.
+      // Only a file stored by POST /leaves/attachment counts (a local
+      // /uploads/<name>, or the storage bucket's https URL) — not any text.
+      const att = String(normalizedPayload.attachment_url || '').trim();
+      const hasAttachment = /^\/uploads\/[\w.-]+$/.test(att) || /^https:\/\//.test(att);
+      if (att && !hasAttachment) {
+        return res.status(400).json({ error: 'Upload the attachment again — that file link is not valid.', code: 'ATTACHMENT_INVALID' });
+      }
+      if (!hasAttachment && lt.requires_attachment) {
+        return res.status(422).json({
+          error: 'This leave type needs a supporting document. Attach it and submit again.',
+          code: 'ATTACHMENT_REQUIRED',
+        });
+      }
+      if (!hasAttachment && Number(lt.requires_medical_cert_days) > 0 && requestedDays > Number(lt.requires_medical_cert_days)) {
+        return res.status(422).json({
+          error: `A medical certificate is required for more than ${lt.requires_medical_cert_days} day(s) of this leave. Attach it and submit again.`,
+          code: 'MEDICAL_CERT_REQUIRED',
+        });
+      }
+      // (The old "sandwich rule" check was removed 2026-11-23: it refused any
+      // leave with a weekend on both sides — every full Mon–Fri week — and no
+      // type had it on. Weekends/holidays inside a leave are charged as LOP by
+      // the clubbing rule instead, company-wide.)
     }
 
     // ── Overlap detection — reject if same employee already has approved/pending leave on these dates ──
@@ -1277,6 +1524,30 @@ async function handleApplyLeave(req, res) {
 
 router.post('/apply', requirePermission('leaves', 'add'), handleApplyLeave);
 
+// ── POST /attachment — a leave's supporting document (2026-11-24) ────────────
+// Stored by StorageService (local disk / S3) and served only through
+// GET /files/:name, whose leave rule lets the applicant, their approvers and HR
+// read it. Apply Leave used the document master before, which keeps no file
+// without Google Drive (the certificate was lost) and hid it from the approver.
+const attachmentUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => cb(null, /\.(pdf|jpe?g|png|docx?)$/i.test(file.originalname || '')),
+});
+router.post('/attachment', requirePermission('leaves', 'add'), (req, res) => {
+  attachmentUpload.single('file')(req, res, async (err) => {
+    try {
+      if (err) return res.status(400).json({ error: err.code === 'LIMIT_FILE_SIZE' ? 'The file must be under 5 MB.' : err.message });
+      if (!req.file) return res.status(400).json({ error: 'Attach a PDF, JPG, PNG or Word file (under 5 MB).' });
+      const url = await uploadFile(req.file.buffer, req.file.originalname, req.file.mimetype);
+      logAudit({ userId: req.user?.userId, module: 'leaves', recordId: null, recordType: 'leave_attachment', action: 'upload', newData: { url, name: req.file.originalname, size: req.file.size }, req });
+      res.status(201).json({ attachment_url: url, file_name: req.file.originalname });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // APPROVAL WORKFLOW — L1 / L2 / L3
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1285,7 +1556,12 @@ router.post('/apply', requirePermission('leaves', 'add'), handleApplyLeave);
 // see shared/managerApprovalAuthz.js), not just anyone holding 'leaves.approve'
 // permission — that permission alone previously let any manager-role user
 // approve any employee's leave, not just their own reports.
-router.post('/approve/manager/:id', requirePermission('leaves', 'approve'), async (req, res) => {
+// 2026-11-24: the gate is 'leaves.view', not 'leaves.approve'. Being the
+// reporting manager IS the authority at this step; requiring the role grant
+// too left every request whose manager holds only the `employee` role with
+// no possible approver (HR may step in only when there is no usable manager).
+// L1 reject and delegate follow the same rule.
+router.post('/approve/manager/:id', requirePermission('leaves', 'view'), async (req, res) => {
   try {
     const actorEmpId = req.user?.employee_id; // Always use authenticated user
     const { comments } = req.body;
@@ -1293,12 +1569,7 @@ router.post('/approve/manager/:id', requirePermission('leaves', 'approve'), asyn
     if (!found) return res.status(404).json({ error: 'Leave application not found' });
     if (await blockOwnLeaveDecision(req, res, found, 'l1')) return;
     const oldRows = [found];
-    const auth = await authorizeManagerApproval({
-      actorEmployeeId: actorEmpId,
-      actorRole: req.user?.role,
-      requesterEmployeeId: oldRows[0].employee_id,
-      delegateApproverId: oldRows[0].delegate_approver_id,
-    });
+    const auth = await authorizeL1(req, oldRows[0]);
     if (!auth.authorized) return res.status(403).json({ error: DENIED_MESSAGE });
     const application = await leavesRepository.approveByManager(req.params.id, actorEmpId, comments);
     logAudit({ userId: req.user?.userId, module: 'leaves', recordId: req.params.id, recordType: 'leave_application', action: 'approve', oldData: oldRows[0] ?? null, newData: { ...application, actor_role: 'manager' }, req });
@@ -1306,15 +1577,19 @@ router.post('/approve/manager/:id', requirePermission('leaves', 'approve'), asyn
     syncLeaveToAttendance(application, pool).catch(() => {});
     // Post LOP (probation / clubbing) if this approval finalized the leave
     postLopToPayroll(application, pool).catch(() => {});
-    // Notify employee + L2 approver (if configured)
-    notifyLeaveEvent('approved', { ...application, employee_name: oldRows[0]?.employee_name }, req.user, [application.employee_id]);
+    // Still pending: tell the employee which step is done and what is next —
+    // not "Leave Approved", which they read as final.
+    const { rows: [lt1] } = await pool.query('SELECT leave_name, l2_required FROM leave_types WHERE id = $1', [application.leave_type_id]);
+    notifyLeaveEvent('leave_step_approved', {
+      ...application, employee_name: oldRows[0]?.employee_name, leave_name: lt1?.leave_name,
+    }, req.user, [application.employee_id], { step: 'your manager', next: lt1?.l2_required ? 'the department head and then HR' : 'HR' });
     res.json(application);
   } catch (error) {
     res.status(statusForWorkflowError(error)).json({ error: error.message });
   }
 });
 
-router.post('/reject/manager/:id', requirePermission('leaves', 'approve'), async (req, res) => {
+router.post('/reject/manager/:id', requirePermission('leaves', 'view'), async (req, res) => {
   try {
     const actorEmpId = req.user?.employee_id;
     const { comments } = req.body;
@@ -1323,12 +1598,7 @@ router.post('/reject/manager/:id', requirePermission('leaves', 'approve'), async
     if (!found) return res.status(404).json({ error: 'Leave application not found' });
     if (await blockOwnLeaveDecision(req, res, found, 'l1')) return;
     const oldRows = [found];
-    const auth = await authorizeManagerApproval({
-      actorEmployeeId: actorEmpId,
-      actorRole: req.user?.role,
-      requesterEmployeeId: oldRows[0].employee_id,
-      delegateApproverId: oldRows[0].delegate_approver_id,
-    });
+    const auth = await authorizeL1(req, oldRows[0]);
     if (!auth.authorized) return res.status(403).json({ error: DENIED_MESSAGE });
     const application = await leavesRepository.rejectByManager(req.params.id, actorEmpId, comments);
     logAudit({ userId: req.user?.userId, module: 'leaves', recordId: req.params.id, recordType: 'leave_application', action: 'reject', oldData: oldRows[0] ?? null, newData: { ...application, actor_role: 'manager' }, req });
@@ -1358,7 +1628,8 @@ router.post('/approve/l2/:id', requirePermission('leaves', 'approve'), async (re
     syncLeaveToAttendance(application, pool).catch(() => {});
     // Post LOP (probation / clubbing) if this approval finalized the leave
     postLopToPayroll(application, pool).catch(() => {});
-    notifyLeaveEvent('approved', application, req.user, [application.employee_id]);
+    notifyLeaveEvent('leave_step_approved', application, req.user, [application.employee_id],
+      { step: 'the department head', next: 'HR' });
     res.json(application);
   } catch (error) {
     res.status(statusForWorkflowError(error)).json({ error: error.message });
@@ -1437,7 +1708,7 @@ router.post('/reject/hr/:id', requirePermission('leaves', 'approve'), async (req
 // Bulk approve — HR/Admin only
 router.post('/bulk-approve', requirePermission('leaves', 'approve'), async (req, res) => {
   const role = (req.user?.role || '').toLowerCase();
-  if (!isAdminOrHR(role)) return res.status(403).json({ error: 'Only HR and Admin can bulk approve leaves' });
+  if (!isAdminOrHR(req)) return res.status(403).json({ error: 'Only HR and Admin can bulk approve leaves' });
   const { ids, comments } = req.body;
   if (!Array.isArray(ids) || !ids.length) return res.status(400).json({ error: 'ids array is required' });
   const actorEmpId = req.user?.employee_id;
@@ -1453,9 +1724,13 @@ router.post('/bulk-approve', requirePermission('leaves', 'approve'), async (req,
       if (await blockOwnLeaveDecision(req, self, target, 'hr')) {
         results.push({ id, status: 'error', code: 'SELF_APPROVAL_BLOCKED', error: self.body?.error }); continue;
       }
-      const app = await leavesRepository.updateStatus(id, 'approved', actorEmpId, comments || 'Bulk approved');
+      // The HR-final step, exactly as one-by-one: needs L1 (and L2 where the
+      // type requires it) first, and posts any LOP to payroll. It used to go
+      // through updateStatus(), which skipped both.
+      const app = await leavesRepository.approveByHR(id, actorEmpId, comments || 'Bulk approved');
       syncLeaveToAttendance(app, pool).catch(() => {});
-      notifyLeaveEvent('approved', app, req.user, [app.employee_id]);
+      postLopToPayroll(app, pool).catch(() => {});
+      notifyLeaveEvent('approved', app, req.user, [app.employee_id, app.manager_id]);
       results.push({ id, status: 'approved' });
     } catch (err) {
       results.push({ id, status: 'error', error: err.message });
@@ -1537,12 +1812,13 @@ router.get('/my', async (req, res) => {
 
 router.get('/team', requirePermission('leaves', 'view'), async (req, res) => {
   try {
-    const role = (req.user?.role || '').toLowerCase();
     const filters = { ...req.query, company_id: req.scope?.company_id ?? null };
-    if (!isAdminOrHR(role)) {
-      filters.manager_id = req.user?.employee_id || null;
+    if (!isAdminOrHR(req)) {
+      // -1, not null: findApplications skips a falsy manager_id, which would
+      // hand an unlinked login the whole company's list.
+      filters.manager_id = req.user?.employee_id || -1;
       // Security: employees and managers cannot pass arbitrary employee_id to see others
-      if (!['manager','department_head','l2_approver'].includes(role)) {
+      if (!hasRole(req, 'manager', 'department_head', 'l2_approver')) {
         delete filters.employee_id;
       }
     }
@@ -1577,47 +1853,64 @@ router.put('/:id/reject', requirePermission('leaves', 'approve'), (req, res) =>
   handleStatusUpdate({ ...req, body: { status: 'rejected', ...req.body } }, res)
 );
 
-// Cancel — employee can cancel their own, HR/Admin can cancel any
+/**
+ * Cancel (or withdraw) a leave — the one rule both routes share (2026-11-24):
+ *   - an employee cancels only their own, and only before it starts (the
+ *     My Leaves button was the only guard; the API took any date);
+ *   - HR / admin may cancel any, but one that has already started needs a reason;
+ *   - an approved leave's Loss of Pay is taken back off the draft payroll run;
+ *     if that month's payroll is already approved it is left alone and the
+ *     answer says so, for HR to correct in Payroll.
+ */
+async function cancelLeave(req, res, { reason = '', withdraw = false } = {}) {
+  const app = await loadLeaveInCompany(req, req.params.id);
+  if (!app) return res.status(404).json({ error: 'Leave application not found' });
+  const hr = isAdminOrHR(req);
+  if (!hr && String(app.employee_id) !== String(req.user?.employee_id)) {
+    return res.status(403).json({ error: `You can only ${withdraw ? 'withdraw' : 'cancel'} your own leave applications` });
+  }
+  if (!['approved', 'pending'].includes(app.status)) {
+    return res.status(409).json({ error: `A leave that is ${app.status} cannot be cancelled` });
+  }
+  const { rows: [when] } = await pool.query(
+    'SELECT start_date < CURRENT_DATE AS started FROM leave_applications WHERE id = $1', [app.id]);
+  if (when?.started && !hr) {
+    return res.status(409).json({
+      error: 'This leave has already started, so it can no longer be cancelled here. Ask HR to cancel it.',
+      code: 'LEAVE_ALREADY_STARTED',
+    });
+  }
+  if (when?.started && !String(reason || '').trim()) {
+    return res.status(400).json({ error: 'This leave has already started — give the reason for cancelling it.', code: 'REASON_REQUIRED' });
+  }
+  const application = await leavesRepository.updateStatus(req.params.id, 'cancelled', req.user?.employee_id, reason || '');
+  if (withdraw) await pool.query('UPDATE leave_applications SET withdrawal_reason = $1 WHERE id = $2', [reason, req.params.id]);
+  reverseLeaveAttendance(application, pool).catch(() => {});
+  const lop = app.status === 'approved' ? await postLopToPayroll(app, pool, -1) : null;
+  logAudit({ userId: req.user?.userId, module: 'leaves', recordId: req.params.id, recordType: 'leave_application',
+    action: withdraw ? 'withdraw' : 'cancel', oldData: app, newData: { status: 'cancelled', reason, lop_reversed: lop }, req });
+  notifyLeaveEvent('cancelled', { ...application, employee_name: app.employee_name }, req.user, [app.manager_id, app.hr_id]);
+  return res.json({
+    success: true, ...application,
+    ...(withdraw ? { withdrawal_reason: reason } : {}),
+    ...(lop?.finalised ? { warning: `This month's payroll is already approved, so its ${lop.days} day(s) of Loss of Pay were not taken back. Correct it in Payroll (arrears).` } : {}),
+  });
+}
+
 router.put('/:id/cancel', requirePermission('leaves', 'view'), async (req, res) => {
   try {
-    const role = (req.user?.role || '').toLowerCase();
-    const app = await loadLeaveInCompany(req, req.params.id);
-    if (!app) return res.status(404).json({ error: 'Leave application not found' });
-    // Non-admin employees can only cancel their own
-    if (!isAdminOrHR(role)) {
-      if (String(app.employee_id) !== String(req.user?.employee_id)) {
-        return res.status(403).json({ error: 'You can only cancel your own leave applications' });
-      }
-    }
-    const application = await leavesRepository.updateStatus(req.params.id, 'cancelled', req.user?.employee_id, req.body.reason || '');
-    reverseLeaveAttendance(application, pool).catch(() => {});
-    notifyLeaveEvent('cancelled', { ...application, employee_name: app.employee_name }, req.user, [app.manager_id, app.hr_id]);
-    res.json({ success: true, ...application });
+    await cancelLeave(req, res, { reason: req.body?.reason || '' });
   } catch (error) {
     res.status(statusForWorkflowError(error)).json({ error: error.message });
   }
 });
 
-// Withdraw — employee retracts an already-approved leave (before leave date)
+// Withdraw — the same, with a reason always required and kept on the leave.
 router.post('/:id/withdraw', requirePermission('leaves', 'view'), async (req, res) => {
   try {
-    const { reason } = req.body;
+    const reason = req.body?.reason;
     if (!reason?.trim()) return res.status(400).json({ error: 'Withdrawal reason is required' });
-    const role = (req.user?.role || '').toLowerCase();
-    const app = await loadLeaveInCompany(req, req.params.id);
-    if (!app) return res.status(404).json({ error: 'Leave application not found' });
-    if (!isAdminOrHR(role) && String(app.employee_id) !== String(req.user?.employee_id)) {
-      return res.status(403).json({ error: 'You can only withdraw your own leave applications' });
-    }
-    if (!['approved', 'pending'].includes(app.status)) {
-      return res.status(409).json({ error: `Cannot withdraw a leave in '${app.status}' status` });
-    }
-    const application = await leavesRepository.updateStatus(req.params.id, 'cancelled', req.user?.employee_id, reason);
-    await pool.query(`UPDATE leave_applications SET withdrawal_reason = $1 WHERE id = $2`, [reason, req.params.id]);
-    reverseLeaveAttendance(application, pool).catch(() => {});
-    logAudit({ userId: req.user?.userId, module: 'leaves', recordId: req.params.id, recordType: 'leave_application', action: 'withdraw', newData: { withdrawal_reason: reason }, req });
-    notifyLeaveEvent('cancelled', { ...application, employee_name: app.employee_name }, req.user, [app.manager_id, app.hr_id]);
-    res.json({ success: true, withdrawal_reason: reason, ...application });
+    await cancelLeave(req, res, { reason, withdraw: true });
   } catch (err) {
     res.status(statusForWorkflowError(err)).json({ error: err.message });
   }
@@ -1653,7 +1946,7 @@ router.get('/on-leave-today', requirePermission('leaves', 'view'), async (req, r
 });
 
 // ── POST /delegate/:id — manager sets a delegate approver for a pending leave ─
-router.post('/delegate/:id', requirePermission('leaves', 'approve'), async (req, res) => {
+router.post('/delegate/:id', requirePermission('leaves', 'view'), async (req, res) => {
   try {
     const { delegate_employee_id, comments } = req.body;
     if (!delegate_employee_id) return res.status(400).json({ error: 'delegate_employee_id is required' });
@@ -1665,12 +1958,7 @@ router.post('/delegate/:id', requirePermission('leaves', 'approve'), async (req,
     if (!found) return res.status(404).json({ error: 'Leave application not found' });
     // Choosing who decides your own leave is deciding it.
     if (await blockOwnLeaveDecision(req, res, found, 'l1')) return;
-    const auth = await authorizeManagerApproval({
-      actorEmployeeId: req.user?.employee_id,
-      actorRole: req.user?.role,
-      requesterEmployeeId: found.employee_id,
-      delegateApproverId: found.delegate_approver_id,
-    });
+    const auth = await authorizeL1(req, found);
     if (!auth.authorized) return res.status(403).json({ error: DENIED_MESSAGE });
     const { rows: [delegate] } = await pool.query(
       `SELECT id FROM employees
@@ -1729,6 +2017,9 @@ router.get('/accrual-history', requirePermission('leaves', 'view'), async (req, 
     if (isAdmin) {
       scopeEmployeeId = Number.isInteger(requested) ? requested : null;
     } else if (isManager) {
+      // A manager login with no employee record has no team: nothing to show
+      // (a null manager filter returned every row in the company, 2026-11-24).
+      if (me == null) return res.json([]);
       scopeManagerId = me;
       if (Number.isInteger(requested)) scopeEmployeeId = requested;
     } else {
@@ -1768,7 +2059,9 @@ router.get('/accrual-history', requirePermission('leaves', 'view'), async (req, 
 });
 
 // ── GET /carry-forward-report — annual carry-forward audit ───────────────────
-router.get('/carry-forward-report', requirePermission('leaves', 'view'), async (req, res) => {
+// HR/admin only (2026-11-24): it lists every employee's carried-forward days,
+// and 'leaves.view' is held by every employee.
+router.get('/carry-forward-report', requireLeaveAdmin, requirePermission('leaves', 'view'), async (req, res) => {
   try {
     const companyId = req.scope?.company_id ?? null;
     const year = Number(req.query.year) || new Date().getFullYear();
@@ -1883,12 +2176,7 @@ router.post('/:id/workflow/advance', requirePermission('leaves', 'approve'), asy
     const leaveRow = await loadLeaveInCompany(req, req.params.id);
     if (!leaveRow) return res.status(404).json({ error: 'Leave application not found' });
     if (await blockOwnLeaveDecision(req, res, leaveRow, 'l1')) return;
-    const auth = await authorizeManagerApproval({
-      actorEmployeeId: req.user?.employee_id,
-      actorRole: req.user?.role,
-      requesterEmployeeId: leaveRow.employee_id,
-      delegateApproverId: leaveRow.delegate_approver_id,
-    });
+    const auth = await authorizeL1(req, leaveRow);
     if (!auth.authorized) return res.status(403).json({ error: DENIED_MESSAGE });
     const instance = await getWorkflowStatus('leaves', parseInt(req.params.id));
     if (!instance || instance.status === 'no_workflow')

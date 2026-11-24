@@ -455,17 +455,17 @@ describe('leave reads the stored end date', () => {
   it('no joining_date + 90 days fallback: a recent Active hire with no end date is not on probation', async () => {
     const res = await request(app).get(`/api/leaves/probation-status?employee_id=${fx.emp.activeRecent}`).set(as('hr'));
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ in_probation: false, probation_end: null });
+    expect(res.body).toMatchObject({ in_probation: false, probation_end: null, in_notice: false });
   });
 
   it('a probationer reports the stored date', async () => {
     const res = await request(app).get(`/api/leaves/probation-status?employee_id=${fx.emp.subject}`).set(as('hr'));
-    expect(res.body).toEqual({ in_probation: true, probation_end: '2026-11-30' });
+    expect(res.body).toMatchObject({ in_probation: true, probation_end: '2026-11-30' });
   });
 
   it('does not read another company\'s employee', async () => {
     const res = await request(app).get(`/api/leaves/probation-status?employee_id=${fx.emp.fSubject}`).set(as('hr'));
-    expect(res.body).toEqual({ in_probation: false, probation_end: null });
+    expect(res.body).toMatchObject({ in_probation: false, probation_end: null });
   });
 });
 

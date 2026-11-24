@@ -1,13 +1,15 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useMemo } from 'react';
 import {
   Download, RefreshCw, BarChart2, FileText, TrendingDown, Users, Clock,
-  Award, FileSpreadsheet, BarChart3,
+  Award, FileSpreadsheet, BarChart3, PlusCircle, CalendarClock,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import { downloadCsv } from '../components/leaveShared';
 
 const YEAR  = new Date().getFullYear();
-const YEARS = [YEAR - 2, YEAR - 1, YEAR, YEAR + 1];
+// Next year only from December, when leave for January is being applied.
+const YEARS = [YEAR - 2, YEAR - 1, YEAR, ...(new Date().getMonth() === 11 ? [YEAR + 1] : [])];
 const MONTHS = [
   {v:'',l:'All Months'},{v:'1',l:'January'},{v:'2',l:'February'},{v:'3',l:'March'},
   {v:'4',l:'April'},{v:'5',l:'May'},{v:'6',l:'June'},{v:'7',l:'July'},
@@ -18,18 +20,9 @@ const MONTHS = [
 const fmt = d => d ? new Date(d).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—';
 const cur  = v => v != null ? `₹${Number(v).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2})}` : '—';
 
-function exportCSV(rows, columns, filename) {
-  const header = columns.map(c => c.label).join(',');
-  const body   = rows.map(r => columns.map(c => {
-    const v = r[c.key];
-    return typeof v === 'string' && v.includes(',') ? `"${v}"` : (v ?? '');
-  }).join(',')).join('\n');
-  const blob = new Blob([header + '\n' + body], { type:'text/csv;charset=utf-8;' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = filename;
-  a.click();
-}
+// Quotes, commas and line breaks in a reason no longer break the file.
+const exportCSV = (rows, columns, filename) =>
+  downloadCsv(filename, columns.map(c => ({ label: c.label, key: c.key })), rows);
 
 async function exportXLSX(rows, columns, filename) {
   try {
@@ -54,7 +47,7 @@ async function exportXLSX(rows, columns, filename) {
   }
 }
 
-const STATUS_COLORS = { approved:{bg:'#d1fae5',color:'#065f46'}, rejected:{bg:'#fee2e2',color:'#991b1b'}, pending:{bg:'#ede9fe',color:'#5b21b6'} };
+const STATUS_COLORS = { approved:{bg:'#d1fae5',color:'#065f46'}, rejected:{bg:'#fee2e2',color:'#991b1b'}, pending:{bg:'#ede9fe',color:'#5b21b6'}, cancelled:{bg:'#f3f4f6',color:'#6b7280'} };
 const sc = s => STATUS_COLORS[(s||'').toLowerCase()] || STATUS_COLORS.pending;
 
 const REPORTS = [
@@ -64,12 +57,34 @@ const REPORTS = [
   { id:'lop',          label:'LOP Report',             icon:BarChart2,   color:'#ef4444' },
   { id:'department',   label:'Department Summary',      icon:Award,       color:'#8b5cf6' },
   { id:'approval-performance', label:'Approval Performance', icon:Clock, color:'#0891b2' },
+  { id:'credits',      label:'Leave Credit History',   icon:PlusCircle,  color:'#059669' },
+  { id:'carry-forward', label:'Carried-Forward Leave', icon:CalendarClock, color:'#b45309' },
 ];
+
+// What each report accepts — mirrors backend reports/reportCatalog.js.
+const REPORT_FILTERS = {
+  leave: ['start_date', 'end_date', 'department', 'status', 'employee_id'],
+  summary: ['year', 'department'],
+  liability: ['year'],
+  lop: ['year', 'month'],
+  department: ['year', 'month'],
+  'approval-performance': ['start_date', 'end_date'],
+  credits: ['year', 'department'],
+  'carry-forward': ['year', 'department'],
+};
+// Which filter controls to show (Year/Month drive start_date/end_date).
+const shows = (report, control) => {
+  const f = REPORT_FILTERS[report] || [];
+  if (control === 'year') return f.includes('year') || f.includes('start_date');
+  if (control === 'month') return f.includes('month') || f.includes('start_date');
+  return f.includes(control);
+};
 
 export default function LeaveReports() {
   const [activeReport, setActiveReport] = useState('leave');
   const [filters, setFilters] = useState({ year:YEAR, month:'', department:'', status:'', employee_id:'', leave_type_id:'' });
-  const [data,       setData]       = useState([]);
+  const [rawData,    setData]       = useState([]);
+  const [total,      setTotal]      = useState(null);
   const [loading,    setLoading]    = useState(false);
   const [error,      setError]      = useState(null);
   const [ran,        setRan]        = useState(false);
@@ -94,17 +109,26 @@ export default function LeaveReports() {
   const loadReport = useCallback(async () => {
     setLoading(true); setError(null);
     try {
+      // Each report accepts only its own filters (the server answers 400 to any
+      // other, so sending Year to the Leave Summary made it fail every time).
+      // Year/Month become a date range for the reports that take one.
+      const allowed = REPORT_FILTERS[activeReport] || [];
       const params = {};
-      if (filters.year)          params.year          = filters.year;
-      if (filters.month)         params.month         = filters.month;
-      if (filters.department)    params.department    = filters.department;
-      if (filters.status)        params.status        = filters.status;
-      if (filters.employee_id)   params.employee_id   = filters.employee_id;
-      if (filters.leave_type_id) params.leave_type_id = filters.leave_type_id;
-      if (filters.start_date)    params.start_date    = filters.start_date;
-      if (filters.end_date)      params.end_date      = filters.end_date;
+      const put = (k, v) => { if (v !== '' && v != null && allowed.includes(k)) params[k] = v; };
+      put('year', filters.year); put('month', filters.month);
+      put('department', filters.department); put('status', filters.status);
+      put('employee_id', filters.employee_id);
+      if (allowed.includes('start_date') && filters.year) {
+        const y = Number(filters.year), m = Number(filters.month) || 0;
+        const last = m ? new Date(y, m, 0).getDate() : 31;
+        params.start_date = `${y}-${String(m || 1).padStart(2, '0')}-01`;
+        params.end_date = `${y}-${String(m || 12).padStart(2, '0')}-${String(last).padStart(2, '0')}`;
+      }
       const r = await api.get(`/reports/leave${activeReport === 'leave' ? '' : `/${activeReport}`}`, { params });
-      setData(Array.isArray(r.data) ? r.data : []);
+      // The reports API answers { rows, total, … } — reading only a bare array
+      // made every report show "No records" whatever the data.
+      setData(Array.isArray(r.data) ? r.data : (Array.isArray(r.data?.rows) ? r.data.rows : []));
+      setTotal(Number(r.data?.total) || null);
       setRan(true);
     } catch (e) {
       setError(e?.response?.data?.error || e.message || 'Failed to load report');
@@ -112,6 +136,15 @@ export default function LeaveReports() {
   }, [activeReport, filters]);
 
   const activeConfig = REPORTS.find(r => r.id === activeReport);
+
+  // Filters a report's API does not take (leave type everywhere; employee and
+  // department on the summary reports) are applied to the rows it returned.
+  const typeName = leaveTypes.find(t => String(t.id) === String(filters.leave_type_id))?.leave_name;
+  const data = useMemo(() => rawData.filter(r =>
+    (!typeName || !('leave_name' in r) || r.leave_name === typeName) &&
+    (!filters.employee_id || !('employee_id' in r) || String(r.employee_id) === String(filters.employee_id)) &&
+    (!filters.department || !('department' in r) || r.department === filters.department)
+  ), [rawData, typeName, filters.employee_id, filters.department]);
 
   const COLUMNS = {
     leave: [
@@ -134,15 +167,29 @@ export default function LeaveReports() {
     lop: [
       {key:'employee_name',label:'Employee'}, {key:'department',label:'Dept'},
       {key:'month',label:'Month'}, {key:'year',label:'Year'},
-      {key:'working_days',label:'Working Days'}, {key:'present_days',label:'Present'},
+      {key:'working_days',label:'Working Days',render:v=>v ?? '—'}, {key:'present_days',label:'Present',render:v=>v ?? '—'},
+      {key:'leave_lop_days',label:'From Leave'},
       {key:'lop_days',label:'LOP Days',render:v=><span style={{color:Number(v)>0?'#ef4444':'#10b981',fontWeight:600}}>{v}</span>},
       {key:'lop_amount',label:'LOP Deduction (₹)',render:cur},
+      {key:'source',label:'Source',render:v=><span style={{fontSize:11,color:v==='payroll sync'?'#065f46':'#b45309'}}>{v}</span>},
     ],
     department: [
       {key:'department',label:'Department'}, {key:'total_employees',label:'Employees'},
       {key:'total_applications',label:'Applications'}, {key:'approved',label:'Approved'},
       {key:'rejected',label:'Rejected'}, {key:'pending',label:'Pending'},
       {key:'total_days_taken',label:'Days Taken'}, {key:'avg_days_per_employee',label:'Avg Days/Emp'},
+    ],
+    credits: [
+      {key:'employee_name',label:'Employee'}, {key:'department',label:'Dept'}, {key:'leave_name',label:'Leave Type'},
+      {key:'days_accrued',label:'Days Credited'},
+      {key:'accrual_type',label:'How',render:v=>({monthly:'Monthly',yearly:'Yearly',joining_date:'Pro-rated (joining)',worked:'By days worked',carry_forward:'Carried forward'}[v]||v||'—')},
+      {key:'month',label:'Month',render:(v)=>v ? MONTHS.find(m=>m.v===String(v))?.l : '—'}, {key:'year',label:'Year'},
+      {key:'run_mode',label:'Run'}, {key:'run_by_name',label:'By'}, {key:'credited_at',label:'On',render:fmt},
+    ],
+    'carry-forward': [
+      {key:'employee_name',label:'Employee'}, {key:'department',label:'Dept'}, {key:'leave_name',label:'Leave Type'},
+      {key:'carried_forward_days',label:'Carried In'}, {key:'max_carry_forward_days',label:'Max Allowed'},
+      {key:'expires_on',label:'Expires',render:v=>v ? fmt(v) : 'Never'},
     ],
     'approval-performance': [
       {key:'approver_name',label:'Approver'}, {key:'department',label:'Dept'},
@@ -211,7 +258,7 @@ export default function LeaveReports() {
               {YEARS.map(y => <option key={y} value={y}>{y}</option>)}
             </select>
           </div>
-          {['department','lop','leave','summary'].includes(activeReport) && (
+          {shows(activeReport, 'month') && (
             <div>
               <label style={{ fontSize:11, fontWeight:600, color:'#6b7280', display:'block', marginBottom:4, textTransform:'uppercase' }}>Month</label>
               <select value={filters.month} onChange={e => setF('month', e.target.value)}
@@ -237,10 +284,11 @@ export default function LeaveReports() {
                 <option value="approved">Approved</option>
                 <option value="pending">Pending</option>
                 <option value="rejected">Rejected</option>
+                <option value="cancelled">Cancelled</option>
               </select>
             </div>
           )}
-          {['leave','summary','liability','lop'].includes(activeReport) && employees.length > 0 && (
+          {['leave','summary','liability','credits','carry-forward'].includes(activeReport) && employees.length > 0 && (
             <div>
               <label style={{ fontSize:11, fontWeight:600, color:'#6b7280', display:'block', marginBottom:4, textTransform:'uppercase' }}>Employee</label>
               <select value={filters.employee_id} onChange={e => setF('employee_id', e.target.value)}
@@ -254,7 +302,7 @@ export default function LeaveReports() {
               </select>
             </div>
           )}
-          {['leave','summary','liability'].includes(activeReport) && leaveTypes.length > 0 && (
+          {['leave','summary','liability','credits','carry-forward'].includes(activeReport) && leaveTypes.length > 0 && (
             <div>
               <label style={{ fontSize:11, fontWeight:600, color:'#6b7280', display:'block', marginBottom:4, textTransform:'uppercase' }}>Leave Type</label>
               <select value={filters.leave_type_id} onChange={e => setF('leave_type_id', e.target.value)}
@@ -285,7 +333,10 @@ export default function LeaveReports() {
         ) : (
           <>
             <div style={{ padding:'12px 16px', borderBottom:'1px solid #f0f0f4', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
-              <span style={{ fontSize:13, fontWeight:600, color:'#374151' }}>{data.length} record{data.length!==1?'s':''}</span>
+              <span style={{ fontSize:13, fontWeight:600, color:'#374151' }}>
+                {data.length} record{data.length!==1?'s':''}
+                {total > rawData.length && <span style={{ color:'#b45309', fontWeight:500 }}> — first {rawData.length} of {total}; narrow the filters</span>}
+              </span>
               <span style={{ fontSize:12, color:'#9ca3af' }}>{activeConfig.label} · {filters.year}</span>
             </div>
             <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>

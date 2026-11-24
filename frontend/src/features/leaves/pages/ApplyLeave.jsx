@@ -7,26 +7,19 @@ import api from '@/services/api/client';
 import { useAuth } from '@/context/AuthContext';
 import './ApplyLeave.css';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import { localISO } from '../components/leaveShared';
+import { isWeeklyOff } from '../components/SaturdayOffPicker';
 
 const ADMIN_ROLES = new Set(['admin', 'super_admin', 'hr', 'hr_manager', 'hr_exec', 'hr_admin']);
 
-function detectClubbingWarning(start, end) {
-  if (!start || !end) return null;
-  const s = new Date(start + 'T00:00:00');
-  const e = new Date(end   + 'T00:00:00');
-  const DAY = 86400000;
-  const dayBefore = new Date(s.getTime() - DAY);
-  const dayAfter  = new Date(e.getTime() + DAY);
-  const prevIsWeekend = dayBefore.getDay() === 0 || dayBefore.getDay() === 6;
-  const nextIsWeekend = dayAfter.getDay()  === 0 || dayAfter.getDay()  === 6;
-  if (s.getDay() === 1 && prevIsWeekend)
-    return 'Leave starts Monday, adjacent to weekend. Clubbing policy may apply — manager pre-approval required.';
-  if (e.getDay() === 5 && nextIsWeekend)
-    return 'Leave ends Friday, adjacent to weekend. Clubbing policy may apply — manager pre-approval required.';
-  if (prevIsWeekend && nextIsWeekend)
-    return 'Leave sandwiches a weekend. Clubbing policy applies — manager approval required.';
-  return null;
-}
+// Weekly offs are the company's (Attendance / Leave Settings: weekend days and
+// which Saturdays are off), not a fixed Saturday + Sunday.
+const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+// (detectClubbingWarning removed 2026-11-24: it warned "Clubbing" for any
+// leave that merely started on a Monday or ended on a Friday. Clubbing is a
+// weekly off or holiday INSIDE the leave — calcBreakdown's clubbedLopDays —
+// and only those days are charged. The server counts the days itself.)
 
 function getEmployeeStatus(user) {
   const s = (user?.employment_status || user?.status || user?.employee_status || '').toLowerCase();
@@ -43,7 +36,7 @@ function getEmployeeStatus(user) {
 //                    as Loss of Pay.
 // Leading/trailing weekends (e.g. a single Friday) are never charged — clubbing
 // only materialises when a non-working day sits between two working leave days.
-function calcBreakdown(start, end, holidays = []) {
+function calcBreakdown(start, end, holidays = [], weekCfg = null) {
   if (!start || !end) return { workingDays: 0, clubbedLopDays: 0 };
   const s = new Date(start + 'T00:00:00');
   const e = new Date(end   + 'T00:00:00');
@@ -55,10 +48,7 @@ function calcBreakdown(start, end, holidays = []) {
     const dd = String(d.getDate()).padStart(2, '0');
     return `${y}-${m}-${dd}`;
   };
-  const isWorking = (d) => {
-    const dow = d.getDay();
-    return dow !== 0 && dow !== 6 && !holidaySet.has(fmt(d));
-  };
+  const isWorking = (d) => !isWeeklyOff(fmt(d), weekCfg) && !holidaySet.has(fmt(d));
   const days = [];
   const cur = new Date(s);
   while (cur <= e) { days.push(new Date(cur)); cur.setDate(cur.getDate() + 1); }
@@ -73,10 +63,10 @@ function calcBreakdown(start, end, holidays = []) {
   return { workingDays, clubbedLopDays };
 }
 
-const today = () => new Date().toISOString().slice(0, 10);
+// Local calendar date. toISOString() is UTC: between 00:00 and 05:30 IST it
+// returned yesterday, so "today" and the earliest allowed date were a day off.
+const today = () => localISO();
 
-// Leave codes left out of this page's type list and balance cards.
-const APPLY_HIDDEN_LEAVE_CODES = new Set(['MRG', 'PATERNITY', 'COMPENSATO', 'WFH']);
 const ADVANCE_NOTICE_EXEMPT =new Set(['sick leave', 'medical leave', 'emergency leave', 'bereavement leave']);
 
 export default function ApplyLeave({ setPage }) {
@@ -92,7 +82,11 @@ export default function ApplyLeave({ setPage }) {
   const [leaveTypesLoading,setLeaveTypesLoading]= useState(true);
   const [employees,        setEmployees]        = useState([]);
   const [holidays,    setHolidays]    = useState([]);
-  const [probation,   setProbation]   = useState({ in_probation: false, probation_end: null });
+  const [weekCfg,     setWeekCfg]     = useState(null);   // { weekend_days, saturday_off_weeks }
+  useEffect(() => {
+    api.get('/leaves/settings').then(r => setWeekCfg(r.data || null)).catch(() => setWeekCfg(null));
+  }, []);
+  const [probation,   setProbation]   = useState({ in_probation: false, probation_end: null, in_notice: false, last_working_date: null });
   const [loading,     setLoading]     = useState(false);
   const [submitting,  setSubmitting]  = useState(false);
   const [toast,       setToast]       = useState(null);
@@ -117,15 +111,30 @@ export default function ApplyLeave({ setPage }) {
   // fall back to any status string carried on the auth user for the notice period.
   const employeeStatus = useMemo(() => getEmployeeStatus(user), [user]);
   const inProbation = probation.in_probation || employeeStatus === 'probation';
-  const isLOP = inProbation || employeeStatus === 'notice';
+  // Notice period comes from the server (an open exit in HR → Exit Management,
+  // or status Notice); the login rarely carried a status string to read.
+  const inNotice = !inProbation && (probation.in_notice || employeeStatus === 'notice');
+  const isLOP = inProbation || inNotice;
   const effectiveLeaveType = isLOP ? 'Loss of Pay' : form.leave_type;
 
   const selectedType = leaveTypes.find(t => t.key === effectiveLeaveType);
-  const bal = balances[effectiveLeaveType] || { used: 0, pending: 0, available: 0 };
+  const bal = balances[effectiveLeaveType] || { used: 0, pending: 0, available: 0, allocated: 0 };
+
+  // Types this person can actually take: unpaid / negative-balance types, or a
+  // type they hold days of (allocated or carried in). A paid type with no days
+  // (e.g. Compensatory Off before any comp-off is earned) could never be
+  // submitted — the server refuses it — so it is not offered.
+  const applicableTypes = useMemo(() => leaveTypes.filter(t =>
+    t.isLOP || t.allowNegative || (balances[t.key]?.allocated || 0) > 0
+  ), [leaveTypes, balances]);
 
   const { workingDays, clubbedLopDays } = useMemo(
-    () => form.half_day ? { workingDays: 0.5, clubbedLopDays: 0 } : calcBreakdown(form.start_date, form.end_date, holidays),
-    [form.start_date, form.end_date, form.half_day, holidays]
+    // A half day counts only on a working day (the server refuses one on a
+    // weekly off or holiday).
+    () => form.half_day
+      ? (calcBreakdown(form.start_date, form.start_date, holidays, weekCfg).workingDays > 0 ? { workingDays: 0.5, clubbedLopDays: 0 } : { workingDays: 0, clubbedLopDays: 0 })
+      : calcBreakdown(form.start_date, form.end_date, holidays, weekCfg),
+    [form.start_date, form.end_date, form.half_day, holidays, weekCfg]
   );
 
   // During probation the whole request is LOP; otherwise only the sandwiched
@@ -135,10 +144,14 @@ export default function ApplyLeave({ setPage }) {
   const days = workingDays;  // count against the selected leave type / balance
   const totalDays = isLOP ? workingDays : workingDays + clubbedLopDays;
 
-  const clubbingWarning = useMemo(
-    () => detectClubbingWarning(form.start_date, form.end_date),
-    [form.start_date, form.end_date]
-  );
+  // Supporting document: always for some types, or past N days (medical
+  // certificate). The server refuses the request without it.
+  const needsAttachment = !isLOP && !!selectedType && (selectedType.requiresAttachment
+    || (selectedType.medicalCertDays > 0 && days > selectedType.medicalCertDays));
+  const attachmentReason = selectedType?.requiresAttachment
+    ? `${effectiveLeaveType} needs a supporting document — attach it below.`
+    : `More than ${selectedType?.medicalCertDays} day(s) of ${effectiveLeaveType} needs a medical certificate — attach it below.`;
+
 
   const showToast = (msg, type = 'success') => {
     setToast({ msg, type });
@@ -157,7 +170,10 @@ export default function ApplyLeave({ setPage }) {
           used:      Number(b.used_days)      || 0,
           pending:   Number(b.pending_days)   || 0,
           available: Number(b.available_days) || 0,
-          allocated: Number(b.allocated_days) || 0,
+          // The person's own entitlement this year (pro-rated for joiners,
+          // plus days carried in) — not the type's default yearly quota.
+          allocated: (Number(b.allocated_days) || 0) + (Number(b.carried_forward_days) || 0),
+          encashed:  Number(b.encashed_days)  || 0,
         };
       });
       setBalances(obj);
@@ -174,13 +190,10 @@ export default function ApplyLeave({ setPage }) {
     setLeaveTypesLoading(true);
     api.get('/leaves/types', { params: { applicable: 1 } })
       .then(res => {
-        // Types nobody applies for here (owner, 2026-11-11): Marriage and
-        // Paternity are not offered; Compensatory Off and Work From Home hold
-        // 0 days for every employee, so the server refused each attempt with
-        // "Insufficient leave balance" — the form offered a request that could
-        // never be submitted.
-        const raw = (Array.isArray(res.data) ? res.data : [])
-          .filter(t => !APPLY_HIDDEN_LEAVE_CODES.has(String(t.leave_code || '').toUpperCase()));
+        // Types not offered by the company are switched off (Active = No) in
+        // Leave Settings and never arrive here. Types the person holds no days
+        // of are dropped by applicableTypes below.
+        const raw = Array.isArray(res.data) ? res.data : [];
         setLeaveTypes(raw.map(t => ({
           id:           t.id,
           key:          t.leave_name,
@@ -196,18 +209,32 @@ export default function ApplyLeave({ setPage }) {
           allowNegative: t.allow_negative_balance ?? false,
           sandwichRule: t.sandwich_rule ?? false,
         })));
-        if (!form.leave_type && raw.length) setForm(f => ({ ...f, leave_type: raw[0].leave_name, leave_type_id: raw[0].id }));
       })
       .catch(() => { setLeaveTypes([]); })
       .finally(() => setLeaveTypesLoading(false));
   }, []);  // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Fetch holidays for current year to exclude from day count
+  // Keep a valid type picked: the first one this person can take, once their
+  // balance is known (and again after HR switches to another employee).
   useEffect(() => {
-    api.get('/holidays', { params: { year: new Date().getFullYear() } })
-      .then(res => setHolidays(Array.isArray(res.data) ? res.data : []))
-      .catch(() => {});
-  }, []);
+    if (!applicableTypes.length) return;
+    if (form.leave_type && (applicableTypes.some(t => t.key === form.leave_type) || /loss.of.pay/i.test(form.leave_type))) return;
+    const first = applicableTypes.find(t => !t.isLOP) || applicableTypes[0];
+    setForm(f => ({ ...f, leave_type: first.key, leave_type_id: first.id }));
+  }, [applicableTypes]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Holidays of every year the leave touches (a leave over New Year needs both),
+  // to leave them out of the day count.
+  const holidayYears = useMemo(() => {
+    const ys = new Set([new Date().getFullYear()]);
+    [form.start_date, form.end_date].forEach(d => { const y = Number(String(d || '').slice(0, 4)); if (y) ys.add(y); });
+    return [...ys].sort().join(',');
+  }, [form.start_date, form.end_date]);
+  useEffect(() => {
+    Promise.all(holidayYears.split(',').map(y => api.get('/holidays', { params: { year: y } })
+      .then(res => (Array.isArray(res.data) ? res.data : [])).catch(() => [])))
+      .then(lists => setHolidays(lists.flat()));
+  }, [holidayYears]);
 
   // Fetch probation status for the target employee (self, or the picked
   // employee when HR/Admin applies on behalf). Drives the LOP-only lockdown.
@@ -250,6 +277,7 @@ export default function ApplyLeave({ setPage }) {
     if (!file) return;
     if (file.size > 5 * 1024 * 1024) { showToast('File must be under 5 MB', 'error'); return; }
     setForm(f => ({ ...f, attachment_file: file, attachment_url: file.name }));
+    if (fieldErrors.attachment) setFieldErrors(e2 => ({ ...e2, attachment: undefined }));
   };
 
   const handleSubmit = async () => {
@@ -260,21 +288,24 @@ export default function ApplyLeave({ setPage }) {
     if (form.end_date && form.start_date && form.end_date < form.start_date)
       errs.end_date = 'End date must be on or after start date';
     if (!form.reason.trim()) errs.reason = 'Reason is required';
-    if (!form.half_day && days <= 0) errs.end_date = 'Select at least one working day for leave';
+    if (days <= 0) errs[form.half_day ? 'start_date' : 'end_date'] = form.half_day
+      ? 'A half day must be on a working day — this date is a weekly off or holiday'
+      : 'Select at least one working day for leave';
+    if (needsAttachment && !form.attachment_file && !form.attachment_url) errs.attachment = attachmentReason;
 
     if (Object.keys(errs).length) {
       setFieldErrors(errs);
       // Surface a fixed-position toast too — inline errors can be scrolled out of
       // view (e.g. the admin employee picker sits above the Submit button), which
       // makes the click look like it did nothing.
-      const firstMsg = errs.employee_id || errs.start_date || errs.end_date || errs.reason;
+      const firstMsg = errs.employee_id || errs.start_date || errs.end_date || errs.reason || errs.attachment;
       showToast(firstMsg || 'Please fix the highlighted fields before submitting.', 'error');
       return;
     }
     setFieldErrors({});
 
     // Client-side balance check (backend will also validate)
-    if (!selectedType?.allowNegative && !selectedType?.isLOP && selectedType?.total > 0) {
+    if (!isLOP && !selectedType?.allowNegative && !selectedType?.isLOP) {
       if (days > bal.available) {
         return showToast(`Only ${bal.available} day(s) available for ${effectiveLeaveType}`, 'error');
       }
@@ -284,19 +315,16 @@ export default function ApplyLeave({ setPage }) {
     try {
       let attachmentUrl = form.attachment_url || null;
 
-      // Upload file if present. This posts to the document master — the only
-      // upload endpoint that exists — and aborts the whole application if it
-      // fails. Storing just the filename on failure used to make a medical
-      // certificate look attached while nothing had been stored.
+      // Upload the file first; a failed upload aborts the application, so a
+      // medical certificate never looks attached when nothing was stored.
+      // POST /leaves/attachment keeps the file (the document master kept none
+      // without Google Drive) and the approver can open it (2026-11-24).
       if (form.attachment_file) {
         const fd = new FormData();
         fd.append('file', form.attachment_file);
-        fd.append('module_type', 'leave');
-        fd.append('linked_entity_type', 'leave_application');
         try {
-          const uploadRes = await api.post('/document-master/upload', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
-          const doc = uploadRes.data?.data;
-          attachmentUrl = doc?.drive_link || (doc?.id ? `/api/document-master/${doc.id}/download` : null);
+          const uploadRes = await api.post('/leaves/attachment', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
+          attachmentUrl = uploadRes.data?.attachment_url || null;
           if (!attachmentUrl) throw new Error('Upload returned no file location');
         } catch (err) {
           setSubmitting(false);
@@ -318,7 +346,7 @@ export default function ApplyLeave({ setPage }) {
         lop_days:         lopDays,
         reason:           form.reason.trim(),
         is_lop:           isLOP || selectedType?.isLOP,
-        clubbing_flag:    clubbedLopDays > 0 || !!clubbingWarning,
+        clubbing_flag:    clubbedLopDays > 0,
         half_day:         form.half_day,
         half_day_session: form.half_day ? form.half_day_session : null,
         attachment_url:   attachmentUrl,
@@ -391,7 +419,7 @@ export default function ApplyLeave({ setPage }) {
               <p>
                 {inProbation
                   ? `Paid leave cannot be applied during probation${probation.probation_end ? ` (ends ${new Date(probation.probation_end + 'T00:00:00').toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' })})` : ''}. Only Loss of Pay (unpaid) leave is available and will be charged as LOP.`
-                  : 'All leave during your notice period is automatically Loss of Pay (unpaid).'}
+                  : `All leave during the notice period is Loss of Pay (unpaid)${probation.last_working_date ? ` — last working day ${new Date(probation.last_working_date + 'T00:00:00').toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' })}` : ''}.`}
               </p>
             </div>
           </div>
@@ -401,9 +429,10 @@ export default function ApplyLeave({ setPage }) {
         <span className="al-section-label">Leave Balances — click a type to select it</span>
         <div className="al-balance-strip">
           {loading && <div style={{ padding: '20px', color: '#9ca3af', fontSize: 13 }}>Loading balances…</div>}
-          {!loading && leaveTypes.filter(t => t.total > 0).map(lt => {
-            const b  = balances[lt.key] || { used: 0, pending: 0, available: 0, allocated: lt.total };
-            const pct = lt.total ? Math.min(100, Math.round(((b.used + b.pending) / lt.total) * 100)) : 0;
+          {!loading && applicableTypes.filter(t => !t.isLOP && (balances[t.key]?.allocated || 0) > 0).map(lt => {
+            const b  = balances[lt.key];
+            const total = b.allocated;
+            const pct = total ? Math.min(100, Math.round(((b.used + b.pending + (b.encashed || 0)) / total) * 100)) : 0;
             const isSelected = form.leave_type === lt.key && !isLOP;
             const colorMap = { 'Sick Leave':'#ef4444','Casual Leave':'#7c5cf0','Earned Leave':'#10b981','Annual Leave':'#10b981','Maternity Leave':'#ec4899','Paternity Leave':'#6366f1','Compensatory Leave':'#8b5cf6','Bereavement Leave':'#6b7280','Marriage Leave':'#7c5cf0' };
             const color = colorMap[lt.key] || '#6366f1';
@@ -413,7 +442,7 @@ export default function ApplyLeave({ setPage }) {
                 <div className="al-bal-info">
                   <span className="al-bal-label">{lt.key}</span>
                   <span className="al-bal-av" style={{ color: b.available === 0 ? '#ef4444' : undefined }}>
-                    {b.available} / {lt.total} days
+                    {b.available} / {total} days
                   </span>
                   {b.pending > 0 && <span className="al-bal-pending">{b.pending}d pending</span>}
                 </div>
@@ -459,12 +488,12 @@ export default function ApplyLeave({ setPage }) {
                   }}>
                   {leaveTypesLoading
                     ? <option value="">Loading…</option>
-                    : leaveTypes.length === 0
-                      ? <option value="">No leave types available</option>
-                      : leaveTypes.map(t => <option key={t.key} value={t.key}>{t.key}</option>)}
+                    : applicableTypes.length === 0
+                      ? <option value="">No leave balance yet</option>
+                      : applicableTypes.map(t => <option key={t.key} value={t.key}>{t.key}</option>)}
                   {/* Only when the company has no Loss of Pay type of its own —
                       otherwise this listed Loss of Pay twice. */}
-                  {!leaveTypes.some(t => /loss.of.pay/i.test(t.key)) && (
+                  {!applicableTypes.some(t => /loss.of.pay/i.test(t.key)) && (
                     <option value="Loss of Pay">Loss of Pay (Unpaid)</option>
                   )}
                 </select>
@@ -527,10 +556,10 @@ export default function ApplyLeave({ setPage }) {
                 </span>
               )}
               {!isLOP && clubbedLopDays === 0 && holidays.length > 0 && workingDays > 0 && (
-                <span style={{ color:'#6b7280' }}>(weekdays only, holidays excluded)</span>
+                <span style={{ color:'#6b7280' }}>(weekly offs and holidays not counted)</span>
               )}
-              {!form.half_day && workingDays === 0 && form.start_date && (
-                <span style={{ color:'#6d28d9', fontWeight:500 }}>⚠ No working days — selected dates fall on weekends or holidays</span>
+              {workingDays === 0 && form.start_date && (
+                <span style={{ color:'#6d28d9', fontWeight:500 }}>⚠ No working days — selected dates fall on weekly offs or holidays</span>
               )}
               {bal.available > 0 && !selectedType?.isLOP && days > bal.available && (
                 <span style={{ color:'#ef4444', fontWeight:600 }}>⚠ Exceeds available {bal.available}d</span>
@@ -546,20 +575,19 @@ export default function ApplyLeave({ setPage }) {
                 </span>
               </div>
             )}
-            {clubbingWarning && clubbedLopDays === 0 && (
-              <div className="al-clubbing-warn">
-                <Info size={14} /><span>{clubbingWarning} Clubbing is not allowed without manager permission — clubbed days become Loss of Pay.</span>
-              </div>
-            )}
             {advanceWarn && (
               <div className="al-clubbing-warn" style={{ background:'#fff7ed', borderColor:'#ddd6fe', color:'#4c1d95' }}>
                 <AlertTriangle size={14} /><span>{advanceWarn}</span>
               </div>
             )}
-            {selectedType?.requiresMedicalCert && (
-              <div className="al-policy-banner" style={{ background:'#eff6ff', borderColor:'#bfdbfe', color:'#1e40af', padding:'10px 14px', borderRadius:8, display:'flex', gap:8, alignItems:'flex-start', marginBottom:12, fontSize:13 }}>
+            {!isLOP && (selectedType?.requiresAttachment || selectedType?.requiresMedicalCert) && (
+              <div className="al-policy-banner" style={{ background:'#f5f3ff', borderColor:'#ddd6fe', color:'#4c1d95', padding:'10px 14px', borderRadius:8, display:'flex', gap:8, alignItems:'flex-start', marginBottom:12, fontSize:13 }}>
                 <Info size={14} style={{ flexShrink:0, marginTop:1 }} />
-                <span>Sick leave exceeding {selectedType.medicalCertDays} day(s) requires a medical certificate (upload below).</span>
+                <span>
+                  {selectedType.requiresAttachment
+                    ? `${effectiveLeaveType} needs a supporting document (upload below).`
+                    : `More than ${selectedType.medicalCertDays} day(s) of ${effectiveLeaveType} needs a medical certificate (upload below).`}
+                </span>
               </div>
             )}
 
@@ -580,7 +608,9 @@ export default function ApplyLeave({ setPage }) {
             {/* Attachment */}
             <div className="al-field">
               <label>
-                Attachment <span style={{ color:'#9ca3af', fontWeight:400, fontSize:11 }}> (optional)</span>
+                Attachment {needsAttachment
+                  ? <span className="al-req">*</span>
+                  : <span style={{ color:'#9ca3af', fontWeight:400, fontSize:11 }}> (optional)</span>}
               </label>
               <div style={{ display:'flex', alignItems:'center', gap:10 }}>
                 <label style={{ display:'flex', alignItems:'center', gap:6, padding:'7px 14px', background:'#f9fafb', border:'1px solid #e5e7eb', borderRadius:8, cursor:'pointer', fontSize:13, fontWeight:500 }}>
@@ -597,6 +627,7 @@ export default function ApplyLeave({ setPage }) {
                 )}
               </div>
               <span style={{ color:'#9ca3af', fontSize:11, marginTop:4, display:'block' }}>PDF, JPG, PNG, DOC — max 5 MB</span>
+              {fieldErrors.attachment && <span className="al-field-error" role="alert" style={{ color:'#ef4444', fontSize:11 }}>{fieldErrors.attachment}</span>}
             </div>
           </div>
 
@@ -613,7 +644,7 @@ export default function ApplyLeave({ setPage }) {
               {form.half_day && <span className="al-lop-tag">Half {form.half_day_session}</span>}
               {isLOP && <span className="al-lop-tag">LOP</span>}
               {!isLOP && clubbedLopDays > 0 && <span className="al-lop-tag">+{clubbedLopDays}d LOP</span>}
-              {(clubbingWarning || clubbedLopDays > 0) && <span className="al-clubbing-flag"><AlertTriangle size={11} /> Clubbing</span>}
+              {clubbedLopDays > 0 && <span className="al-clubbing-flag"><AlertTriangle size={11} /> Clubbing</span>}
             </div>
             <button className="al-btn-primary" onClick={handleSubmit}
               disabled={submitting}>

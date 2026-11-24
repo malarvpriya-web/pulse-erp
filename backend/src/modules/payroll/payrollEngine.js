@@ -514,13 +514,22 @@ export function computePayroll(emp, config = {}) {
   // HR's one-time amounts for this employee and month (payroll_adjustments).
   const adjustmentLines = (adjustments || []).filter(a => num(a.amount) > 0)
     .map(a => ({ id: a.id ?? null, kind: a.kind === 'deduction' ? 'deduction' : 'earning', label: String(a.label || '').trim() || 'Adjustment',
-      amount: round(num(a.amount)), account_code: a.account_code || null }));
+      amount: round(num(a.amount)), account_code: a.account_code || null,
+      // 2026-11-23: an earning may carry its own flat TDS % (taxed at that rate
+      // this month instead of the slab — leave encashment) and may be outside
+      // PF/ESI wages (in_wages false — leave encashment is not "wages").
+      tds_rate: a.tds_rate == null || a.tds_rate === '' ? null : num(a.tds_rate),
+      in_wages: a.in_wages !== false }));
   const otherEarnings = adjustmentLines.filter(a => a.kind === 'earning').reduce((t, a) => t + a.amount, 0);
+  const flatTaxEarnings = adjustmentLines.filter(a => a.kind === 'earning' && a.tds_rate != null);
+  const flatTaxIncome = flatTaxEarnings.reduce((t, a) => t + a.amount, 0);
+  const flatTds = flatTaxEarnings.reduce((t, a) => t + round(a.amount * a.tds_rate / 100), 0);
+  const nonWageEarnings = adjustmentLines.filter(a => a.kind === 'earning' && !a.in_wages).reduce((t, a) => t + a.amount, 0);
   const adjDeductions = adjustmentLines.filter(a => a.kind === 'deduction').reduce((t, a) => t + a.amount, 0);
   const oneTime = overtimePay + nightShiftAllowance + bonusAmt + arrearAmt + otherEarnings;
   const gross = regularGross + oneTime;
 
-  const remuneration = regularGross + overtimePay + nightShiftAllowance + otherEarnings + (includeErPf ? bonusAmt : 0);
+  const remuneration = regularGross + overtimePay + nightShiftAllowance + (otherEarnings - nonWageEarnings) + (includeErPf ? bonusAmt : 0);
   const pfWage = round(codeWage(basic, remuneration, includeErPf));
   const pfContribWage = contribWageOf(pfWage);
   const age = ageOn(emp.dob ?? emp.date_of_birth, pEnd);
@@ -553,7 +562,7 @@ export function computePayroll(emp, config = {}) {
   // October–March): someone already contributing in the period keeps contributing,
   // on actual wages, after a raise takes them over the limit.
   const esiApplicable = esi_enabled && (esiCoverageWage <= rules['esi.wage_threshold'] || !!esi_period_covered);
-  const esiWage = esiBasis === 'code_wages' ? pfWage : gross - bonusAmt;
+  const esiWage = esiBasis === 'code_wages' ? pfWage : gross - bonusAmt - nonWageEarnings;
   const upToRupee = (v) => Math.ceil(Math.round(v * 100) / 100);
   const employeeESI = esiApplicable ? upToRupee(esiWage * rules['esi.employee_rate'] / 100) : 0;
   const employerESI = esiApplicable ? upToRupee(esiWage * rules['esi.employer_rate'] / 100) : 0;
@@ -580,7 +589,10 @@ export function computePayroll(emp, config = {}) {
   const ytdGross = num(ytd?.gross);
   const ytdTds = num(ytd?.tds);
   const projectedRegular = ytdGross + regularGross + fullMonthRegular * (remaining - 1);
-  const projectedAnnual = projectedRegular + oneTime;
+  // A flat-TDS earning is taxed at its own rate below, not through the slab
+  // projection this month (later months see it in YTD gross, so the year's
+  // final tax is still on all income, with this TDS counted as paid).
+  const projectedAnnual = projectedRegular + oneTime - flatTaxIncome;
 
   let otherDeductions = 0;
   let oldRegime = null;
@@ -624,7 +636,9 @@ export function computePayroll(emp, config = {}) {
   const taxWithoutOneTime = tds_auto_calculate ? computeIncomeTax(taxableOf(projectedRegular), regime, taxRule, { age: taxAge }) : 0;
   const tdsRegular = Math.max(0, round((taxWithoutOneTime - ytdTds) / remaining));
   const tdsOneTime = Math.max(0, annualTax - taxWithoutOneTime);
-  const monthlyTDS = tds_auto_calculate ? tdsRegular + tdsOneTime : 0;
+  // The flat % is the company's explicit rule, so it applies even when slab
+  // TDS is not auto-calculated.
+  const monthlyTDS = (tds_auto_calculate ? tdsRegular + tdsOneTime : 0) + flatTds;
 
   // ── Recoveries (loan EMI / advance) ──────────────────────────────────────
   const loanDeduction = round(recoveries.filter(r => r.type === 'loan').reduce((s, r) => s + num(r.amount), 0));
@@ -704,6 +718,7 @@ export function computePayroll(emp, config = {}) {
     professional_tax: professionalTax,
     lwf_employee,
     tds: monthlyTDS,
+    tds_flat: flatTds,              // part of tds: flat-% earnings (leave encashment)
     loan_deduction: loanDeduction,
     advance_deduction: advanceDeduction,
     other_deductions: adjDeductions,

@@ -34,6 +34,7 @@
  */
 import pool from '../shared/db.js';
 import { getShiftRule } from '../../shared/attendanceRules.js';
+import { getWeekendDays, dayIsWeekend } from '../../shared/weekend.js';
 import { isExitedSql } from '../../shared/employeeStatus.js';
 import notificationsRepository from '../notifications/repositories/notifications.repository.js';
 import { todayIST } from '../payroll/payroll.service.js';
@@ -56,18 +57,7 @@ export async function weekOf(date, db = pool) {
   return w;
 }
 
-/** The weekend days configured for attendance (same row choice as getShiftRule). */
-async function weekendDays(companyId, db) {
-  try {
-    const { rows: [s] } = await db.query(
-      `SELECT weekend_days FROM attendance_general_settings
-        WHERE ($1::int IS NULL OR company_id = $1 OR company_id IS NULL)
-        ORDER BY (company_id IS NULL), id LIMIT 1`, [companyId ?? null]);
-    const list = Array.isArray(s?.weekend_days) ? s.weekend_days : null;
-    if (list && list.length) return new Set(list.map(d => String(d).toLowerCase()));
-  } catch { /* fall through */ }
-  return new Set(['saturday', 'sunday']);
-}
+// Weekend days (incl. 2nd/4th-Saturday offs) come from shared/weekend.js.
 
 /** Projects the employee may book to during [from, to]. */
 export async function projectsFor(employeeId, companyId, from, to, db = pool) {
@@ -136,7 +126,7 @@ function hoursFor(f, weekend, fullDay) {
   if (f.holiday) return { hours: 0, source: 'holiday', note: f.holiday };
   if (f.on_leave && f.leave_half) return { hours: quarter(fullDay / 2), source: 'half_leave' };
   if (f.on_leave) return { hours: 0, source: 'leave' };
-  if (weekend.has(String(f.weekday).toLowerCase())) return { hours: 0, source: 'weekend' };
+  if (dayIsWeekend(f.date, weekend)) return { hours: 0, source: 'weekend' };
   if (/absent/i.test(f.att_status || '')) return { hours: 0, source: 'absent' };
   return { hours: quarter(fullDay), source: 'standard' };
 }
@@ -168,7 +158,7 @@ export async function suggestWeek(employeeId, companyId, weekStart, db = pool) {
     projectsFor(employeeId, companyId, w.week_start, w.week_end, db),
     dayFacts(employeeId, companyId, w.week_start, w.week_end, db),
     getShiftRule(companyId, db),
-    weekendDays(companyId, db),
+    getWeekendDays(companyId),
   ]);
   const today = todayIST();
   const days = facts.map(f => {

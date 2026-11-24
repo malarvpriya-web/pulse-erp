@@ -302,7 +302,7 @@ export const ROUTES = {
   // ── Leaves ───────────────────────────────────────────────────────────────
   ApplyLeave:            { module: 'leaves', component: lazy(() => import('@/features/leaves/pages/ApplyLeave')), props: ctx => ({ setPage: ctx.setPage }) },
   MyLeaves:              { module: 'leaves', component: lazy(() => import('@/features/leaves/pages/MyLeaves')),   props: ctx => ({ setPage: ctx.setPage }) },
-  AllLeaves:             { module: 'leaves', component: lazy(() => import('@/features/leaves/pages/AllLeaves')) },
+  AllLeaves:             { module: 'leaves', component: lazy(() => import('@/features/leaves/pages/AllLeaves')), props: ctx => ({ setPage: ctx.setPage }) },
   LeaveSettings:         { module: 'leaves', component: lazy(() => import('@/features/leaves/pages/LeaveSettings')), props: ctx => ({ setPage: ctx.setPage }) },
   LeaveApprovals:        { module: 'leaves', component: lazy(() => import('@/features/leaves/pages/LeaveApprovals')) },
   LeaveCalendar:         { module: 'leaves', component: lazy(() => import('@/features/leaves/pages/LeaveCalendar')) },
@@ -782,10 +782,16 @@ import {
 //     holding 'Service Desk' (department_head, service_manager,
 //     service_engineer) also holds 'Complaints', so nobody lost the register.
 //
-// Within a submenu the house order is: overview → daily transactions →
-// approvals/queues → analysis & reports → masters/settings, with `separator`
-// rows breaking up anything past ~8 items and self-service ("My …") pages
-// grouped at the top of the shared HR/Attendance/Leaves/Timesheets menus.
+// Within a submenu the house order is by WHO uses the page (owner, 2026-11-23),
+// so the three audiences read apart in the flat flyout list:
+//   'Admin'    — super admin / module owner: dashboards, analytics, reports,
+//                masters, settings, audit.
+//   'Manager'  — team lead / approver: team views, approvals, planning, control.
+//   'Employee' — the individual: "My …" pages and day-to-day entry screens.
+// Each tier opens with a `separator` row named exactly 'Admin' / 'Manager' /
+// 'Employee'. Separators are never drawn (Sidebar.jsx renders pages only), so
+// a page row must never carry one of those three names — the React key is the
+// name. A role's filter simply drops the tiers it can't see.
 export const NAV_ITEMS = [
   // ── Workspace ─────────────────────────────────────────────────────────────
   { name: 'Home',               icon: <FaHome />,              page: 'Home' },
@@ -806,41 +812,57 @@ export const NAV_ITEMS = [
   { divider: true, section: 'Insights' },
 
   { name: 'Analytics & AI', icon: <FaRobot />, submenu: [
-    { name: 'Executive',           separator: true },
+    { name: 'Admin',               separator: true },
     { name: 'CEO Intelligence',    page: 'CEOIntelligenceDashboard' },
-    { name: 'Executive Dashboard', page: 'ExecutiveDashboard' },
     { name: 'Ops Command Center',  page: 'AdminDashboard' },
-    { name: 'Functional',          separator: true },
+    { name: 'ERP Intelligence',    page: 'ERPIntelligence' },
+    { name: 'Dashboard Builder',   page: 'DashboardBuilder' },
+    { name: 'System Health',       page: 'SystemHealth' },
+    { name: 'Manager',             separator: true },
+    { name: 'Executive Dashboard', page: 'ExecutiveDashboard' },
     { name: 'CFO Dashboard',       page: 'CFODashboard' },
     { name: 'HR Dashboard',        page: 'HRDashboard' },
     { name: 'HR Benchmarking',     page: 'HRBenchmarkingDashboard' },
-    { name: 'Platform',            separator: true },
-    { name: 'Dashboard Builder',   page: 'DashboardBuilder' },
-    { name: 'ERP Intelligence',    page: 'ERPIntelligence' },
-    { name: 'System Health',       page: 'SystemHealth' },
   ]},
 
   { name: 'Reports', icon: <FaFileAlt />, module: 'reports', submenu: [
+    { name: 'Admin',               separator: true },
     { name: 'Report Builder',      page: 'Reports' },
+    { name: 'Employee',            separator: true },
     { name: 'Saved Reports',       page: 'SavedReports' },
   ]},
 
   { divider: true, section: 'Revenue' },
 
+  { name: 'Marketing', icon: <FaBullhorn />, submenu: [
+    { name: 'Admin',           separator: true },
+    { name: 'Dashboard',       page: 'MarketingDashboard' },
+    { name: 'Analytics',       page: 'MarketingAnalytics' },  // Campaign·Won/Lost·Performance
+    { name: 'Settings',        page: 'MarketingSettings' },
+    { name: 'Manager',         separator: true },
+    { name: 'Campaigns',       page: 'Campaigns' },
+    { name: 'Journeys',        page: 'MarketingJourneys' },   // nurture sequences that actually run
+    { name: 'Pursuit List',    page: 'PursuitList' },
+    { name: 'Assign Tasks',    page: 'AssignTasks' },
+    { name: 'Delivery Tracker',page: 'DeliveryTracker' },
+    { name: 'Employee',        separator: true },
+    { name: 'Timesheet Entry', page: 'TimesheetEntry' },
+  ]},
+
   { name: 'CRM', icon: <FaHandshake />, submenu: [
+    { name: 'Admin',                     separator: true },
     { name: 'Dashboard',                 page: 'SalesDashboard' },
-    { name: 'IEM — Enquiries',           page: 'Leads' },
+    { name: 'Analysis & Automation',     page: 'CRMInsights' },   // Won/Lost·Web forms·Reports·Pipeline automation
+    { name: 'Settings',                  page: 'CRMSettings' },
+    { name: 'Manager',                   separator: true },
     { name: 'Opportunities',             page: 'OpportunitiesKanban' },
     { name: 'Pursuits',                  page: 'Pursuits' },
     { name: 'Tenders',                   page: 'TenderWorkspace' },
-    { name: 'Customers',                 separator: true },
     { name: 'Customers',                 page: 'CRMCustomers' },   // Accounts·Contacts·Customer 360·Health Engine
-    { name: 'Engagement',                separator: true },
+    { name: 'Employee',                  separator: true },
+    { name: 'IEM — Enquiries',           page: 'Leads' },
     { name: 'Activities',                page: 'CRMActivities' },
     { name: 'CRM Email',                 page: 'CRMEmail' },
-    { name: 'Analysis & Setup',          separator: true },
-    { name: 'Analysis & Automation',     page: 'CRMInsights' },   // Won/Lost·Web forms·Reports·Pipeline automation
-    { name: 'Settings',                  page: 'CRMSettings' },
 
     // ── Consolidated into the hubs above (2026-09-16 IA pass) ──────────
     // These rows are NOT drawn in the sidebar — Sidebar.jsx skips any entry
@@ -860,21 +882,21 @@ export const NAV_ITEMS = [
   ]},
 
   { name: 'Sales', icon: <FaFileInvoiceDollar />, submenu: [
+    { name: 'Admin',                     separator: true },
     { name: 'Command Center',            page: 'SalesCommandCenter' },
-    { name: 'Sell',                      separator: true },
-    { name: 'Quotations',                page: 'Quotations' },
-    { name: 'Sales Orders',              page: 'SalesOrders' },
-    { name: 'Pricing Engine',            page: 'PricingEngine' },
-    { name: 'Fulfilment',                page: 'FulfilmentTracking' },
-    { name: 'Subscriptions',             page: 'Subscriptions' },
-    { name: 'Plan & Perform',            separator: true },
-    { name: 'Targets & Commission',      page: 'SalesPerformance' },   // Targets·Commission
     { name: 'Intelligence',              page: 'SalesIntelligence' },
     { name: 'Market Presence',           page: 'SalesMarket' },
-    { name: 'Deal Registration',         page: 'DealRegistrations' },
-    { name: 'Enablement & Setup',        separator: true },
-    { name: 'Enablement',                page: 'SalesEnablement' },   // Playbooks·Calendar·Documents
     { name: 'Settings',                  page: 'SalesSettings' },
+    { name: 'Manager',                   separator: true },
+    { name: 'Targets & Commission',      page: 'SalesPerformance' },   // Targets·Commission
+    { name: 'Pricing Engine',            page: 'PricingEngine' },
+    { name: 'Deal Registration',         page: 'DealRegistrations' },
+    { name: 'Subscriptions',             page: 'Subscriptions' },
+    { name: 'Fulfilment',                page: 'FulfilmentTracking' },
+    { name: 'Employee',                  separator: true },
+    { name: 'Quotations',                page: 'Quotations' },
+    { name: 'Sales Orders',              page: 'SalesOrders' },
+    { name: 'Enablement',                page: 'SalesEnablement' },   // Playbooks·Calendar·Documents
 
     // ── Consolidated into the hubs above (2026-09-16 IA pass) ──────────
     // These rows are NOT drawn in the sidebar — Sidebar.jsx skips any entry
@@ -890,125 +912,76 @@ export const NAV_ITEMS = [
     { name: 'SalesDocuments',            page: 'SalesDocuments', inHub: 'SalesEnablement' },
   ]},
 
-  { name: 'Marketing', icon: <FaBullhorn />, submenu: [
-    { name: 'Dashboard',       page: 'MarketingDashboard' },
-    { name: 'Campaigns',       page: 'Campaigns' },
-    { name: 'Pursuit List',    page: 'PursuitList' },
-    { name: 'Execution',       separator: true },
-    { name: 'Assign Tasks',    page: 'AssignTasks' },
-    { name: 'Delivery Tracker',page: 'DeliveryTracker' },
-    { name: 'Timesheet Entry', page: 'TimesheetEntry' },
-    { name: 'Journeys',        page: 'MarketingJourneys' },   // nurture sequences that actually run
-    { name: 'Analysis & Setup', separator: true },
-    { name: 'Analytics',       page: 'MarketingAnalytics' },  // Campaign·Won/Lost·Performance
-    { name: 'Settings',        page: 'MarketingSettings' },
+  // Split out of 'Supply Chain' 2026-09-16. That band ran to nine menus once
+  // the four promoted modules landed in it; Procurement -> Inventory ->
+  // Production -> Quality is the material flow, and Engineering / R&D /
+  // IoT / Compliance / Asset Register are the plant and asset side of the
+  // same factory. Bands are display-only — they carry no pages and are
+  // filtered out of getMenuSections(), so splitting one changes no gate.
+  { divider: true, section: 'Engineering & Assets' },
+
+  { name: 'Engineering', icon: <FaWrench />, module: 'engineering', submenu: [
+    { name: 'Admin',               separator: true },
+    { name: 'Dashboard',           page: 'EngineeringDashboard' },
+    { name: 'Power Quality',       page: 'PowerQualityAnalytics' },
+    { name: 'Manager',             separator: true },
+    { name: 'R&D Projects',        page: 'RDProjects' },
+    { name: 'Design Phases',       page: 'DesignPhases' },     // stage gates behind RDProjects/PrototypeTracker
+    { name: 'Change Notices (ECN)',page: 'ECNManagement' },
+    { name: 'Employee',            separator: true },
+    { name: 'Development Register',page: 'EngineeringDev' },   // IPD design/development records
+    { name: 'Prototype Tracker',   page: 'PrototypeTracker' },
+    { name: 'Test Plans',          page: 'TestPlans' },
   ]},
 
-  { divider: true, section: 'Delivery' },
+  // Promoted from an auto-discovered orphan group ('R&D · More') 2026-09-16.
+  // Kept as its own section rather than folded into Engineering: of the five
+  // roles that hold it, project_manager holds no 'Engineering' — folding would
+  // have silently revoked the page for them. Name matches ROLE_SECTION_ALLOWLIST.
+  { name: 'R&D', icon: <FaFlask />, module: 'rd', page: 'RDHub' },
 
-  { name: 'Projects', icon: <FaProjectDiagram />, module: 'projects', submenu: [
-    { name: 'Dashboard',                 page: 'ProjectsDashboard' },
-    { name: 'Projects',                  page: 'Projects' },
-    { name: 'Project 360°',              page: 'Project360' },
-    { name: 'Delivery',                  separator: true },
-    { name: 'Delivery Boards',           page: 'ProjectBoards' },   // Project Master·Pipeline·Task board·Gantt·Installation
-    { name: 'Control',                   separator: true },
-    { name: 'Resource Management',       page: 'ResourceManagement' },
-    { name: 'Issue Management',          page: 'IssueManagement' },
-    { name: 'Lifecycle',                 page: 'ProjectLifecycleHub' },
-    { name: 'Financials',                page: 'ProjectFinancialsHub' },
-    { name: 'Insights & Setup',          separator: true },
-    { name: 'CEO Command Center',        page: 'CEOCommandCenter' },
-    { name: 'Project Reports',           page: 'ProjectReports' },
-    { name: 'Settings',                  page: 'ProjectSettings' },
-
-    // ── Consolidated into the hubs above (2026-09-16 IA pass) ──────────
-    // These rows are NOT drawn in the sidebar — Sidebar.jsx skips any entry
-    // carrying `inHub`. They stay here because getSectionForPage() walks
-    // NAV_ITEMS: drop them and each page silently becomes section-less,
-    // which makes canRoleAccessPageBySection wave it through for every
-    // role. Keeping them preserves the section gate exactly, and TabHub
-    // re-checks each tab with canRoleOpenPage() before drawing it.
-    { name: 'ProductionDeliveryTracker', page: 'ProductionDeliveryTracker', inHub: 'ProjectBoards' },
-    { name: 'ProjectPipelineBoard',      page: 'ProjectPipelineBoard', inHub: 'ProjectBoards' },
-    { name: 'KanbanBoard',               page: 'KanbanBoard', inHub: 'ProjectBoards' },
-    { name: 'GanttChart',                page: 'GanttChart', inHub: 'ProjectBoards' },
-    { name: 'InstallationDashboard',     page: 'InstallationDashboard', inHub: 'ProjectBoards' },
+  // Promoted from 'IoT Fleet · More' 2026-09-16 — seven real pages that never
+  // got a curated entry, so they rendered as a generic "More" folder below
+  // Administration and were invisible to the Page Access admin screen
+  // (getMenuSections reads NAV_ITEMS only).
+  { name: 'IoT Fleet', icon: <FaBroadcastTower />, module: 'iot', submenu: [
+    { name: 'Admin',               separator: true },
+    { name: 'Platform Health',     page: 'IoTHealth' },
+    { name: 'Metric & Device Registry', page: 'MetricRegistry' },
+    { name: 'Alert Rules',         page: 'AlertRules' },
+    { name: 'Hardware Pilots',     page: 'HardwarePilots' },
+    { name: 'Manager',             separator: true },
+    { name: 'Fleet Monitor',       page: 'FleetMonitor' },
+    { name: 'Alert Centre',        page: 'AlertCenter' },
+    { name: 'Employee',            separator: true },
+    { name: 'Equipment 360',       page: 'Equipment360' },
   ]},
 
-  { name: 'Operations', icon: <FaStream />, submenu: [
-    { name: 'Workflow Center',   page: 'WorkflowCenter' },          // Board·Configuration
-    { name: 'Project Tracker',   page: 'ProjectWorkflowTracker' },
-    { name: 'Lifecycle Tracker', page: 'LifecycleTracker', module: 'servicedesk' },
-    { name: 'Post-Delivery',     page: 'OperationsLifecycleHub' },  // Commissioning·AMC·Warranty
-    { name: 'Analytics',         separator: true },
-    { name: 'Dept Workload',     page: 'DepartmentWorkload' },
-    { name: 'Bottlenecks',       page: 'BottleneckAnalytics' },
-  ]},
+  // Promoted from 'Compliance · More' / 'Asset Register · More' 2026-09-16.
+  // Both stay standalone sections for the same reason as R&D above: their role
+  // sets (hr holds both; qc_engineer holds Compliance; store_keeper/
+  // procurement_* hold Asset Register) cut across Quality/Inventory, so there
+  // is no parent menu that folds them in without revoking someone's access.
+  { name: 'Compliance',     icon: <FaBalanceScale />, module: 'compliance', page: 'ComplianceRegister' },
 
-  // The complaint half of the complaint -> service-ticket loop. Sits directly
-  // above 'Service Desk' so the pair reads as one workflow — see the ordering
-  // note above for why the register no longer also appears inside Service Desk.
-  { name: 'Complaints', icon: <FaExclamationCircle />, submenu: [
-    { name: 'Dashboard',           page: 'ComplaintsDashboard' },
-    { name: 'Complaint Register',  page: 'CustomerComplaintsIPCS' },
-  ]},
-
-  { name: 'Service Desk', icon: <FaHeadset />, module: 'servicedesk', submenu: [
-    { name: 'Dashboard',                 page: 'SupportDashboard' },
-    { name: 'Tickets',                   separator: true },
-    { name: 'My Tickets',                page: 'MyTickets' },
-    { name: 'All Tickets',               page: 'AllTickets' },
-    { name: 'SLA Management',            page: 'SLAManagement' },
-    { name: 'Agent Workload',            page: 'AgentWorkload' },
-    { name: 'Field & Site',              separator: true },
-    { name: 'My Field Jobs',             page: 'EngineerHome' },
-    { name: 'Field Operations',          page: 'ServiceFieldCenter' },   // Visits·Engineers·Installation·Commissioning·Delivery·Spares
-    { name: 'Customers',                 separator: true },
-    { name: 'Customers & Contracts',     page: 'ServiceCustomerCenter' },   // Portal·Contracts·Warranty
-    { name: 'Reviews',                   page: 'ServiceReviews' },
-    { name: 'Insights & Setup',          separator: true },
-    { name: 'Catalog & Knowledge',       page: 'ServiceCatalogCenter' },   // IPS·Rate card·KB·Email to case
-    { name: 'Intelligence',              page: 'ServiceIntelligence' },
-    { name: 'Settings',                  page: 'ServiceDeskSettings' },
-
-    // ── Consolidated into the hubs above (2026-09-16 IA pass) ──────────
-    // These rows are NOT drawn in the sidebar — Sidebar.jsx skips any entry
-    // carrying `inHub`. They stay here because getSectionForPage() walks
-    // NAV_ITEMS: drop them and each page silently becomes section-less,
-    // which makes canRoleAccessPageBySection wave it through for every
-    // role. Keeping them preserves the section gate exactly, and TabHub
-    // re-checks each tab with canRoleOpenPage() before drawing it.
-    { name: 'FieldVisitScheduler',       page: 'FieldVisitScheduler', inHub: 'ServiceFieldCenter' },
-    { name: 'ServiceEngineers',          page: 'ServiceEngineers', inHub: 'ServiceFieldCenter' },
-    { name: 'InstallationRequests',      page: 'InstallationRequests', inHub: 'ServiceFieldCenter' },
-    { name: 'CommissioningWorkflow',     page: 'CommissioningWorkflow', inHub: 'ServiceFieldCenter' },
-    { name: 'DeliveryNote',              page: 'DeliveryNote', inHub: 'ServiceFieldCenter' },
-    { name: 'ServiceStockManagement',    page: 'ServiceStockManagement', inHub: 'ServiceFieldCenter' },
-    { name: 'CustomerPortalManagement',  page: 'CustomerPortalManagement', inHub: 'ServiceCustomerCenter' },
-    { name: 'ServiceContracts',          page: 'ServiceContracts', inHub: 'ServiceCustomerCenter' },
-    { name: 'OperationsWarranty',        page: 'OperationsWarranty', inHub: 'ServiceCustomerCenter' },
-    { name: 'ServiceMasterIPS',          page: 'ServiceMasterIPS', inHub: 'ServiceCatalogCenter' },
-    { name: 'ServiceMaster',             page: 'ServiceMaster', inHub: 'ServiceCatalogCenter' },
-    { name: 'KnowledgeBase',             page: 'KnowledgeBase', inHub: 'ServiceCatalogCenter' },
-    { name: 'SupportMailbox',            page: 'SupportMailbox', inHub: 'ServiceCatalogCenter' },
-  ]},
+  { name: 'Asset Register', icon: <FaTags />,         module: 'assets',     page: 'AssetRegister' },
 
   { divider: true, section: 'Supply Chain' },
 
   { name: 'Procurement', icon: <FaShoppingCart />, module: 'procurement', submenu: [
+    { name: 'Admin',                     separator: true },
+    { name: 'Reports',                   page: 'ProcurementReports' },
+    { name: 'Settings',                  page: 'ProcurementSettings' },
+    { name: 'Manager',                   separator: true },
     { name: 'Purchase Requests',         page: 'PurchaseRequestDashboard' },
     { name: 'PO Management',             page: 'PurchaseOrderManagement' },
-    { name: 'Purchase Orders',           page: 'PurchaseOrders' },
-    { name: 'Goods Receipt',             page: 'GoodsReceipt' },
-    { name: 'Quality Inspection',        page: 'QualityInspection' },
-    { name: 'Vendors & Planning',        separator: true },
     { name: 'Vendor Center',             page: 'VendorCenter' },
     { name: 'Sourcing & Strategy',       page: 'SourcingCenter' },   // Strategy·RFx·Capacity·Performance·Development
     { name: 'MRP Planning',              page: 'MRPPlanning' },
-    { name: 'Reports & Setup',           separator: true },
-    { name: 'Reports',                   page: 'ProcurementReports' },
-    { name: 'Settings',                  page: 'ProcurementSettings' },
+    { name: 'Employee',                  separator: true },
+    { name: 'Purchase Orders',           page: 'PurchaseOrders' },
+    { name: 'Goods Receipt',             page: 'GoodsReceipt' },
+    { name: 'Quality Inspection',        page: 'QualityInspection' },
 
     // ── Consolidated into the hubs above (2026-09-16 IA pass) ──────────
     // These rows are NOT drawn in the sidebar — Sidebar.jsx skips any entry
@@ -1025,19 +998,19 @@ export const NAV_ITEMS = [
   ]},
 
   { name: 'Inventory', icon: <FaBox />, module: 'inventory', submenu: [
+    { name: 'Admin',                     separator: true },
     { name: 'Dashboard',                 page: 'InventoryDashboard' },
     { name: 'Advanced Dashboard',        page: 'AdvancedInventoryDashboard' },
-    { name: 'Operations',                separator: true },
-    { name: 'Stock Control',             page: 'StockControl' },   // Summary·Movements·Reservations·Consumption·Batch·Serial·Alerts
-    { name: 'Warehouse & Stores',        page: 'WarehouseCenter' },   // Warehouse·Operations·Stores·Cost·Inbound Quality
-    { name: 'Logistics & Returns',       page: 'LogisticsCenter' },   // Shipping·Routes·RMA
-    { name: 'Plan & Analyse',            separator: true },
-    { name: 'Planning',                  page: 'InventoryPlanning' },   // Demand·Parameters·Health·Kanban
     { name: 'Insights & Reports',        page: 'InventoryInsights' },   // Service Level·Intel·Report
-    { name: 'Masters & Setup',           separator: true },
     { name: 'Item Master',               page: 'ItemMaster' },
     { name: 'Component Pricing',         page: 'VendorPriceComparison' },
     { name: 'Settings',                  page: 'InventorySettings' },
+    { name: 'Manager',                   separator: true },
+    { name: 'Planning',                  page: 'InventoryPlanning' },   // Demand·Parameters·Health·Kanban
+    { name: 'Warehouse & Stores',        page: 'WarehouseCenter' },   // Warehouse·Operations·Stores·Cost·Inbound Quality
+    { name: 'Logistics & Returns',       page: 'LogisticsCenter' },   // Shipping·Routes·RMA
+    { name: 'Employee',                  separator: true },
+    { name: 'Stock Control',             page: 'StockControl' },   // Summary·Movements·Reservations·Consumption·Batch·Serial·Alerts
 
     // ── Consolidated into the hubs above (2026-09-16 IA pass) ──────────
     // These rows are NOT drawn in the sidebar — Sidebar.jsx skips any entry
@@ -1071,19 +1044,19 @@ export const NAV_ITEMS = [
   ]},
 
   { name: 'Production', icon: <FaIndustry />, module: 'production', submenu: [
+    { name: 'Admin',                     separator: true },
     { name: 'Production Dashboard',      page: 'ProductionDashboard' },
-    { name: 'Execution',                 separator: true },
-    { name: 'Module Batch Requests',     page: 'ProductionModuleRequests' },
-    { name: 'Module Production Batches', page: 'ProductionOrders' },
-    { name: 'Shop Floor',                page: 'ShopFloor' },
-    { name: 'Subcontracting',            page: 'SubcontractOrders' },
-    { name: 'Batch Genealogy',           page: 'GenealogyTrace' },
-    { name: 'Component Traceability',    page: 'ComponentTrace' },
-    { name: 'Plan & Engineer',           separator: true },
+    { name: 'Settings',                  page: 'ProductionSettings' },
+    { name: 'Manager',                   separator: true },
     { name: 'Planning',                  page: 'ProductionPlanningHub' },   // MRP·CRP·S&OP·Scenario·Work Centre
     { name: 'BOM Management',            page: 'BOMCenter' },   // Builder·Modeling·Upload
-    { name: 'Setup',                     separator: true },
-    { name: 'Settings',                  page: 'ProductionSettings' },
+    { name: 'Module Batch Requests',     page: 'ProductionModuleRequests' },
+    { name: 'Subcontracting',            page: 'SubcontractOrders' },
+    { name: 'Employee',                  separator: true },
+    { name: 'Module Production Batches', page: 'ProductionOrders' },
+    { name: 'Shop Floor',                page: 'ShopFloor' },
+    { name: 'Batch Genealogy',           page: 'GenealogyTrace' },
+    { name: 'Component Traceability',    page: 'ComponentTrace' },
 
     // ── Consolidated into the hubs above (2026-09-16 IA pass) ──────────
     // These rows are NOT drawn in the sidebar — Sidebar.jsx skips any entry
@@ -1103,88 +1076,128 @@ export const NAV_ITEMS = [
   ]},
 
   { name: 'Quality', icon: <FaShieldAlt />, module: 'quality', submenu: [
+    { name: 'Admin',                 separator: true },
     { name: 'Dashboard',             page: 'QualityDashboard' },
-    { name: 'Control',               separator: true },
-    { name: 'Inspection Center',     page: 'InspectionCenter' },
-    { name: 'Material Tests',        page: 'MaterialQualityTests' },
-    { name: 'NCR Management',        page: 'NCRManagement' },
-    { name: 'CAPA Management',       page: 'CAPAManagement' },
-    { name: 'Assurance',             separator: true },
-    { name: 'FAT / SAT',             page: 'FATManagement' },
-    { name: 'Supplier Quality',      page: 'SupplierQuality' },
-    { name: 'Equipment Calibration', page: 'EquipmentCalibration' },
-    { name: 'Reports & Setup',       separator: true },
     { name: 'Reports',               page: 'QualityReports' },
     { name: 'Settings',              page: 'QualitySettings' },
+    { name: 'Manager',               separator: true },
+    { name: 'NCR Management',        page: 'NCRManagement' },
+    { name: 'CAPA Management',       page: 'CAPAManagement' },
+    { name: 'Supplier Quality',      page: 'SupplierQuality' },
+    { name: 'FAT / SAT',             page: 'FATManagement' },
+    { name: 'Equipment Calibration', page: 'EquipmentCalibration' },
+    { name: 'Employee',              separator: true },
+    { name: 'Inspection Center',     page: 'InspectionCenter' },
+    { name: 'Material Tests',        page: 'MaterialQualityTests' },
   ]},
 
-  // Split out of 'Supply Chain' 2026-09-16. That band ran to nine menus once
-  // the four promoted modules landed in it; Procurement -> Inventory ->
-  // Production -> Quality is the material flow, and Engineering / R&D /
-  // IoT / Compliance / Asset Register are the plant and asset side of the
-  // same factory. Bands are display-only — they carry no pages and are
-  // filtered out of getMenuSections(), so splitting one changes no gate.
-  { divider: true, section: 'Engineering & Assets' },
+  { divider: true, section: 'Delivery' },
 
-  { name: 'Engineering', icon: <FaWrench />, module: 'engineering', submenu: [
-    { name: 'Dashboard',           page: 'EngineeringDashboard' },
-    { name: 'Development Register',page: 'EngineeringDev' },   // IPD design/development records
-    { name: 'R&D Projects',        page: 'RDProjects' },
-    { name: 'Prototype Tracker',   page: 'PrototypeTracker' },
-    { name: 'Design Phases',       page: 'DesignPhases' },     // stage gates behind RDProjects/PrototypeTracker
-    { name: 'Test Plans',          page: 'TestPlans' },
-    { name: 'Change Notices (ECN)',page: 'ECNManagement' },
-    { name: 'Power Quality',       page: 'PowerQualityAnalytics' },
+  { name: 'Projects', icon: <FaProjectDiagram />, module: 'projects', submenu: [
+    { name: 'Admin',                     separator: true },
+    { name: 'Dashboard',                 page: 'ProjectsDashboard' },
+    { name: 'CEO Command Center',        page: 'CEOCommandCenter' },
+    { name: 'Project Reports',           page: 'ProjectReports' },
+    { name: 'Settings',                  page: 'ProjectSettings' },
+    { name: 'Manager',                   separator: true },
+    { name: 'Projects',                  page: 'Projects' },
+    { name: 'Project 360°',              page: 'Project360' },
+    { name: 'Financials',                page: 'ProjectFinancialsHub' },
+    { name: 'Resource Management',       page: 'ResourceManagement' },
+    { name: 'Lifecycle',                 page: 'ProjectLifecycleHub' },
+    { name: 'Issue Management',          page: 'IssueManagement' },
+    { name: 'Employee',                  separator: true },
+    { name: 'Delivery Boards',           page: 'ProjectBoards' },   // Project Master·Pipeline·Task board·Gantt·Installation
+
+    // ── Consolidated into the hubs above (2026-09-16 IA pass) ──────────
+    // These rows are NOT drawn in the sidebar — Sidebar.jsx skips any entry
+    // carrying `inHub`. They stay here because getSectionForPage() walks
+    // NAV_ITEMS: drop them and each page silently becomes section-less,
+    // which makes canRoleAccessPageBySection wave it through for every
+    // role. Keeping them preserves the section gate exactly, and TabHub
+    // re-checks each tab with canRoleOpenPage() before drawing it.
+    { name: 'ProductionDeliveryTracker', page: 'ProductionDeliveryTracker', inHub: 'ProjectBoards' },
+    { name: 'ProjectPipelineBoard',      page: 'ProjectPipelineBoard', inHub: 'ProjectBoards' },
+    { name: 'KanbanBoard',               page: 'KanbanBoard', inHub: 'ProjectBoards' },
+    { name: 'GanttChart',                page: 'GanttChart', inHub: 'ProjectBoards' },
+    { name: 'InstallationDashboard',     page: 'InstallationDashboard', inHub: 'ProjectBoards' },
   ]},
 
-  // Promoted from an auto-discovered orphan group ('R&D · More') 2026-09-16.
-  // Kept as its own section rather than folded into Engineering: of the five
-  // roles that hold it, project_manager holds no 'Engineering' — folding would
-  // have silently revoked the page for them. Name matches ROLE_SECTION_ALLOWLIST.
-  { name: 'R&D', icon: <FaFlask />, module: 'rd', page: 'RDHub' },
-
-  // Promoted from 'IoT Fleet · More' 2026-09-16 — seven real pages that never
-  // got a curated entry, so they rendered as a generic "More" folder below
-  // Administration and were invisible to the Page Access admin screen
-  // (getMenuSections reads NAV_ITEMS only).
-  { name: 'IoT Fleet', icon: <FaBroadcastTower />, module: 'iot', submenu: [
-    { name: 'Fleet Monitor',       page: 'FleetMonitor' },
-    { name: 'Equipment 360',       page: 'Equipment360' },
-    { name: 'Alerts',              separator: true },
-    { name: 'Alert Centre',        page: 'AlertCenter' },
-    { name: 'Alert Rules',         page: 'AlertRules' },
-    { name: 'Platform',            separator: true },
-    { name: 'Metric & Device Registry', page: 'MetricRegistry' },
-    { name: 'Hardware Pilots',     page: 'HardwarePilots' },
-    { name: 'Platform Health',     page: 'IoTHealth' },
+  { name: 'Operations', icon: <FaStream />, submenu: [
+    { name: 'Admin',             separator: true },
+    { name: 'Bottlenecks',       page: 'BottleneckAnalytics' },
+    { name: 'Dept Workload',     page: 'DepartmentWorkload' },
+    { name: 'Manager',           separator: true },
+    { name: 'Workflow Center',   page: 'WorkflowCenter' },          // Board·Configuration
+    { name: 'Project Tracker',   page: 'ProjectWorkflowTracker' },
+    { name: 'Lifecycle Tracker', page: 'LifecycleTracker', module: 'servicedesk' },
+    { name: 'Post-Delivery',     page: 'OperationsLifecycleHub' },  // Commissioning·AMC·Warranty
   ]},
 
-  // Promoted from 'Compliance · More' / 'Asset Register · More' 2026-09-16.
-  // Both stay standalone sections for the same reason as R&D above: their role
-  // sets (hr holds both; qc_engineer holds Compliance; store_keeper/
-  // procurement_* hold Asset Register) cut across Quality/Inventory, so there
-  // is no parent menu that folds them in without revoking someone's access.
-  { name: 'Compliance',     icon: <FaBalanceScale />, module: 'compliance', page: 'ComplianceRegister' },
-  { name: 'Asset Register', icon: <FaTags />,         module: 'assets',     page: 'AssetRegister' },
+  // The complaint half of the complaint -> service-ticket loop. Sits directly
+  // above 'Service Desk' so the pair reads as one workflow — see the ordering
+  // note above for why the register no longer also appears inside Service Desk.
+  { name: 'Complaints', icon: <FaExclamationCircle />, submenu: [
+    { name: 'Dashboard',           page: 'ComplaintsDashboard' },
+    { name: 'Complaint Register',  page: 'CustomerComplaintsIPCS' },
+  ]},
+
+  { name: 'Service Desk', icon: <FaHeadset />, module: 'servicedesk', submenu: [
+    { name: 'Admin',                     separator: true },
+    { name: 'Dashboard',                 page: 'SupportDashboard' },
+    { name: 'Intelligence',              page: 'ServiceIntelligence' },
+    { name: 'Catalog & Knowledge',       page: 'ServiceCatalogCenter' },   // IPS·Rate card·KB·Email to case
+    { name: 'Settings',                  page: 'ServiceDeskSettings' },
+    { name: 'Manager',                   separator: true },
+    { name: 'All Tickets',               page: 'AllTickets' },
+    { name: 'SLA Management',            page: 'SLAManagement' },
+    { name: 'Agent Workload',            page: 'AgentWorkload' },
+    { name: 'Field Operations',          page: 'ServiceFieldCenter' },   // Visits·Engineers·Installation·Commissioning·Delivery·Spares
+    { name: 'Customers & Contracts',     page: 'ServiceCustomerCenter' },   // Portal·Contracts·Warranty
+    { name: 'Reviews',                   page: 'ServiceReviews' },
+    { name: 'Employee',                  separator: true },
+    { name: 'My Tickets',                page: 'MyTickets' },
+    { name: 'My Field Jobs',             page: 'EngineerHome' },
+
+    // ── Consolidated into the hubs above (2026-09-16 IA pass) ──────────
+    // These rows are NOT drawn in the sidebar — Sidebar.jsx skips any entry
+    // carrying `inHub`. They stay here because getSectionForPage() walks
+    // NAV_ITEMS: drop them and each page silently becomes section-less,
+    // which makes canRoleAccessPageBySection wave it through for every
+    // role. Keeping them preserves the section gate exactly, and TabHub
+    // re-checks each tab with canRoleOpenPage() before drawing it.
+    { name: 'FieldVisitScheduler',       page: 'FieldVisitScheduler', inHub: 'ServiceFieldCenter' },
+    { name: 'ServiceEngineers',          page: 'ServiceEngineers', inHub: 'ServiceFieldCenter' },
+    { name: 'InstallationRequests',      page: 'InstallationRequests', inHub: 'ServiceFieldCenter' },
+    { name: 'CommissioningWorkflow',     page: 'CommissioningWorkflow', inHub: 'ServiceFieldCenter' },
+    { name: 'DeliveryNote',              page: 'DeliveryNote', inHub: 'ServiceFieldCenter' },
+    { name: 'ServiceStockManagement',    page: 'ServiceStockManagement', inHub: 'ServiceFieldCenter' },
+    { name: 'CustomerPortalManagement',  page: 'CustomerPortalManagement', inHub: 'ServiceCustomerCenter' },
+    { name: 'ServiceContracts',          page: 'ServiceContracts', inHub: 'ServiceCustomerCenter' },
+    { name: 'OperationsWarranty',        page: 'OperationsWarranty', inHub: 'ServiceCustomerCenter' },
+    { name: 'ServiceMasterIPS',          page: 'ServiceMasterIPS', inHub: 'ServiceCatalogCenter' },
+    { name: 'ServiceMaster',             page: 'ServiceMaster', inHub: 'ServiceCatalogCenter' },
+    { name: 'KnowledgeBase',             page: 'KnowledgeBase', inHub: 'ServiceCatalogCenter' },
+    { name: 'SupportMailbox',            page: 'SupportMailbox', inHub: 'ServiceCatalogCenter' },
+  ]},
 
   { divider: true, section: 'Finance' },
 
   { name: 'Finance', icon: <FaRupeeSign />, module: 'finance', submenu: [
+    { name: 'Admin',                     separator: true },
     { name: 'Finance Dashboard',         page: 'FinanceDashboardNew' },
-    { name: 'Transactions',              separator: true },
-    { name: 'Receivables',               page: 'ReceivablesPage' },
-    { name: 'Payables',                  page: 'PayablesPage' },
-    { name: 'Payments',                  page: 'PaymentBatch' },
-    { name: 'Customers & Suppliers',     page: 'Parties' },
-    { name: 'Accounting',                separator: true },
+    { name: 'Financial Reports',         page: 'FinanceReports' },
+    { name: 'Budget Management',         page: 'BudgetManagement' },
+    { name: 'Settings',                  page: 'FinanceSettings' },
+    { name: 'Manager',                   separator: true },
     { name: 'Accounting',                page: 'FinanceAccounting' },   // Engine·Chart of Accounts·Period Close·Cost Centres
+    { name: 'Payments',                  page: 'PaymentBatch' },
     { name: 'Tax & Compliance',          page: 'TaxManagement' },
     { name: 'Fixed Assets',              page: 'FixedAssets' },
-    { name: 'Budget Management',         page: 'BudgetManagement' },
-    { name: 'Reports & Setup',           separator: true },
-    { name: 'Financial Reports',         page: 'FinanceReports' },
-    { name: 'Settings',                  page: 'FinanceSettings' },
-    { name: 'Self Service',              separator: true },
+    { name: 'Employee',                  separator: true },
+    { name: 'Receivables',               page: 'ReceivablesPage' },
+    { name: 'Payables',                  page: 'PayablesPage' },
+    { name: 'Customers & Suppliers',     page: 'Parties' },
     { name: 'My Payslip',                page: 'PayslipViewer' },
 
     // ── Consolidated into the hubs above (2026-09-16 IA pass) ──────────
@@ -1202,102 +1215,6 @@ export const NAV_ITEMS = [
 
   { divider: true, section: 'People' },
 
-  { name: 'Employees', icon: <FaUsers />, module: 'employees', submenu: [
-    { name: 'Dashboard',           page: 'EmployeesDashboard' },
-    { name: 'All Employees',       page: 'EmployeesData' },
-    { name: 'Ex-Employees',        page: 'ExEmployees' },
-    // Its own `module: 'bgv'` so the row is hidden from a role that holds
-    // employees:view but no BGV grant — the group gate alone would have shown it
-    // to every manager and then dead-ended them on Access Denied, which is the
-    // sidebar/route mismatch the 2026-09-16 browser sweep found on the HR menu.
-    { name: 'Background Verification', page: 'BackgroundVerification', module: 'bgv' },
-    // Employee Reports (Workforce Analytics & Reports) lives under HR, not here —
-    // see the HR group below for why.
-    // EmployeeMasters is deliberately NOT a row here: it is reached from
-    // All Employees → "Manage Employee Masters" and from Settings → Master Data.
-  ]},
-
-  { name: 'HR', icon: <FaUserTie />, module: 'hr', submenu: [
-    // Employee Directory is NOT a row here any more: it is the company phonebook,
-    // not an HR process, and it sits beside Org Chart below (its own section).
-    // Interns are not employees, so this is an HR row, not an Employees row.
-    // Its own `module` because the HR section is also held by payroll_admin,
-    // manager and employee, none of whom hold internships:view — Sidebar.jsx
-    // drops an HR row whose module the caller cannot view, and Layout.jsx's
-    // route gate refuses the page itself.
-    { name: 'Internships',               page: 'Internships', module: 'internships' },
-    // payroll:view (PC-01 closure) — hr_exec, manager and employee hold the HR
-    // section but not payroll; their API calls here were all 403.
-    { name: 'Payroll Center',            page: 'PayrollCenter', module: 'payroll' },
-    // Own `module`: the HR section is also held by hr, hr_exec, manager and
-    // employee, who hold no it_declarations grant — Sidebar drops the row for
-    // them and Layout refuses the URL (§203).
-    // employee_bank:view holders (hr, hr_manager, admin by default) — §204 —
-    // and propose-only :add holders, who see only their own requests (§206;
-    // no role holds :add as seeded).
-    { name: 'Announcements',             page: 'Announcements' },
-    // Workforce Analytics & Reports needs hr:view (its data endpoint does), so it
-    // belongs to the section the hr:view roles hold. It used to sit under
-    // Employees, which hr_exec / hr_manager / payroll_admin do not have in
-    // ROLE_SECTION_ALLOWLIST — so the menu hid it from them AND
-    // canRoleAccessPageBySection refused the direct URL, although each holds
-    // hr:view. getSectionForPage() resolves a page to the FIRST group that
-    // lists it, so it must appear in this group only.
-    { name: 'Workforce Analytics & Reports', page: 'EmployeeReports', module: 'hr' },
-    { name: 'Self Service',              separator: true },
-    { name: 'My Dashboard',              page: 'EmployeeDashboard' },
-    // employeeLinkOnly: a login with no employee (a system administrator) has no
-    // record to show, so Sidebar.jsx drops the row; the URL says why it is empty.
-    { name: 'My Details',                page: 'MyEmployeeRecord', employeeLinkOnly: true },
-    // Request a gate pass / material pass, pre-register visitors (§272).
-    { name: 'My Gate Passes',            page: 'MyGatePasses', employeeLinkOnly: true },
-    // Own trainings, tests, certificates and skills (Learning Center, 2026-11-18).
-    { name: 'My Learning',               page: 'MyLearning', employeeLinkOnly: true },
-    { name: 'Employee Records',          page: 'EmployeeRecords' },   // Assets·Policies·HR Documents
-    // Who heads each department: probation reviewer, first gate-pass approver
-    // and manager access to the department's records. Was a panel inside
-    // Probation Management (2026-11-11). hr:view reads, hr:edit changes.
-    { name: 'Department Heads',          page: 'DepartmentHeads' },
-    { name: 'Lifecycle',                 separator: true },
-    // Probation and exit are separate workflows (an employee being confirmed vs
-    // one leaving), so each has its own row. Probation used to be a tab of the
-    // 'Exit & Probation' hub; the hub key ExitCenter is kept — it is the Exit
-    // Management page now — so bookmarks and Page Access grants still resolve.
-    { name: 'Probation Management',      page: 'Probation' },
-    // exit:view (B4, migration 20261116000005): Roles Setup decides who sees it.
-    { name: 'Exit Management',           page: 'ExitCenter', module: 'exit' },   // Exits & settlement·Offboarding checklist
-    // Own `module` (§209): talent ratings are confidential, so the row shows
-    // only to succession:view holders (hr, hr_manager, admin, super_admin by
-    // default; any other role by explicit grant in Roles Setup). Everyone else
-    // in this section — employee, manager, hr_exec — no longer sees it, and
-    // Layout refuses the URL.
-    { name: 'Succession Center',         page: 'SuccessionCenter', module: 'succession' },
-    { name: 'Security & Access',         separator: true },
-    // Gate passes and visitor management had no link anywhere: /BiometricAccess
-    // redirected to AttendanceSettings?tab=devices, which renders DeviceManagement
-    // and covers none of it. Filed under HR because the page, its backend module
-    // (hr/biometric.routes.js) and this section all agree — putting the row under
-    // Attendance instead would leave getSectionForPage() resolving 'Attendance'
-    // while the file's folder module stays 'hr'.
-    // §272: its own `module` — gate_access (view = the registers). The page
-    // was BiometricAccess (now a redirect route, gated on gate_access too);
-    // its attendance-import tab moved to Attendance → Punch Import.
-    { name: 'Gate Pass & Visitors',      page: 'GatePassVisitors', module: 'gate_access' },   // Gate passes·Material passes·Visitors
-
-    // ── Consolidated into the hubs above (2026-09-16 IA pass) ──────────
-    // These rows are NOT drawn in the sidebar — Sidebar.jsx skips any entry
-    // carrying `inHub`. They stay here because getSectionForPage() walks
-    // NAV_ITEMS: drop them and each page silently becomes section-less,
-    // which makes canRoleAccessPageBySection wave it through for every
-    // role. Keeping them preserves the section gate exactly, and TabHub
-    // re-checks each tab with canRoleOpenPage() before drawing it.
-    { name: 'EmployeeAssets',            page: 'EmployeeAssets', inHub: 'EmployeeRecords' },
-    { name: 'Policies',                  page: 'Policies', inHub: 'EmployeeRecords' },
-    { name: 'Downloads',                 page: 'Downloads', inHub: 'EmployeeRecords' },
-    { name: 'Offboarding',              page: 'Offboarding', inHub: 'ExitCenter' },
-    { name: 'ExitManagement',            page: 'ExitManagement', inHub: 'ExitCenter' },
-  ]},
-
   // 'Talent' used to be a separate top-level menu (Resume Database/Pools/
   // Question Bank/Agencies) but it had no `module:` key, so it was invisible
   // to manager/department_head — who hold 'Recruitment' but not 'Talent' —
@@ -1308,21 +1225,21 @@ export const NAV_ITEMS = [
   // (Talent Pools/Question Bank/Agencies) live in this menu directly, all
   // inheriting the 'recruitment' module permission.
   { name: 'Recruitment', icon: <FaBriefcase />, module: 'recruitment', submenu: [
-    // 'My Work' leads, not the Dashboard. §25 of the 2026-09-27 brief: "Recruiters
-    // need action more than charts... Do not make the first screen a wall of 20
-    // charts", with Work Queue first in its own priority list. The analytics
-    // Dashboard is still here, one row down.
-    { name: 'My Work',                   page: 'RecruitmentWorkQueue' },
+    { name: 'Admin',                     separator: true },
     { name: 'Dashboard',                 page: 'RecruitmentDashboard' },
-    { name: 'Pipeline',                  separator: true },
+    { name: 'Reports & Setup',           page: 'HiringAdmin' },   // Forecasts·Reports·Email templates·Settings
+    { name: 'Agencies',                  page: 'RecruitmentAgencies' },
+    { name: 'Manager',                   separator: true },
     { name: 'Jobs',                      page: 'Jobs' },
     { name: 'Candidates',                page: 'Candidates' },
     { name: 'Talent Bank',               page: 'TalentBank' },
-    { name: 'Agencies',                  page: 'RecruitmentAgencies' },
     { name: 'Interviews',                page: 'InterviewCenter' },   // Schedule·Feedback·Question Bank
     { name: 'Offer & Onboarding',        page: 'OnboardingCenter' },   // Offers·Checklist·Employee creation
-    { name: 'Reports & Setup',           separator: true },
-    { name: 'Reports & Setup',           page: 'HiringAdmin' },   // Forecasts·Reports·Email templates·Settings
+    { name: 'Employee',                  separator: true },
+    // The recruiter's own action queue. It used to lead the menu (§25 of the
+    // 2026-09-27 brief); the owner's 2026-11-23 menu order puts admin pages
+    // first and personal pages last in every submenu.
+    { name: 'My Work',                   page: 'RecruitmentWorkQueue' },
 
     // ── Consolidated into the hubs above (2026-09-16 IA pass) ──────────
     // These rows are NOT drawn in the sidebar — Sidebar.jsx skips any entry
@@ -1371,44 +1288,117 @@ export const NAV_ITEMS = [
     { name: 'CareersPageAdmin',          page: 'CareersPageAdmin', inHub: 'Jobs' },   // Careers Website tab (11-17)
   ]},
 
-  // Learning Center consolidated 2026-11-18 (10 rows → 8). Skill Matrix and
-  // Competency Framework are one page; Trainer Management is a tab of L&D
-  // Setup (inHub row below). SkillMatrix / CompetencyFramework are redirect-only
-  // routes, gated on `training`, to the one Skills & Competencies page.
-  { name: 'Learning Center', icon: <FaGraduationCap />, submenu: [
-    { name: 'L&D Dashboard',       page: 'LearningDashboard' },
-    { name: 'Trainings',           page: 'LearningDevelopment' },
-    { name: 'Learning Paths',      page: 'LearningPaths' },
-    { name: 'Assessments',         page: 'AssessmentCenter' },
-    { name: 'Capability',          separator: true },
-    { name: 'Skills & Competencies', page: 'SkillsCompetencies' },
-    { name: 'Certifications',      page: 'CertificationManagement' },
-    { name: 'Administration',      separator: true },
-    { name: 'Reports',             page: 'TrainingReports' },
-    { name: 'L&D Setup',           page: 'LNDSettings' },
-    { name: 'TrainerManagement',   page: 'TrainerManagement', inHub: 'LNDSettings' },
+  { name: 'Employees', icon: <FaUsers />, module: 'employees', submenu: [
+    { name: 'Dashboard',           page: 'EmployeesDashboard' },
+    { name: 'All Employees',       page: 'EmployeesData' },
+    { name: 'Ex-Employees',        page: 'ExEmployees' },
+    // Its own `module: 'bgv'` so the row is hidden from a role that holds
+    // employees:view but no BGV grant — the group gate alone would have shown it
+    // to every manager and then dead-ended them on Access Denied, which is the
+    // sidebar/route mismatch the 2026-09-16 browser sweep found on the HR menu.
+    { name: 'Background Verification', page: 'BackgroundVerification', module: 'bgv' },
+    // Employee Reports (Workforce Analytics & Reports) lives under HR, not here —
+    // see the HR group below for why.
+    // EmployeeMasters is deliberately NOT a row here: it is reached from
+    // All Employees → "Manage Employee Masters" and from Settings → Master Data.
+  ]},
+
+  { name: 'HR', icon: <FaUserTie />, module: 'hr', submenu: [
+    // Employee Directory is NOT a row here any more: it is the company phonebook,
+    // not an HR process, and it sits beside Org Chart below (its own section).
+    { name: 'Admin',                     separator: true },
+    // payroll:view (PC-01 closure) — hr_exec, manager and employee hold the HR
+    // section but not payroll; their API calls here were all 403.
+    { name: 'Payroll Center',            page: 'PayrollCenter', module: 'payroll' },
+    // Workforce Analytics & Reports needs hr:view (its data endpoint does), so it
+    // belongs to the section the hr:view roles hold. It used to sit under
+    // Employees, which hr_exec / hr_manager / payroll_admin do not have in
+    // ROLE_SECTION_ALLOWLIST — so the menu hid it from them AND
+    // canRoleAccessPageBySection refused the direct URL, although each holds
+    // hr:view. getSectionForPage() resolves a page to the FIRST group that
+    // lists it, so it must appear in this group only.
+    { name: 'Workforce Analytics & Reports', page: 'EmployeeReports', module: 'hr' },
+    // Own `module` (§209): talent ratings are confidential, so the row shows
+    // only to succession:view holders (hr, hr_manager, admin, super_admin by
+    // default; any other role by explicit grant in Roles Setup). Everyone else
+    // in this section — employee, manager, hr_exec — no longer sees it, and
+    // Layout refuses the URL.
+    { name: 'Succession Center',         page: 'SuccessionCenter', module: 'succession' },
+    // Who heads each department: probation reviewer, first gate-pass approver
+    // and manager access to the department's records. Was a panel inside
+    // Probation Management (2026-11-11). hr:view reads, hr:edit changes.
+    { name: 'Department Heads',          page: 'DepartmentHeads' },
+    { name: 'Employee Records',          page: 'EmployeeRecords' },   // Assets·Policies·HR Documents
+    { name: 'Announcements',             page: 'Announcements' },
+    // Interns are not employees, so this is an HR row, not an Employees row.
+    // Its own `module` because the HR section is also held by payroll_admin,
+    // manager and employee, none of whom hold internships:view — Sidebar.jsx
+    // drops an HR row whose module the caller cannot view, and Layout.jsx's
+    // route gate refuses the page itself.
+    { name: 'Internships',               page: 'Internships', module: 'internships' },
+    { name: 'Manager',                   separator: true },
+    // Probation and exit are separate workflows (an employee being confirmed vs
+    // one leaving), so each has its own row. Probation used to be a tab of the
+    // 'Exit & Probation' hub; the hub key ExitCenter is kept — it is the Exit
+    // Management page now — so bookmarks and Page Access grants still resolve.
+    { name: 'Probation Management',      page: 'Probation' },
+    // exit:view (B4, migration 20261116000005): Roles Setup decides who sees it.
+    { name: 'Exit Management',           page: 'ExitCenter', module: 'exit' },   // Exits & settlement·Offboarding checklist
+    // Gate passes and visitor management had no link anywhere: /BiometricAccess
+    // redirected to AttendanceSettings?tab=devices, which renders DeviceManagement
+    // and covers none of it. Filed under HR because the page, its backend module
+    // (hr/biometric.routes.js) and this section all agree — putting the row under
+    // Attendance instead would leave getSectionForPage() resolving 'Attendance'
+    // while the file's folder module stays 'hr'.
+    // §272: its own `module` — gate_access (view = the registers). The page
+    // was BiometricAccess (now a redirect route, gated on gate_access too);
+    // its attendance-import tab moved to Attendance → Punch Import.
+    { name: 'Gate Pass & Visitors',      page: 'GatePassVisitors', module: 'gate_access' },   // Gate passes·Material passes·Visitors
+    { name: 'Employee',                  separator: true },
+    // An employee-only login sees these four as top-level rows directly under
+    // Home (Sidebar.jsx promotes HR's self-service rows), in this order.
+    { name: 'My Dashboard',              page: 'EmployeeDashboard' },
+    // employeeLinkOnly: a login with no employee (a system administrator) has no
+    // record to show, so Sidebar.jsx drops the row; the URL says why it is empty.
+    { name: 'My Details',                page: 'MyEmployeeRecord', employeeLinkOnly: true },
+    // Request a gate pass / material pass, pre-register visitors (§272).
+    { name: 'My Gate Passes',            page: 'MyGatePasses', employeeLinkOnly: true },
+    // Own trainings, tests, certificates and skills (Learning Center, 2026-11-18).
+    { name: 'My Learning',               page: 'MyLearning', employeeLinkOnly: true },
+
+    // ── Consolidated into the hubs above (2026-09-16 IA pass) ──────────
+    // These rows are NOT drawn in the sidebar — Sidebar.jsx skips any entry
+    // carrying `inHub`. They stay here because getSectionForPage() walks
+    // NAV_ITEMS: drop them and each page silently becomes section-less,
+    // which makes canRoleAccessPageBySection wave it through for every
+    // role. Keeping them preserves the section gate exactly, and TabHub
+    // re-checks each tab with canRoleOpenPage() before drawing it.
+    { name: 'EmployeeAssets',            page: 'EmployeeAssets', inHub: 'EmployeeRecords' },
+    { name: 'Policies',                  page: 'Policies', inHub: 'EmployeeRecords' },
+    { name: 'Downloads',                 page: 'Downloads', inHub: 'EmployeeRecords' },
+    { name: 'Offboarding',              page: 'Offboarding', inHub: 'ExitCenter' },
+    { name: 'ExitManagement',            page: 'ExitManagement', inHub: 'ExitCenter' },
   ]},
 
   { name: 'Attendance', icon: <FaCalendarCheck />, module: 'attendance', submenu: [
-    // §278 (owner, 2026-11-18): QR Attendance removed; office staff punch on
-    // the machine, field staff in My Attendance (camera + GPS).
-    { name: 'My Attendance',             page: 'AttendanceDashboard' },
-    { name: 'Team & Monitoring',         separator: true },
-    { name: 'Live Workforce',            page: 'LiveWorkforceDashboard' },
-    { name: 'Team Attendance',           page: 'TeamAttendance' },
-    // Daily contract-labour attendance is an everyday task, not configuration (owner, 2026-11-19).
-    { name: 'Contract Labour',           page: 'ContractLabour' },
+    { name: 'Admin',                     separator: true },
     // Shift Calendar and Punch Machines are Configuration tabs (owner, 2026-11-19: fewer menu rows).
-    { name: 'Approvals',                 separator: true },
-    { name: 'Approvals',                 page: 'AttendanceApprovals' },   // Regularization·Overtime·Shift change·Comp off·Delegation
-    { name: 'Reporting',                 separator: true },
-    { name: 'Reports',                   page: 'AttendanceReportsHub' },
-    { name: 'Audit Logs',                page: 'AttendanceAuditLogs' },
+    { name: 'Configuration',             page: 'AttendanceConfig' },   // Shifts·Shift Calendar·Punch Machines·Work Centres·Geo Fencing·Settings
     // Month close: totals each employee's month (present, LOP, OT), locks it
     // and hands it to Payroll Center. It was hidden inside Configuration.
     { name: 'Payroll Sync',              page: 'PayrollSync', module: 'attendance', moduleActions: ['edit'] },
-    { name: 'Configuration',             separator: true },
-    { name: 'Configuration',             page: 'AttendanceConfig' },   // Shifts·Shift Calendar·Punch Machines·Work Centres·Geo Fencing·Settings
+    { name: 'Reports',                   page: 'AttendanceReportsHub' },
+    { name: 'Audit Logs',                page: 'AttendanceAuditLogs' },
+    { name: 'Manager',                   separator: true },
+    { name: 'Live Workforce',            page: 'LiveWorkforceDashboard' },
+    { name: 'Team Attendance',           page: 'TeamAttendance' },
+    { name: 'Approvals',                 page: 'AttendanceApprovals' },   // Regularization·Overtime·Shift change·Comp off·Delegation
+    // Daily contract-labour attendance is an everyday task, not configuration (owner, 2026-11-19).
+    { name: 'Contract Labour',           page: 'ContractLabour' },
+    { name: 'Employee',                  separator: true },
+    // §278 (owner, 2026-11-18): QR Attendance removed; office staff punch on
+    // the machine, field staff in My Attendance (camera + GPS).
+    { name: 'My Attendance',             page: 'AttendanceDashboard' },
 
     // ── Consolidated into the hubs above (2026-09-16 IA pass) ──────────
     // These rows are NOT drawn in the sidebar — Sidebar.jsx skips any entry
@@ -1439,47 +1429,54 @@ export const NAV_ITEMS = [
   ]},
 
   { name: 'Leaves', icon: <FaUmbrellaBeach />, module: 'leaves', submenu: [
-    { name: 'My Leaves',         page: 'MyLeaves' },
-    { name: 'Apply Leave',       page: 'ApplyLeave' },
-    { name: 'Leave Calendar',    page: 'LeaveCalendar' },
-    { name: 'Holiday Calendar',  page: 'HolidayCalendar' },
-    { name: 'Approvals',         separator: true },
-    { name: 'Leave Approvals',   page: 'LeaveApprovals' },
-    { name: 'Team Leaves',       page: 'TeamLeaves' },
-    { name: 'Administration',    separator: true },
+    { name: 'Admin',             separator: true },
     { name: 'All Leaves',        page: 'AllLeaves' },
     { name: 'Leave Reports',     page: 'LeaveReports' },
     { name: 'Encashment',        page: 'LeaveEncashment' },
     { name: 'Leave Settings',    page: 'LeaveSettings' },
+    { name: 'Manager',           separator: true },
+    { name: 'Leave Approvals',   page: 'LeaveApprovals' },
+    // Team Leaves removed 2026-11-23: it was a second menu row for Leave
+    // Approvals → Team View. The TeamLeaves route key stays (like
+    // HRApprovalLeave) so old links still open that tab.
+    // Company-wide (GET /leaves/calendar returns everyone's leave), so it is
+    // a manager view, not self-service — see EMPLOYEE_SELF_SERVICE_PAGES.
+    { name: 'Leave Calendar',    page: 'LeaveCalendar' },
+    { name: 'Employee',          separator: true },
+    { name: 'My Leaves',         page: 'MyLeaves' },
+    { name: 'Apply Leave',       page: 'ApplyLeave' },
+    { name: 'Holiday Calendar',  page: 'HolidayCalendar' },
   ]},
 
   { name: 'Timesheets', icon: <FaClock />, module: 'timesheets', submenu: [
-    { name: 'My Timesheet',        page: 'MyTimesheet' },
-    { name: 'My Analytics',        page: 'MyAnalytics' },
-    { name: 'Team',                separator: true },
-    { name: 'All Timesheets',      page: 'Timesheets' },
-    { name: 'Approvals',           page: 'TimesheetApprovals' },
-    { name: 'Reports & Setup',     separator: true },
+    { name: 'Admin',               separator: true },
     { name: 'Utilization Report',  page: 'UtilizationReport' },
     { name: 'Weekly Report',       page: 'WeeklyProductionReport' },
     { name: 'Settings',            page: 'TimesheetSettings' },
+    { name: 'Manager',             separator: true },
+    { name: 'All Timesheets',      page: 'Timesheets' },
+    { name: 'Approvals',           page: 'TimesheetApprovals' },
+    { name: 'Employee',            separator: true },
+    { name: 'My Timesheet',        page: 'MyTimesheet' },
+    { name: 'My Analytics',        page: 'MyAnalytics' },
   ]},
 
   // Eight of these twelve pages (Review Cycles, KRA, OKR, Calibration,
   // Increment, Promotion, Dashboard, Reports) were built, routed and gated —
   // EMPLOYEE_SELF_SERVICE_PAGES already names them as "manager/HR-only" — but
   // carried no link anywhere in the app: no NAV row, no hub tab, no setPage
-  // call. Added 2026-09-16. The self-service three stay at the top, per the
-  // house order for shared HR-family menus.
+  // call. Added 2026-09-16. The self-service three sit last, per the house
+  // order (admin → manager → employee).
   { name: 'Performance', icon: <FaTrophy />, module: 'performance', submenu: [
+    { name: 'Admin',                     separator: true },
+    { name: 'Insights & Setup',          page: 'PerformanceInsights' },   // Dashboard·Reports·Settings
+    { name: 'Talent Decisions',          page: 'TalentDecisions' },   // Calibration·Increment·Promotion
+    { name: 'Manager',                   separator: true },
+    { name: 'Cycles & Goals',            page: 'PerformanceManage' },   // Team·Cycles·KRA·OKR
+    { name: 'Employee',                  separator: true },
     { name: 'My Reviews',                page: 'PerformanceReviews' },
     { name: 'Goals & KPIs',              page: 'Goals' },
     { name: '360° Feedback',             page: 'Feedback360' },
-    { name: 'Manage',                    separator: true },
-    { name: 'Cycles & Goals',            page: 'PerformanceManage' },   // Team·Cycles·KRA·OKR
-    { name: 'Talent Decisions',          page: 'TalentDecisions' },   // Calibration·Increment·Promotion
-    { name: 'Insights & Setup',          separator: true },
-    { name: 'Insights & Setup',          page: 'PerformanceInsights' },   // Dashboard·Reports·Settings
 
     // ── Consolidated into the hubs above (2026-09-16 IA pass) ──────────
     // These rows are NOT drawn in the sidebar — Sidebar.jsx skips any entry
@@ -1500,15 +1497,34 @@ export const NAV_ITEMS = [
     { name: 'PerformanceSettings',       page: 'PerformanceSettings', inHub: 'PerformanceInsights' },
   ]},
 
+  // Learning Center consolidated 2026-11-18 (10 rows → 8). Skill Matrix and
+  // Competency Framework are one page; Trainer Management is a tab of L&D
+  // Setup (inHub row below). SkillMatrix / CompetencyFramework are redirect-only
+  // routes, gated on `training`, to the one Skills & Competencies page.
+  { name: 'Learning Center', icon: <FaGraduationCap />, submenu: [
+    { name: 'Admin',               separator: true },
+    { name: 'L&D Dashboard',       page: 'LearningDashboard' },
+    { name: 'Reports',             page: 'TrainingReports' },
+    { name: 'L&D Setup',           page: 'LNDSettings' },
+    { name: 'Manager',             separator: true },
+    { name: 'Trainings',           page: 'LearningDevelopment' },
+    { name: 'Learning Paths',      page: 'LearningPaths' },
+    { name: 'Assessments',         page: 'AssessmentCenter' },
+    { name: 'Skills & Competencies', page: 'SkillsCompetencies' },
+    { name: 'Certifications',      page: 'CertificationManagement' },
+    { name: 'TrainerManagement',   page: 'TrainerManagement', inHub: 'LNDSettings' },
+  ]},
+
   { name: 'Travel Desk', icon: <FaPlane />, submenu: [
+    { name: 'Admin',                     separator: true },
     { name: 'Dashboard',                 page: 'TravelDashboard' },
-    { name: 'My Travel',                 separator: true },
+    { name: 'Insights & Policy',         page: 'TravelInsights' },   // Command·Analytics·Reports·Audit·Policy
+    { name: 'Manager',                   separator: true },
+    { name: 'Travel Approvals',          page: 'TravelApprovals' },
+    { name: 'Employee',                  separator: true },
     { name: 'My Travel',                 page: 'MyTravel' },   // Entry·Requests·Bookings·Advances·Calendar
     { name: 'Expenses',                  page: 'TravelExpenseCenter' },   // Claims·Trip expenses·Review·Payment
     { name: 'Visit Reports',             page: 'TravelVisits' },   // Reports·Customer visits
-    { name: 'Approvals & Insight',       separator: true },
-    { name: 'Travel Approvals',          page: 'TravelApprovals' },
-    { name: 'Insights & Policy',         page: 'TravelInsights' },   // Command·Analytics·Reports·Audit·Policy
 
     // ── Consolidated into the hubs above (2026-09-16 IA pass) ──────────
     // These rows are NOT drawn in the sidebar — Sidebar.jsx skips any entry
@@ -1549,8 +1565,8 @@ export const NAV_ITEMS = [
   { divider: true, section: 'Tools' },
 
   { name: 'e-Signatures', icon: <FaFileSignature />, submenu: [
-    { name: 'Sign & Send',         page: 'DocumentSigning' },
     { name: 'Document Vault',      page: 'DocumentMaster' },
+    { name: 'Sign & Send',         page: 'DocumentSigning' },
   ]},
 
   // Standalone item (no submenu) — visible to every role incl. employees;
@@ -1569,18 +1585,20 @@ export const NAV_ITEMS = [
   // advertised as a second home.
 
   { name: 'Settings', icon: <FaCog />, page: 'SettingsCenter', submenu: [
+    // The group's own page must stay the first row: tapping a parent that has
+    // both a page and a submenu opens the panel (Sidebar.jsx), so this row is
+    // the only way to reach it on touch devices. It is not a duplicate.
+    { name: 'Admin',                     separator: true },
     { name: '⚙ Settings Center',         page: 'SettingsCenter' },
-    { name: 'User Preferences',          page: 'UserPreferences' },
-    { name: 'Company & Access',          separator: true },
+    { name: 'Setup Center',              page: 'SetupCenter' },
     { name: 'Company Setup',             page: 'CompanySetup' },   // Profile·Branches·Org·Brand Vault
     { name: 'Access Control',            page: 'AccessControl' },
+    { name: 'Master Data',               page: 'MasterDataCenter' },   // Masters·Products·Documents·Order Policy·Asset Maintenance
     { name: 'Workflow Builder',          page: 'WorkflowBuilder' },
     { name: 'Setup Notifications',       page: 'SetupNotifications' },
-    { name: 'Data & Platform',           separator: true },
-    { name: 'Master Data',               page: 'MasterDataCenter' },   // Masters·Products·Documents·Order Policy·Asset Maintenance
     { name: 'Platform & Integrations',   page: 'PlatformCenter' },   // System·Integrations·Tally·Zoho·API·DB
-    { name: 'Guided Setup',              separator: true },
-    { name: 'Setup Center',              page: 'SetupCenter' },
+    { name: 'Employee',                  separator: true },
+    { name: 'User Preferences',          page: 'UserPreferences' },
 
     // ── Consolidated into the hubs above (2026-09-16 IA pass) ──────────
     // These rows are NOT drawn in the sidebar — Sidebar.jsx skips any entry

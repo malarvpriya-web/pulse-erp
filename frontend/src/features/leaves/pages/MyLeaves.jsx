@@ -1,242 +1,218 @@
-import { useState, useEffect, useRef } from 'react';
+/**
+ * My Leaves — the employee's own leave: balance, every request and where it
+ * stands, every approver's comment, and cancel before the leave starts.
+ *
+ * 2026-11-23 (Leaves review): balance summary added (it was only on Apply
+ * Leave); year filter; the approval chain now shows the department-head step
+ * only for types that have one (it always said "L2 Pending"); comments from
+ * the department head and HR are shown too — a rejection by HR used to arrive
+ * with no visible reason.
+ */
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '@/services/api/client';
 import { useAuth } from '@/context/AuthContext';
 import { useToast } from '@/context/ToastContext';
-import {
-  Calendar, Clock, CheckCircle, XCircle, AlertCircle, RefreshCw,
-  CalendarDays,
-} from 'lucide-react';
+import { Calendar, Clock, RefreshCw, CalendarDays, Paperclip, History } from 'lucide-react';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import { ApprovalChain, StatusChip, LeaveHistoryDialog, fmtDate, localISO, AttachmentLink } from '../components/leaveShared';
 
-const fmt = d => d ? new Date(d).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '—';
+const YEAR = new Date().getFullYear();
 
-function ApprovalPipeline({ leave }) {
-  const status = (leave.status || 'pending').toLowerCase();
-  const mgr    = (leave.manager_status || 'pending').toLowerCase();
-  const l2     = leave.l2_status ? leave.l2_status.toLowerCase() : null;
-  const hr     = (leave.hr_status || 'pending').toLowerCase();
-
-  if (status === 'cancelled') return <Chip bg="#f3f4f6" color="#6b7280">Cancelled</Chip>;
-  if (status === 'approved')  return <Chip bg="#d1fae5" color="#166534">✓ Fully Approved</Chip>;
-  if (status === 'rejected') {
-    const who = hr === 'rejected' ? 'HR' : l2 === 'rejected' ? 'L2' : 'Manager';
-    return <Chip bg="#fee2e2" color="#991b1b">Rejected by {who}</Chip>;
-  }
-  if (mgr === 'pending') return (
-    <div style={{ display:'flex', gap:4, alignItems:'center', flexWrap:'wrap' }}>
-      <Chip bg="#ddd6fe" color="#4c1d95">L1 Pending</Chip>
-      <span style={{ color:'#d1d5db', fontSize:11 }}>→ L2 → HR</span>
-    </div>
-  );
-  if (mgr === 'approved' && (!l2 || l2 === 'pending')) return (
-    <div style={{ display:'flex', gap:4, alignItems:'center', flexWrap:'wrap' }}>
-      <Chip bg="#d1fae5" color="#065f46">L1 ✓</Chip>
-      <span style={{ color:'#d1d5db', fontSize:11 }}>→</span>
-      <Chip bg="#dbeafe" color="#1d4ed8">L2 Pending</Chip>
-      <span style={{ color:'#d1d5db', fontSize:11 }}>→ HR</span>
-    </div>
-  );
-  if (l2 === 'approved' && hr === 'pending') return (
-    <div style={{ display:'flex', gap:4, alignItems:'center', flexWrap:'wrap' }}>
-      <Chip bg="#d1fae5" color="#065f46">L1 ✓</Chip>
-      <span style={{ color:'#d1d5db', fontSize:11 }}>→</span>
-      <Chip bg="#d1fae5" color="#065f46">L2 ✓</Chip>
-      <span style={{ color:'#d1d5db', fontSize:11 }}>→</span>
-      <Chip bg="#dbeafe" color="#1d4ed8">HR Pending</Chip>
-    </div>
-  );
-  return <Chip bg="#ddd6fe" color="#4c1d95">Pending Review</Chip>;
-}
-
-function Chip({ bg, color, children }) {
+function Comment({ who, text }) {
+  if (!text) return null;
   return (
-    <span style={{ background:bg, color, padding:'2px 9px', borderRadius:20, fontSize:11, fontWeight:700, whiteSpace:'nowrap' }}>
-      {children}
-    </span>
+    <div style={{ fontSize: 12, color: '#374151', marginBottom: 6, padding: '6px 10px', background: '#f5f3ff', borderRadius: 6, borderLeft: '3px solid #6B3FDB' }}>
+      <span style={{ fontWeight: 600, fontSize: 11, color: '#6B3FDB' }}>{who}: </span>{text}
+    </div>
   );
 }
 
-// Mobile card view for a single leave
-function LeaveCard({ leave, onCancel, cancelling }) {
-  const canCancelThis = ['pending','approved'].includes(leave.status) && new Date(leave.start_date) >= new Date(new Date().toDateString());
-  const typeColor = { 'Sick Leave':'#ef4444', 'Casual Leave':'#7c5cf0', 'Earned Leave':'#10b981', 'Annual Leave':'#10b981', 'Maternity Leave':'#ec4899', 'Paternity Leave':'#6366f1', 'Compensatory Leave':'#8b5cf6', 'Loss of Pay':'#9ca3af' };
-  const tc = typeColor[leave.leave_name||leave.leave_type] || '#6366f1';
-
+function LeaveCard({ leave, onCancel, cancelling, onHistory }) {
+  const canCancel = ['pending', 'approved'].includes(leave.status) && String(leave.start_date).slice(0, 10) >= localISO();
+  const lop = leave.is_lop ? Number(leave.number_of_days) : Number(leave.lop_days || 0);
   return (
-    <div style={{ background:'#fff', borderRadius:12, border:'1px solid #e5e7eb', padding:'14px 16px', marginBottom:10 }}>
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:10 }}>
-        <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-          <div style={{ width:4, height:36, borderRadius:2, background:tc, flexShrink:0 }}/>
-          <div>
-            <div style={{ fontWeight:700, fontSize:14, color:'#1f2937' }}>{leave.leave_name || leave.leave_type}</div>
-            <div style={{ fontSize:12, color:'#6b7280', marginTop:2 }}>
-              {leave.number_of_days || leave.days} day{(leave.number_of_days||1) !== 1 ? 's' : ''}
-              {leave.half_day ? ' (Half Day)' : ''}
-            </div>
+    <div style={{ background: '#fff', borderRadius: 12, border: '1px solid #e5e7eb', padding: '14px 16px', marginBottom: 10 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10, gap: 10, flexWrap: 'wrap' }}>
+        <div>
+          <div style={{ fontWeight: 700, fontSize: 14, color: '#1f2937' }}>{leave.leave_name}</div>
+          <div style={{ fontSize: 12, color: '#6b7280', marginTop: 2 }}>
+            {Number(leave.number_of_days)} day{Number(leave.number_of_days) !== 1 ? 's' : ''}
+            {leave.half_day ? ` (half day, ${leave.half_day_session === 'PM' ? 'afternoon' : 'morning'})` : ''}
+            {lop > 0 && <span style={{ color: '#b91c1c', fontWeight: 600 }}> · {lop} day{lop !== 1 ? 's' : ''} Loss of Pay</span>}
           </div>
         </div>
-        <ApprovalPipeline leave={leave} />
-      </div>
-      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8, fontSize:12, color:'#6b7280', marginBottom:10 }}>
-        <div style={{ display:'flex', alignItems:'center', gap:5 }}>
-          <Calendar size={12} color="#9ca3af"/>
-          {fmt(leave.start_date)}
-          {leave.start_date !== leave.end_date && ` → ${fmt(leave.end_date)}`}
-        </div>
-        <div style={{ display:'flex', alignItems:'center', gap:5 }}>
-          <Clock size={12} color="#9ca3af"/>
-          Applied: {fmt(leave.applied_at || leave.created_at)}
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <StatusChip status={leave.status} />
+          <ApprovalChain leave={leave} />
         </div>
       </div>
-      {leave.reason && (
-        <div style={{ fontSize:12, color:'#6b7280', marginBottom:8, padding:'6px 10px', background:'#f9fafb', borderRadius:6 }}>
-          {leave.reason}
+      <div style={{ display: 'flex', gap: 18, fontSize: 12, color: '#6b7280', marginBottom: 10, flexWrap: 'wrap' }}>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+          <Calendar size={12} color="#9ca3af" />
+          {fmtDate(leave.start_date)}{String(leave.start_date).slice(0, 10) !== String(leave.end_date).slice(0, 10) && ` → ${fmtDate(leave.end_date)}`}
+        </span>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}><Clock size={12} color="#9ca3af" /> Applied {fmtDate(leave.applied_at || leave.created_at)}</span>
+      </div>
+      {leave.reason && <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 8, padding: '6px 10px', background: '#f9fafb', borderRadius: 6 }}>{leave.reason}</div>}
+      <Comment who={leave.manager_name ? `Manager (${leave.manager_name})` : 'Manager'} text={leave.manager_comments || leave.manager_comment} />
+      <Comment who={leave.l2_name ? `Department head (${leave.l2_name})` : 'Department head'} text={leave.l2_comments} />
+      <Comment who={leave.hr_name ? `HR (${leave.hr_name})` : 'HR'} text={leave.hr_comments} />
+      <Comment who="Withdrawn because" text={leave.withdrawal_reason} />
+      {leave.status === 'pending' && leave.escalated_at && (
+        <div style={{ fontSize: 11, color: '#b45309', marginBottom: 8 }}>
+          Waited long for {({ l1: 'your manager', l2: 'the department head', hr: 'HR' })[leave.escalation_step] || 'a decision'} — escalated on {fmtDate(leave.escalated_at)}.
         </div>
       )}
-      {(leave.manager_comments || leave.manager_comment) && (
-        <div style={{ fontSize:12, color:'#374151', marginBottom:8, padding:'6px 10px', background:'#eff6ff', borderRadius:6, borderLeft:'3px solid #6366f1' }}>
-          <span style={{ fontWeight:600, fontSize:11, color:'#6366f1' }}>Manager: </span>
-          {leave.manager_comments || leave.manager_comment}
-        </div>
-      )}
-      {leave.attachment_url && (
-        <div style={{ fontSize:12, marginBottom:8 }}>
-          <a href={leave.attachment_url} target="_blank" rel="noopener noreferrer"
-            style={{ color:'#6366f1', textDecoration:'none', display:'flex', alignItems:'center', gap:4 }}>
-            📎 View Attachment
-          </a>
-        </div>
-      )}
-      {canCancelThis && (
-        <button onClick={() => onCancel(leave)} disabled={cancelling === leave.id}
-          style={{ width:'100%', padding:'8px', background:'#fee2e2', color:'#991b1b', border:'none', borderRadius:8, cursor:'pointer', fontSize:13, fontWeight:600, opacity:cancelling===leave.id?0.6:1 }}>
-          {cancelling === leave.id ? 'Cancelling…' : 'Cancel Leave'}
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+        {leave.attachment_url && (
+          <span style={{ color: '#6B3FDB', display: 'flex', alignItems: 'center', gap: 4 }}>
+            <Paperclip size={12} /><AttachmentLink url={leave.attachment_url} label="View attachment" style={{ fontSize: 12 }} />
+          </span>
+        )}
+        <button onClick={() => onHistory(leave.id)} className="pulse-btn-secondary" style={{ fontSize: 12, padding: '5px 10px', display: 'flex', alignItems: 'center', gap: 4 }}>
+          <History size={12} /> History
         </button>
-      )}
+        {canCancel && (
+          <button onClick={() => onCancel(leave)} disabled={cancelling === leave.id}
+            style={{ marginLeft: 'auto', padding: '6px 14px', background: '#fee2e2', color: '#991b1b', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 12, fontWeight: 600, opacity: cancelling === leave.id ? 0.6 : 1 }}>
+            {cancelling === leave.id ? 'Cancelling…' : 'Cancel leave'}
+          </button>
+        )}
+      </div>
     </div>
   );
 }
 
 export default function MyLeaves({ setPage }) {
-  const { user }  = useAuth();
-  const toast     = useToast();
-  const navigate  = useNavigate();
-  const [leaves,    setLeaves]    = useState([]);
-  const [loading,   setLoading]   = useState(false);
-  const [cancelling,setCancelling]= useState(null);
-  const [pendingHandleCancel, setPendingHandleCancel] = useState(null);
-  const [fStatus,   setFStatus]   = useState('');
-  const [view,      setView]      = useState('cards'); // 'cards' | 'table'
+  const { user } = useAuth();
+  const toast = useToast();
+  const navigate = useNavigate();
+  const [leaves, setLeaves] = useState([]);
+  const [balance, setBalance] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [cancelling, setCancelling] = useState(null);
+  const [pendingCancel, setPendingCancel] = useState(null);
+  const [fStatus, setFStatus] = useState('');
+  const [fYear, setFYear] = useState(String(YEAR));
+  const [historyId, setHistoryId] = useState(null);
   const isMounted = useRef(true);
-
   useEffect(() => { isMounted.current = true; return () => { isMounted.current = false; }; }, []);
 
-  const fetchMyLeaves = async () => {
+  const goApply = () => (setPage ? setPage('ApplyLeave') : navigate('/ApplyLeave'));
+
+  const fetchMine = useCallback(async () => {
     setLoading(true);
     try {
       const params = {};
-      if (fStatus) params.status = fStatus;
-      const response = await api.get('/leaves/my', { params });
+      if (fYear) params.year = fYear;
+      const [apps, bal] = await Promise.allSettled([
+        api.get('/leaves/my', { params }),
+        user?.employee_id ? api.get(`/leaves/balance/${user.employee_id}`, { params: { year: fYear || YEAR } }) : Promise.resolve({ data: [] }),
+      ]);
       if (!isMounted.current) return;
-      const raw = Array.isArray(response.data) ? response.data : (response.data?.data || response.data?.applications || []);
-      setLeaves(raw);
-    } catch { if (isMounted.current) setLeaves([]); }
-    finally { if (isMounted.current) setLoading(false); }
-  };
-
-  useEffect(() => { fetchMyLeaves(); }, [fStatus]); // eslint-disable-line react-hooks/exhaustive-deps
+      setLeaves(apps.status === 'fulfilled' && Array.isArray(apps.value.data) ? apps.value.data : []);
+      setBalance(bal.status === 'fulfilled' && Array.isArray(bal.value.data)
+        ? bal.value.data.filter(b => Number(b.allocated_days) + Number(b.carried_forward_days || 0) > 0 || Number(b.used_days) > 0) : []);
+    } finally { if (isMounted.current) setLoading(false); }
+  }, [fYear, user?.employee_id]);
+  useEffect(() => { fetchMine(); }, [fetchMine]);
 
   const handleCancel = async () => {
-    if (!pendingHandleCancel) return;
-    const leave = pendingHandleCancel;
-    setPendingHandleCancel(null);
+    if (!pendingCancel) return;
+    const leave = pendingCancel;
+    setPendingCancel(null);
     setCancelling(leave.id);
     try {
       await api.put(`/leaves/${leave.id}/cancel`);
-      toast.success('Leave cancelled. Balance restored if it was approved.');
-      fetchMyLeaves();
+      toast.success(leave.status === 'approved' ? 'Leave cancelled. The days are back in your balance.' : 'Leave request cancelled.');
+      fetchMine();
     } catch (err) {
       toast.error(err?.response?.data?.error || 'Failed to cancel leave');
     } finally { if (isMounted.current) setCancelling(null); }
   };
 
-  const stats = leaves.reduce((acc, l) => { acc[l.status] = (acc[l.status]||0)+1; return acc; }, {});
+  const stats = leaves.reduce((acc, l) => { acc[l.status] = (acc[l.status] || 0) + 1; return acc; }, {});
+  const shown = fStatus ? leaves.filter(l => l.status === fStatus) : leaves;
 
   return (
     <PageShell dock={
       <PageHero
         icon={CalendarDays}
         eyebrow="Leave"
-        title="My Leave Applications"
-        subtitle="Your complete leave history and status"
+        title="My Leaves"
+        subtitle="Your balance, every request and where it stands"
         actions={<>
-          <button className="plh-cta plh-cta--ghost" onClick={fetchMyLeaves}>
-            <RefreshCw size={13}/>
-          </button>
-          <button className="plh-cta" onClick={() => setPage ? setPage('ApplyLeave') : navigate('/leaves/apply')}>
-            + Apply Leave
-          </button>
+          <button className="plh-cta plh-cta--ghost" onClick={fetchMine} aria-label="Refresh"><RefreshCw size={13} /></button>
+          <button className="plh-cta" onClick={goApply}>+ Apply Leave</button>
         </>}
       />
     }>
       <ConfirmDialog
-        open={!!pendingHandleCancel}
-        title="Cancel Leave"
-        message={pendingHandleCancel ? `Cancel your ${pendingHandleCancel.leave_name || pendingHandleCancel.leave_type} from ${fmt(pendingHandleCancel.start_date)}? If already approved, days will be returned to your balance.` : ''}
-        confirmLabel="Cancel Leave"
+        open={!!pendingCancel}
+        title="Cancel leave"
+        message={pendingCancel ? `Cancel your ${pendingCancel.leave_name} from ${fmtDate(pendingCancel.start_date)}?${pendingCancel.status === 'approved' ? ' The days go back to your balance.' : ''}` : ''}
+        confirmLabel="Cancel leave"
         variant="warning"
         onConfirm={handleCancel}
-        onCancel={() => setPendingHandleCancel(null)}
+        onCancel={() => setPendingCancel(null)}
       />
-      {/* Header */}
+      {historyId && <LeaveHistoryDialog leaveId={historyId} onClose={() => setHistoryId(null)} />}
 
+      {/* Balance */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(170px,1fr))', gap: 10, marginBottom: 18 }}>
+        {balance.length === 0 && !loading && (
+          <div style={{ gridColumn: '1/-1', fontSize: 13, color: '#9ca3af' }}>No leave balance for {fYear || YEAR} yet — HR sets it up in Leave Settings.</div>
+        )}
+        {balance.map(b => {
+          const total = Number(b.allocated_days) + Number(b.carried_forward_days || 0);
+          const used = Number(b.used_days || 0);
+          const pending = Number(b.pending_days || 0);
+          const pct = total > 0 ? Math.min(100, Math.round(((used + pending) / total) * 100)) : 0;
+          return (
+            <div key={b.leave_type_id} style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: '10px 14px' }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: '#374151' }}>{b.leave_name}</div>
+              <div style={{ fontSize: 20, fontWeight: 800, color: Number(b.available_days) > 0 ? '#6B3FDB' : '#dc2626' }}>
+                {Number(b.available_days)} <span style={{ fontSize: 11, color: '#9ca3af', fontWeight: 500 }}>of {total} left</span>
+              </div>
+              <div style={{ height: 4, background: '#f3f4f6', borderRadius: 2, margin: '6px 0' }}>
+                <div style={{ width: `${pct}%`, height: 4, borderRadius: 2, background: '#6B3FDB' }} />
+              </div>
+              <div style={{ fontSize: 11, color: '#6b7280' }}>
+                {used} taken{pending ? ` · ${pending} pending` : ''}{Number(b.encashed_days) ? ` · ${Number(b.encashed_days)} encashed` : ''}{Number(b.carried_forward_days) ? ` · ${Number(b.carried_forward_days)} carried in` : ''}
+              </div>
+            </div>
+          );
+        })}
+      </div>
 
-      {/* Summary pills */}
-      <div style={{ display:'flex', gap:8, marginBottom:16, flexWrap:'wrap' }}>
-        {[['','All',leaves.length,'#6b7280'],['pending','Pending',stats.pending||0,'#7c5cf0'],['approved','Approved',stats.approved||0,'#10b981'],['rejected','Rejected',stats.rejected||0,'#ef4444'],['cancelled','Cancelled',stats.cancelled||0,'#9ca3af']].map(([v,l,cnt,color]) => (
+      {/* Filters */}
+      <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
+        {[['', 'All', leaves.length], ['pending', 'Pending', stats.pending || 0], ['approved', 'Approved', stats.approved || 0], ['rejected', 'Rejected', stats.rejected || 0], ['cancelled', 'Cancelled', stats.cancelled || 0]].map(([v, l, cnt]) => (
           <button key={v} onClick={() => setFStatus(v)}
-            style={{ padding:'6px 14px', borderRadius:20, border:`1.5px solid ${fStatus===v?color:'#e5e7eb'}`, background:fStatus===v?color+'18':'#fff', color:fStatus===v?color:'#6b7280', fontSize:12, fontWeight:600, cursor:'pointer' }}>
+            style={{ padding: '6px 14px', borderRadius: 20, border: `1.5px solid ${fStatus === v ? '#6B3FDB' : '#e5e7eb'}`, background: fStatus === v ? '#f5f3ff' : '#fff', color: fStatus === v ? '#6B3FDB' : '#6b7280', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
             {l} <strong>{cnt}</strong>
           </button>
         ))}
+        <select value={fYear} onChange={e => setFYear(e.target.value)} aria-label="Year"
+          style={{ marginLeft: 'auto', padding: '6px 10px', border: '1px solid #e5e7eb', borderRadius: 8, fontSize: 13 }}>
+          {[YEAR + 1, YEAR, YEAR - 1, YEAR - 2].map(y => <option key={y} value={y}>{y}</option>)}
+        </select>
       </div>
 
-      {/* Approval chain explainer */}
-      <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:16, padding:'8px 14px', background:'#f0f9ff', borderRadius:8, border:'1px solid #bae6fd', fontSize:12, flexWrap:'wrap' }}>
-        <strong style={{ color:'#0369a1' }}>Approval Flow:</strong>
-        <Chip bg="#ede9fe" color="#5b21b6">L1 Manager</Chip>
-        <span style={{ color:'#9ca3af' }}>→</span>
-        <Chip bg="#dbeafe" color="#1d4ed8">L2 Dept Head</Chip>
-        <span style={{ color:'#9ca3af' }}>→</span>
-        <Chip bg="#ede9fe" color="#5b21b6">L3 HR</Chip>
-      </div>
-
-      {/* Content */}
       {loading ? (
-        <div style={{ textAlign:'center', padding:60, color:'#9ca3af' }}>
-          <div style={{ width:32,height:32,border:'3px solid #e5e7eb',borderTopColor:'#6366f1',borderRadius:'50%',margin:'0 auto 12px',animation:'spin 0.8s linear infinite' }}/>
-          Loading…
-        </div>
-      ) : leaves.length === 0 ? (
-        <div style={{ textAlign:'center', padding:60, color:'#9ca3af' }}>
-          <Calendar size={48} color="#d1d5db" style={{ display:'block', margin:'0 auto 12px' }}/>
-          <p style={{ margin:'0 0 16px', fontSize:15 }}>No leave applications found</p>
-          {setPage && (
-            <button onClick={() => setPage('ApplyLeave')}
-              style={{ padding:'9px 22px', background:'#6366f1', color:'#fff', border:'none', borderRadius:8, fontSize:13, fontWeight:600, cursor:'pointer' }}>
-              Apply for Leave
-            </button>
-          )}
+        <div style={{ textAlign: 'center', padding: 60, color: '#9ca3af' }}>Loading…</div>
+      ) : shown.length === 0 ? (
+        <div style={{ textAlign: 'center', padding: 60, color: '#9ca3af' }}>
+          <Calendar size={48} color="#d1d5db" style={{ display: 'block', margin: '0 auto 12px' }} />
+          <p style={{ margin: '0 0 16px', fontSize: 15 }}>No leave requests{fStatus ? ` that are ${fStatus}` : ''} in {fYear || 'any year'}</p>
+          <button onClick={goApply} className="pulse-btn-primary">Apply for leave</button>
         </div>
       ) : (
-        <div>
-          {/* Mobile: cards; Desktop: cards (always readable) */}
-          {leaves.map(leave => (
-            <LeaveCard key={leave.id} leave={leave} onCancel={setPendingHandleCancel} cancelling={cancelling} />
-          ))}
-        </div>
+        shown.map(leave => (
+          <LeaveCard key={leave.id} leave={leave} onCancel={setPendingCancel} cancelling={cancelling} onHistory={setHistoryId} />
+        ))
       )}
     </PageShell>
   );

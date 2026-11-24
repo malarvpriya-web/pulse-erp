@@ -42,7 +42,8 @@ const SEARCHABLE_PAGES = [
   { page: 'LeaveApprovals',      label: 'Leave Approvals',            category: 'Leaves' },
   { page: 'LeaveCalendar',       label: 'Leave Calendar',             category: 'Leaves' },
   { page: 'LeaveSettings',       label: 'Leave Settings',             category: 'Leaves' },
-  { page: 'TeamLeaves',          label: 'Team Leaves',                category: 'Leaves' },
+  { page: 'LeaveReports',        label: 'Leave Reports',              category: 'Leaves' },
+  { page: 'LeaveEncashment',     label: 'Leave Encashment',           category: 'Leaves' },
   // Finance
   { page: 'FinanceDashboardNew', label: 'Finance Dashboard',          category: 'Finance' },
   { page: 'CFODashboard',        label: 'CFO Dashboard',              category: 'Finance' },

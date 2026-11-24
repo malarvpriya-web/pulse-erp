@@ -17,6 +17,7 @@ import { Save, RefreshCw, CalendarDays, Clock, Zap, Gift, FileEdit, LogOut, Chev
 import api from '@/services/api/client';
 import { useAuth } from '@/context/AuthContext';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import SaturdayOffPicker, { saturdayText } from '@/features/leaves/components/SaturdayOffPicker';
 
 const DAYS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
 const label = (d) => d.charAt(0).toUpperCase() + d.slice(1, 3);
@@ -246,7 +247,7 @@ export default function GeneralSettings({ embedded }) {
       )}
 
       <Section icon={CalendarDays} title="Work week & hours" hint="Office staff punch on the machine; field staff punch from My Attendance."
-        summary={`${workWeekText(s.working_days)} · ${s.full_day_hours} h work + ${s.break_duration} min break · half day below ${s.half_day_hours} h · ${hhmm(s.work_start_time)}–${hhmm(s.work_end_time)}`}
+        summary={`${workWeekText(s.working_days)}${(s.saturday_off_weeks || []).length ? ` (${saturdayText(s.working_days, s.saturday_off_weeks)})` : ""} · ${s.full_day_hours} h work + ${s.break_duration} min break · half day below ${s.half_day_hours} h · ${hhmm(s.work_start_time)}–${hhmm(s.work_end_time)}`}
         {...sec('week')}>
         <Row label="Working days" desc="Days not ticked are weekly offs (no absence is marked on them)">
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
@@ -260,6 +261,10 @@ export default function GeneralSettings({ embedded }) {
               );
             })}
           </div>
+        </Row>
+        <Row label="Saturdays" desc="Every Saturday off, every Saturday working, or only some (e.g. 2nd and 4th) off">
+          <SaturdayOffPicker workingDays={s.working_days || []} weeks={s.saturday_off_weeks || []} disabled={dis}
+            onChange={(v) => setS((p) => ({ ...p, ...v }))} />
         </Row>
         <Row label="Work hours in a full day" desc="Hours of work, not counting the break">
           <input type="number" min="1" max="16" step="0.5" style={INPUT} disabled={dis} value={s.full_day_hours} onChange={num('full_day_hours')} />

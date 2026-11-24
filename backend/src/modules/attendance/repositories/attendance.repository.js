@@ -432,7 +432,7 @@ const attendanceRepository = {
       let status;
       if (recordMap[ymd]) {
         status = recordMap[ymd];
-      } else if (dow === 0 || dow === 6) {
+      } else if (dayIsWeekend(ymd, weekend)) {
         status = 'weekend';
       } else if (ymd > todayStr) {
         status = 'future';

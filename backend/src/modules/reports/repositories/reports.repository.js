@@ -223,13 +223,13 @@ const reportsRepository = {
         lt.leave_name,
         COALESCE(lb.allocated_days, 0)                                              AS allocated_days,
         COALESCE(SUM(la.number_of_days) FILTER (WHERE ${isIn('la.status', LEAVE_APPROVED)}), 0) AS used_days,
-        COALESCE(lb.allocated_days, 0)
+        (COALESCE(lb.allocated_days, 0) + COALESCE(lb.carried_forward_days, 0) - COALESCE(lb.encashed_days, 0))
           - COALESCE(SUM(la.number_of_days) FILTER (WHERE ${isIn('la.status', LEAVE_APPROVED)}), 0) AS remaining_days,
         COUNT(la.id) FILTER (WHERE ${isIn('la.status', LEAVE_PENDING)})::int        AS pending_count,
         COUNT(la.id) FILTER (WHERE LOWER(la.status) = 'rejected')::int              AS rejected_count
       FROM employees e
       JOIN leave_types lt
-        ON lt.is_active = true AND lt.deleted_at IS NULL
+        ON lt.is_active = true AND lt.deleted_at IS NULL AND (lt.company_id = e.company_id OR lt.company_id IS NULL)
       LEFT JOIN leave_balances lb
         ON lb.employee_id = e.id AND lb.leave_type_id = lt.id AND lb.year = $2
       LEFT JOIN leave_applications la
@@ -242,7 +242,7 @@ const reportsRepository = {
         AND ($3::text IS NULL OR e.department = $3)
         AND (lb.id IS NOT NULL OR la.id IS NOT NULL)
       GROUP BY e.id, e.office_id, e.name, e.first_name, e.last_name, e.department,
-               e.designation, lt.leave_name, lb.allocated_days
+               e.designation, lt.leave_name, lb.allocated_days, lb.carried_forward_days, lb.encashed_days
       ORDER BY employee_name, lt.leave_name`;
     return paginate(sql, [company_id, resolvedYear, department || null], { limit, offset });
   },
@@ -258,14 +258,16 @@ const reportsRepository = {
         lt.leave_name,
         COALESCE(lb.allocated_days, 0) AS allocated_days,
         COALESCE(SUM(la.number_of_days) FILTER (WHERE ${isIn('la.status', LEAVE_APPROVED)}), 0) AS used_days,
-        GREATEST(COALESCE(lb.allocated_days, 0)
+        GREATEST((COALESCE(lb.allocated_days, 0) + COALESCE(lb.carried_forward_days, 0) - COALESCE(lb.encashed_days, 0))
           - COALESCE(SUM(la.number_of_days) FILTER (WHERE ${isIn('la.status', LEAVE_APPROVED)}), 0), 0) AS balance_days,
         ROUND(COALESCE(e.basic_salary, 0) / 26.0, 2) AS daily_rate,
-        ROUND(GREATEST(COALESCE(lb.allocated_days, 0)
+        ROUND(GREATEST((COALESCE(lb.allocated_days, 0) + COALESCE(lb.carried_forward_days, 0) - COALESCE(lb.encashed_days, 0))
           - COALESCE(SUM(la.number_of_days) FILTER (WHERE ${isIn('la.status', LEAVE_APPROVED)}), 0), 0)
           * (COALESCE(e.basic_salary, 0) / 26.0), 2) AS liability_amount
       FROM employees e
-      JOIN leave_types lt ON lt.is_active = true AND lt.deleted_at IS NULL
+      JOIN leave_types lt ON lt.is_active = true AND lt.deleted_at IS NULL AND (lt.company_id = e.company_id OR lt.company_id IS NULL)
+                          -- Liability is what could be paid out: encashable types only.
+                          AND lt.is_encashable = true
       LEFT JOIN leave_balances lb
         ON lb.employee_id = e.id AND lb.leave_type_id = lt.id AND lb.year = $2
       LEFT JOIN leave_applications la
@@ -277,29 +279,68 @@ const reportsRepository = {
         AND ($1::int IS NULL OR e.company_id = $1)
         AND lb.id IS NOT NULL
       GROUP BY e.id, e.office_id, e.name, e.first_name, e.last_name, e.department,
-               e.designation, e.basic_salary, lt.leave_name, lb.allocated_days
-      HAVING GREATEST(COALESCE(lb.allocated_days, 0)
+               e.designation, e.basic_salary, lt.leave_name, lb.allocated_days, lb.carried_forward_days, lb.encashed_days
+      HAVING GREATEST((COALESCE(lb.allocated_days, 0) + COALESCE(lb.carried_forward_days, 0) - COALESCE(lb.encashed_days, 0))
         - COALESCE(SUM(la.number_of_days) FILTER (WHERE ${isIn('la.status', LEAVE_APPROVED)}), 0), 0) > 0
       ORDER BY liability_amount DESC`;
     return paginate(sql, [company_id, resolvedYear], { limit, offset });
   },
 
+  /**
+   * Loss of Pay per employee per month (2026-11-24). It read only
+   * payroll_attendance_summary, which exists once Attendance → Payroll Sync has
+   * run for the month — so approved Loss of Pay leave showed nothing until then
+   * (0 rows with an approved LOP leave on record). Now both:
+   *   - leave_lop_days: approved leave that is unpaid (an LOP type, or the
+   *     clubbed weekly offs / holidays inside a paid leave), by its start month;
+   *   - lop_days: the payroll figure once synced (attendance shortfall + those
+   *     leave days), else the leave figure — `source` says which.
+   * The amount is days × (Basic in force ÷ working days, or ÷ 26 before sync).
+   */
   async getLOPReport({ month, year, company_id, limit, offset }) {
     const sql = `
+      WITH leave_lop AS (
+        SELECT la.employee_id,
+               EXTRACT(MONTH FROM la.start_date)::int AS month,
+               EXTRACT(YEAR  FROM la.start_date)::int AS year,
+               SUM(CASE WHEN la.is_lop OR COALESCE(lt.is_lop_type, false)
+                        THEN la.number_of_days ELSE COALESCE(la.lop_days, 0) END) AS leave_lop_days
+          FROM leave_applications la
+          LEFT JOIN leave_types lt ON lt.id = la.leave_type_id
+         WHERE la.status = 'approved' AND la.deleted_at IS NULL
+           AND (la.is_lop OR COALESCE(lt.is_lop_type, false) OR COALESCE(la.lop_days, 0) > 0)
+         GROUP BY 1, 2, 3
+      ),
+      merged AS (
+        SELECT COALESCE(pas.employee_id, ll.employee_id) AS employee_id,
+               COALESCE(pas.month, ll.month) AS month, COALESCE(pas.year, ll.year) AS year,
+               pas.working_days, pas.present_days, pas.absent_days,
+               COALESCE(ll.leave_lop_days, 0) AS leave_lop_days,
+               COALESCE(pas.lop_days, ll.leave_lop_days, 0) AS lop_days,
+               CASE WHEN pas.employee_id IS NOT NULL THEN 'payroll sync' ELSE 'approved leave (not synced yet)' END AS source
+          FROM (SELECT * FROM payroll_attendance_summary WHERE lop_days > 0) pas
+          FULL OUTER JOIN leave_lop ll
+            ON ll.employee_id = pas.employee_id AND ll.month = pas.month AND ll.year = pas.year
+      )
       SELECT
-        e.office_id AS employee_code,
+        e.id AS employee_id, e.office_id AS employee_code,
         ${EMP_NAME} AS employee_name,
         e.department, e.designation,
-        pas.month, pas.year, pas.working_days, pas.present_days, pas.absent_days, pas.lop_days,
-        ROUND((COALESCE(e.basic_salary, 0) / NULLIF(pas.working_days, 0)) * pas.lop_days, 2) AS lop_amount
-      FROM payroll_attendance_summary pas
-      JOIN employees e ON e.id = pas.employee_id
-      WHERE pas.lop_days > 0
+        m.month, m.year, m.working_days, m.present_days, m.absent_days,
+        m.leave_lop_days, m.lop_days, m.source,
+        ROUND(COALESCE(
+          (SELECT basic_salary FROM employee_salary_assignments esa
+            WHERE esa.employee_id = e.id AND esa.effective_from <= make_date(m.year, m.month, 1) + INTERVAL '1 month' - INTERVAL '1 day'
+            ORDER BY esa.effective_from DESC, esa.created_at DESC LIMIT 1),
+          e.basic_salary, 0) / COALESCE(NULLIF(m.working_days, 0), 26) * m.lop_days, 2) AS lop_amount
+      FROM merged m
+      JOIN employees e ON e.id = m.employee_id
+      WHERE m.lop_days > 0
         AND e.deleted_at IS NULL
         AND ($1::int IS NULL OR e.company_id = $1)
-        AND ($2::int IS NULL OR pas.year  = $2)
-        AND ($3::int IS NULL OR pas.month = $3)
-      ORDER BY pas.year DESC, pas.month DESC, lop_amount DESC`;
+        AND ($2::int IS NULL OR m.year  = $2)
+        AND ($3::int IS NULL OR m.month = $3)
+      ORDER BY m.year DESC, m.month DESC, lop_amount DESC`;
     return paginate(sql,
       [company_id, year ? Number(year) : null, month ? Number(month) : null], { limit, offset });
   },
@@ -329,6 +370,45 @@ const reportsRepository = {
       GROUP BY COALESCE(e.department, 'Unassigned')
       ORDER BY total_days_taken DESC, department`;
     return paginate(sql, [company_id, resolvedYear, month ? Number(month) : null], { limit, offset });
+  },
+
+  /** Leave credits from leave_accrual_log (2026-11-24 — the log had no screen). */
+  async getLeaveCreditReport({ year, department, company_id, limit, offset }) {
+    const sql = `
+      SELECT e.id AS employee_id, e.office_id AS employee_code, ${EMP_NAME} AS employee_name, e.department,
+             lt.leave_name, lal.year, lal.month, lal.days_accrued, lal.accrual_type, lal.run_mode,
+             COALESCE(NULLIF(TRIM(CONCAT_WS(' ', rb.first_name, rb.last_name)), ''), 'Automatic') AS run_by_name,
+             lal.created_at AS credited_at
+        FROM leave_accrual_log lal
+        JOIN employees e    ON e.id = lal.employee_id
+        JOIN leave_types lt ON lt.id = lal.leave_type_id
+        LEFT JOIN employees rb ON rb.id = lal.run_by
+       WHERE e.deleted_at IS NULL
+         AND ($1::int IS NULL OR e.company_id = $1)
+         AND ($2::int IS NULL OR lal.year = $2)
+         AND ($3::text IS NULL OR e.department = $3)
+       ORDER BY lal.created_at DESC, employee_name`;
+    return paginate(sql, [company_id, year ? Number(year) : null, department || null], { limit, offset });
+  },
+
+  /** Days carried into the year, and when they lapse (type's expiry months from 1 Jan). */
+  async getCarryForwardReport({ year, department, company_id, limit, offset }) {
+    const resolvedYear = Number(year) || new Date().getFullYear();
+    const sql = `
+      SELECT e.id AS employee_id, e.office_id AS employee_code, ${EMP_NAME} AS employee_name, e.department,
+             lt.leave_name, lb.year, lb.carried_forward_days, lt.max_carry_forward_days,
+             CASE WHEN COALESCE(lt.carry_forward_expiry_months, 0) > 0
+                  THEN (make_date(lb.year, 1, 1) + make_interval(months => lt.carry_forward_expiry_months) - INTERVAL '1 day')::date
+             END AS expires_on
+        FROM leave_balances lb
+        JOIN employees e    ON e.id = lb.employee_id
+        JOIN leave_types lt ON lt.id = lb.leave_type_id
+       WHERE lb.year = $2 AND COALESCE(lb.carried_forward_days, 0) > 0
+         AND e.deleted_at IS NULL AND ${sqlEmployeeActive('e.status')}
+         AND ($1::int IS NULL OR e.company_id = $1)
+         AND ($3::text IS NULL OR e.department = $3)
+       ORDER BY e.department, employee_name, lt.leave_name`;
+    return paginate(sql, [company_id, resolvedYear, department || null], { limit, offset });
   },
 
   async getApprovalPerformanceReport({ start_date, end_date, company_id, limit, offset }) {

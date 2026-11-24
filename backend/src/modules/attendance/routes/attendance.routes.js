@@ -2614,14 +2614,16 @@ router.post('/payroll-sync', requireAttendanceAdmin, async (req, res) => {
          ${empFilter}
     `, [m, y]);
 
-    // Step 3 — compute calendar working days (Mon–Fri) for the month
+    // Step 3 — calendar working days for the month: every day that is not a
+    // weekly off in Attendance Settings (weekend days + 2nd/4th-Saturday offs).
+    // It was a fixed Mon–Fri, so a working Saturday never counted.
+    const pad2 = n => String(n).padStart(2, '0');
+    const weekendCfg = await getWeekendDays(companyId);
     const daysInMonth = new Date(y, m, 0).getDate();
     let workingDays = 0;
     for (let d = 1; d <= daysInMonth; d++) {
-      const dow = new Date(y, m - 1, d).getDay();
-      if (dow !== 0 && dow !== 6) workingDays++;
+      if (!dayIsWeekend(`${y}-${pad2(m)}-${pad2(d)}`, weekendCfg)) workingDays++;
     }
-    const pad2 = n => String(n).padStart(2, '0');
     const startDate = `${y}-${pad2(m)}-01`;
     const endDate   = `${y}-${pad2(m)}-${daysInMonth}`;
 
@@ -2634,18 +2636,17 @@ router.post('/payroll-sync', requireAttendanceAdmin, async (req, res) => {
       SELECT date::text AS d FROM holidays
        WHERE date BETWEEN $1 AND $2
          AND (company_id = $3 OR company_id IS NULL)
-         AND EXTRACT(DOW FROM date) NOT IN (0, 6)
-    `, [prevStart, endDate, companyId])).rows.map(r => r.d));
+    `, [prevStart, endDate, companyId])).rows.map(r => r.d).filter(d => !dayIsWeekend(d, weekendCfg)));
     workingDays = Math.max(0, workingDays - [...holidayDates].filter(d => d >= startDate).length);
     const todayIso = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
     const isoOf = (d) => (d == null ? null : (d instanceof Date ? d.toLocaleDateString('en-CA') : String(d).slice(0, 10)));
     const nextDay = (ds) => { const d = new Date(`${ds}T00:00:00Z`); d.setUTCDate(d.getUTCDate() + 1); return d.toISOString().slice(0, 10); };
-    // Mon–Fri working days in [from, to], less company holidays.
+    // Working days in [from, to] (not a weekly off, not a holiday).
     const countWorking = (from, to) => {
       let n = 0;
       for (let d = new Date(`${from}T00:00:00Z`); d.toISOString().slice(0, 10) <= to; d.setUTCDate(d.getUTCDate() + 1)) {
         const dow = d.getUTCDay(), ds = d.toISOString().slice(0, 10);
-        if (dow !== 0 && dow !== 6 && !holidayDates.has(ds)) n++;
+        if (!dayIsWeekend(ds, weekendCfg) && !holidayDates.has(ds)) n++;
       }
       return n;
     };
@@ -2661,19 +2662,47 @@ router.post('/payroll-sync', requireAttendanceAdmin, async (req, res) => {
                COUNT(*) FILTER (WHERE status = 'half_day')::int AS h
           FROM attendance_records WHERE employee_id = $1 AND attendance_date BETWEEN $2 AND $3 AND deleted_at IS NULL`, [employeeId, from, to]);
       // Approved PAID leave: not loss-of-pay leave (the application's is_lop, or a
-      // leave type that is unpaid or LOP); a half-day leave counts as half. The old
-      // query read a column that does not exist (leave_type) and swallowed the
-      // error, so approved leave was always 0 days — people on paid leave lost pay.
-      const { rows: [l] } = await pool.query(`
-        SELECT COALESCE(SUM(CASE WHEN la.half_day THEN 0.5
-                                 ELSE LEAST(la.end_date, $3::date) - GREATEST(la.start_date, $2::date) + 1 END), 0)::numeric AS leave_days
+      // leave type that is unpaid or LOP); a half-day leave counts as half.
+      // 2026-11-24: counted in WORKING days inside [from, to] — it was calendar
+      // days, so a Fri–Mon leave covered 4 days and hid two absences elsewhere.
+      // And the clubbed weekly offs / holidays INSIDE a paid leave (its
+      // lop_days, set when it was applied) are now charged as Loss of Pay, as
+      // the leave rule says; they are not working days, so the shortfall below
+      // never caught them. A clubbed day the person actually worked is not charged.
+      const { rows: lvs } = await pool.query(`
+        SELECT la.start_date::text AS s, la.end_date::text AS e, la.half_day,
+               COALESCE(la.lop_days, 0)::float8 AS lop_days
           FROM leave_applications la
           LEFT JOIN leave_types lt ON lt.id = la.leave_type_id
          WHERE la.employee_id = $1 AND LOWER(la.status) = 'approved' AND la.deleted_at IS NULL
            AND NOT COALESCE(la.is_lop, false) AND COALESCE(lt.is_paid, true) AND NOT COALESCE(lt.is_lop_type, false)
            AND la.start_date <= $3::date AND la.end_date >= $2::date`, [employeeId, from, to]);
-      const leave = Math.min(parseFloat(l.leave_days || 0), working);
-      const lop = Math.max(0, Math.round((working - (a.p + a.h * 0.5 + leave)) * 2) / 2);
+      const isWorkingDay = (ds) => !dayIsWeekend(ds, weekendCfg) && !holidayDates.has(ds);
+      const daysOf = (f, t) => { const out = []; for (let d = new Date(`${f}T00:00:00Z`); d.toISOString().slice(0, 10) <= t; d.setUTCDate(d.getUTCDate() + 1)) out.push(d.toISOString().slice(0, 10)); return out; };
+      let workedOn = null;   // dates with a punch, fetched only if a leave has clubbed days
+      let paidLeave = 0, clubbed = 0;
+      for (const lv of lvs) {
+        const ls = lv.s.slice(0, 10), le = lv.e.slice(0, 10);
+        const s = ls > from ? ls : from, e = le < to ? le : to;
+        if (lv.half_day) { if (isWorkingDay(s)) paidLeave += 0.5; continue; }
+        paidLeave += countWorking(s, e);
+        if (lv.lop_days > 0) {
+          const all = daysOf(ls, le);
+          const fw = all.find(isWorkingDay), lw = [...all].reverse().find(isWorkingDay);
+          if (!fw) continue;
+          if (workedOn == null) {
+            const { rows: w } = await pool.query(
+              `SELECT attendance_date::text AS d FROM attendance_records
+                WHERE employee_id = $1 AND attendance_date BETWEEN $2 AND $3 AND deleted_at IS NULL
+                  AND status IN ('present','late','wfh','half_day')`, [employeeId, from, to]);
+            workedOn = new Set(w.map(r => r.d.slice(0, 10)));
+          }
+          const inside = daysOf(s > fw ? s : fw, e < lw ? e : lw).filter(d => !isWorkingDay(d) && !workedOn.has(d)).length;
+          clubbed += Math.min(inside, lv.lop_days);
+        }
+      }
+      const leave = Math.min(paidLeave, working);
+      const lop = Math.max(0, Math.round((working - (a.p + a.h * 0.5 + leave)) * 2) / 2) + clubbed;
       return { lop, working, leave };
     };
     const { rows: existing } = await pool.query(
@@ -3502,11 +3531,10 @@ router.get('/monthly-report', async (req, res) => {
     const startDate = `${y}-${pad2(m)}-01`;
     const endDate   = `${y}-${pad2(m)}-${daysInMonth}`;
 
-    // Calendar working days (Mon–Fri) for the month — same for all employees
-    let workingDays = 0;
+    // Calendar working days for the month (Attendance Settings weekly offs, incl. 2nd/4th Saturday)
+    const weekendCfg = await getWeekendDays(companyId); let workingDays = 0;
     for (let d = 1; d <= daysInMonth; d++) {
-      const dow = new Date(y, m - 1, d).getDay();
-      if (dow !== 0 && dow !== 6) workingDays++;
+      if (!dayIsWeekend(`${y}-${pad2(m)}-${pad2(d)}`, weekendCfg)) workingDays++;
     }
 
     const params = [startDate, endDate];
@@ -3557,8 +3585,7 @@ router.get('/monthly-report', async (req, res) => {
           // Count working days from joining date to end of month
           let proratedDays = 0;
           for (let d = jd.getDate(); d <= daysInMonth; d++) {
-            const dow = new Date(y, m - 1, d).getDay();
-            if (dow !== 0 && dow !== 6) proratedDays++;
+            if (!dayIsWeekend(`${y}-${pad2(m)}-${pad2(d)}`, weekendCfg)) proratedDays++;
           }
           effectiveWorkingDays = proratedDays;
         }
@@ -3758,6 +3785,8 @@ router.get('/my-shift-assignment', async (req, res) => {
 const ALL_DAYS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
 const SETTINGS_FIELDS = {
   working_days:                 'jsonb',
+  // Which Saturdays are off when Saturday is a working day: e.g. [2,4] (owner, 2026-11-23)
+  saturday_off_weeks:           'jsonb',
   timezone:                     'text',
   work_start_time:              'time',
   work_end_time:                'time',
@@ -3826,6 +3855,7 @@ function settingsResponse(row, policies = {}) {
     company_id:                   r.company_id ?? null,
     working_days:                 Array.isArray(r.working_days) ? r.working_days : ['monday', 'tuesday', 'wednesday', 'thursday', 'friday'],
     weekend_days:                 Array.isArray(r.weekend_days) ? r.weekend_days : ['saturday', 'sunday'],
+    saturday_off_weeks:           Array.isArray(r.saturday_off_weeks) ? r.saturday_off_weeks.map(Number) : [],
     timezone:                     r.timezone || 'Asia/Kolkata',
     work_start_time:              String(r.work_start_time || '09:00').slice(0, 5),
     work_end_time:                String(r.work_end_time || '18:00').slice(0, 5),
@@ -3907,6 +3937,9 @@ async function saveAttendanceSettings(companyId, body, userId) {
       if (!v.length) throw Object.assign(new Error('Choose at least one working day'), { status: 400 });
       vals.push(JSON.stringify(ALL_DAYS.filter((d) => !v.includes(d))));
       sets.push(`weekend_days = $${vals.length}::jsonb`);
+    }
+    if (k === 'saturday_off_weeks') {
+      v = [...new Set((Array.isArray(v) ? v : []).map(Number).filter((n) => Number.isInteger(n) && n >= 1 && n <= 5))].sort();
     }
     if (k === 'device_settings') v = { ...DEVICE_DEFAULTS, ...(v || {}) };
     if (k === 'late_bands') v = cleanLateBands(v);

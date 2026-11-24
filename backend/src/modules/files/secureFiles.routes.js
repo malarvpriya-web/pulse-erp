@@ -16,7 +16,7 @@
 import { Router } from 'express';
 import path        from 'path';
 import fs          from 'fs';
-import { verifyToken, permissionFor } from '../../middlewares/auth.middleware.js';
+import { verifyToken, permissionFor, rolesOf } from '../../middlewares/auth.middleware.js';
 import pool              from '../../config/db.js';
 // The writer's own constant, not a second path.resolve() of our own. This file
 // used to compute '../../../../uploads' from src/modules/files/, which resolves
@@ -362,6 +362,33 @@ async function declarationViewPermission(req) {
   } catch { return false; }
 }
 
+/**
+ * A leave application's supporting document (leave_applications.attachment_url,
+ * POST /leaves/attachment — 2026-11-24). Readable by the employee who applied,
+ * the people who decide it (reporting manager, assigned delegate, a department
+ * head / L2 approver of the same department) and HR / admin of the company.
+ * It was stored in the document master before, which kept no file at all
+ * without Google Drive and hid it from the approver as confidential.
+ */
+async function leaveAttachmentOwner(filename) {
+  const { rows } = await pool.query(
+    `SELECT la.employee_id, la.delegate_approver_id, e.company_id, e.reporting_manager_id, e.department
+       FROM leave_applications la JOIN employees e ON e.id = la.employee_id
+      WHERE la.attachment_url LIKE $1 AND la.deleted_at IS NULL
+      LIMIT 1`, [`%/${filename}`]);
+  return rows[0] || null;
+}
+async function leaveAttachmentPermission(req, owner) {
+  const roles = rolesOf(req);
+  if (roles.some(r => ['super_admin', 'admin', 'hr', 'hr_manager', 'hr_exec', 'hr_admin'].includes(r))) return true;
+  const { rows: [me] } = await pool.query(
+    `SELECT e.id, e.department FROM users u JOIN employees e ON e.id = u.employee_id WHERE u.id = $1`,
+    [req.user?.id ?? req.user?.userId ?? null]);
+  if (!me) return false;
+  if ([owner.employee_id, owner.reporting_manager_id, owner.delegate_approver_id].some(x => x != null && Number(x) === Number(me.id))) return true;
+  return roles.some(r => ['department_head', 'l2_approver'].includes(r)) && !!owner.department && me.department === owner.department;
+}
+
 async function canReadFile(req, filename) {
   const { userId, role } = req.user;
   const companyId = req.scope?.company_id ?? null;
@@ -382,7 +409,9 @@ async function canReadFile(req, filename) {
           e.resume_file            LIKE $1 OR
           e.offer_letter_file      LIKE $1 OR
           e.passport_file          LIKE $1 OR
-          e.driving_license_file   LIKE $1
+          e.driving_license_file   LIKE $1 OR
+          e.appointment_letter_file LIKE $1 OR
+          e.confidentiality_letter_file LIKE $1
         )
       LIMIT 1`,
     [`%${filename}`]
@@ -417,6 +446,12 @@ async function canReadFile(req, filename) {
     if (visitorPhoto) {
       if (companyId != null && visitorPhoto.company_id !== companyId) return false;
       return await visitorPhotoPermission(req, visitorPhoto);
+    }
+
+    const leaveDoc = await leaveAttachmentOwner(filename);
+    if (leaveDoc) {
+      if (companyId != null && leaveDoc.company_id !== companyId) return false;
+      return await leaveAttachmentPermission(req, leaveDoc);
     }
 
     const doc = await employeeDocumentOwner(filename);
@@ -512,7 +547,9 @@ router.get('/:filename', async (req, res) => {
             e.resume_file            LIKE $1 OR
             e.offer_letter_file      LIKE $1 OR
             e.passport_file          LIKE $1 OR
-            e.driving_license_file   LIKE $1
+            e.driving_license_file   LIKE $1 OR
+          e.appointment_letter_file LIKE $1 OR
+          e.confidentiality_letter_file LIKE $1
           )
         LIMIT 1`,
       [`%${filename}`]
@@ -561,6 +598,14 @@ router.get('/:filename', async (req, res) => {
       if (visitorPhoto) {
         if (companyId != null && visitorPhoto.company_id !== companyId) return res.status(403).json({ error: 'Forbidden' });
         if (!(await visitorPhotoPermission(req, visitorPhoto))) return res.status(403).json({ error: 'Forbidden' });
+        return sendFile(req, res, absPath, filename, userId);
+      }
+
+      // Leave attachments — see leaveAttachmentOwner(); the same question canReadFile() asks.
+      const leaveDoc = await leaveAttachmentOwner(filename);
+      if (leaveDoc) {
+        if (companyId != null && leaveDoc.company_id !== companyId) return res.status(403).json({ error: 'Forbidden' });
+        if (!(await leaveAttachmentPermission(req, leaveDoc))) return res.status(403).json({ error: 'Forbidden' });
         return sendFile(req, res, absPath, filename, userId);
       }
 

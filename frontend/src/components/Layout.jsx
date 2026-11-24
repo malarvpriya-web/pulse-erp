@@ -13,8 +13,9 @@ import { MERGED_ROUTES as ROUTES } from '@/config/autoRouter';
 import {
   getSectionForPage, canRenderPage, canOpenEmployeeMaster,
   EMPLOYEE_MASTER_PAGE, EMPLOYEE_DIRECTORY_PAGE,
-  payrollHubRedirect, PAYROLL_HUB_PAGE,
+  payrollHubRedirect, PAYROLL_HUB_PAGE, REPORTING_MANAGER_PAGES,
 } from '@/config/menuCatalog';
+import { useApproverStatus } from '@/features/approvals/approverStatus';
 import './Layout.css';
 
 // Once-a-day login overlay highlighting today's birthdays/anniversaries.
@@ -26,6 +27,9 @@ export default function Layout({ selectedEmployee, setSelectedEmployee }) {
   const navigate = useNavigate();
   const { search } = useLocation();
   const { role, user, hasPermission, menuAccess, logout } = useAuth();
+  // An employee-role reporting manager may open Leave Approvals (menuCatalog
+  // REPORTING_MANAGER_PAGES). Shared, cached request — the Sidebar asks the same.
+  const approver = useApproverStatus(role === 'employee');
 
   const { showWarning, sessionTimeRemaining, extendSession, forceLogout } =
     useSessionManager({ onLogout: logout });
@@ -93,7 +97,9 @@ export default function Layout({ selectedEmployee, setSelectedEmployee }) {
     // on the page as before (payrollHubRedirect in menuCatalog.js).
     const payrollHub = payrollHubRedirect(role, page, { route: ROUTES[PAYROLL_HUB_PAGE], menuAccess, hasPermission });
     if (payrollHub) return <Navigate to={payrollHub} replace />;
-    if (!canRenderPage(role, page, { route, menuAccess, hasPermission })) {
+    // Wait for the reporting-line answer instead of flashing Access Denied.
+    if (role === 'employee' && approver.loading && REPORTING_MANAGER_PAGES.has(page)) return null;
+    if (!canRenderPage(role, page, { route, menuAccess, hasPermission, hasDirectReports: approver.has_direct_reports === true })) {
       const Unauthorized = ROUTES['Unauthorized'].component;
       return <Unauthorized setPage={setPage} />;
     }

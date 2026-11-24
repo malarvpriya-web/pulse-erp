@@ -1383,37 +1383,29 @@ Manual checks:
 Frontend: `frontend/src/features/leaves`  
 Backend: `backend/src/modules/leaves`
 
-Features to test:
+Features to test (menu order, §279; details §280):
 
-- My Leaves
-- Apply Leave
-- Leave Approvals
-- Team Leaves
-- Leave Calendar
-- Holiday Calendar
-- Comp Off
-- All Leaves
-- Leave Reports
-- Encashment
-- Leave Settings
-- Accruals
-- Leave balance
-- Leave policies
+- Admin: All Leaves (register, HR cancel, "punched in on leave" flag) · Leave Reports (8 reports) · Encashment · Leave Settings (Leave Types, Allocations, Accrual & Carry Forward, Leave Rules)
+- Manager: Leave Approvals (Manager (L1) · Dept Head (L2) · HR (final) · Team View) · Leave Calendar
+- Employee: My Leaves · Apply Leave · Holiday Calendar
+- (Team Leaves and the Policy Rules tab are gone — §280; Comp Off lives in Attendance → Approvals.)
 
 Connections:
 
-- Employees provide employee and manager hierarchy.
-- Attendance consumes approved leave days.
-- Payroll consumes unpaid leave, encashment, comp-off.
-- Approvals routes approval actions.
-- Notifications inform requesters/approvers.
+- Employees provide the reporting line: the reporting manager decides L1 by that line alone (no role grant needed); HR steps in when there is no usable manager or the step is escalated.
+- Attendance consumes approved leave days (`on_leave` rows; a punch on the day wins and All Leaves flags it).
+- Payroll consumes LOP through the attendance sync (paid leave counted in working days; clubbed weekly offs / holidays inside a paid leave charged as LOP), encashment as a one-time earning with flat TDS (§280), comp-off.
+- Approvals Center lists every step the caller may decide (same rule as the leave endpoints).
+- Notifications: submitted, step approved, approved / rejected / cancelled, escalated (once per step after N days).
+- Files: leave attachments are stored by StorageService and served by `/files/:name` to the applicant, their approvers and HR.
 
 Manual checks:
 
-- Applying leave follows workflow.
-- Approved leave reflects in attendance calendar.
-- Rejected leave does not affect payroll.
-- Encashment posts to payroll/finance if implemented.
+- Apply → manager → (department head where the type needs one) → HR; the day count is the server's.
+- Approved leave reflects in attendance; cancelling it returns the days and takes LOP off a draft payroll.
+- Rejected / cancelled leave does not affect payroll.
+- A request left at one step past "escalate after N days" is escalated once and HR may then decide the manager step.
+- Encashment approval adds a payroll earning for the chosen month and turns Paid when that payroll is approved.
 
 ### Payroll
 
@@ -26354,3 +26346,76 @@ Tests: `integration.attendanceConsolidation.test.js` (settings row, allowance, H
 - **Team Attendance** is HR (whole company) or a manager / department head (direct reports + every department they head, via `department_heads` → `master_departments.name`). `GET /attendance/team/:manager_id` now refuses another manager's id for non-admins (anyone could read any team before). Role checks use `hasAnyRole`.
 - Confirmed, no change needed: Shift Calendar exists once (Configuration → Shifts & Rotations is where shifts are set up and HR can set a one-day override directly); timesheets auto-fill from `attendance_records` whatever the source, so machine punches reach timesheets; Approval Center and Attendance → Approvals show the same requests (inbox vs full history with filters) under the same rules; Delegation = an approver hands their approvals to someone else for a date range; one employee's late arrivals for a month = Reports → Late Arrivals, search the name.
 
+
+## §279. Sidebar menu reordered — business-flow bands, Admin → Manager → Employee submenus (2026-11-23)
+
+Owner request: "rearrange the menu and submenus without duplications … submenus used by superadmin first and then the manager and employees page". Display-only: no page, route, `module`, `inHub`, permission key or group `name` changed (380 rows before and after, identical page/module/hub set; `nav.json` row set identical, only the order changed).
+
+**Top-level order (bands)** follows the order-to-cash and hire-to-exit flows:
+Workspace (Home, Approvals) · Insights (Analytics & AI, Reports) · Revenue (**Marketing → CRM → Sales**: campaign → enquiry → order) · **Engineering & Assets** (now before Supply Chain: design precedes buying and building) · Supply Chain (Procurement → Inventory → Production → Quality) · **Delivery** (now after Supply Chain: Projects → Operations → Complaints → Service Desk) · Finance · People (**Recruitment → Employees → HR** → Attendance → Leaves → Timesheets → Performance → Learning Center → Travel Desk → Org Chart → Employee Directory) · Tools · Administration. Complaints still sits directly above Service Desk (§104).
+
+**Submenu order** is now by audience, replacing the old "self-service at the top" house order. Every submenu opens with separator rows named exactly `Admin` / `Manager` / `Employee`:
+- **Admin**: dashboards, analytics, reports, masters, settings, audit.
+- **Manager**: team views, approvals, planning, control.
+- **Employee**: "My …" pages and day-to-day entry screens.
+
+Separators are never drawn (Sidebar renders pages only), so the flat flyout reads admin pages, then manager pages, then personal pages. Role filters drop the tiers a role can't see. A page row must never be named `Admin`/`Manager`/`Employee`, because Sidebar keys rows by name.
+
+**Duplicates removed:** seven headings that repeated the row under them (CRM Customers, Finance Accounting, Attendance Approvals and Configuration, Recruitment Reports & Setup, Performance Insights & Setup, Travel My Travel) are gone with the tier rename. `⚙ Settings Center` inside Settings is **not** a duplicate: a parent with both a page and a submenu opens its panel on tap, so that row is the only touch path to the page (comment added).
+
+**Left in place, owner decision needed (overlaps that need code, not reordering):**
+- Procurement → PO Management (`PurchaseOrderManagement`) and Purchase Orders (`PurchaseOrders`) both list `/procurement/purchase-orders`.
+- Module approval pages (Attendance/Leave/Timesheet/Travel Approvals) show the same requests as Approval Center; they also carry team history, filters and delegation. Dropping a row would leave the page section-less, and the section gate lets section-less pages through.
+
+Employee-only logins are unaffected: HR's four self-service rows still become top-level rows directly under Home, in the same order. Files: `frontend/src/config/routes.jsx` (NAV_ITEMS + house-order comment), `tests/nav-verify/nav.json` (regenerated). Supersedes the submenu-order rule in §104; the band rules in §104 still apply.
+
+## §280. Leaves made production-ready — reporting-line approval, server-side day count, escalation, cancel rules, payroll LOP, attachments, reports (2026-11-23 / 2026-11-24)
+
+Owner request: check every Leaves page and tab — purpose, missing features, live links, every button — then fix everything and make it production ready. Two passes (11-23 rounds 1–2, 11-24 rounds 3–4). Earlier Leaves history: §12 / §33 / §53.
+
+**Pages and their one job each**
+
+| Page | Purpose | Notes |
+|---|---|---|
+| All Leaves | Company register (HR) | filters, totals, CSV, history; **HR Cancel** (reason); "Punched in on N days" flag + filter (`worked_days`) |
+| Leave Approvals | The one place decisions are taken | Manager (L1) / Dept Head (L2) / HR (final) built on the server (`queue=l2`, `queue=hr`); balance-after, attachment, "also off"; Escalated badge; for HR a manager-step row stays disabled until `hr_may_decide_l1` |
+| Leave Reports | 8 reports via `/reports/leave*` | Leave Summary, Balance Summary, Liability, LOP, Department, Approval Performance, **Leave Credit History** (`leave_accrual_log`), **Carried-Forward Leave** |
+| Encashment | Paid through payroll | approve → `payroll_adjustments` earning, flat TDS from Leave Rules, Paid when that payroll is approved |
+| Leave Settings | Types, allocations, accrual / carry forward, Leave Rules | Leave Rules = Saturdays off, encashment TDS %, **escalate after N days** |
+| Leave Calendar | Who is off | weekday colours from the company's weekly offs |
+| My Leaves / Apply Leave | Self-service | Apply previews the server's rule; attachment upload; escalation note |
+| Holiday Calendar | Holidays | edit rights by any role held |
+
+**Approval rule (L1)** — `leaves.routes.js authorizeL1()` on approve / reject / delegate / workflow-advance: the reporting manager or delegate (gate is `leaves:view`; the reporting line is the authority) → HR / admin when the employee has no active manager, the manager has **no active login** (`managerApprovalAuthz.js managerCanLogIn`, shared with travel / expenses / pricing), or the step was **escalated**. Never one's own. `approvals.sources.js` mirrors it (leave L1 needs no `can_approve`; all roles held count for leave). An employee-role team lead reaches Leave Approvals through `hasDirectReports` (`/approvals/stats`, active reports only) → `menuCatalog.js REPORTING_MANAGER_PAGES`. ⚠ Layout gates on the **primary** role: a secondary Manager role on a primary-`employee` login still meets the employee gate (EMP002 was made Manager-primary).
+
+**Escalation** — `leaveEscalation.service.js`, run by `leave.cron.js` weekdays 09:00 (it replaced a sweep that re-notified the same manager every day and never moved the request). Step clock: applied → manager approved → L2 approved. Past `escalation_days` (company_settings `leaves`, default 3, 0 = off) a step is escalated **once** (`leave_applications.escalated_at / escalation_step`, migration 20261124000001): L1 → manager, manager's manager, HR (HR may then decide); L2 → same-department heads + HR; HR step → HR + admins. Event `leave_escalated`.
+
+**The day count is the server's** — `countLeaveDays()` in apply: weekly offs incl. off-Saturdays (`shared/weekend.js`), holidays, clubbed days → `lop_days`, a half day only on a working day (`NO_WORKING_DAYS`); `is_lop` comes from the type; `clubbing_flag` only when a weekly off / holiday is inside the leave. A type picked by id must be active and the employee's company's (`LEAVE_TYPE_NOT_AVAILABLE`). Other apply rules: attachment / medical certificate, probation and notice → LOP only, min notice, max consecutive, gender, overlap.
+
+**Cancel / withdraw** — `cancelLeave()`: an employee only before the start (`LEAVE_ALREADY_STARTED`); HR any, with a reason once started; an approved leave's LOP is taken off the draft `payroll_runs` row (`postLopToPayroll(…, −1)`, salary in force), with a warning when that month's payroll is already approved.
+
+**Leave → payroll** — attendance payroll sync `lopInRange`: paid leave in WORKING days (it was calendar days, which hid absences); clubbed days inside a paid leave charged as LOP unless the person punched in. The LOP report = approved LOP leave ∪ `payroll_attendance_summary` (column `source`).
+
+**Attachments** — `POST /leaves/attachment` (5 MB, pdf / jpg / png / doc) → StorageService; `secureFiles.routes.js leaveAttachmentOwner` lets the applicant, reporting manager, delegate, a same-department head / L2 approver and HR read it; apply accepts only `/uploads/…` or https. (The document-master path kept no file without Google Drive and hid it from approvers as confidential.) Frontend `leaveShared.jsx openLeaveAttachment` fetches with the token.
+
+**Scoping fixes** — logins with no employee record no longer see the company: `/applications` manager queue (`manager_id = -1`), `/allocations` and `/accrual-history` (a manager with no employee → []); `/carry-forward-report` is HR-only.
+
+**Removed** — the Team Leaves menu row (route key kept → Team View), the Policy Rules tab (`leave_policies` was never read), All Leaves' own apply drawer and approve buttons, the old sandwich check, the Monday/Friday "clubbing" warning.
+
+**Migrations** 20261123000001 (encashment ↔ payroll adjustment), 20261123000002 (Saturdays off, encashment TDS, worked accrual), 20261124000001 (escalation). **Tests** `integration.leaveRules.test.js` (30), `integration.attendanceRules.test.js` (clubbed LOP in the sync), `smoke.leaves` (backend + frontend).
+
+```mermaid
+flowchart LR
+  A[Apply Leave] -->|server day count| L1{Manager L1}
+  L1 -->|type needs dept head| L2{Dept head L2}
+  L1 --> HR{HR final}
+  L2 --> HR
+  HR -->|approved| ATT[Attendance on_leave]
+  ATT --> SYNC[Payroll attendance sync: LOP incl. clubbed days]
+  SYNC --> PAY[Payroll run]
+  L1 -. waits over N days .-> ESC[Escalation: manager's manager + HR; HR may decide L1]
+  L2 -. waits over N days .-> ESC2[Escalation: dept heads + HR]
+  HR -. waits over N days .-> ESC3[Escalation: HR + admins]
+  ENC[Encashment approved] --> ADJ[payroll_adjustments earning, flat TDS] --> PAY
+  CAN[Cancel approved leave] -->|LOP back off the draft| PAY
+```

@@ -67,6 +67,7 @@ async function sweep(companyId) {
   await soft(`DELETE FROM audit_logs WHERE module_name = 'intelligence' AND reference_id IN (SELECT id::text FROM payroll_runs WHERE employee_id IN ${emps})`);
   await q(`DELETE FROM employee_bank_change_requests WHERE company_id = $1`);
   await q(`DELETE FROM leave_encashments WHERE company_id = $1 OR employee_id IN ${emps}`);
+  await q(`DELETE FROM leave_balances WHERE employee_id IN ${emps}`);
   await q(`DELETE FROM increment_recommendations WHERE company_id = $1 OR employee_id IN ${emps}`);
   await q(`DELETE FROM salary_revision_proposals WHERE company_id = $1`);
   await q(`DELETE FROM payroll_runs WHERE employee_id IN ${emps}`);
@@ -133,6 +134,12 @@ beforeAll(async () => {
     `INSERT INTO leave_types (leave_name, leave_code, annual_quota, is_encashable, company_id)
      VALUES ('PC01 Encashable', 'PC01EL', 12, true, $1) RETURNING id`, [co.companyId]);
   leaveTypeId = lt.id;
+  // A claim needs days to encash (balance check added 2026-11-23).
+  for (const emp of [E.SELF, E.COL]) {
+    await pool.query(
+      `INSERT INTO leave_balances (employee_id, leave_type_id, year, allocated_days, used_days) VALUES ($1, $2, $3, 12, 0)
+       ON CONFLICT (employee_id, leave_type_id, year) DO UPDATE SET allocated_days = 12`, [emp, leaveTypeId, CUR_Y]);
+  }
 
   R.SELF = (await pool.query(
     `INSERT INTO increment_recommendations (company_id, employee_id, current_ctc, recommended_increment_pct, recommended_new_ctc, status)
@@ -259,7 +266,15 @@ describe('decision 3 — leave encashment claims and their amounts', () => {
   it('a payroll:edit holder (hr) claims for an employee and sees the amounts', async () => {
     const res = await claim(U.hr, { employee_id: E.COL, tds_rate: 0.05 });
     expect(res.status, JSON.stringify(res.body)).toBe(201);
-    expect(Number(res.body.tds_amount)).toBe(100);
+    expect(Number(res.body.gross_amount)).toBe(2000);
+    // A rate Payroll sets overrides the Leave Settings % for this claim (2026-11-23).
+    expect(Number(res.body.tds_amount)).toBe(100);   // Payroll's own 5% on this claim (company default is 20%)
+  });
+
+  it('a claim larger than the balance is refused', async () => {
+    const res = await claim(U.hr, { employee_id: E.COL, days_encashed: 50 });
+    expect(res.status).toBe(422);
+    expect(res.body.code).toBe('INSUFFICIENT_BALANCE');
   });
 
   it('money fields go to payroll:view holders and the claimant only', async () => {

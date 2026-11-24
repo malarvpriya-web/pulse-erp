@@ -7,7 +7,7 @@ import { triggerEmail } from "../../services/emailTrigger.js";
 import recruitmentRepository from "../recruitment/repositories/recruitment.repository.js";
 import { getOfferValidityDays } from "../recruitment/offerValidity.js";
 import { canApproveRequisition, canApproveOffer } from "../recruitment/requisitionAccess.js";
-import { buildOfferLetterPdf, letterDate as offerLetterDate, rupees as offerRupees } from "../recruitment/offerLetter.js";
+import { offerLetterData, letterDate as offerLetterDate, rupees as offerRupees } from "../recruitment/offerLetter.js";
 import {
   SOURCES, SOURCE_BY_TYPE, MODULE_DECIDED_TYPES, central,
   buildContext, loadSlaHours, displayStatus, DEFAULT_SLA_HOURS,
@@ -263,6 +263,9 @@ export const getApprovalStats = async (req, res) => {
       isApprover: pending.length > 0 || history.length > 0
         || isApproverRole(req) || isAttendanceApprover(req)
         || !!ctx.perms.leaves?.can_approve || ctx.directReports.size > 0,
+      // Someone's reporting manager: opens Leave Approvals even with only the
+      // employee role (2026-11-24 — the L1 step needs no role grant).
+      hasDirectReports: ctx.activeReportCount > 0,
     });
   } catch (err) {
     send(res, err, 'Get approval stats error:');
@@ -373,12 +376,14 @@ async function approveSourceItem(prefix, sourceId, req) {
       const offer = await recruitmentRepository.findOfferById(sourceId, null);
       if (offer) {
         // The template's placeholders are company_name, job_title and
-        // offer_expiry_date; this used to send offer_date/designation/ctc, so the
-        // e-mail went out with blanks and promised a letter that was never
-        // attached (audit 2026-11-17 B9). The PDF is now attached.
-        const letter = await buildOfferLetterPdf(pool, { companyId: offer.company_id, offerId: sourceId, signatoryUserId: req.user?.userId ?? req.user?.id ?? null })
-          .catch((e) => { console.warn('[offer] letter PDF failed:', e.message); return null; });
-        const d = letter?.data || {};
+        // offer_expiry_date (audit 2026-11-17 B9).
+        // Owner 18 Nov 26: the offer goes as an e-mail ONLY — no letter is
+        // attached. The offer letter, appointment letter and confidentiality
+        // letter are issued at onboarding and filed on the employee record
+        // (recruitment/joiningLetters.js). offerLetterData only supplies the
+        // e-mail's fields here; no PDF is built.
+        const d = (await offerLetterData(pool, { companyId: offer.company_id, offerId: sourceId })
+          .catch((e) => { console.warn('[offer] e-mail data failed:', e.message); return null; })) || {};
         triggerEmail('offer_sent', {
           candidate_email:   offer.candidate_email || '',
           candidate_name:    offer.candidate_name  || '',
@@ -387,7 +392,7 @@ async function approveSourceItem(prefix, sourceId, req) {
           offer_expiry_date: offerLetterDate(d.offer_expiry_date),
           joining_date:      offerLetterDate(d.joining_date),
           ctc:               d.offered_salary ? offerRupees(d.offered_salary) : '',
-        }, offer.company_id, letter ? { attachments: [{ filename: letter.filename, content: letter.pdf, contentType: 'application/pdf' }] } : {});
+        }, offer.company_id);
       }
       return { requesterEmployeeId: offerRow.created_by, companyId: offerRow.company_id, label: 'Offer Letter' };
     }

@@ -209,7 +209,7 @@ export async function buildPeriodContext({ company_id, month, year, employee_id 
          AND employee_esi > 0 AND (year * 100 + month) = ANY($3::int[])`, [ids, FINAL_STATUSES, contribMonths]) : empty,
     // HR's one-time earnings and deductions for the month (§261).
     client.query(`
-      SELECT id, employee_id, kind, label, amount, account_code FROM payroll_adjustments
+      SELECT id, employee_id, kind, label, amount, account_code, tds_rate, in_wages FROM payroll_adjustments
        WHERE company_id = $1 AND month = $2 AND year = $3 AND is_test = false AND employee_id = ANY($4::int[])
        ORDER BY id`, [company_id, p.month, p.year, ids]),
   ]) : [empty, empty, empty, empty, empty, empty, empty, empty, empty, empty];
@@ -251,7 +251,7 @@ export async function buildPeriodContext({ company_id, month, year, employee_id 
       perq_loans: (loanM.get(k) || []).map(r => ({ balance: num(r.outstanding_balance), interest_rate: num(r.interest_rate), loan_type: r.loan_type, purpose: r.purpose })),
       night_shift_days: parseInt(l?.night_shift_days || 0),
       night_shift_rate: settings.night_shift_rate ?? 200,
-      adjustments: (adjM.get(k) || []).map(a => ({ id: a.id, kind: a.kind, label: a.label, amount: num(a.amount), account_code: a.account_code })),
+      adjustments: (adjM.get(k) || []).map(a => ({ id: a.id, kind: a.kind, label: a.label, amount: num(a.amount), account_code: a.account_code, tds_rate: a.tds_rate, in_wages: a.in_wages })),
       // Monthly payroll only: arrears, CTC and settlement figures carry no plan bonus.
       bonus_plans: rules['bonus.plans']?.plans ?? null,
       recoveries,
