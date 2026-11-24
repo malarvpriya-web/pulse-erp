@@ -518,6 +518,8 @@ describe('escalation (2026-11-24)', () => {
 
   it('not yet: HR cannot take the manager step, and nothing is escalated', async () => {
     expect((await api('post', `/approve/manager/${leaveId}`, { comments: 'x' })).status).toBe(403);
+    const row = (await api('get', '/applications?manager_status=pending&status=pending')).body.find(r => r.id === leaveId);
+    expect(row.hr_may_decide_l1).toBe(false);   // false, not null — the screen disables HR's buttons on it
     const { escalated } = await runLeaveEscalation({ companyId: A.companyId });
     expect(escalated.find(e => e.id === leaveId)).toBeUndefined();
   });

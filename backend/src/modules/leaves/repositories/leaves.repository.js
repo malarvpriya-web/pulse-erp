@@ -156,7 +156,7 @@ const leavesRepository = {
         -- HR / admin may take the manager step: it was escalated, or there is
         -- no manager who can act (none, left, or no active login) — the same
         -- rule leaves.routes.js authorizeL1 applies (2026-11-24).
-        (la.escalation_step = 'l1' OR NOT EXISTS (
+        (COALESCE(la.escalation_step = 'l1', false) OR NOT EXISTS (
            SELECT 1 FROM employees rm JOIN users ru ON ru.employee_id = rm.id AND ru.is_active = TRUE
             WHERE rm.id = e.reporting_manager_id AND rm.id <> e.id AND rm.deleted_at IS NULL
               AND NOT (${isExitedSql('rm.status')})

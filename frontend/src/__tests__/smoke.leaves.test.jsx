@@ -388,12 +388,22 @@ describe('LeaveApprovals — smoke', () => {
     await waitFor(() => expect(screen.getByText('2 left after')).toBeDefined());
   });
 
-  it('calls the manager approve endpoint on the L1 tab', async () => {
-    stubApis({ leaves: [PENDING_LEAVE] });
+  it('calls the manager approve endpoint on the L1 tab when HR may decide it', async () => {
+    stubApis({ leaves: [{ ...PENDING_LEAVE, hr_may_decide_l1: true }] });
     render(<LeaveApprovals />);
     await waitFor(() => screen.getByText('Priya Nair'));
     fireEvent.click(screen.getAllByText('Approve')[0]);
     await waitFor(() => expect(api.post).toHaveBeenCalledWith(`/leaves/approve/manager/${PENDING_LEAVE.id}`, expect.any(Object)));
+  });
+
+  it('HR waits for a reporting manager who can act: the buttons are disabled (2026-11-24)', async () => {
+    stubApis({ leaves: [{ ...PENDING_LEAVE, hr_may_decide_l1: false, manager_id: 999, delegate_approver_id: null }] });
+    render(<LeaveApprovals />);
+    await waitFor(() => screen.getByText('Priya Nair'));
+    const approve = screen.getAllByText('Approve')[0].closest('button');
+    expect(approve.disabled).toBe(true);
+    fireEvent.click(approve);
+    expect(api.post).not.toHaveBeenCalled();
   });
 
   it('a rejection needs a comment (no call without one)', async () => {

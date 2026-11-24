@@ -269,8 +269,9 @@ function QueueTable({ queue, toast, me = null, isAdmin = false }) {
                 const others = othersOff(l);
                 // HR / admin take the manager step only once it is escalated or
                 // there is no manager who can act (server: authorizeL1).
-                const waitMgr = queue.id === 'manager' && isAdmin && !l.hr_may_decide_l1
-                  && String(l.manager_id) !== String(me) && String(l.delegate_approver_id) !== String(me);
+                const isMe = id => me != null && id != null && String(id) === String(me);
+                const waitMgr = queue.id === 'manager' && isAdmin && l.hr_may_decide_l1 !== true
+                  && !isMe(l.manager_id) && !isMe(l.delegate_approver_id);
                 return (
                   <tr key={l.id} style={{ borderBottom: '1px solid #f9fafb', background: selected.has(l.id) ? '#f0fdf4' : i % 2 === 0 ? '#fff' : '#fafafa' }}>
                     {queue.bulkApprove && (
