@@ -26,7 +26,6 @@ const STATUS_CONFIG = {
 // WFH removed 2026-11-19 (owner: office staff punch on the machine, field staff in the app; no record was ever WFH).
 const ALL_STATUSES    = ['Present', 'Absent', 'Late', 'On Leave', 'Half Day'];
 const FILTER_STATUSES = ['All', 'Present', 'Absent', 'Late', 'On Leave', 'Half Day', 'Weekend', 'Pending'];
-const HOLIDAY_TYPES   = ['National', 'Optional', 'Restricted'];
 const DAY_LABELS      = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
 
 function getWeekDates(dateStr) {

@@ -186,9 +186,12 @@ export default function ApplyLeave({ setPage }) {
 
   useEffect(() => { loadBalance(isAdmin ? form.employee_id : uid); }, [uid, isAdmin, form.employee_id, loadBalance]);
 
+  // Types for the person the leave is for: gender-restricted ones they cannot
+  // take (Maternity / Paternity) are left out by the server (2026-11-24).
+  const typesFor = isAdmin ? form.employee_id : uid;
   useEffect(() => {
     setLeaveTypesLoading(true);
-    api.get('/leaves/types', { params: { applicable: 1 } })
+    api.get('/leaves/types', { params: { applicable: 1, ...(typesFor ? { for_employee: typesFor } : {}) } })
       .then(res => {
         // Types not offered by the company are switched off (Active = No) in
         // Leave Settings and never arrive here. Types the person holds no days
@@ -212,7 +215,7 @@ export default function ApplyLeave({ setPage }) {
       })
       .catch(() => { setLeaveTypes([]); })
       .finally(() => setLeaveTypesLoading(false));
-  }, []);  // eslint-disable-line react-hooks/exhaustive-deps
+  }, [typesFor]);  // eslint-disable-line react-hooks/exhaustive-deps
 
   // Keep a valid type picked: the first one this person can take, once their
   // balance is known (and again after HR switches to another employee).
@@ -231,10 +234,13 @@ export default function ApplyLeave({ setPage }) {
     return [...ys].sort().join(',');
   }, [form.start_date, form.end_date]);
   useEffect(() => {
-    Promise.all(holidayYears.split(',').map(y => api.get('/holidays', { params: { year: y } })
+    // The leave-taker's own calendar (company-wide + their zone) — the same
+    // days the server leaves out. HR applying on behalf asks for that person's.
+    const forEmp = isAdmin && form.employee_id ? { employee_id: form.employee_id } : {};
+    Promise.all(holidayYears.split(',').map(y => api.get('/holidays', { params: { year: y, ...forEmp } })
       .then(res => (Array.isArray(res.data) ? res.data : [])).catch(() => [])))
       .then(lists => setHolidays(lists.flat()));
-  }, [holidayYears]);
+  }, [holidayYears, isAdmin, form.employee_id]);
 
   // Fetch probation status for the target employee (self, or the picked
   // employee when HR/Admin applies on behalf). Drives the LOP-only lockdown.
@@ -415,7 +421,7 @@ export default function ApplyLeave({ setPage }) {
           <div className="al-policy-banner al-policy-lop">
             <AlertTriangle size={16} />
             <div>
-              <strong>{inProbation ? 'You are in your Probation Period' : 'Notice Period'} — Paid Leave Not Available</strong>
+              <strong>{inProbation ? (isAdmin && String(form.employee_id) !== String(uid) ? 'This employee is in probation' : 'You are in your Probation Period') : 'Notice Period'} — Paid Leave Not Available</strong>
               <p>
                 {inProbation
                   ? `Paid leave cannot be applied during probation${probation.probation_end ? ` (ends ${new Date(probation.probation_end + 'T00:00:00').toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' })})` : ''}. Only Loss of Pay (unpaid) leave is available and will be charged as LOP.`

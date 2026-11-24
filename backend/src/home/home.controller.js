@@ -67,7 +67,7 @@ export const getResources = async (req, res) => {
 
 export const getHolidays = async (req, res) => {
   try {
-    const holidays = await homeService.getHolidays(req.scope?.company_id ?? null);
+    const holidays = await homeService.getHolidays(req.scope?.company_id ?? null, req.user?.employee_id ?? null);
     res.json(holidays);
   } catch (err) {
     console.error(err);
@@ -77,7 +77,7 @@ export const getHolidays = async (req, res) => {
 
 export const getAllHolidays = async (req, res) => {
   try {
-    const holidays = await homeService.getAllHolidays(req.scope?.company_id ?? null);
+    const holidays = await homeService.getAllHolidays(req.scope?.company_id ?? null, req.user?.employee_id ?? null);
     res.json(holidays);
   } catch (err) {
     console.error(err);

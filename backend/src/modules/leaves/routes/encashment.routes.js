@@ -33,6 +33,22 @@ async function withoutMoney(req, rows, me) {
   });
 }
 
+// Who decides a claim (2026-11-24). Approving one writes a payroll EARNING, so
+// it is HR / payroll work — leaves:approve alone (held by every line manager
+// and department head) let a manager approve money for their team, and their
+// OWN claim. Never the claimant themself.
+export const ENCASHMENT_DECIDER_ROLES = ['super_admin', 'admin', 'hr', 'hr_manager', 'hr_exec', 'payroll_admin', 'finance_manager'];
+async function refuseDecider(req, claimEmployeeId) {
+  if (!hasRole(req, ...ENCASHMENT_DECIDER_ROLES)) {
+    return { status: 403, body: { code: 'ENCASHMENT_DECIDER_ONLY', error: 'Only HR or payroll can approve or cancel a leave encashment claim.' } };
+  }
+  const me = await employeeOf(req, pool);
+  if (me != null && Number(me) === Number(claimEmployeeId)) {
+    return { status: 403, body: { code: 'ENCASHMENT_SELF_DECISION', error: 'You cannot decide your own encashment claim — another HR or payroll person must.' } };
+  }
+  return null;
+}
+
 const router = express.Router();
 
 // ── GET /leave-encashment — list encashment records ───────────────────────────
@@ -242,6 +258,8 @@ router.post('/approve/:id', requirePermission('leaves', 'approve'), async (req, 
         WHERE le.id = $1 AND e.company_id = $2 FOR UPDATE OF le`, [req.params.id, cid]);
     if (!enc.length) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Encashment record not found' }); }
     if (enc[0].status !== 'pending') { await client.query('ROLLBACK'); return res.status(409).json({ error: 'Already processed' }); }
+    const refused = await refuseDecider(req, enc[0].employee_id);
+    if (refused) { await client.query('ROLLBACK'); return res.status(refused.status).json(refused.body); }
 
     const e = enc[0];
 
@@ -326,6 +344,16 @@ router.post('/reject/:id', requirePermission('leaves', 'approve'), async (req, r
   try {
     const { reason } = req.body;
     if (!reason?.trim()) return res.status(400).json({ error: 'Rejection reason is required' });
+    // Cancelling is HR / payroll's call, as approving is. The claimant cannot
+    // hit this route at all (employees hold no leaves:approve).
+    {
+      const { rows: [c] } = await pool.query(
+        `SELECT le.employee_id FROM leave_encashments le JOIN employees e ON e.id = le.employee_id
+          WHERE le.id = $1 AND e.company_id = $2`, [req.params.id, cid]);
+      if (!c) return res.status(404).json({ error: 'Encashment record not found' });
+      const refused = await refuseDecider(req, c.employee_id);
+      if (refused) return res.status(refused.status).json(refused.body);
+    }
 
     const { rows } = await pool.query(`
       -- 'cancelled', not 'rejected': the table's CHECK allows pending / approved /

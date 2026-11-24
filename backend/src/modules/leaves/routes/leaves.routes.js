@@ -65,8 +65,8 @@ async function syncLeaveToAttendance(application, poolRef) {
 
       // Skip holidays
       const isHoliday = await poolRef.query(
-        'SELECT 1 FROM holidays WHERE date=$1::date AND (company_id=$2 OR company_id IS NULL) LIMIT 1',
-        [dateStr, resolvedCompanyId]
+        'SELECT 1 FROM holidays WHERE date=$1::date AND (company_id=$2 OR company_id IS NULL) AND (zone_id IS NULL OR zone_id = (SELECT zone_id FROM employees WHERE id = $3)) LIMIT 1',
+        [dateStr, resolvedCompanyId, employee_id]
       ).then(r => r.rows.length > 0).catch(() => false);
       if (isHoliday) continue;
 
@@ -326,7 +326,7 @@ function normalizeApplicationPayload(body, employee_id, leave_type_id) {
  * last working day (clubbing → Loss of Pay). Same rule as ApplyLeave.jsx's
  * preview. Returns { error, code } for a request that cannot be a leave.
  */
-async function countLeaveDays({ companyId, start, end, halfDay = false }) {
+async function countLeaveDays({ companyId, start, end, halfDay = false, employeeId = null }) {
   const s = String(start || '').slice(0, 10), e = String(end || '').slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(s) || !/^\d{4}-\d{2}-\d{2}$/.test(e)) {
     return { error: 'Start and end dates are required (YYYY-MM-DD).', code: 'DATES_REQUIRED' };
@@ -336,9 +336,12 @@ async function countLeaveDays({ companyId, start, end, halfDay = false }) {
   if (span > 366) return { error: 'A leave request cannot be longer than a year.', code: 'RANGE_TOO_LONG' };
   const weekend = await getWeekendDays(companyId);
   const { rows: hol } = await pool.query(
+    // A zone's holiday is off only for that zone's employees (Holiday
+    // Calendar → zone); a company-wide one (no zone) for everyone.
     `SELECT date::text AS d FROM holidays
-      WHERE date BETWEEN $1::date AND $2::date AND (company_id = $3 OR company_id IS NULL)`,
-    [s, e, companyId]);
+      WHERE date BETWEEN $1::date AND $2::date AND (company_id = $3 OR company_id IS NULL)
+        AND (zone_id IS NULL OR zone_id = (SELECT zone_id FROM employees WHERE id = $4))`,
+    [s, e, companyId, employeeId]);
   const holidays = new Set(hol.map(h => h.d.slice(0, 10)));
   const days = [];
   for (let t = Date.parse(`${s}T00:00:00Z`); t <= Date.parse(`${e}T00:00:00Z`); t += 86400000) {
@@ -639,6 +642,23 @@ router.get('/types', requirePermission('leaves', 'view'), async (req, res) => {
         ${scopeClause}
       ORDER BY is_active DESC, leave_name
     `, [companyId, includeInactive]);
+    // for_employee=<id> (Apply Leave, 2026-11-24): leave out the types the
+    // person cannot take for their gender (Maternity / Paternity …) — the same
+    // rule /apply enforces (GENDER_RESTRICTED). Anyone but HR asks for
+    // themself, whatever id they send. Unknown gender: nothing is hidden.
+    if (applicable && req.query.for_employee != null) {
+      const target = isAdminOrHR(req) ? Number(req.query.for_employee) : await employeeOf(req, pool);
+      const { rows: [g] } = target ? await pool.query(
+        `SELECT LOWER(COALESCE(gender, '')) AS gender FROM employees WHERE id = $1 AND company_id = $2`, [target, companyId])
+        : { rows: [] };
+      const empG = g?.gender || '';
+      if (empG) {
+        return res.json(rows.filter(t => {
+          const r = String(t.gender_restriction || '').toLowerCase();
+          return !r || r === 'all' || empG.startsWith(r[0]);
+        }));
+      }
+    }
     res.json(rows);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -1268,10 +1288,24 @@ async function handleApplyLeave(req, res) {
      * first and last working day of the leave are Loss of Pay (clubbing); a
      * half day must fall on a working day. Whatever the client sent is ignored.
      */
+    // No back-dated leave from employees (owner, 2026-11-24): a leave that
+    // starts before today is entered by HR (Apply Leave → on behalf). The
+    // screen already blocked past dates; the API took any date.
+    if (!isAdminOrHR(req)) {
+      const now = new Date();
+      const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+      if (String(normalizedPayload.start_date || '').slice(0, 10) < todayStr) {
+        return res.status(422).json({
+          error: 'Leave cannot start before today. For a past date, ask HR to enter it.',
+          code: 'BACKDATED_NOT_ALLOWED', module: 'leaves',
+        });
+      }
+    }
     {
       const { rows: [empCo] } = await pool.query('SELECT company_id FROM employees WHERE id = $1', [normalizedPayload.employee_id]);
       const count = await countLeaveDays({
         companyId: empCo?.company_id ?? req.scope?.company_id ?? null,
+        employeeId: normalizedPayload.employee_id,
         start: normalizedPayload.start_date,
         end: normalizedPayload.half_day ? normalizedPayload.start_date : normalizedPayload.end_date,
         halfDay: !!normalizedPayload.half_day,
@@ -1368,7 +1402,7 @@ async function handleApplyLeave(req, res) {
       `SELECT min_notice_days, requires_attachment, requires_medical_cert_days,
               allowed_in_probation, max_consecutive_days, sandwich_rule,
               gender_restriction, include_holidays, include_weekends,
-              is_lop_type, is_paid
+              is_lop_type, is_paid, leave_name
        FROM leave_types WHERE id = $1`, [leave_type_id]
     );
     if (typeRows.length) {
@@ -1377,15 +1411,21 @@ async function handleApplyLeave(req, res) {
       // is unpaid for every day of it, not only the clubbed ones.
       normalizedPayload.is_lop = !!lt.is_lop_type;
       if (lt.is_lop_type) normalizedPayload.lop_days = normalizedPayload.number_of_days;
-      const today = new Date(); today.setHours(0,0,0,0);
       const startDate = new Date(normalizedPayload.start_date);
       const endDate   = new Date(normalizedPayload.end_date);
-      const noticeDays = Math.ceil((startDate - today) / 86400000);
+      // Calendar days between today (business time zone — the process TZ is
+      // pinned) and the start, counted on dates only. It compared UTC midnight
+      // of the start with LOCAL midnight today, so every request looked 5½
+      // hours further away and got one day more notice than it gave.
+      const now = new Date();
+      const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+      const noticeDays = Math.round((Date.parse(`${String(normalizedPayload.start_date).slice(0, 10)}T00:00:00Z`) - Date.parse(`${todayStr}T00:00:00Z`)) / 86400000);
       const exemptTypes = ['sick', 'medical', 'emergency', 'bereavement'];
 
-      // Min notice
+      // Min notice. Exempt by the TYPE's own name — the request's free-text
+      // leave_type let anyone send "sick" with an Earned Leave id and skip it.
       if (lt.min_notice_days > 0 && noticeDays < lt.min_notice_days) {
-        if (!exemptTypes.some(e => (leave_type || '').toLowerCase().includes(e))) {
+        if (!exemptTypes.some(e => String(lt.leave_name || '').toLowerCase().includes(e))) {
           return res.status(422).json({
             error: `This leave type requires at least ${lt.min_notice_days} day(s) advance notice.`,
             code: 'INSUFFICIENT_NOTICE',
@@ -1576,7 +1616,9 @@ router.post('/approve/manager/:id', requirePermission('leaves', 'view'), async (
     // Sync to attendance if this is a single-level approval that results in status='approved'
     syncLeaveToAttendance(application, pool).catch(() => {});
     // Post LOP (probation / clubbing) if this approval finalized the leave
-    postLopToPayroll(application, pool).catch(() => {});
+    // Awaited (2026-11-24): fire-and-forget let the posting land after the
+    // response — payroll could be run before it, and a later cancel saw it twice.
+    await postLopToPayroll(application, pool).catch(() => {});
     // Still pending: tell the employee which step is done and what is next —
     // not "Leave Approved", which they read as final.
     const { rows: [lt1] } = await pool.query('SELECT leave_name, l2_required FROM leave_types WHERE id = $1', [application.leave_type_id]);
@@ -1627,7 +1669,7 @@ router.post('/approve/l2/:id', requirePermission('leaves', 'approve'), async (re
     // Sync to attendance if this is a single-level approval that results in status='approved'
     syncLeaveToAttendance(application, pool).catch(() => {});
     // Post LOP (probation / clubbing) if this approval finalized the leave
-    postLopToPayroll(application, pool).catch(() => {});
+    await postLopToPayroll(application, pool).catch(() => {});
     notifyLeaveEvent('leave_step_approved', application, req.user, [application.employee_id],
       { step: 'the department head', next: 'HR' });
     res.json(application);
@@ -1675,7 +1717,7 @@ router.post('/approve/hr/:id', requirePermission('leaves', 'approve'), async (re
     // Auto-sync attendance records for approved leave dates (WFH-aware, holiday-aware)
     syncLeaveToAttendance(application, pool).catch(() => {});
     // Post LOP deduction to active payroll run if this is a Loss of Pay application
-    postLopToPayroll(application, pool).catch(() => {});
+    await postLopToPayroll(application, pool).catch(() => {});
     notifyLeaveEvent('approved', application, req.user, [application.employee_id, application.manager_id]);
     res.json(application);
   } catch (error) {
@@ -1729,7 +1771,7 @@ router.post('/bulk-approve', requirePermission('leaves', 'approve'), async (req,
       // through updateStatus(), which skipped both.
       const app = await leavesRepository.approveByHR(id, actorEmpId, comments || 'Bulk approved');
       syncLeaveToAttendance(app, pool).catch(() => {});
-      postLopToPayroll(app, pool).catch(() => {});
+      await postLopToPayroll(app, pool).catch(() => {});
       notifyLeaveEvent('approved', app, req.user, [app.employee_id, app.manager_id]);
       results.push({ id, status: 'approved' });
     } catch (err) {

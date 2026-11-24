@@ -1,6 +1,7 @@
 import express from 'express';
 import pool from '../../../config/db.js';
-import { allowRoles } from '../../../middlewares/auth.middleware.js';
+import { allowRoles, hasRole } from '../../../middlewares/auth.middleware.js';
+import { employeeOf } from '../../../shared/scope.js';
 
 const router = express.Router();
 
@@ -15,6 +16,10 @@ const HOLIDAY_EDIT_ROLES = [
   'Admin', 'SuperAdmin', 'HR',
 ];
 const requireHolidayEditor = allowRoles(...HOLIDAY_EDIT_ROLES);
+// Every holiday is a day off for the people it covers (the whole company, or
+// one zone). There are no optional / restricted holidays (owner, 2026-11-24):
+// a day only some people take is leave, not a holiday.
+export const HOLIDAY_TYPES = ['National', 'Regional', 'Festival', 'Company'];
 
 // GET /holidays?year=2026&zone_id=3&upcoming=1
 // NULL company_id rows are global seed data visible to all tenants.
@@ -35,7 +40,18 @@ router.get('/', async (req, res) => {
       conditions.push(`h.date >= CURRENT_DATE`);
     }
 
-    if (zone_id) {
+    // Each zone may have its own calendar (owner, 2026-11-24). Anyone who does
+    // not edit the calendar sees THEIR calendar: company-wide holidays plus
+    // their zone's. HR may ask for one employee's (?employee_id — Apply Leave
+    // on behalf) or one zone's (?zone_id); with neither, every zone.
+    const editor = hasRole(req, ...HOLIDAY_EDIT_ROLES);
+    const forEmployee = editor
+      ? (req.query.employee_id ? Number(req.query.employee_id) : null)
+      : await employeeOf(req, pool);
+    if (!editor || forEmployee) {
+      params.push(forEmployee ?? -1);
+      conditions.push(`(h.zone_id IS NULL OR h.zone_id = (SELECT zone_id FROM employees WHERE id = $${params.length}))`);
+    } else if (zone_id) {
       // National holidays (zone_id IS NULL) always included; add zone-specific ones
       params.push(Number(zone_id));
       conditions.push(`(h.zone_id IS NULL OR h.zone_id = $${params.length})`);
@@ -59,7 +75,10 @@ router.get('/', async (req, res) => {
 router.post('/', requireHolidayEditor, async (req, res) => {
   try {
     const companyId = scopeCompanyId(req);
-    const { name, date, type = 'Optional', description = '', zone_id = null } = req.body;
+    const { name, date, type = 'Festival', description = '', zone_id = null } = req.body;
+    if (!HOLIDAY_TYPES.includes(type)) {
+      return res.status(400).json({ error: `Holiday type must be one of: ${HOLIDAY_TYPES.join(', ')}.`, code: 'HOLIDAY_TYPE' });
+    }
     if (!name?.trim() || !date) return res.status(400).json({ error: 'name and date are required' });
 
     // Duplicate check: same name (case-insensitive) + date + company
@@ -111,6 +130,9 @@ router.patch('/:id', requireHolidayEditor, async (req, res) => {
 
     if (name !== undefined)        { params.push(name.trim());     sets.push(`name = $${params.length}`); }
     if (date !== undefined)        { params.push(date);            sets.push(`date = $${params.length}`); }
+    if (type !== undefined && !HOLIDAY_TYPES.includes(type)) {
+      return res.status(400).json({ error: `Holiday type must be one of: ${HOLIDAY_TYPES.join(', ')}.`, code: 'HOLIDAY_TYPE' });
+    }
     if (type !== undefined)        { params.push(type);            sets.push(`type = $${params.length}`); }
     if (description !== undefined) { params.push(description);     sets.push(`description = $${params.length}`); }
     if (zone_id !== undefined)     { params.push(zone_id || null); sets.push(`zone_id = $${params.length}`); }

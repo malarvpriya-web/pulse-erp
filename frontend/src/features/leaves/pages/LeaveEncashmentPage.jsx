@@ -197,12 +197,16 @@ function ReasonDialog({ claim, onConfirm, onClose }) {
 }
 
 export default function LeaveEncashmentPage() {
-  const { user, hasPermission } = useAuth();
+  const { user, hasPermission, hasAnyRole } = useAuth();
   const toast = useToast();
   // PC-01 decision 3: a claim for someone else is payroll:edit work.
   const claimsForOthers = typeof hasPermission === 'function' && hasPermission('payroll', 'edit');
-  const canDecide = typeof hasPermission === 'function' && hasPermission('leaves', 'approve');
+  // Approving writes a payroll earning: HR / payroll only, never your own
+  // claim (server: ENCASHMENT_DECIDER_ROLES). leaves:approve is held by every
+  // line manager, so it is not enough.
+  const canDecide = hasAnyRole('super_admin', 'admin', 'hr', 'hr_manager', 'hr_exec', 'payroll_admin', 'finance_manager');
   const ownEmployeeId = user?.employee_id ?? null;
+  const isOwn = r => ownEmployeeId != null && String(r.employee_id) === String(ownEmployeeId);
 
   const [records, setRecords] = useState([]);
   const [employees, setEmployees] = useState([]);
@@ -357,7 +361,7 @@ export default function LeaveEncashmentPage() {
                     </td>
                     <td style={{ padding: '10px 12px', fontSize: 12, color: '#6b7280', maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.reason}>{r.reason || '—'}</td>
                     <td style={{ padding: '10px 12px' }}>
-                      {r.status === 'pending' && canDecide ? (
+                      {r.status === 'pending' && canDecide && !isOwn(r) ? (
                         <div style={{ display: 'flex', gap: 5 }}>
                           <button onClick={() => setApproveFor(r)} disabled={acting === r.id}
                             style={{ display: 'flex', alignItems: 'center', gap: 3, padding: '4px 9px', background: '#d1fae5', color: '#065f46', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 11, fontWeight: 600, opacity: acting === r.id ? 0.5 : 1 }}>
@@ -369,7 +373,8 @@ export default function LeaveEncashmentPage() {
                           </button>
                         </div>
                       ) : (
-                        <span style={{ fontSize: 12, color: '#9ca3af' }}>{r.approved_by_name ? `By ${r.approved_by_name}` : '—'}</span>
+                        <span style={{ fontSize: 12, color: '#9ca3af' }}>{/* approved_by_name is a CONCAT — a blank " " when nobody decided yet. */}
+                          {String(r.approved_by_name || '').trim() ? `By ${String(r.approved_by_name).trim()}` : r.status === 'pending' ? 'Waiting for HR / payroll' : '—'}</span>
                       )}
                     </td>
                   </tr>

@@ -81,7 +81,7 @@ beforeEach(() => {
 describe('POST /api/leaves — submit leave request', () => {
   it('401 without token', async () => {
     const res = await request(app).post('/api/leaves')
-      .send({ leave_type: 'casual', start_date: '2026-05-01', end_date: '2026-05-02', days: 2, reason: 'Test' });
+      .send({ leave_type: 'casual', start_date: '2027-05-03', end_date: '2027-05-04', days: 2, reason: 'Test' });
     expect(res.status).toBe(401);
   });
 
@@ -98,7 +98,7 @@ describe('POST /api/leaves — submit leave request', () => {
 
     const res = await request(app).post('/api/leaves')
       .set('Authorization', `Bearer ${employeeToken()}`)
-      .send({ leave_type_id: 1, leave_type: 'casual', start_date: '2026-05-01', end_date: '2026-05-02', days: 2, reason: 'Personal work' });
+      .send({ leave_type_id: 1, leave_type: 'casual', start_date: '2027-05-03', end_date: '2027-05-04', days: 2, reason: 'Personal work' });
 
     expect(res.status).toBe(201);
     expect(res.body.status).toBe('pending');
@@ -111,7 +111,7 @@ describe('POST /api/leaves — submit leave request', () => {
 
     const res = await request(app).post('/api/leaves')
       .set('Authorization', `Bearer ${employeeToken()}`)
-      .send({ leave_type: 'nonexistent', start_date: '2026-05-01', end_date: '2026-05-02', days: 2 });
+      .send({ leave_type: 'nonexistent', start_date: '2027-05-03', end_date: '2027-05-04', days: 2 });
 
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/not found/i);

@@ -537,8 +537,12 @@ const leavesRepository = {
       FROM leave_applications la
       JOIN employees e  ON la.employee_id = e.id
       JOIN leave_types lt ON la.leave_type_id = lt.id
-      WHERE la.status = 'approved' AND la.deleted_at IS NULL${cidClause}
+      WHERE ${['1', 'true'].includes(String(filters.include_pending || '')) ? "la.status IN ('approved', 'pending')" : "la.status = 'approved'"}
+        AND la.deleted_at IS NULL${cidClause}
     `;
+    // include_pending=1 (Leave Calendar → "Show pending"): requests not yet
+    // decided too, so cover can be planned before they are approved. Without
+    // it approved only — Leave Approvals' "also off" relies on that.
 
     if (filters.start_date && filters.end_date) {
       query += ` AND la.start_date <= $${paramCount + 1} AND la.end_date >= $${paramCount}`;

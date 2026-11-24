@@ -317,8 +317,13 @@ router.get('/missed-timesheets', async (req, res) => {
         [eid, startISO, endISO]
       ).catch(() => ({ rows: [] })),
       pool.query(
-        `SELECT date::text AS d FROM holidays WHERE date BETWEEN $1 AND $2`,
-        [startISO, endISO]
+        // The employee's own calendar: their company's holidays, company-wide
+        // or of their zone (it read every company's holidays).
+        `SELECT date::text AS d FROM holidays h
+          WHERE h.date BETWEEN $1 AND $2
+            AND (h.company_id IS NULL OR h.company_id = (SELECT company_id FROM employees WHERE id = $3))
+            AND (h.zone_id IS NULL OR h.zone_id = (SELECT zone_id FROM employees WHERE id = $3))`,
+        [startISO, endISO, eid]
       ).catch(() => ({ rows: [] })),
       pool.query(
         `SELECT start_date::text AS s, end_date::text AS e

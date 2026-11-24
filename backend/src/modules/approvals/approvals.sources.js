@@ -206,13 +206,14 @@ const leave = {
     if (r.stage_key === 'l2') return holds(ctx, 'department_head', 'l2_approver', 'admin', 'super_admin', 'hr_manager');
     return holds(ctx, 'hr', 'hr_manager', 'admin', 'super_admin');
   },
+  // One place decides a leave (owner, 2026-11-24): Leave Approvals, which
+  // shows what the decision needs — balance after, who else is off, the
+  // attachment, the escalation. The Approval Center lists the request (and
+  // counts it) and opens that screen on the right queue; it no longer has its
+  // own Approve / Reject / Delegate for leave.
   actions(r) {
-    const lvl = r.stage_key === 'l1' ? 'manager' : r.stage_key;
-    return {
-      approve: req_('post', `/leaves/approve/${lvl}/${r.source_id}`, {}, 'comments'),
-      reject:  req_('post', `/leaves/reject/${lvl}/${r.source_id}`,  {}, 'comments', { commentRequired: true }),
-      ...(r.stage_key === 'l1' ? { delegate: req_('post', `/leaves/delegate/${r.source_id}`, {}, null, { delegateKey: 'delegate_employee_id' }) } : {}),
-    };
+    const queue = r.stage_key === 'l1' ? 'manager' : r.stage_key;
+    return { open: { page: 'LeaveApprovals', params: { queue, leave: r.source_id } } };
   },
   mine(ctx) {
     return q(`

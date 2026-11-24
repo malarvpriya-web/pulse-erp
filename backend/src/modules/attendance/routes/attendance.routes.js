@@ -911,8 +911,9 @@ router.post('/clock', clockRateLimit, async (req, res) => {
           // §278.4: only employees chosen for comp off (Settings → Comp off).
           if (compOffEnabled && !isWeekend2 && await isCompOffEligible(pool, employee_id)) {
             const hQ = await pool.query(
-              `SELECT id FROM holidays WHERE date=$1::date AND (company_id=$2 OR company_id IS NULL) LIMIT 1`,
-              [today, companyId]
+              `SELECT id FROM holidays WHERE date=$1::date AND (company_id=$2 OR company_id IS NULL)
+                 AND (zone_id IS NULL OR zone_id = (SELECT zone_id FROM employees WHERE id = $3)) LIMIT 1`,
+              [today, companyId, employee_id]
             );
             if (hQ.rows.length > 0 && totalHours >= fullDayHours) {
               const holidayId = hQ.rows[0].id;
@@ -2632,21 +2633,31 @@ router.post('/payroll-sync', requireAttendanceAdmin, async (req, res) => {
     const prevM = m === 1 ? 12 : m - 1, prevY = m === 1 ? y - 1 : y;
     const prevStart = `${prevY}-${pad2(prevM)}-01`;
     const prevEnd = `${prevY}-${pad2(prevM)}-${pad2(new Date(prevY, prevM, 0).getDate())}`;
-    const holidayDates = new Set((await pool.query(`
-      SELECT date::text AS d FROM holidays
+    // Holidays are per zone (owner, 2026-11-24: each zone may have its own
+    // calendar): a holiday with no zone is everyone's, one with a zone only
+    // that zone's employees'. holidayDates = the company-wide ones.
+    const holRows = (await pool.query(`
+      SELECT date::text AS d, zone_id FROM holidays
        WHERE date BETWEEN $1 AND $2
          AND (company_id = $3 OR company_id IS NULL)
-    `, [prevStart, endDate, companyId])).rows.map(r => r.d).filter(d => !dayIsWeekend(d, weekendCfg)));
+    `, [prevStart, endDate, companyId])).rows.filter(r => !dayIsWeekend(r.d, weekendCfg));
+    const holByZone = new Map();
+    const holSetFor = (zoneId = null) => {
+      const k = zoneId == null ? 'none' : String(zoneId);
+      if (!holByZone.has(k)) holByZone.set(k, new Set(holRows.filter(r => r.zone_id == null || (zoneId != null && Number(r.zone_id) === Number(zoneId))).map(r => r.d)));
+      return holByZone.get(k);
+    };
+    const holidayDates = holSetFor(null);
     workingDays = Math.max(0, workingDays - [...holidayDates].filter(d => d >= startDate).length);
     const todayIso = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
     const isoOf = (d) => (d == null ? null : (d instanceof Date ? d.toLocaleDateString('en-CA') : String(d).slice(0, 10)));
     const nextDay = (ds) => { const d = new Date(`${ds}T00:00:00Z`); d.setUTCDate(d.getUTCDate() + 1); return d.toISOString().slice(0, 10); };
     // Working days in [from, to] (not a weekly off, not a holiday).
-    const countWorking = (from, to) => {
+    const countWorking = (from, to, hs = holidayDates) => {
       let n = 0;
       for (let d = new Date(`${from}T00:00:00Z`); d.toISOString().slice(0, 10) <= to; d.setUTCDate(d.getUTCDate() + 1)) {
         const dow = d.getUTCDay(), ds = d.toISOString().slice(0, 10);
-        if (!dayIsWeekend(ds, weekendCfg) && !holidayDates.has(ds)) n++;
+        if (!dayIsWeekend(ds, weekendCfg) && !hs.has(ds)) n++;
       }
       return n;
     };
@@ -2654,9 +2665,9 @@ router.post('/payroll-sync', requireAttendanceAdmin, async (req, res) => {
     const clip = (from, to, joining, exit) => [[from, isoOf(joining)].filter(Boolean).sort().pop(), [to, isoOf(exit)].filter(Boolean).sort()[0]];
     // Loss of pay in [from, to]: working days not covered by attendance
     // (present / late / WFH, half days as half) or approved paid leave.
-    const lopInRange = async (employeeId, from, to) => {
+    const lopInRange = async (employeeId, from, to, hs = holidayDates) => {
       if (from > to) return { lop: 0, working: 0, leave: 0 };
-      const working = countWorking(from, to);
+      const working = countWorking(from, to, hs);
       const { rows: [a] } = await pool.query(`
         SELECT COUNT(*) FILTER (WHERE status IN ('present','late','wfh'))::int AS p,
                COUNT(*) FILTER (WHERE status = 'half_day')::int AS h
@@ -2677,7 +2688,7 @@ router.post('/payroll-sync', requireAttendanceAdmin, async (req, res) => {
          WHERE la.employee_id = $1 AND LOWER(la.status) = 'approved' AND la.deleted_at IS NULL
            AND NOT COALESCE(la.is_lop, false) AND COALESCE(lt.is_paid, true) AND NOT COALESCE(lt.is_lop_type, false)
            AND la.start_date <= $3::date AND la.end_date >= $2::date`, [employeeId, from, to]);
-      const isWorkingDay = (ds) => !dayIsWeekend(ds, weekendCfg) && !holidayDates.has(ds);
+      const isWorkingDay = (ds) => !dayIsWeekend(ds, weekendCfg) && !hs.has(ds);
       const daysOf = (f, t) => { const out = []; for (let d = new Date(`${f}T00:00:00Z`); d.toISOString().slice(0, 10) <= t; d.setUTCDate(d.getUTCDate() + 1)) out.push(d.toISOString().slice(0, 10)); return out; };
       let workedOn = null;   // dates with a punch, fetched only if a leave has clubbed days
       let paidLeave = 0, clubbed = 0;
@@ -2685,7 +2696,7 @@ router.post('/payroll-sync', requireAttendanceAdmin, async (req, res) => {
         const ls = lv.s.slice(0, 10), le = lv.e.slice(0, 10);
         const s = ls > from ? ls : from, e = le < to ? le : to;
         if (lv.half_day) { if (isWorkingDay(s)) paidLeave += 0.5; continue; }
-        paidLeave += countWorking(s, e);
+        paidLeave += countWorking(s, e, hs);
         if (lv.lop_days > 0) {
           const all = daysOf(ls, le);
           const fw = all.find(isWorkingDay), lw = [...all].reverse().find(isWorkingDay);
@@ -2713,7 +2724,7 @@ router.post('/payroll-sync', requireAttendanceAdmin, async (req, res) => {
     // Step 4 — aggregate per-employee attendance stats
     const { rows: empStats } = await pool.query(`
       SELECT
-        e.id AS employee_id, e.joining_date, e.exit_date,
+        e.id AS employee_id, e.joining_date, e.exit_date, e.zone_id,
         COUNT(*) FILTER (WHERE ar.status IN ('present','late')) AS present_days,
         COUNT(*) FILTER (WHERE ar.status = 'absent')           AS absent_days,
         COUNT(*) FILTER (WHERE ar.status = 'wfh')              AS wfh_days,
@@ -2728,7 +2739,7 @@ router.post('/payroll-sync', requireAttendanceAdmin, async (req, res) => {
       WHERE LOWER(e.status) IN ('active','probation','notice')
         AND e.deleted_at IS NULL ${cidEmp}
         ${empFilter.replace(/AND employee_id/, 'AND e.id')}
-      GROUP BY e.id, e.joining_date, e.exit_date
+      GROUP BY e.id, e.joining_date, e.exit_date, e.zone_id
     `, [startDate, endDate]);
 
     // Late-coming penalties (§278.3, Settings → Late-coming penalties): extra
@@ -2752,9 +2763,10 @@ router.post('/payroll-sync', requireAttendanceAdmin, async (req, res) => {
       const mine = summaryOf(row.employee_id, m, y);
       const countedTo = mine?.carried_to_next && mine.counted_to ? mine.counted_to : [endDate, todayIso].sort()[0];
       const [fFrom, fTo] = clip(startDate, endDate, row.joining_date, row.exit_date);
-      const empWorkingDays = fFrom > fTo ? 0 : countWorking(fFrom, fTo);
+      const hs = holSetFor(row.zone_id);   // this employee's zone calendar
+      const empWorkingDays = fFrom > fTo ? 0 : countWorking(fFrom, fTo, hs);
       const [cFrom, cTo] = clip(startDate, countedTo, row.joining_date, row.exit_date);
-      const counted = await lopInRange(row.employee_id, cFrom, cTo);
+      const counted = await lopInRange(row.employee_id, cFrom, cTo, hs);
       const pen = penalties.get(Number(row.employee_id)) || { days: 0, lines: [] };
       const lopDays = counted.lop + pen.days;
       const approvedLeaveDays = counted.leave;
@@ -2766,9 +2778,9 @@ router.post('/payroll-sync', requireAttendanceAdmin, async (req, res) => {
       const prev = summaryOf(row.employee_id, prevM, prevY);
       if (prev?.counted_to && prev.counted_to < prevEnd) {
         const [gFrom, gTo] = clip(nextDay(prev.counted_to), prevEnd, row.joining_date, row.exit_date);
-        carriedLop = (await lopInRange(row.employee_id, gFrom, gTo)).lop;
+        carriedLop = (await lopInRange(row.employee_id, gFrom, gTo, hs)).lop;
         const [pFrom, pTo] = clip(prevStart, prevEnd, row.joining_date, row.exit_date);
-        carriedBase = pFrom > pTo ? null : countWorking(pFrom, pTo);
+        carriedBase = pFrom > pTo ? null : countWorking(pFrom, pTo, hs);
         await pool.query(`UPDATE payroll_attendance_summary SET carried_to_next = true
                             WHERE employee_id = $1 AND month = $2 AND year = $3`, [row.employee_id, prevM, prevY]);
       }

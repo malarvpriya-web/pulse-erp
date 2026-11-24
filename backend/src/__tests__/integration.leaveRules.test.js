@@ -550,3 +550,109 @@ describe('escalation (2026-11-24)', () => {
     expect((await api('put', '/settings', { escalation_days: 31 })).status).toBe(400);
   });
 });
+
+// 2026-11-24 audit: advance notice counted on dates (it read UTC midnight
+// against local midnight → one day too generous) and exempt by the TYPE's
+// name, not the free-text leave_type the request carries; a zone's holiday
+// is off only for that zone.
+describe('advance notice and zone holidays (2026-11-24)', () => {
+  const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  let start, diff, zoneId = null, zoneEmp = null;
+  beforeAll(async () => {
+    // First weekday ≥ 5 days ahead that is no holiday of this company / global.
+    const d = new Date(); d.setHours(12, 0, 0, 0); d.setDate(d.getDate() + 5);
+    for (;;) {
+      const s = ymd(d);
+      const { rows } = await pool.query(`SELECT 1 FROM holidays WHERE date = $1::date AND (company_id = $2 OR company_id IS NULL)`, [s, A.companyId]);
+      if (d.getDay() !== 0 && d.getDay() !== 6 && !rows.length) break;
+      d.setDate(d.getDate() + 1);
+    }
+    start = ymd(d);
+    const t = new Date(); t.setHours(12, 0, 0, 0);
+    diff = Math.round((d - t) / 86400000);
+    zoneId = (await pool.query('SELECT id FROM master_zones ORDER BY id LIMIT 1')).rows[0]?.id ?? null;
+  });
+  afterAll(async () => {
+    await pool.query(`DELETE FROM holidays WHERE company_id = $1`, [A.companyId]);
+    if (zoneEmp) await pool.query('UPDATE employees SET zone_id = NULL WHERE id = $1', [zoneEmp]);
+  });
+  const typeWithNotice = async (code, days, year = Number(start.slice(0, 4))) => {
+    const id = (await pool.query(
+      `INSERT INTO leave_types (leave_name, leave_code, annual_quota, company_id, min_notice_days, is_active)
+       VALUES ($1, $1, 30, $2, $3, true) RETURNING id`, [code, A.companyId, days])).rows[0].id;
+    for (const e of [emp, noticeEmp]) {
+      await pool.query(`INSERT INTO leave_balances (employee_id, leave_type_id, year, allocated_days, used_days) VALUES ($1,$2,$3,30,0)`, [e, id, year]);
+    }
+    return id;
+  };
+
+  it('exactly the notice given is accepted; one day short is refused', async () => {
+    const ok = await apply({ leave_type_id: await typeWithNotice('ZZNTCOK', diff), start_date: start, end_date: start });
+    expect(ok.status, JSON.stringify(ok.body)).toBe(201);
+    await pool.query('DELETE FROM leave_applications WHERE id = $1', [ok.body.id]);
+    const short = await apply({ leave_type_id: await typeWithNotice('ZZNTCSHORT', diff + 1), start_date: start, end_date: start });
+    expect(short.status, JSON.stringify(short.body)).toBe(422);
+    expect(short.body.code).toBe('INSUFFICIENT_NOTICE');
+  });
+
+  it('calling it "Sick Leave" in the request does not skip another type\'s notice', async () => {
+    const r = await apply({ leave_type_id: await typeWithNotice('ZZNTCNAME', 60), leave_type: 'Sick Leave', start_date: start, end_date: start });
+    expect(r.status, JSON.stringify(r.body)).toBe(422);
+    expect(r.body.code).toBe('INSUFFICIENT_NOTICE');
+  });
+
+  it('a zone holiday is off for that zone only', async () => {
+    if (zoneId == null) return;   // no master zone in this database
+    await pool.query(`INSERT INTO holidays (name, date, company_id, zone_id, type) VALUES ('ZZ zone day', '2027-11-16', $1, $2, 'Regional')`, [A.companyId, zoneId]);
+    const zt = await typeWithNotice('ZZZONE', 0, 2027);
+    const other = await apply({ leave_type_id: zt, start_date: '2027-11-16', end_date: '2027-11-16' });
+    expect(other.status, JSON.stringify(other.body)).toBe(201);
+    expect(Number(other.body.number_of_days)).toBe(1);
+    await pool.query('DELETE FROM leave_applications WHERE id = $1', [other.body.id]);
+    zoneEmp = noticeEmp;
+    await pool.query('UPDATE employees SET zone_id = $1 WHERE id = $2', [zoneId, zoneEmp]);
+    const inZone = await api('post', '/apply', { employee_id: zoneEmp, reason: 'zone', leave_type_id: zt, start_date: '2027-11-16', end_date: '2027-11-16' });
+    expect(inZone.status, JSON.stringify(inZone.body)).toBe(400);
+    expect(inZone.body.code).toBe('NO_WORKING_DAYS');
+  });
+});
+
+// Owner decisions 2026-11-24: no back-dated leave from employees (HR enters
+// it); Apply Leave lists no type the person cannot take for their gender.
+describe('back-dated leave and gender-restricted types (2026-11-24)', () => {
+  let empUserId, typeF;
+  const selfToken = () => jwt.sign({ userId: empUserId, role: 'employee', company_id: A.companyId, employee_id: emp }, process.env.JWT_SECRET, { expiresIn: '1h' });
+  const asSelf = (method, path, body) => request(app)[method](`/api/leaves${path}`)
+    .set('Authorization', `Bearer ${selfToken()}`).send(body || {});
+  beforeAll(async () => {
+    const { rows: [u] } = await pool.query(
+      `INSERT INTO users (name, email, password_hash, company_id, is_active, role, employee_id)
+       VALUES ($1, $2, 'not-a-real-hash', $3, true, 'employee', $4) RETURNING id`,
+      [`${A.code} bd`, `${A.code.toLowerCase()}.bd@test.invalid`, A.companyId, emp]);
+    empUserId = u.id;
+    const { rows: [role] } = await pool.query(`SELECT id FROM roles WHERE LOWER(code) = 'employee' LIMIT 1`);
+    await pool.query(`INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2)`, [empUserId, role.id]);
+    await pool.query(`UPDATE employees SET gender = 'Male' WHERE id = $1`, [emp]);
+    typeF = (await pool.query(
+      `INSERT INTO leave_types (leave_name, leave_code, annual_quota, company_id, gender_restriction, is_active)
+       VALUES ('ZZ Maternity', 'ZZMAT', 180, $1, 'F', true) RETURNING id`, [A.companyId])).rows[0].id;
+  });
+  afterAll(async () => { await pool.query(`UPDATE employees SET gender = NULL WHERE id = ANY($1::int[])`, [[emp, noticeEmp]]); });
+
+  it('an employee cannot apply for a past date', async () => {
+    const mine = await asSelf('post', '/apply', { employee_id: emp, leave_type_id: T.plain, start_date: '2026-01-05', end_date: '2026-01-05', reason: 'past' });
+    expect(mine.status, JSON.stringify(mine.body)).toBe(422);
+    expect(mine.body.code).toBe('BACKDATED_NOT_ALLOWED');
+  });
+
+  it('a female-only type is hidden from a male employee and shown to HR for a woman; the id cannot be spoofed', async () => {
+    const mine = await asSelf('get', `/types?applicable=1&for_employee=${emp}`);
+    expect(mine.status).toBe(200);
+    expect(mine.body.map(t => t.id)).not.toContain(typeF);
+    await pool.query(`UPDATE employees SET gender = 'Female' WHERE id = $1`, [noticeEmp]);
+    const forHer = await api('get', `/types?applicable=1&for_employee=${noticeEmp}`);
+    expect(forHer.body.map(t => t.id)).toContain(typeF);
+    const spoof = await asSelf('get', `/types?applicable=1&for_employee=${noticeEmp}`);
+    expect(spoof.body.map(t => t.id)).not.toContain(typeF);
+  });
+});

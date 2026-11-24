@@ -81,9 +81,10 @@ export async function runAutoAbsent() {
         continue;
       }
 
-      // Skip if today is a holiday
+      // Skip if today is a company-wide holiday (no zone). A zone's holiday
+      // skips only that zone's employees — below (2026-11-24).
       const holidayCheck = await pool.query(
-        `SELECT 1 FROM holidays WHERE date=$1::date AND (company_id=$2 OR company_id IS NULL) LIMIT 1`,
+        `SELECT 1 FROM holidays WHERE date=$1::date AND (company_id=$2 OR company_id IS NULL) AND zone_id IS NULL LIMIT 1`,
         [today, companyId]
       ).catch(() => ({ rows: [] }));
       if (holidayCheck.rows.length > 0) continue;
@@ -100,6 +101,12 @@ export async function runAutoAbsent() {
            AND e.deleted_at IS NULL
            AND LOWER(e.status) IN ('active','probation')
            ${cidClause}
+           -- Skip employees whose zone has a holiday today
+           AND NOT EXISTS (
+             SELECT 1 FROM holidays h
+              WHERE h.date = $1::date AND h.zone_id IS NOT NULL AND h.zone_id = e.zone_id
+                AND (h.company_id = e.company_id OR h.company_id IS NULL)
+           )
            -- Skip employees on approved leave
            AND NOT EXISTS (
              SELECT 1 FROM leave_applications la

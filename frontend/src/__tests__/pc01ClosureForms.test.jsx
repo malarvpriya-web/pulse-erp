@@ -9,11 +9,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent, within } from '@testing-library/react';
 
-const auth = vi.hoisted(() => ({ grants: new Set(), user: { id: 1, employee_id: 7 } }));
+const auth = vi.hoisted(() => ({ grants: new Set(), roles: [], user: { id: 1, employee_id: 7 } }));
 vi.mock('../services/api/client', () => ({ default: { get: vi.fn(), post: vi.fn(), put: vi.fn(), delete: vi.fn() } }));
 vi.mock('../features/employees/pages/AddEmployee.css', () => ({}));
 vi.mock('../context/AuthContext', () => ({
-  useAuth: () => ({ user: auth.user, hasPermission: (m, a) => auth.grants.has(`${m}:${a}`) }),
+  useAuth: () => ({ user: auth.user, hasPermission: (m, a) => auth.grants.has(`${m}:${a}`), hasAnyRole: (...r) => r.some(x => auth.roles.includes(x)) }),
 }));
 vi.mock('../context/ToastContext', () => ({
   useToast: () => ({ success: vi.fn(), error: vi.fn(), warning: vi.fn(), info: vi.fn(), showToast: vi.fn() }),
@@ -126,5 +126,30 @@ describe('Leave Encashment — claims and amounts (decision 3)', () => {
     expect(await screen.findByText(/days encashed/)).toBeTruthy();
     expect(screen.queryByText('Approved amount')).toBeNull();
     expect(screen.queryByText('Paid in payroll')).toBeNull();
+  });
+
+  // 2026-11-24: approving writes a payroll earning — HR / payroll only, never
+  // your own claim. leaves:approve (every manager) is not enough.
+  const pendingFor = (empId) => [{ id: 5, employee_id: empId, employee_name: 'X', status: 'pending', days_encashed: 1, year: new Date().getFullYear() }];
+  it('a manager with leaves:approve gets no Approve / Cancel', async () => {
+    auth.grants = new Set(['leaves:approve']); auth.roles = ['manager']; auth.user = { id: 1, employee_id: 7 };
+    withRecords(pendingFor(8));
+    render(<LeaveEncashmentPage />);
+    expect(await screen.findByText('Waiting for HR / payroll')).toBeTruthy();
+    expect(within(screen.getByRole('table')).queryByRole('button', { name: /Approve/ })).toBeNull();
+  });
+
+  it("HR decides a colleague's claim but not their own", async () => {
+    auth.grants = new Set(['leaves:approve']); auth.roles = ['hr']; auth.user = { id: 1, employee_id: 7 };
+    withRecords(pendingFor(8));
+    const { unmount } = render(<LeaveEncashmentPage />);
+    await screen.findByRole('table');
+    expect(within(screen.getByRole('table')).getByRole('button', { name: /Approve/ })).toBeTruthy();
+    unmount();
+    withRecords(pendingFor(7));
+    render(<LeaveEncashmentPage />);
+    expect(await screen.findByText('Waiting for HR / payroll')).toBeTruthy();
+    expect(within(screen.getByRole('table')).queryByRole('button', { name: /Approve/ })).toBeNull();
+    auth.roles = [];
   });
 });

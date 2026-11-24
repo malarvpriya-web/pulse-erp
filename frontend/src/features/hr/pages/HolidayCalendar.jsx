@@ -14,13 +14,15 @@ const MONTHS = [
   "January","February","March","April","May","June",
   "July","August","September","October","November","December",
 ];
-const HOLIDAY_TYPES = ["National", "Regional", "Optional", "Restricted", "Festival"];
+// No optional / restricted holidays (owner, 2026-11-24): a holiday is a day
+// off for everyone it covers — the whole company, or one zone.
+const HOLIDAY_TYPES = ["National", "Regional", "Festival", "Company"];
 
-const typeColor = (type = "Optional") => {
+const typeColor = (type = "Festival") => {
   const t = String(type).toLowerCase();
   if (t === "national")   return { bg: "#dcfce7", color: "#166534" };
   if (t === "regional")   return { bg: "#dbeafe", color: "#1e3a8a" };
-  if (t === "restricted") return { bg: "#fee2e2", color: "#991b1b" };
+  if (t === "company")    return { bg: "#fef3c7", color: "#92400e" };
   if (t === "festival")   return { bg: "#f3e8ff", color: "#6b21a8" };
   return { bg: "#ede9fe", color: "#5b21b6" };
 };
@@ -49,13 +51,13 @@ function parseCsv(text) {
     return {
       name: cols[idxName] || "",
       date: cols[idxDate] || "",
-      type: cols[idxType] || "Optional",
+      type: HOLIDAY_TYPES.includes(cols[idxType]) ? cols[idxType] : "Festival",
       description: cols[idxDesc] || "",
     };
   }).filter((r) => r.name && r.date);
 }
 
-const EMPTY_FORM = { name: "", date: "", type: "Optional", description: "", zone_id: "" };
+const EMPTY_FORM = { name: "", date: "", type: "Festival", description: "", zone_id: "" };
 
 // Extracted so it is stable across renders (no remount on parent re-render)
 function HolidayFormFields({ values, onChange, zones }) {
@@ -95,7 +97,7 @@ function HolidayFormFields({ values, onChange, zones }) {
       <div>
         <label>Zone / Region</label>
         <select value={values.zone_id} onChange={(e) => onChange({ ...values, zone_id: e.target.value })}>
-          <option value="">All Zones (National)</option>
+          <option value="">Whole company (every zone)</option>
           {zones.map((z) => <option key={z.id} value={String(z.id)}>{z.name}</option>)}
         </select>
       </div>
@@ -148,12 +150,15 @@ export default function HolidayCalendar() {
   useEffect(() => { fetchHolidays(); }, [selectedYear]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
+    // Master zones are HR / admin data (403 for an employee — it logged an
+    // error on every visit). Only the people who add holidays need the list.
+    if (!canEdit) return;
     api.get("/master/zones")
       // Rows with a null id are free-text zones read off employee records; they
       // are not real master zones and cannot be stored as holidays.zone_id.
       .then((r) => setZones((Array.isArray(r.data) ? r.data : []).filter((z) => z.id != null)))
       .catch(() => {});
-  }, []);
+  }, [canEdit]);
 
   // ── Derived state ──────────────────────────────────────────────────────────
   const years = useMemo(
@@ -222,7 +227,7 @@ export default function HolidayCalendar() {
     setEditForm({
       name:        holiday.name || "",
       date:        toYMD(holiday.date),
-      type:        holiday.type || "Optional",
+      type:        holiday.type || "Festival",
       description: holiday.description || "",
       zone_id:     holiday.zone_id ? String(holiday.zone_id) : "",
     });
@@ -283,7 +288,7 @@ export default function HolidayCalendar() {
           await api.post("/holidays", {
             name:        row.name,
             date:        row.date,
-            type:        HOLIDAY_TYPES.includes(row.type) ? row.type : "Optional",
+            type:        HOLIDAY_TYPES.includes(row.type) ? row.type : "Festival",
             description: row.description || "",
           });
           imported++;
@@ -428,7 +433,7 @@ export default function HolidayCalendar() {
                       <td>{toYMD(holiday.date)}</td>
                       <td>
                         <span className="holiday-type-pill" style={{ background: tc.bg, color: tc.color }}>
-                          {holiday.type || "Optional"}
+                          {holiday.type || "Festival"}
                         </span>
                       </td>
                       <td>
@@ -480,7 +485,7 @@ export default function HolidayCalendar() {
                           <div className="holiday-month-name">{h.name}</div>
                           <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginTop: 3 }}>
                             <span className="holiday-type-pill" style={{ background: tc.bg, color: tc.color }}>
-                              {h.type || "Optional"}
+                              {h.type || "Festival"}
                             </span>
                             {h.zone_name && (
                               <span className="holiday-zone-pill">{h.zone_name}</span>

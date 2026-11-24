@@ -107,6 +107,7 @@ async function dayFacts(employeeId, companyId, from, to, db) {
        LEFT JOIN LATERAL (
          SELECT name FROM holidays
           WHERE date = days.day AND ($2::int IS NULL OR company_id = $2 OR company_id IS NULL)
+            AND (zone_id IS NULL OR zone_id = (SELECT zone_id FROM employees WHERE id = $1))
           LIMIT 1) h ON true
        LEFT JOIN LATERAL (
          SELECT 1 AS found, half_day FROM leave_applications

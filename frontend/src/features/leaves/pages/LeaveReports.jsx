@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useMemo } from 'react';
 import {
-  Download, RefreshCw, BarChart2, FileText, TrendingDown, Users, Clock,
+  Download, RefreshCw, BarChart2, TrendingDown, Users, Clock,
   Award, FileSpreadsheet, BarChart3, PlusCircle, CalendarClock,
 } from 'lucide-react';
 import api from '@/services/api/client';
@@ -50,8 +50,10 @@ async function exportXLSX(rows, columns, filename) {
 const STATUS_COLORS = { approved:{bg:'#d1fae5',color:'#065f46'}, rejected:{bg:'#fee2e2',color:'#991b1b'}, pending:{bg:'#ede9fe',color:'#5b21b6'}, cancelled:{bg:'#f3f4f6',color:'#6b7280'} };
 const sc = s => STATUS_COLORS[(s||'').toLowerCase()] || STATUS_COLORS.pending;
 
+// The request-by-request "Leave Summary" report was removed 2026-11-24: it
+// was the same list as Leaves → All Leaves (the register), which has more
+// filters, totals, CSV and each request's approval history.
 const REPORTS = [
-  { id:'leave',        label:'Leave Summary',          icon:FileText,    color:'#6366f1' },
   { id:'summary',      label:'Employee Balance Summary',icon:Users,       color:'#10b981' },
   { id:'liability',    label:'Leave Liability (₹)',    icon:TrendingDown, color:'#7c5cf0' },
   { id:'lop',          label:'LOP Report',             icon:BarChart2,   color:'#ef4444' },
@@ -81,7 +83,7 @@ const shows = (report, control) => {
 };
 
 export default function LeaveReports() {
-  const [activeReport, setActiveReport] = useState('leave');
+  const [activeReport, setActiveReport] = useState('summary');
   const [filters, setFilters] = useState({ year:YEAR, month:'', department:'', status:'', employee_id:'', leave_type_id:'' });
   const [rawData,    setData]       = useState([]);
   const [total,      setTotal]      = useState(null);
@@ -222,7 +224,7 @@ export default function LeaveReports() {
         icon={BarChart3}
         eyebrow="Leave"
         title="Leave Reports"
-        subtitle="Comprehensive leave analytics and compliance reports"
+        subtitle="Balances, liability, Loss of Pay, credits and approval speed — every single request is in All Leaves"
         actions={ran && data.length> 0 && (
           <div style={{ display:'flex', gap:8 }}>
             <button className="plh-cta" onClick={() => exportCSV(data, cols, `${activeReport}-report-${filters.year}.csv`)}>

@@ -117,3 +117,38 @@ describe('same-company access still works', () => {
     expect(Array.isArray(el.body)).toBe(true);
   });
 });
+
+// 2026-11-24: approving writes a payroll earning — HR / payroll only, never
+// the claimant. leaves:approve (every manager holds it) used to be enough.
+describe('who may decide a claim', () => {
+  it('a line manager cannot approve or cancel; nothing changes', async () => {
+    const { rows: [{ id }] } = await pool.query(
+      `INSERT INTO leave_encashments (employee_id, leave_type_id, year, days_encashed, net_amount, encashment_month, encashment_year, status, company_id)
+       VALUES ($1, $2, 2027, 1, 1000, 5, 2027, 'pending', $3) RETURNING id`, [empA, leaveTypeId, A.companyId]);
+    const mgr = await addUser(pool, A, { label: 'linemgr', roleCode: 'manager' });
+    const ap = await as(mgr).post(`/approve/${id}`, { payout_month: 5, payout_year: 2027 });
+    expect(ap.status, JSON.stringify(ap.body)).toBe(403);
+    expect(ap.body.code).toBe('ENCASHMENT_DECIDER_ONLY');
+    const rj = await as(mgr).post(`/reject/${id}`, { reason: 'no' });
+    expect(rj.status).toBe(403);
+    expect((await claim(id)).status).toBe('pending');
+    expect((await pool.query('SELECT COUNT(*)::int n FROM payroll_adjustments WHERE employee_id = $1 AND month = 5 AND year = 2027', [empA])).rows[0].n).toBe(0);
+  });
+
+  it('HR cannot decide their own claim', async () => {
+    const { rows: [{ id }] } = await pool.query(
+      `INSERT INTO leave_encashments (employee_id, leave_type_id, year, days_encashed, net_amount, encashment_month, encashment_year, status, company_id)
+       VALUES ($1, $2, 2027, 1, 1000, 6, 2027, 'pending', $3) RETURNING id`, [empA, leaveTypeId, A.companyId]);
+    const hr = await addUser(pool, A, { label: 'selfhr', roleCode: 'hr' });
+    await pool.query('UPDATE users SET employee_id = $1 WHERE id = $2', [empA, hr.userId]);
+    const self = { token: () => jwt.sign({ userId: hr.userId, role: 'hr', company_id: A.companyId, employee_id: empA }, process.env.JWT_SECRET, { expiresIn: '1h' }) };
+    try {
+      const ap = await as(self).post(`/approve/${id}`, { payout_month: 6, payout_year: 2027 });
+      expect(ap.status, JSON.stringify(ap.body)).toBe(403);
+      expect(ap.body.code).toBe('ENCASHMENT_SELF_DECISION');
+      expect((await claim(id)).status).toBe('pending');
+    } finally {
+      await pool.query('UPDATE users SET employee_id = NULL WHERE id = $1', [hr.userId]);
+    }
+  });
+});

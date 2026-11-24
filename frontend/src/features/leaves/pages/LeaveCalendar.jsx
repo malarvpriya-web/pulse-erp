@@ -38,6 +38,8 @@ export default function LeaveCalendar() {
   const [selectedDay,setSelectedDay]= useState(null);
   const [filterDept, setFilterDept] = useState('');
   const [filterEmp,  setFilterEmp]  = useState('');
+  // Pending requests too, to plan cover before they are decided (2026-11-24).
+  const [showPending, setShowPending] = useState(false);
   const abortRef = useRef(null);
   const [weekCfg, setWeekCfg] = useState(null);
   useEffect(() => { api.get('/leaves/settings').then(r => setWeekCfg(r.data || null)).catch(() => {}); }, []);
@@ -80,6 +82,7 @@ export default function LeaveCalendar() {
     if (!isAdmin)       leavesParams.employee_id = user?.employee_id;
     if (filterEmp)      leavesParams.employee_id = filterEmp;
     if (filterDept)     leavesParams.department  = filterDept;
+    if (showPending)    leavesParams.include_pending = 1;
 
     Promise.all([
       api.get('/leaves/calendar', { params: leavesParams,                  signal: ctrl.signal }),
@@ -106,7 +109,7 @@ export default function LeaveCalendar() {
       });
 
     return () => ctrl.abort();
-  }, [year, month, isAdmin, user?.employee_id, user?.company_id, filterDept, filterEmp]);
+  }, [year, month, isAdmin, user?.employee_id, user?.company_id, filterDept, filterEmp, showPending]);
 
   // type name → color lookup
   const typeColorMap = useMemo(() => {
@@ -145,7 +148,7 @@ export default function LeaveCalendar() {
   // Month summary counts per leave type
   const monthlySummary = useMemo(() => {
     const counts = {};
-    leaves.forEach(l => {
+    leaves.filter(l => l.status !== 'pending').forEach(l => {
       const name = l.leave_name || l.leave_type || 'Other';
       counts[name] = (counts[name] || 0) + 1;
     });
@@ -185,6 +188,9 @@ export default function LeaveCalendar() {
                 </option>
               ))}
             </select>
+            <label style={{ ...FILTER_SELECT, display:'flex', alignItems:'center', gap:5 }} title="Requests not yet approved, drawn hollow">
+              <input type="checkbox" checked={showPending} onChange={e => setShowPending(e.target.checked)} /> Show pending
+            </label>
             {(filterDept || filterEmp) && (
               <button className="plh-cta"
                 onClick={() => { setFilterDept(''); setFilterEmp(''); }}>
@@ -282,8 +288,10 @@ export default function LeaveCalendar() {
                           <div
                             key={li}
                             className="lc-dot"
-                            style={{ background: colorFor(l) }}
-                            title={`${l.employee_name ?? ''} – ${l.leave_name || l.leave_type || ''}`}
+                            style={l.status === 'pending'
+                              ? { background: 'transparent', border: `1.5px solid ${colorFor(l)}`, boxSizing: 'border-box' }
+                              : { background: colorFor(l) }}
+                            title={`${l.employee_name ?? ''} – ${l.leave_name || l.leave_type || ''}${l.status === 'pending' ? ' (pending)' : ''}`}
                           />
                         ))}
                         {dayLeaves.length > 5 && (
@@ -357,6 +365,7 @@ export default function LeaveCalendar() {
                       >
                         {l.leave_name || l.leave_type || 'Leave'}
                       </span>
+                      {l.status === 'pending' && <span style={{ fontSize:10, color:'#b45309', marginLeft:6, fontWeight:600 }}>Pending</span>}
                     </div>
                   </div>
                 </div>
@@ -386,6 +395,7 @@ export default function LeaveCalendar() {
                         >
                           {l.leave_name || l.leave_type || 'Leave'}
                         </span>
+                        {l.status === 'pending' && <span style={{ fontSize:10, color:'#b45309', marginLeft:6, fontWeight:600 }}>Pending</span>}
                       </div>
                     </div>
                   </div>

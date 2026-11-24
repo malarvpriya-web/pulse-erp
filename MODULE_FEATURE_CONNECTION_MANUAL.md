@@ -26365,7 +26365,7 @@ Separators are never drawn (Sidebar renders pages only), so the flat flyout read
 
 **Left in place, owner decision needed (overlaps that need code, not reordering):**
 - Procurement → PO Management (`PurchaseOrderManagement`) and Purchase Orders (`PurchaseOrders`) both list `/procurement/purchase-orders`.
-- Module approval pages (Attendance/Leave/Timesheet/Travel Approvals) show the same requests as Approval Center; they also carry team history, filters and delegation. Dropping a row would leave the page section-less, and the section gate lets section-less pages through.
+- Module approval pages (Attendance/Leave/Timesheet/Travel Approvals) show the same requests as Approval Center; they also carry team history, filters and delegation. Dropping a row would leave the page section-less, and the section gate lets section-less pages through. **Leave resolved in §281:** the Approval Center lists leave but opens Leave Approvals to decide it.
 
 Employee-only logins are unaffected: HR's four self-service rows still become top-level rows directly under Home, in the same order. Files: `frontend/src/config/routes.jsx` (NAV_ITEMS + house-order comment), `tests/nav-verify/nav.json` (regenerated). Supersedes the submenu-order rule in §104; the band rules in §104 still apply.
 
@@ -26379,12 +26379,12 @@ Owner request: check every Leaves page and tab — purpose, missing features, li
 |---|---|---|
 | All Leaves | Company register (HR) | filters, totals, CSV, history; **HR Cancel** (reason); "Punched in on N days" flag + filter (`worked_days`) |
 | Leave Approvals | The one place decisions are taken | Manager (L1) / Dept Head (L2) / HR (final) built on the server (`queue=l2`, `queue=hr`); balance-after, attachment, "also off"; Escalated badge; for HR a manager-step row stays disabled until `hr_may_decide_l1` |
-| Leave Reports | 8 reports via `/reports/leave*` | Leave Summary, Balance Summary, Liability, LOP, Department, Approval Performance, **Leave Credit History** (`leave_accrual_log`), **Carried-Forward Leave** |
-| Encashment | Paid through payroll | approve → `payroll_adjustments` earning, flat TDS from Leave Rules, Paid when that payroll is approved |
+| Leave Reports | 7 reports via `/reports/leave*` | Balance Summary, Liability, LOP, Department, Approval Performance, **Leave Credit History** (`leave_accrual_log`), **Carried-Forward Leave** (Leave Summary removed §281 — it was All Leaves again) |
+| Encashment | Paid through payroll | approve → `payroll_adjustments` earning, flat TDS from Leave Rules, Paid when that payroll is approved; decided by HR / payroll only, never one's own claim (§281) |
 | Leave Settings | Types, allocations, accrual / carry forward, Leave Rules | Leave Rules = Saturdays off, encashment TDS %, **escalate after N days** |
-| Leave Calendar | Who is off | weekday colours from the company's weekly offs |
-| My Leaves / Apply Leave | Self-service | Apply previews the server's rule; attachment upload; escalation note |
-| Holiday Calendar | Holidays | edit rights by any role held |
+| Leave Calendar | Who is off | weekday colours from the company's weekly offs; "Show pending" (§281) |
+| My Leaves / Apply Leave | Self-service | Apply previews the server's rule; attachment upload; escalation note; no back-dated leave, no type barred by gender (§281) |
+| Holiday Calendar | Holidays | edit rights by any role held; one calendar per zone, no optional holidays (§281) |
 
 **Approval rule (L1)** — `leaves.routes.js authorizeL1()` on approve / reject / delegate / workflow-advance: the reporting manager or delegate (gate is `leaves:view`; the reporting line is the authority) → HR / admin when the employee has no active manager, the manager has **no active login** (`managerApprovalAuthz.js managerCanLogIn`, shared with travel / expenses / pricing), or the step was **escalated**. Never one's own. `approvals.sources.js` mirrors it (leave L1 needs no `can_approve`; all roles held count for leave). An employee-role team lead reaches Leave Approvals through `hasDirectReports` (`/approvals/stats`, active reports only) → `menuCatalog.js REPORTING_MANAGER_PAGES`. ⚠ Layout gates on the **primary** role: a secondary Manager role on a primary-`employee` login still meets the employee gate (EMP002 was made Manager-primary).
 
@@ -26418,4 +26418,38 @@ flowchart LR
   HR -. waits over N days .-> ESC3[Escalation: HR + admins]
   ENC[Encashment approved] --> ADJ[payroll_adjustments earning, flat TDS] --> PAY
   CAN[Cancel approved leave] -->|LOP back off the draft| PAY
+```
+
+## §281. Leaves audit round 6 — encashment deciders, one decision place, zone holiday calendars, no back-dated leave (2026-11-24)
+
+Owner request: check every Leaves page and tab (purpose, duplicates, missing features, live data, links, editable inputs), then "fix all" with these decisions: rename the 20 Oct "Diwali", no optional holidays, zone-wise calendars, no back-dated sick leave, wipe junk balances, hide gender-barred types, one place to decide leave. Builds on §280.
+
+**Encashment is HR / payroll's decision** — `encashment.routes.js ENCASHMENT_DECIDER_ROLES` (super_admin, admin, hr, hr_manager, hr_exec, payroll_admin, finance_manager) on approve and reject/cancel; never the claimant (`ENCASHMENT_SELF_DECISION`). It was `leaves:approve` only, which every line manager and department head holds, so a manager could approve money for the team and their own claim; approval writes a `payroll_adjustments` earning. Encashment page shows Approve / Cancel by the same roles and never on your own row ("Waiting for HR / payroll").
+
+**One place decides leave** — `approvals.sources.js` leave rows carry `actions.open = { page: 'LeaveApprovals', params: { queue: manager|l2|hr, leave: id } }` instead of approve / reject / delegate. The Approval Center still lists and counts leave (and its SLA); "Open" lands on Leave Approvals on that queue with the row highlighted (`?queue=&leave=`). Leave Approvals keeps what the decision needs: balance after, who else is off, attachment, escalation, delegation, bulk HR approve.
+
+**Apply rules** —
+- No back-dated leave from employees: start before today → 422 `BACKDATED_NOT_ALLOWED` (HR / admin enter past leave on behalf). The screen already blocked it; the API did not.
+- Min notice: counted on calendar dates (UTC midnight vs local midnight gave one extra day) and exempt by the **type's own name**, not the request's free-text `leave_type` (sending "sick" with an Earned Leave id skipped the notice).
+- `GET /leaves/types?applicable=1&for_employee=` drops types the person cannot take for their gender (same rule as `GENDER_RESTRICTED`); a non-HR caller always gets their own list. Apply Leave reloads it when HR picks another employee.
+- HR / L1 / L2 / bulk approval now **await** `postLopToPayroll` (fire-and-forget let the posting land after the response).
+
+**Zone holiday calendars** — a holiday with `zone_id` NULL is the whole company's; one with a zone only that zone's employees' (`employees.zone_id`). Applied in: leave day count (`countLeaveDays` employeeId), leave → attendance sync, `GET /holidays` (non-editors get their own calendar; HR all / `?zone_id` / `?employee_id`), Apply Leave preview, payroll attendance sync (`holSetFor(zone)` per employee for working days and LOP), auto-absent cron and punch reminders (company-wide holiday skips the company; zone holiday skips that zone's people), comp-off holiday check, timesheet autofill, user dashboard (also now company-scoped), Home holiday widgets. Biometric dashboard "today is a holiday" label stays company-level.
+
+**No optional holidays** — holiday types are National / Regional / Festival / Company (`holidays.routes.js HOLIDAY_TYPES`, 400 `HOLIDAY_TYPE`); a day only some people take is leave. Holiday Calendar form, CSV import and default type follow; "All Zones (National)" reads "Whole company (every zone)".
+
+**Pages** — Leave Reports: "Leave Summary" removed (duplicate of All Leaves). Leave Calendar: "Show pending" (`/leaves/calendar?include_pending=1`, drawn hollow; Leave Approvals' "also off" stays approved-only). Leave Settings: an allocation's year is read-only on edit (a changed year saved a second allocation). Apply Leave: on-behalf banner reads "This employee is in probation". Holiday Calendar: master zones fetched only for editors (403 for employees).
+
+**Data** (`scripts/samples/leaves-holidays-cleanup-2026-11-24.mjs`, backup `_backups/leaves_2026-11-24/`, audit_logs 190832–190834): 20 balances on deleted leave types removed; holiday 27 "Diwali" 20 Oct 2026 → "Ayudha Pooja" 19 Oct 2026 (no attendance absences that day, October payroll not yet synced); New Year's Day type Optional → Company.
+
+**Tests** `integration.holidayZones.test.js` (new, 3), `integration.leaveRules.test.js` (+5: notice, name exemption, zone day, back-dated, gender), `integration.encashmentOwnership.test.js` (+2), `approvalsSecurity` (leave row opens Leave Approvals), `smoke.leaves` (future dates), frontend `pc01ClosureForms` (+2).
+
+```mermaid
+flowchart LR
+  AC[Approval Center: leave row] -->|Open| LA[Leave Approvals ?queue=&leave=]
+  LA --> L1{Manager L1} --> HR{HR final}
+  HOL[Holiday Calendar: company-wide + per-zone] --> CNT[Leave day count]
+  HOL --> SYNC[Payroll attendance sync per zone]
+  HOL --> ABS[Auto-absent / reminders per zone]
+  ENC[Encashment claim] -->|HR / payroll, not own| ADJ[payroll_adjustments earning]
 ```

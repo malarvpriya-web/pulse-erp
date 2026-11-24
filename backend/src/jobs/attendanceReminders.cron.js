@@ -61,7 +61,7 @@ export async function runPunchReminders(now = new Date(), { companyIds } = {}) {
     if (!inOn && !outOn) continue;
     if (dayIsWeekend(today, await getWeekendDays(companyId))) continue;
     const { rows: hol } = await pool.query(
-      `SELECT 1 FROM holidays WHERE date = $1::date AND (company_id = $2 OR company_id IS NULL) LIMIT 1`, [today, companyId])
+      `SELECT 1 FROM holidays WHERE date = $1::date AND (company_id = $2 OR company_id IS NULL) AND zone_id IS NULL LIMIT 1`, [today, companyId])
       .catch(() => ({ rows: [] }));
     if (hol.length) continue;
     const before = Math.max(5, Number(s?.punch_reminder_minutes ?? 15));
@@ -77,6 +77,9 @@ export async function runPunchReminders(now = new Date(), { companyIds } = {}) {
         LEFT JOIN attendance_records ar ON ar.employee_id = e.id AND ar.attendance_date = $1::date AND ar.deleted_at IS NULL
        WHERE e.company_id = $2 AND e.deleted_at IS NULL AND LOWER(e.status) IN ('active','probation','notice')
          AND e.is_field_employee = TRUE
+         -- not on their zone's holiday (zone calendars, 2026-11-24)
+         AND NOT EXISTS (SELECT 1 FROM holidays h WHERE h.date = $1::date AND h.zone_id IS NOT NULL
+                          AND h.zone_id = e.zone_id AND (h.company_id = e.company_id OR h.company_id IS NULL))
          AND NOT EXISTS (SELECT 1 FROM leave_applications la
                           WHERE la.employee_id = e.id AND LOWER(la.status) = 'approved'
                             AND $1::date BETWEEN la.start_date AND la.end_date)`, [today, companyId])

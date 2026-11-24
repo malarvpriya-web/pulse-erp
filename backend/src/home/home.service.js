@@ -122,24 +122,28 @@ export const getResources = async (companyId = null) => {
   return result.rows;
 };
 
-export const getHolidays = async (companyId = null) => {
+// employeeId: that person's calendar — company-wide holidays plus their
+// zone's (zone calendars, 2026-11-24). Without one, company-wide only.
+export const getHolidays = async (companyId = null, employeeId = null) => {
   const result = await pool.query(`
     SELECT id, name, date, type, description
       FROM holidays
      WHERE ($1::integer IS NULL OR company_id = $1 OR company_id IS NULL)
+       AND (zone_id IS NULL OR zone_id = (SELECT zone_id FROM employees WHERE id = $2))
        AND date >= CURRENT_DATE
      ORDER BY date ASC
-  `, [companyId]);
+  `, [companyId, employeeId]);
   return result.rows;
 };
 
-export const getAllHolidays = async (companyId = null) => {
+export const getAllHolidays = async (companyId = null, employeeId = null) => {
   const result = await pool.query(`
     SELECT id, name, date, type, description
       FROM holidays
      WHERE ($1::integer IS NULL OR company_id = $1 OR company_id IS NULL)
+       AND (zone_id IS NULL OR zone_id = (SELECT zone_id FROM employees WHERE id = $2))
      ORDER BY date ASC
-  `, [companyId]);
+  `, [companyId, employeeId]);
   return result.rows;
 };
 

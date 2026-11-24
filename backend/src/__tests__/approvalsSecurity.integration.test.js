@@ -433,7 +433,9 @@ describe('Approval Center over the hardened routes', () => {
   it('queues are tenant-scoped, module records stay on their own endpoints, the requester view works', async () => {
     const id = await applyLeave();
     const mine = (await api('mgr', 'get', '/approvals/pending')).body.find((r) => r.id === `leave:${id}`);
-    expect(mine.actions.approve.url).toBe(`/leaves/approve/manager/${id}`);
+    // One place decides leave (2026-11-24): the row opens Leave Approvals on its queue.
+    expect(mine.actions.open).toEqual({ page: 'LeaveApprovals', params: { queue: 'manager', leave: String(id) } });
+    expect(mine.actions.approve).toBeUndefined();
     expect((await api('mgrB', 'get', '/approvals/pending')).body.some((r) => r.id === `leave:${id}`)).toBe(false);
     expect((await api('hrB', 'get', '/approvals/pending')).body.some((r) => String(r.id).startsWith('travel:'))).toBe(false);
     expect((await api('mgr', 'post', `/approvals/leave:${id}/approve`)).body.code).toBe('USE_MODULE_ENDPOINT');

@@ -658,7 +658,9 @@ const LeaveSettings = ({ setPage }) => {
               </div>
               <div className="ls-field">
                 <label>Year</label>
-                <input type="number" value={allocForm.year} onChange={e => setAllocForm(f=>({...f,year:e.target.value}))} />
+                {/* Read-only on edit: a changed year saved a NEW allocation for that
+                    year and left this one as it was. */}
+                <input type="number" value={allocForm.year} disabled={allocModal !== 'add'} onChange={e => setAllocForm(f=>({...f,year:e.target.value}))} />
               </div>
             </div>
             {allocErr && <div className="ls-modal-err">{allocErr}</div>}

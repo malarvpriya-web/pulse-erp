@@ -101,7 +101,7 @@ function useDecisionContext(rows) {
 /* ── Single queue table ──────────────────────────────────────────────────── */
 const STEP_OF = { manager: 'l1', l2: 'l2', hr: 'hr' };
 
-function QueueTable({ queue, toast, me = null, isAdmin = false }) {
+function QueueTable({ queue, toast, me = null, isAdmin = false, focusId = null }) {
   const [data, setData] = useState([]);
   const [loading, setLoading] = useState(false);
   const [acting, setActing] = useState(null);
@@ -273,7 +273,8 @@ function QueueTable({ queue, toast, me = null, isAdmin = false }) {
                 const waitMgr = queue.id === 'manager' && isAdmin && l.hr_may_decide_l1 !== true
                   && !isMe(l.manager_id) && !isMe(l.delegate_approver_id);
                 return (
-                  <tr key={l.id} style={{ borderBottom: '1px solid #f9fafb', background: selected.has(l.id) ? '#f0fdf4' : i % 2 === 0 ? '#fff' : '#fafafa' }}>
+                  <tr key={l.id} ref={String(l.id) === String(focusId) ? (el => el?.scrollIntoView({ block: 'center' })) : undefined}
+                    style={{ borderBottom: '1px solid #f9fafb', background: String(l.id) === String(focusId) ? '#fef9c3' : selected.has(l.id) ? '#f0fdf4' : i % 2 === 0 ? '#fff' : '#fafafa' }}>
                     {queue.bulkApprove && (
                       <td style={{ padding: '8px 12px' }}><input type="checkbox" checked={selected.has(l.id)} onChange={() => toggleSelect(l.id)} aria-label={`Select ${l.employee_name}`} /></td>
                     )}
@@ -461,7 +462,12 @@ function TeamView() {
 }
 
 /* ── Main page ─────────────────────────────────────────────────────────────── */
-export default function LeaveApprovals({ initialQueue } = {}) {
+export default function LeaveApprovals({ initialQueue: queueProp } = {}) {
+  // ?queue=manager|l2|hr&leave=<id> — the Approval Center opens a leave here
+  // (the one place leave is decided, 2026-11-24) on its queue, row highlighted.
+  const urlParams = new URLSearchParams(typeof window !== 'undefined' ? window.location.search : '');
+  const initialQueue = queueProp || urlParams.get('queue') || undefined;
+  const focusId = urlParams.get('leave');
   // hasAnyRole, not user.role: roles are many-to-many; `role` is only the primary.
   const { hasAnyRole, hasPermission, user } = useAuth();
   const toast = useToast();
@@ -502,7 +508,7 @@ export default function LeaveApprovals({ initialQueue } = {}) {
       </div>
       {activeTab === 'team'
         ? <TeamView />
-        : activeQueue && <QueueTable key={activeTab} queue={activeQueue} toast={toast} me={user?.employee_id ?? null} isAdmin={isAdmin} />}
+        : activeQueue && <QueueTable key={activeTab} queue={activeQueue} toast={toast} me={user?.employee_id ?? null} isAdmin={isAdmin} focusId={focusId} />}
     </PageShell>
   );
 }
