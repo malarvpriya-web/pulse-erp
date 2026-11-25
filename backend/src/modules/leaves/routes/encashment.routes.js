@@ -117,7 +117,6 @@ router.get('/', requirePermission('leaves', 'view'), async (req, res) => {
        WHERE le.status = 'approved' AND le.payroll_adjustment_id = pa.id AND le.company_id = $1`, [companyId]);
 
     const isAdmin   = hasRole(req, 'super_admin', 'admin', 'hr', 'hr_manager', 'hr_exec', 'payroll_admin', 'finance_manager');
-    const isManager = hasRole(req, 'manager', 'department_head');
     const me        = await employeeOf(req, pool);
     const requested = req.query.employee_id ? Number(req.query.employee_id) : null;
 
@@ -132,11 +131,11 @@ router.get('/', requirePermission('leaves', 'view'), async (req, res) => {
       if (Number.isInteger(requested)) {
         filters += ` AND le.employee_id = $${params.length + 1}`; params.push(requested);
       }
-    } else if (isManager) {
-      if (me == null) return res.json([]);
-      filters += ` AND (le.employee_id = $${params.length + 1} OR e.reporting_manager_id = $${params.length + 1})`;
-      params.push(me);
     } else {
+      // Managers / department heads see only their OWN claim (owner 2026-11-25).
+      // They saw their reports' claims before (days only — amounts were already
+      // stripped by withoutMoney for non-payroll:view). Managers do not decide
+      // encashment (HR / payroll do), so a report's claim is none of theirs.
       // No employee record means no claim of one's own to show. Returning
       // everything would be the fail-open this endpoint just had.
       if (me == null) return res.json([]);

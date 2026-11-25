@@ -481,9 +481,8 @@ export default function ManagerDashboard({ setPage, hideHeader = false }) {
       await api.post('/timesheets/timesheets/approve', { ids: [item.id], approved_by: user?.userId });
     } else if (item._type === 'travel') {
       await api.put(`/travel/requests/${item.id}/status`, { status: 'approved' });
-    } else {
-      await api.put(`/leaves/${item.id}/approve`);
     }
+    // Leave has no inline decision here — its row opens Leave Approvals.
   };
 
   const doReject = async (item) => {
@@ -491,8 +490,6 @@ export default function ManagerDashboard({ setPage, hideHeader = false }) {
       await api.post('/timesheets/timesheets/reject', { ids: [item.id], approved_by: user?.userId });
     } else if (item._type === 'travel') {
       await api.put(`/travel/requests/${item.id}/status`, { status: 'rejected' });
-    } else {
-      await api.put(`/leaves/${item.id}/reject`);
     }
   };
 
@@ -822,12 +819,23 @@ export default function ManagerDashboard({ setPage, hideHeader = false }) {
                       )}
                     </div>
                     <div className="md-appr-actions">
-                      <button className="md-btn-approve" title="Approve" onClick={() => handleApprove(item)}>
-                        <CheckCircle size={14} />
-                      </button>
-                      <button className="md-btn-reject" title="Reject" onClick={() => handleReject(item)}>
-                        <X size={14} />
-                      </button>
+                      {item._type === 'leave' ? (
+                        // Leave is decided in Leave Approvals only (owner 2026-11-25):
+                        // balance, who else is off, the chain and a reject reason live there.
+                        <button className="md-text-btn" title="Open in Leave Approvals"
+                          onClick={() => setPage('LeaveApprovals', { queue: 'manager', leave: item.id })}>
+                          Review
+                        </button>
+                      ) : (
+                        <>
+                          <button className="md-btn-approve" title="Approve" onClick={() => handleApprove(item)}>
+                            <CheckCircle size={14} />
+                          </button>
+                          <button className="md-btn-reject" title="Reject" onClick={() => handleReject(item)}>
+                            <X size={14} />
+                          </button>
+                        </>
+                      )}
                     </div>
                   </div>
                 );

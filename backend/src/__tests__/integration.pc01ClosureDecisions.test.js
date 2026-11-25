@@ -284,8 +284,9 @@ describe('decision 3 — leave encashment claims and their amounts', () => {
     for (const id of [E.SELF, E.COL]) for (const k of MONEY) expect(exec[id], `hr_exec ${k}`).not.toHaveProperty(k);
     expect(exec[E.COL].days_encashed).toBeDefined();
     const mgr = byId((await call(U.manager, 'get', '/api/leave-encashment')).body);
-    expect(Object.keys(mgr).map(Number).sort()).toEqual([E.SELF, E.COL].sort());
-    for (const k of MONEY) expect(mgr[E.COL]).not.toHaveProperty(k);
+    // Owner 2026-11-25: a manager no longer sees their reports' claims at all.
+    expect(Object.keys(mgr).map(Number)).not.toContain(E.SELF);
+    expect(Object.keys(mgr).map(Number)).not.toContain(E.COL);
     const own = (await call(U.employee, 'get', '/api/leave-encashment')).body;
     expect(own.map(r => r.employee_id)).toEqual([E.SELF]);
     expect(Number(own[0].rate_per_day)).toBe(1000);
