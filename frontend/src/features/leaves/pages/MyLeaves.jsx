@@ -45,7 +45,8 @@ function LeaveCard({ leave, onCancel, cancelling, onHistory }) {
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <StatusChip status={leave.status} />
-          <ApprovalChain leave={leave} />
+          {/* ApprovalChain draws its own "Cancelled" chip — two chips side by side. */}
+          {leave.status !== 'cancelled' && <ApprovalChain leave={leave} />}
         </div>
       </div>
       <div style={{ display: 'flex', gap: 18, fontSize: 12, color: '#6b7280', marginBottom: 10, flexWrap: 'wrap' }}>
@@ -125,8 +126,10 @@ export default function MyLeaves({ setPage }) {
     setPendingCancel(null);
     setCancelling(leave.id);
     try {
-      await api.put(`/leaves/${leave.id}/cancel`);
+      const { data } = await api.put(`/leaves/${leave.id}/cancel`);
       toast.success(leave.status === 'approved' ? 'Leave cancelled. The days are back in your balance.' : 'Leave request cancelled.');
+      // Payroll already approved for that month: the Loss of Pay stays until HR corrects it.
+      if (data?.warning) toast.warning(data.warning);
       fetchMine();
     } catch (err) {
       toast.error(err?.response?.data?.error || 'Failed to cancel leave');
@@ -170,6 +173,18 @@ export default function MyLeaves({ setPage }) {
           const used = Number(b.used_days || 0);
           const pending = Number(b.pending_days || 0);
           const pct = total > 0 ? Math.min(100, Math.round(((used + pending) / total) * 100)) : 0;
+          // Loss of Pay has no quota — "0 of 0 left" in red read as a problem.
+          if (b.is_lop_type) {
+            return (
+              <div key={b.leave_type_id} style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: '10px 14px' }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: '#374151' }}>{b.leave_name}</div>
+                <div style={{ fontSize: 20, fontWeight: 800, color: '#b91c1c' }}>
+                  {used} <span style={{ fontSize: 11, color: '#9ca3af', fontWeight: 500 }}>day{used !== 1 ? 's' : ''} unpaid</span>
+                </div>
+                <div style={{ fontSize: 11, color: '#6b7280', marginTop: 10 }}>No quota — deducted from salary{pending ? ` · ${pending} pending` : ''}</div>
+              </div>
+            );
+          }
           return (
             <div key={b.leave_type_id} style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: '10px 14px' }}>
               <div style={{ fontSize: 12, fontWeight: 600, color: '#374151' }}>{b.leave_name}</div>

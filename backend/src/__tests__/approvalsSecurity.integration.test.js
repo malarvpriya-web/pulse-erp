@@ -224,7 +224,8 @@ describe('Leave — L1 → L2 → HR, company and authority', () => {
     const before = await usedDays();
     expect((await api('hr', 'post', `/leaves/approve/hr/${id}`, {})).status).toBe(409);
     expect((await api('hr', 'post', `/leaves/reject/hr/${id}`, { comments: 'late' })).status).toBe(409);
-    expect((await api('hr', 'put', `/leaves/applications/${id}/status`, { status: 'pending' })).status).toBe(409);
+    // 'pending' is not a decision the generic route takes (2026-11-25) — refused as a bad request.
+    expect((await api('hr', 'put', `/leaves/applications/${id}/status`, { status: 'pending' })).status).toBe(400);
     expect((await api('hr', 'put', `/leaves/applications/${id}/status`, { status: 'approved' })).status).toBe(409);
     expect(await usedDays()).toBe(before);
   });

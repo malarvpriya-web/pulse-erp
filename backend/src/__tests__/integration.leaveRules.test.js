@@ -65,6 +65,8 @@ async function sweep(companyId) {
   await q(`DELETE FROM leave_encashments WHERE employee_id IN ${emps}`);
   await q(`DELETE FROM payroll_adjustments WHERE employee_id IN ${emps}`);
   await q(`DELETE FROM leave_accrual_log WHERE employee_id IN ${emps}`);
+  await q(`DELETE FROM compensatory_off WHERE employee_id IN ${emps}`);
+  await q(`DELETE FROM user_roles WHERE user_id IN (SELECT id FROM users WHERE company_id = $1)`);
   await q(`DELETE FROM attendance_general_settings WHERE company_id = $1`);
   await q(`DELETE FROM company_settings WHERE company_id = $1 AND module = 'leaves'`);
   await q(`DELETE FROM attendance_records WHERE employee_id IN ${emps}`);
@@ -456,6 +458,22 @@ describe('cancel (2026-11-24)', () => {
     expect((await asEmp('put', `/${id}/cancel`)).status).toBe(200);
   });
 
+  it('an employee withdrawing their own leave is not recorded as the HR decider (2026-11-25)', async () => {
+    const id = (await apply({ leave_type_id: typeId, start_date: '2027-11-15', end_date: '2027-11-15' })).body.id;
+    expect((await asEmp('post', `/${id}/withdraw`, { reason: 'plans changed' })).status).toBe(200);
+    const { rows: [la] } = await pool.query('SELECT status, hr_id, hr_comments, withdrawal_reason FROM leave_applications WHERE id = $1', [id]);
+    expect(la.status).toBe('cancelled');
+    expect(la.hr_id).toBeNull();
+    expect(la.hr_comments).toBeNull();
+    expect(la.withdrawal_reason).toBe('plans changed');
+  });
+
+  it('the balance tells a Loss of Pay type apart (My Leaves shows it as unpaid days, not "0 of 0 left")', async () => {
+    const res = await asEmp('get', `/balance/${emp}?year=2027`);
+    expect(res.status).toBe(200);
+    expect(res.body.find(b => b.leave_type_id === typeId)?.is_lop_type).toBe(false);
+  });
+
   it('cancelling an approved LOP leave takes the LOP off the draft payroll run', async () => {
     const lopType = (await pool.query(
       `INSERT INTO leave_types (leave_name, leave_code, annual_quota, company_id, is_lop_type, allow_negative_balance, is_active)
@@ -769,5 +787,159 @@ describe('Leave Settings: delete allocation + change history (2026-11-25)', () =
     const types = await api('get', '/settings/history?kind=types');
     expect(types.body.length).toBeGreaterThan(0);
     expect(types.body.every(r => r.record_type === 'leave_type')).toBe(true);
+  });
+});
+
+describe('own leave for everyone (2026-11-25)', () => {
+  // A store keeper: linked to an employee, but the role holds no leaves grant.
+  let staff, staffUser, unlinkedUser, own;  // own: an active type (an earlier suite switches own off)
+  const as = (userId, employeeId, method, path, body) => request(app)[method](`/api/leaves${path}`)
+    .set('Authorization', `Bearer ${jwt.sign({ userId, role: 'store_keeper', roles: ['store_keeper'], company_id: A.companyId, employee_id: employeeId }, process.env.JWT_SECRET, { expiresIn: '1h' })}`)
+    .send(body || {});
+  beforeAll(async () => {
+    staff = (await pool.query(
+      `INSERT INTO employees (company_id, office_id, first_name, last_name, status, joining_date, department)
+       VALUES ($1, 'EMP959', 'Store', 'Keeper', 'Active', '2025-01-01', 'Stores') RETURNING id`, [A.companyId])).rows[0].id;
+    own = (await pool.query(
+      `INSERT INTO leave_types (leave_name, leave_code, annual_quota, company_id, is_active) VALUES ('ZZ Own', 'ZZOWN', 10, $1, true) RETURNING id`,
+      [A.companyId])).rows[0].id;
+    for (const e of [staff, emp]) await pool.query(`INSERT INTO leave_balances (employee_id, leave_type_id, year, allocated_days, used_days) VALUES ($1,$2,2027,10,0)`, [e, own]);
+    const { rows: [role] } = await pool.query(`SELECT id FROM roles WHERE LOWER(code) = 'store_keeper' LIMIT 1`);
+    const mkUser = async (tag, employeeId) => {
+      const { rows: [u] } = await pool.query(
+        `INSERT INTO users (name, email, password_hash, company_id, is_active, role, employee_id)
+         VALUES ($1, $2, 'not-a-real-hash', $3, true, 'store_keeper', $4) RETURNING id`,
+        [`${A.code} ${tag}`, `${A.code.toLowerCase()}.${tag}@test.invalid`, A.companyId, employeeId]);
+      await pool.query(`INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2)`, [u.id, role.id]);
+      return u.id;
+    };
+    staffUser = await mkUser('stores', staff);
+    unlinkedUser = await mkUser('stores2', null);
+  });
+
+  it('a linked store keeper sees their balance, applies, reads history and cancels — their own only', async () => {
+    const bal = await as(staffUser, staff, 'get', `/balance/${staff}?year=2027`);
+    expect(bal.status, JSON.stringify(bal.body)).toBe(200);
+    expect(bal.body.some(b => b.leave_type_id === own)).toBe(true);
+    expect((await as(staffUser, staff, 'get', '/types?applicable=1')).status).toBe(200);
+    expect((await as(staffUser, staff, 'get', '/probation-status')).status).toBe(200);
+    // employee_id of someone else is ignored: the leave is filed for the caller.
+    const applied = await as(staffUser, staff, 'post', '/apply', { employee_id: emp, leave_type_id: own, start_date: '2027-10-04', end_date: '2027-10-04', reason: 'own' });
+    expect(applied.status, JSON.stringify(applied.body)).toBe(201);
+    expect(applied.body.employee_id).toBe(staff);
+    expect((await as(staffUser, staff, 'get', `/applications/${applied.body.id}/history`)).status).toBe(200);
+    expect((await as(staffUser, staff, 'put', `/${applied.body.id}/cancel`)).status).toBe(200);
+  });
+
+  it('… but nothing beyond their own', async () => {
+    const ob = await as(staffUser, staff, 'get', `/balance/${emp}`); expect(ob.status, JSON.stringify(ob.body)).toBe(403);
+    expect((await as(staffUser, staff, 'get', '/applications')).status).toBe(403);
+    const ap = await apply({ leave_type_id: own, start_date: '2027-10-19', end_date: '2027-10-19' });
+    expect(ap.status, JSON.stringify(ap.body)).toBe(201);
+    const other = ap.body.id;
+    expect((await as(staffUser, staff, 'put', `/${other}/cancel`)).status).toBe(403);
+    expect((await as(staffUser, staff, 'get', `/applications/${other}/history`)).status).toBe(404);
+  });
+
+  it('an unlinked login without the grant is still refused', async () => {
+    expect((await as(unlinkedUser, null, 'get', '/types?applicable=1')).status).toBe(403);
+    expect((await as(unlinkedUser, null, 'post', '/apply', { leave_type_id: own, start_date: '2027-10-06', end_date: '2027-10-06', reason: 'x' })).status).toBe(403);
+  });
+});
+
+describe('a leave over New Year (2026-11-25)', () => {
+  it('is refused — one request per year, each year has its own balance', async () => {
+    const res = await apply({ leave_type_id: T.l2, start_date: '2027-12-30', end_date: '2028-01-03' });
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.code).toBe('LEAVE_CROSSES_YEAR');
+  });
+});
+
+describe('cancelling an approved Comp Off leave (2026-11-25)', () => {
+  it('hands its credit back, so it can still expire', async () => {
+    const co = (await pool.query(
+      `INSERT INTO leave_types (leave_name, leave_code, annual_quota, company_id, is_comp_off_type, is_active)
+       VALUES ('ZZ Comp Off', 'ZZCO', 0, $1, true, true) RETURNING id`, [A.companyId])).rows[0].id;
+    await pool.query(`INSERT INTO leave_balances (employee_id, leave_type_id, year, allocated_days, used_days) VALUES ($1,$2,2027,1,0)`, [emp, co]);
+    const { rows: [credit] } = await pool.query(
+      `INSERT INTO compensatory_off (employee_id, work_date, hours_worked, status, credited, expires_on, company_id)
+       VALUES ($1, '2027-09-05', 8, 'approved', true, '2099-12-31', $2) RETURNING id`, [emp, A.companyId]);
+    const id = (await apply({ leave_type_id: co, start_date: '2027-11-22', end_date: '2027-11-22' })).body.id;
+    await api('post', `/approve/manager/${id}`, { comments: 'ok' });
+    expect((await api('post', `/approve/hr/${id}`, { comments: 'ok' })).body.status).toBe('approved');
+    const st = async () => (await pool.query('SELECT status FROM compensatory_off WHERE id = $1', [credit.id])).rows[0].status;
+    expect(await st()).toBe('used');
+    expect((await api('put', `/${id}/cancel`, {})).status).toBe(200);
+    expect(await st()).toBe('approved');
+  });
+});
+
+describe('Apply Leave page audit (2026-11-25)', () => {
+  // Own types: earlier suites switch T.plain off and change T.l2.
+  let full, noHalf;
+  beforeAll(async () => {
+    const mk = async (name, code, half) => (await pool.query(
+      `INSERT INTO leave_types (leave_name, leave_code, annual_quota, company_id, is_active, allow_half_day)
+       VALUES ($1, $2, 10, $3, true, $4) RETURNING id`, [name, code, A.companyId, half])).rows[0].id;
+    full = await mk('ZZ Apply Audit', 'ZZAPA', true);
+    noHalf = await mk('ZZ No Half', 'ZZNOH', false);
+    for (const t of [full, noHalf]) await pool.query(`INSERT INTO leave_balances (employee_id, leave_type_id, year, allocated_days, used_days) VALUES ($1,$2,2027,10,0)`, [emp, t]);
+  });
+  it('a morning half and an afternoon half on the same day do not clash; a second morning does', async () => {
+    const am = await apply({ leave_type_id: full, start_date: '2027-06-14', end_date: '2027-06-14', half_day: true, half_day_session: 'AM' });
+    expect(am.status, JSON.stringify(am.body)).toBe(201);
+    const pm = await apply({ leave_type_id: full, start_date: '2027-06-14', end_date: '2027-06-14', half_day: true, half_day_session: 'pm' });
+    expect(pm.status, JSON.stringify(pm.body)).toBe(201);
+    expect(pm.body.half_day_session).toBe('PM');
+    const am2 = await apply({ leave_type_id: full, start_date: '2027-06-14', end_date: '2027-06-14', half_day: true, half_day_session: 'AM' });
+    expect(am2.status).toBe(409);
+    // A full day on top of a half day still clashes.
+    const fullDay = await apply({ leave_type_id: full, start_date: '2027-06-14', end_date: '2027-06-14' });
+    expect(fullDay.status).toBe(409);
+  });
+
+  it('a half day on a type that does not allow one is refused', async () => {
+    const res = await apply({ leave_type_id: noHalf, start_date: '2027-06-15', end_date: '2027-06-15', half_day: true, half_day_session: 'AM' });
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.code).toBe('HALF_DAY_NOT_ALLOWED');
+  });
+
+  it('probation-status says who approves: the manager with a login, else nobody (HR steps in); a left manager is not used', async () => {
+    const mgr = (await pool.query(
+      `INSERT INTO employees (company_id, office_id, first_name, last_name, status, joining_date, department)
+       VALUES ($1, 'EMP971', 'Mana', 'Ger', 'Active', '2024-01-01', 'Testing') RETURNING id`, [A.companyId])).rows[0].id;
+    const rep = (await pool.query(
+      `INSERT INTO employees (company_id, office_id, first_name, last_name, status, joining_date, department, reporting_manager_id, probation_end_date)
+       VALUES ($1, 'EMP972', 'New', 'Joiner', 'Active', '2026-11-01', 'Testing', $2, '2027-02-28') RETURNING id`, [A.companyId, mgr])).rows[0].id;
+    const st = async () => (await api('get', `/probation-status?employee_id=${rep}`)).body;
+    // Manager has no login yet → HR decides.
+    let s = await st();
+    expect(s.approver).toBeNull();
+    // Probation by stored end date only, not by status.
+    expect(s.status_probation).toBe(false);
+    expect(s.probation_end).toBe('2027-02-28');
+    await pool.query(
+      `INSERT INTO users (name, email, password_hash, company_id, is_active, role, employee_id)
+       VALUES ($1, $2, 'not-a-real-hash', $3, true, 'employee', $4)`,
+      [`${A.code} mgr`, `${A.code.toLowerCase()}.mgr@test.invalid`, A.companyId, mgr]);
+    s = await st();
+    expect(s.approver?.id).toBe(mgr);
+    expect(s.approver?.office_id).toBe('EMP971');
+    // A manager who has left (any exited spelling) is not the approver.
+    await pool.query(`UPDATE employees SET status = 'terminated' WHERE id = $1`, [mgr]);
+    s = await st();
+    expect(s.approver).toBeNull();
+  });
+
+  it('paid leave starting after the probation end date is accepted; on or before it is refused', async () => {
+    const pe = (await pool.query(
+      `INSERT INTO employees (company_id, office_id, first_name, last_name, status, joining_date, department, probation_end_date)
+       VALUES ($1, 'EMP973', 'Prob', 'Ation', 'Active', '2026-10-01', 'Testing', '2027-06-30') RETURNING id`, [A.companyId])).rows[0].id;
+    await pool.query(`INSERT INTO leave_balances (employee_id, leave_type_id, year, allocated_days, used_days) VALUES ($1,$2,2027,10,0)`, [pe, full]);
+    const inside = await api('post', '/apply', { employee_id: pe, leave_type_id: full, start_date: '2027-06-30', end_date: '2027-06-30', reason: 'x' });
+    expect(inside.status, JSON.stringify(inside.body)).toBe(422);
+    expect(inside.body.code).toBe('PROBATION_RESTRICTED');
+    const after = await api('post', '/apply', { employee_id: pe, leave_type_id: full, start_date: '2027-07-01', end_date: '2027-07-01', reason: 'x' });
+    expect(after.status, JSON.stringify(after.body)).toBe(201);
   });
 });

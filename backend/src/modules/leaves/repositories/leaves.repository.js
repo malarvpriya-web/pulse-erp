@@ -84,7 +84,8 @@ const leavesRepository = {
         lt.leave_name, lt.leave_code,
         COALESCE(lt.carry_forward_allowed, false) AS carry_forward_allowed,
         COALESCE(lt.is_encashable, false)          AS is_encashable,
-        COALESCE(lt.allow_half_day, true)           AS allow_half_day
+        COALESCE(lt.allow_half_day, true)           AS allow_half_day,
+        COALESCE(lt.is_lop_type, false)             AS is_lop_type
       FROM leave_balances lb
       JOIN leave_types lt ON lb.leave_type_id = lt.id
       WHERE lb.employee_id = $1 AND lb.year = $2
@@ -477,8 +478,10 @@ const leavesRepository = {
              hr_status     = CASE WHEN $1::varchar IN ('approved','rejected') THEN $1::varchar ELSE hr_status END,
              l2_status     = CASE WHEN $1::varchar IN ('approved','rejected') THEN $1::varchar ELSE l2_status END,
              manager_status = CASE WHEN $1::varchar IN ('approved','rejected') AND manager_status = 'pending' THEN $1::varchar ELSE manager_status END,
-             hr_id         = COALESCE(hr_id, $3),
-             hr_comments   = COALESCE($4, hr_comments),
+             -- The applicant cancelling their own leave is not "HR": it stamped
+             -- their own id as hr_id and (withdraw) their reason as HR's comment.
+             hr_id         = CASE WHEN $1::varchar = 'cancelled' AND $3::int IS NOT DISTINCT FROM employee_id THEN hr_id ELSE COALESCE(hr_id, $3::int) END,
+             hr_comments   = CASE WHEN $1::varchar = 'cancelled' AND $3::int IS NOT DISTINCT FROM employee_id THEN hr_comments ELSE COALESCE($4, hr_comments) END,
              hr_approved_at = CASE WHEN $1::varchar IN ('approved','rejected') THEN CURRENT_TIMESTAMP ELSE hr_approved_at END,
              updated_at    = CURRENT_TIMESTAMP
          WHERE id = $2 AND deleted_at IS NULL
@@ -551,6 +554,26 @@ const leavesRepository = {
        WHERE employee_id = $2 AND leave_type_id = $3 AND year = $4`,
       [application.number_of_days || 0, application.employee_id, application.leave_type_id, year]
     );
+
+    // Comp Off (2026-11-25): approving consumed the oldest credits (marked
+    // 'used', FIFO, above); cancelling left them 'used', so the days came back
+    // to the balance but their credits could never expire. Hand back as many
+    // credits as were taken — the most recently used, never one the expiry job
+    // closed. A credit already past expires_on is expired again by the next
+    // leave.cron run, which also takes its days off the balance.
+    const { rows: [lt] } = await client.query(
+      'SELECT is_comp_off_type FROM leave_types WHERE id = $1', [application.leave_type_id]);
+    if (lt?.is_comp_off_type) {
+      await client.query(
+        `UPDATE compensatory_off SET status = 'approved', updated_at = CURRENT_TIMESTAMP
+          WHERE id IN (
+            SELECT id FROM compensatory_off
+             WHERE employee_id = $1 AND status = 'used' AND credited = true
+               AND COALESCE(comments, '') NOT LIKE '%Expired%'
+             ORDER BY updated_at DESC, work_date DESC
+             LIMIT $2)`,
+        [application.employee_id, Math.ceil(Number(application.number_of_days) || 1)]);
+    }
   },
 
   async getLeaveCalendar(filters = {}) {

@@ -189,8 +189,8 @@ export default function EmployeeDashboard({ setPage }) {
 
   // A link is offered only if Layout would render the target for this role.
   const canOpen = useCallback(page => canRenderPage(role, page, {
-    route: ROUTES[page], menuAccess, hasPermission,
-  }), [role, menuAccess, hasPermission]);
+    route: ROUTES[page], menuAccess, hasPermission, employeeLinked: user?.employee_id != null,
+  }), [role, menuAccess, hasPermission, user?.employee_id]);
   const linkTo = useCallback((page, params) => (
     typeof setPage === 'function' && canOpen(page)
       ? () => (params ? setPage(page, params) : setPage(page))

@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import api from '@/services/api/client';
 import { useAuth } from '@/context/AuthContext';
 import { ChevronLeft, ChevronRight, Users, Calendar, X, CalendarDays } from 'lucide-react';
@@ -62,7 +63,10 @@ function LeaveRow({ l, color, onOpen }) {
   );
 }
 
-export default function LeaveCalendar() {
+export default function LeaveCalendar({ setPage }) {
+  const navigate = useNavigate();
+  // A picked day from today on opens Apply Leave with that date filled in.
+  const applyFrom = (d) => (setPage ? setPage('ApplyLeave', { from: d }) : navigate(`/ApplyLeave?from=${d}`));
   const now = new Date();
   const todayISO = localISO(now);
   // hasAnyRole, not the primary `role`: someone holding HR or manager as a
@@ -365,14 +369,9 @@ export default function LeaveCalendar() {
                 })}
               </div>
 
-              {/* Legend — the types actually on screen this month */}
+              {/* Markers only: the leave types and their colours are the month
+                  summary beside the calendar (it listed the same types twice). */}
               <div className="lc-legend">
-                {monthlySummary.map(t => (
-                  <div key={t.key} className="lc-legend-item">
-                    <div className="lc-legend-dot" style={{ background: colorForKey(t.key) }}/>
-                    {t.name}
-                  </div>
-                ))}
                 {showPending && leaves.some(l => l.status === 'pending') && (
                   <div className="lc-legend-item">
                     <div className="lc-legend-dot" style={{ border: '1.5px solid #6b7280', boxSizing: 'border-box' }}/>
@@ -417,6 +416,13 @@ export default function LeaveCalendar() {
               {leavesOnDay(selectedDay).map((l, i) => (
                 <LeaveRow key={l.id ?? i} l={l} color={colorFor(l)} onOpen={openLeave} />
               ))}
+
+              {iso(year, month, selectedDay) >= todayISO && (
+                <button type="button" className="pulse-btn-secondary" style={{ marginTop: 8, width: '100%' }}
+                  onClick={() => applyFrom(iso(year, month, selectedDay))}>
+                  Apply for leave from this day
+                </button>
+              )}
             </div>
           )}
 
@@ -431,7 +437,7 @@ export default function LeaveCalendar() {
           </div>
 
           <div className="lc-side-section">
-            <div className="lc-side-hd">{MONTHS[month]} summary</div>
+            <div className="lc-side-hd">{MONTHS[month]} — leave by type</div>
             {monthlySummary.length === 0
               ? <p className="lc-side-empty">No {showPending ? '' : 'approved '}leave this month</p>
               : monthlySummary.map(t => (
@@ -441,13 +447,16 @@ export default function LeaveCalendar() {
                     <span className="lc-summary-cnt" title={`${t.people.size} ${t.people.size === 1 ? 'person' : 'people'} approved`}>
                       {fmtDays(t.days)} d
                     </span>
+                    {t.people.size > 0 && (
+                      <span className="lc-summary-pend" style={{ color: '#6b7280' }}>· {t.people.size} {t.people.size === 1 ? 'person' : 'people'}</span>
+                    )}
                     {t.pendingDays > 0 && (
                       <span className="lc-summary-pend" title="Pending days">+{fmtDays(t.pendingDays)} pending</span>
                     )}
                   </div>
                 ))}
             {monthlySummary.length > 0 && (
-              <p className="lc-side-note">Leave days in {MONTHS[month]}. Click a name for its approval history.</p>
+              <p className="lc-side-note">Colours match the calendar dots. Leave days in {MONTHS[month]}; click a name for its approval history.</p>
             )}
           </div>
         </div>

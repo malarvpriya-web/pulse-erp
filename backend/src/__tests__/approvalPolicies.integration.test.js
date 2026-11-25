@@ -117,7 +117,7 @@ async function balanceFor(key, cid) {
     `INSERT INTO leave_balances (employee_id, leave_type_id, year, allocated_days, used_days, opening_balance, carried_forward_days, encashed_days)
      VALUES ($1, $2, 2026, 12, 0, 0, 0, 0)`, [fx.emp[key], fx.type[cid]]);
 }
-const DATES = ['2026-12-07', '2026-12-08', '2026-12-09', '2026-12-10', '2026-12-11', '2026-12-14', '2026-12-15', '2026-12-16'];
+const DATES = ['2026-12-07', '2026-12-08', '2026-12-09', '2026-12-10', '2026-12-11', '2026-12-14', '2026-12-15', '2026-12-16', '2026-12-17', '2026-12-18'];
 let dateSeq = 0;
 async function applyLeave(key, cid) {
   const d = DATES[dateSeq++];
@@ -205,12 +205,42 @@ describe('Leave: nobody decides their own leave', () => {
     expect((await api('hr1', 'patch', `/leaves/${id}/approve`)).status).toBe(403);
     const bulk = await api('hr1', 'post', '/leaves/bulk-approve', { ids: [id] });
     expect(bulk.body.results[0]).toMatchObject({ status: 'error', code: 'SELF_APPROVAL_BLOCKED' });
-    expect((await api('hr1', 'post', `/leaves/${id}/workflow/advance`, { action: 'approve' })).status).toBe(403);
+    // Workflow advance retired 2026-11-25 (it finalised from L1, skipping L2/HR).
+    expect((await api('hr1', 'post', `/leaves/${id}/workflow/advance`, { action: 'approve' })).status).toBe(410);
     expect((await leave(id)).status).toBe('pending');
     expect(await used('hr1', A)).toBe(before);
     // Another HR user completes it.
     expect((await api('hr2', 'post', `/leaves/approve/hr/${id}`)).status).toBe(200);
     expect(await used('hr1', A)).toBe(before + 1);
+  });
+
+  // Go-live check 2026-11-25: the one-button routes (Notification Center,
+  // Manager Dashboard) used to set a pending leave straight to approved for HR —
+  // no manager, no dept head — and refused the manager. Now each call is taken
+  // at the step the leave is waiting on, by that step's own rules.
+  it('generic status / approve routes decide the step the leave is waiting on, never skip one', async () => {
+    const id = await applyLeave('req', A);
+    const before = await used('req', A);
+    // HR cannot jump the manager step while the manager can log in.
+    expect((await api('hr2', 'put', `/leaves/applications/${id}/status`, { status: 'approved' })).status).toBe(403);
+    expect((await leave(id))).toMatchObject({ status: 'pending', manager_status: 'pending' });
+    // The manager's one-button approve is the L1 decision.
+    expect((await api('mgr', 'put', `/leaves/${id}/approve`)).status).toBe(200);
+    expect((await leave(id))).toMatchObject({ status: 'pending', manager_status: 'approved' });
+    // Rejecting still needs a reason.
+    expect((await api('dh2', 'patch', `/leaves/${id}/reject`)).status).toBe(400);
+    // Next call is the L2 step (type requires it), then HR final.
+    expect((await api('dh2', 'patch', `/leaves/${id}/approve`)).status).toBe(200);
+    expect((await leave(id))).toMatchObject({ status: 'pending', l2_status: 'approved' });
+    expect(await used('req', A)).toBe(before);
+    expect((await api('hr2', 'put', `/leaves/applications/${id}/status`, { status: 'approved' })).status).toBe(200);
+    expect((await leave(id)).status).toBe('approved');
+    expect(await used('req', A)).toBe(before + 1);
+    // Decided — a second call is refused, not re-applied.
+    expect((await api('hr2', 'put', `/leaves/applications/${id}/status`, { status: 'approved' })).status).toBe(409);
+    expect(await used('req', A)).toBe(before + 1);
+    // The generic workflow routes are retired.
+    expect((await api('hr2', 'get', `/leaves/${id}/workflow`)).status).toBe(410);
   });
 
   it('delegation cannot be used to route your own leave to someone you choose', async () => {

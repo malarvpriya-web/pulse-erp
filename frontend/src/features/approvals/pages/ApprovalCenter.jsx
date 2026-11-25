@@ -74,8 +74,8 @@ const Badge = ({ tone = 'grey', children, title }) => (
 export default function ApprovalCenter({ initialTab } = {}) {
   const navigate = useNavigate();
   const location = useLocation();
-  const { role, menuAccess } = useAuth();
-  const canOpen = useCallback((page) => !!page && canRoleOpenPage(role, page, { menuAccess }), [role, menuAccess]);
+  const { user, role, menuAccess } = useAuth();
+  const canOpen = useCallback((page) => !!page && canRoleOpenPage(role, page, { menuAccess, employeeLinked: user?.employee_id != null }), [role, menuAccess, user?.employee_id]);
   const open = (page, params) => {
     if (!page) return;
     const qs = params && Object.keys(params).length ? `?${new URLSearchParams(params)}` : '';

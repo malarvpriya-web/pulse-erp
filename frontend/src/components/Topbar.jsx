@@ -88,8 +88,8 @@ export default function Topbar({ goBack, currentPage }) {
   // will only hit "Unauthorized" clicking through. Mirrors the same check
   // GlobalSearch.jsx runs for the command-palette search.
   const searchablePages = useMemo(
-    () => SEARCH_PAGES.filter(p => canRoleOpenPage(role, p.page, { menuAccess })),
-    [role, menuAccess]
+    () => SEARCH_PAGES.filter(p => canRoleOpenPage(role, p.page, { menuAccess, employeeLinked: user?.employee_id != null })),
+    [role, menuAccess, user?.employee_id]
   );
 
   // notifications state
@@ -229,7 +229,7 @@ export default function Topbar({ goBack, currentPage }) {
   // than closing on a click that went nowhere.
   const openNotif = (n) => {
     if (!n.is_read) markRead(n.id);
-    const target = notificationTarget(n, pg => canRoleOpenPage(role, pg, { menuAccess }));
+    const target = notificationTarget(n, pg => canRoleOpenPage(role, pg, { menuAccess, employeeLinked: user?.employee_id != null }));
     if (target) navigate(target.page, target.params);
   };
 

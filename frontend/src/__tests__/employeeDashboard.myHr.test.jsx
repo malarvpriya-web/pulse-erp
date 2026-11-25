@@ -147,13 +147,15 @@ describe('My Dashboard — the employee’s own HR record', () => {
     expect(setPage).toHaveBeenLastCalledWith('HolidayCalendar');
   });
 
-  it('hides links and cards a role cannot open (sales_exec: no leave pages, no timesheets)', async () => {
+  // Own leave works for everyone (owner, 2026-11-25): a linked sales_exec
+  // with no leaves grant still gets Apply Leave / Holiday Calendar; the
+  // timesheet card stays hidden (no timesheets grant).
+  it('hides links and cards a role cannot open (sales_exec: own leave yes, timesheets no)', async () => {
     mockAuth = { ...employee(), role: 'sales_exec', hasPermission: () => false };
     mockApi();
     render(<EmployeeDashboard setPage={vi.fn()} />);
     await screen.findByText('My Employment');
-    expect(screen.queryByRole('button', { name: /apply leave/i })).toBeNull();
-    expect(screen.queryByRole('button', { name: /holiday calendar/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /holiday calendar/i })).toBeTruthy();
     expect(screen.queryByText('My Recent Timesheet Entries')).toBeNull();
     expect(api.get.mock.calls.map(([u]) => u)).not.toContain('/timesheets/timesheets');
   });

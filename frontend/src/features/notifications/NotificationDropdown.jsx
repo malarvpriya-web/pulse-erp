@@ -56,7 +56,7 @@ function groupByDate(items) {
 
 export default function NotificationDropdown({ onViewAll }) {
   const navigate = useNavigate();
-  const { role, menuAccess } = useAuth();
+  const { user, role, menuAccess } = useAuth();
   const [open,  setOpen]  = useState(false);
   const [items, setItems] = useState([]);
   const ref = useRef(null);
@@ -108,7 +108,7 @@ export default function NotificationDropdown({ onViewAll }) {
   // pointing somewhere this role can't open) just closes the panel.
   const openNotification = (n) => {
     if (!n.is_read) markRead(n.id);
-    const target = notificationTarget(n, pg => canRoleOpenPage(role, pg, { menuAccess }));
+    const target = notificationTarget(n, pg => canRoleOpenPage(role, pg, { menuAccess, employeeLinked: user?.employee_id != null }));
     if (!target) return; // nothing to open — leave the panel where it is
     setOpen(false);
     const qs = new URLSearchParams(target.params).toString();

@@ -800,13 +800,14 @@ export function canRoleAccessPageBySection(role, page) {
 // enforces at the route level. `menuAccess` is the admin Page-Access override
 // lookup from useAuth() — pass it so an explicit grant/revoke on a section is
 // honored here exactly as it is in the sidebar and at the route.
-export function canRoleOpenPage(role, page, { menuAccess, hasDirectReports = false } = {}) {
+export function canRoleOpenPage(role, page, { menuAccess, hasDirectReports = false, employeeLinked = false } = {}) {
   const section = getSectionForPage(page);
   // ALWAYS_VISIBLE sections cannot be restricted (see its definition) — the same
   // rule Sidebar.jsx applies, so a drawn row never resolves to nowhere.
   const override = section && menuAccess && !ALWAYS_VISIBLE.has(section) ? menuAccess(section) : null;
   if (override === 'hidden') return false;
   if (override === 'view' || override === 'edit') return true;
+  if (employeeLinked && OWN_LEAVE_PAGES.has(page)) return true;
 
   if (role === 'employee' && !canEmployeeAccessPage(page, { hasDirectReports })) return false;
   if (role === 'hr' && !canHrAccessPage(page)) return false;
@@ -857,7 +858,15 @@ export function holdsModuleGrant(hasPermission, module, actions) {
   return list.some(a => hasPermission(module, a));
 }
 
-export function canRenderPage(role, page, { route, menuAccess, hasPermission, hasDirectReports = false } = {}) {
+// ── Own leave for everyone (owner, 2026-11-25) ─────────────────────────────
+// Every login linked to an employee record opens these three pages, whatever
+// its roles: sales_exec, store_keeper, qc_engineer … hold no 'Leaves' section
+// and no leaves grant, so they could not see their balance or apply. The
+// server lets the same logins through on the own-leave routes only
+// (leaves.routes.js ownLeave) and pins them to their own employee_id.
+export const OWN_LEAVE_PAGES = new Set(['MyLeaves', 'ApplyLeave', 'HolidayCalendar']);
+
+export function canRenderPage(role, page, { route, menuAccess, hasPermission, hasDirectReports = false, employeeLinked = false } = {}) {
   const section = getSectionForPage(page);
   // ALWAYS_VISIBLE sections (Home, Approvals) cannot be
   // restricted by Page Access. Sidebar.jsx already draws them regardless; without
@@ -867,6 +876,7 @@ export function canRenderPage(role, page, { route, menuAccess, hasPermission, ha
   const financeRole = role === 'finance' || role === 'finance_manager' || role === 'accounts_exec';
 
   if (sectionAccess === 'hidden') return false;
+  if (employeeLinked && OWN_LEAVE_PAGES.has(page)) return true;
   if (role === 'employee' && !canEmployeeAccessPage(page, { hasDirectReports })) return false;
   if (role === 'hr' && !granted && !canHrAccessPage(page)) return false;
   if (financeRole && !granted && !canFinanceAccessPage(page)) return false;

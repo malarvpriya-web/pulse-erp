@@ -105,18 +105,21 @@ describe('Leave Encashment — claims and amounts (decision 3)', () => {
     return within(select).getAllByRole('option').slice(1).map(o => o.textContent);
   };
 
-  it('without payroll:edit the claim can be only for yourself', async () => {
+  // Owner, 2026-11-24: employees cannot raise claims, not even their own —
+  // only payroll (payroll:edit) raises one, and never for themself.
+  it('without payroll:edit there is no New Encashment at all', async () => {
     auth.grants = new Set(); auth.user = { id: 1, employee_id: 7 };
     withRecords([]);
     render(<LeaveEncashmentPage />);
-    expect(await pickerOptions()).toEqual(['Asha K (EMP007)']);
+    await screen.findByText(/No encashment|encashment/i);
+    expect(screen.queryByRole('button', { name: /New Encashment/ })).toBeNull();
   });
 
-  it('with payroll:edit any employee can be chosen', async () => {
-    auth.grants = new Set(['payroll:edit']);
+  it('with payroll:edit any employee but yourself can be chosen', async () => {
+    auth.grants = new Set(['payroll:edit']); auth.user = { id: 1, employee_id: 7 };
     withRecords([]);
     render(<LeaveEncashmentPage />);
-    expect(await pickerOptions()).toEqual(['Asha K (EMP007)', 'Ravi M (EMP008)']);
+    expect(await pickerOptions()).toEqual(['Ravi M (EMP008)']);
   });
 
   it('withheld amounts are not totalled as ₹0', async () => {

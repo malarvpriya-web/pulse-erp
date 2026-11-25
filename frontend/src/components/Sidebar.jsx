@@ -28,7 +28,7 @@ import {
   FINANCE_RESTRICTED_SECTIONS, FINANCE_SELF_SERVICE_PAGES,
   FINANCE_ANALYTICS_SCOPED_PAGES, MANAGER_ANALYTICS_SCOPED_PAGES,
   HR_EXEC_EXCLUDED_PAGES, MANAGER_HR_SCOPED_PAGES, SECURITY_HR_SCOPED_PAGES, ALWAYS_VISIBLE,
-  canOpenEmployeeMaster, EMPLOYEE_DIRECTORY_PAGE, EMPLOYEE_MASTER_PAGE, holdsModuleGrant,
+  canOpenEmployeeMaster, EMPLOYEE_DIRECTORY_PAGE, EMPLOYEE_MASTER_PAGE, holdsModuleGrant, OWN_LEAVE_PAGES,
 } from '@/config/menuCatalog';
 
 // Orphan groups are named "<Label> · More". Where the label doesn't match a
@@ -241,7 +241,16 @@ export default function Sidebar() {
     // Band labels carry no pages and no permissions — keep them here and drop
     // the ones left empty for this role in the pass after the reduce.
     if (rawItem.divider) { acc.push(rawItem); return acc; }
-    if (!isMenuVisible(rawItem)) return acc;
+    // Own leave for everyone (owner, 2026-11-25): a login linked to an
+    // employee whose roles hold no Leaves menu (sales_exec, store_keeper,
+    // qc_engineer …) still gets its own three rows — the same pages Layout
+    // opens for it (OWN_LEAVE_PAGES in menuCatalog.js).
+    if (!isMenuVisible(rawItem)) {
+      if (rawItem.name === 'Leaves' && user?.employee_id != null && menuAccess('Leaves') !== 'hidden' && Array.isArray(rawItem.submenu)) {
+        acc.push({ ...rawItem, submenu: rawItem.submenu.filter(sub => !sub.separator && OWN_LEAVE_PAGES.has(sub.page)) });
+      }
+      return acc;
+    }
     // One employee list per person: whoever can open All Employees gets that
     // row and not the read-only phonebook (Layout.jsx redirects its URL the same
     // way). canOpenEmployeeMaster() runs Layout's own route gate against the

@@ -99,7 +99,7 @@ export default function Layout({ selectedEmployee, setSelectedEmployee }) {
     if (payrollHub) return <Navigate to={payrollHub} replace />;
     // Wait for the reporting-line answer instead of flashing Access Denied.
     if (role === 'employee' && approver.loading && REPORTING_MANAGER_PAGES.has(page)) return null;
-    if (!canRenderPage(role, page, { route, menuAccess, hasPermission, hasDirectReports: approver.has_direct_reports === true })) {
+    if (!canRenderPage(role, page, { route, menuAccess, hasPermission, hasDirectReports: approver.has_direct_reports === true, employeeLinked: user?.employee_id != null })) {
       const Unauthorized = ROUTES['Unauthorized'].component;
       return <Unauthorized setPage={setPage} />;
     }

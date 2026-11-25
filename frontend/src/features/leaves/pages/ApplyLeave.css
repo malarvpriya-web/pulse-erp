@@ -114,6 +114,9 @@
   text-transform: uppercase; letter-spacing: .05em;
 }
 .al-req { color: #ef4444; margin-left: 2px; }
+/* A label used as a control (half-day tick, file picker) is not a field caption. */
+.al-field label.al-inline { text-transform: none; letter-spacing: 0; font-size: 13px; font-weight: 500; color: #374151; white-space: nowrap; }
+.al-field input[type="checkbox"] { width: auto; margin: 0; }
 
 .al-field input,
 .al-field select,

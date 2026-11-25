@@ -7,6 +7,8 @@ vi.mock('../modules/leaves/repositories/leaves.repository.js', () => ({
     applyLeave:       vi.fn(),
     findApplications: vi.fn(),
     updateStatus:     vi.fn(),
+    approveByHR:      vi.fn(),
+    rejectByHR:       vi.fn(),
   },
 }));
 vi.mock('../services/ValidationEngineService.js', () => ({
@@ -126,42 +128,54 @@ describe('PATCH /api/leaves/:id/approve — approval flow', () => {
     expect(res.status).toBe(401);
   });
 
-  it('200 HR approves leave', async () => {
-    mockAuthWithFullPermission();
-    // loadLeaveInCompany(): the route now reads the leave (company-scoped) first.
-    pool.query.mockResolvedValueOnce({ rows: [{ ...pendingLeave, employee_company_id: null }] });
-    // blockOwnLeaveDecision(): the actor's employee (HR, id 2) is not the requester (4).
-    pool.query.mockResolvedValueOnce({ rows: [{ employee_id: 2 }] });
-    const approved = { ...pendingLeave, status: 'approved' };
-    leavesRepo.updateStatus.mockResolvedValue(approved);
+  // 2026-11-25: the one-button route decides the step the leave waits on. This
+  // leave has its manager's approval and no L2, so it is HR's final decision —
+  // approveByHR (needs L1 first), never updateStatus (which skipped the steps).
+  const atHrStep = { ...pendingLeave, manager_status: 'approved', l2_status: null, employee_company_id: null };
+  const routeSql = () => pool.query.mockImplementation(async (sql) => {
+    const q = String(sql);
+    if (/FROM leave_applications la/.test(q) && /LEFT JOIN employees e/.test(q)) return { rows: [atHrStep] };
+    if (/SELECT l2_required FROM leave_types/.test(q)) return { rows: [{ l2_required: false }] };
+    if (/can_approve|role_permissions|user_permissions/i.test(q)) return { rows: [FULL_PERMISSION] };
+    if (/FROM users/i.test(q)) return { rows: [{ ...ACTIVE_USER, employee_id: 2 }] };
+    return { rows: [] };
+  });
 
+  it('200 HR approves leave at the HR step', async () => {
+    mockAuthWithFullPermission();
+    routeSql();
+    leavesRepo.approveByHR.mockResolvedValue({ ...atHrStep, status: 'approved', hr_status: 'approved' });
     const res = await request(app).patch('/api/leaves/10/approve')
       .set('Authorization', `Bearer ${hrToken()}`)
       .send({ comments: 'OK' });
-
-    expect(res.status).toBe(200);
-    expect(res.body.success).toBe(true);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.status).toBe('approved');
+    expect(leavesRepo.approveByHR).toHaveBeenCalled();
+    expect(leavesRepo.updateStatus).not.toHaveBeenCalled();
   });
 });
 
 // ── Reject leave ────────────────────────────────────────────────────────────────
 
 describe('PATCH /api/leaves/:id/reject — rejection flow', () => {
-  it('200 HR rejects leave with reason', async () => {
+  const atHrStep = { ...pendingLeave, manager_status: 'approved', l2_status: null, employee_company_id: null };
+  it('200 HR rejects leave with reason at the HR step', async () => {
     mockAuthWithFullPermission();
-    // loadLeaveInCompany(): the route now reads the leave (company-scoped) first.
-    pool.query.mockResolvedValueOnce({ rows: [{ ...pendingLeave, employee_company_id: null }] });
-    // blockOwnLeaveDecision(): the actor's employee (HR, id 2) is not the requester (4).
-    pool.query.mockResolvedValueOnce({ rows: [{ employee_id: 2 }] });
-    const rejected = { ...pendingLeave, status: 'rejected' };
-    leavesRepo.updateStatus.mockResolvedValue(rejected);
-
+    pool.query.mockImplementation(async (sql) => {
+      const q = String(sql);
+      if (/FROM leave_applications la/.test(q) && /LEFT JOIN employees e/.test(q)) return { rows: [atHrStep] };
+      if (/SELECT l2_required FROM leave_types/.test(q)) return { rows: [{ l2_required: false }] };
+      if (/can_approve|role_permissions|user_permissions/i.test(q)) return { rows: [FULL_PERMISSION] };
+      if (/FROM users/i.test(q)) return { rows: [{ ...ACTIVE_USER, employee_id: 2 }] };
+      return { rows: [] };
+    });
+    leavesRepo.rejectByHR.mockResolvedValue({ ...atHrStep, status: 'rejected', hr_status: 'rejected' });
     const res = await request(app).patch('/api/leaves/10/reject')
       .set('Authorization', `Bearer ${hrToken()}`)
       .send({ comments: 'Busy period' });
-
-    expect(res.status).toBe(200);
-    expect(res.body.success).toBe(true);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.status).toBe('rejected');
+    expect(leavesRepo.rejectByHR).toHaveBeenCalled();
   });
 });
 

@@ -89,6 +89,15 @@ try {
     // punches attendance-sample-data.mjs laid down (2026-11-24: they said
     // "present" on the very days of the approved sample leave).
     if (status === 'approved' && !x.half) await markOnLeave(emp.id, s, e);
+    // Approving a leave adds its days to leave_balances.used_days
+    // (incrementUsedBalance); F&F and year-end carry-forward read that column.
+    // Inserting the approved row directly left EL "0 used" (2026-11-25).
+    if (status === 'approved' && !x.lop) await client.query(`
+      INSERT INTO leave_balances (employee_id, leave_type_id, year, allocated_days, used_days)
+      VALUES ($1, $2, $3, 0, $4)
+      ON CONFLICT (employee_id, leave_type_id, year)
+      DO UPDATE SET used_days = COALESCE(leave_balances.used_days, 0) + EXCLUDED.used_days, updated_at = NOW()`,
+      [emp.id, T[code], YEAR, days]);
     n++;
   }
 

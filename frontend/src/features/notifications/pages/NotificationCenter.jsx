@@ -9,7 +9,6 @@ import { useAuth } from '@/context/AuthContext';
 import { canRoleOpenPage } from '@/config/menuCatalog';
 import { notificationTarget } from '../notificationTarget';
 import './NotificationCenter.css';
-import { useToast } from '@/context/ToastContext';
 import ConfirmDialog from '@/components/core/ConfirmDialog';
 import { PageHero, PageShell } from '@/components/pulse-ui';
 import { fmtDate } from '@/utils/dateFormatter';
@@ -62,7 +61,6 @@ function shortTime(ts) {
 }
 
 const NotificationCenter = () => {
-  const toast = useToast();
   const navigate = useNavigate();
   const { user, role, menuAccess } = useAuth();
   const [notifications, setNotifications] = useState([]);
@@ -120,16 +118,13 @@ const NotificationCenter = () => {
     await deleteNotification(id);
   };
 
-  const handleLeaveAction = async (notif, action) => {
-    try {
-      await api.put(`/leaves/applications/${notif.reference_id}/status`, { status: action });
-      await api.put(`/notifications/${notif.id}/read`, {});
-      toast.success(`Leave ${action} successfully`);
-      fetchNotifications();
-    } catch (error) {
-      console.error('Error:', error);
-      toast.error(`Failed to ${action} leave`);
-    }
+  // Leave is decided in one place — Leave Approvals (owner, 2026-11-24): the
+  // approver sees the balance, the other people off and the approval chain
+  // there, and gives a reason to reject. The old one-click Approve / Reject
+  // here could not do either (2026-11-25 go-live check).
+  const handleLeaveReview = async (notif) => {
+    try { await api.put(`/notifications/${notif.id}/read`, {}); } catch { /* still open it */ }
+    navigate(`/LeaveApprovals${notif.reference_id ? `?leave=${encodeURIComponent(notif.reference_id)}` : ''}`);
   };
 
   // Probation decisions are NOT taken from a notification any more
@@ -144,7 +139,7 @@ const NotificationCenter = () => {
      filtered through the role gate, so a row only becomes clickable when the
      signed-in role can actually open where it points. */
   const targetFor = useCallback(
-    (notif) => notificationTarget(notif, pg => canRoleOpenPage(role, pg, { menuAccess })),
+    (notif) => notificationTarget(notif, pg => canRoleOpenPage(role, pg, { menuAccess, employeeLinked: user?.employee_id != null })),
     [role, menuAccess]
   );
 
@@ -276,14 +271,9 @@ const NotificationCenter = () => {
                           not also open it. */}
                       <div className="nc-acts" onClick={e => e.stopPropagation()}>
                         {isLeaveNotif(notif) && !notif.is_read && (
-                          <>
-                            <button className="nc-btn nc-btn-ok" onClick={() => handleLeaveAction(notif, 'approved')}>
-                              Approve
-                            </button>
-                            <button className="nc-btn nc-btn-no" onClick={() => handleLeaveAction(notif, 'rejected')}>
-                              Reject
-                            </button>
-                          </>
+                          <button className="nc-btn nc-btn-ok" onClick={() => handleLeaveReview(notif)}>
+                            Review
+                          </button>
                         )}
                         {!notif.is_read && (
                           <button

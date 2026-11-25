@@ -178,7 +178,7 @@ export default function GlobalSearch({ setPage, onClose }) {
   const [active, setActive] = useState(0);
   const inputRef = useRef(null);
   const listRef  = useRef(null);
-  const { role, menuAccess } = useAuth();
+  const { user, role, menuAccess } = useAuth();
 
   useEffect(() => { inputRef.current?.focus(); }, []);
 
@@ -188,7 +188,7 @@ export default function GlobalSearch({ setPage, onClose }) {
   // of a shared menu. canRoleOpenPage already lets super_admin/admin through
   // (they hold no section allowlist) while still enforcing SUPER_ADMIN_ONLY_
   // PAGES against admin.
-  const accessiblePages = SEARCHABLE_PAGES.filter(p => canRoleOpenPage(role, p.page, { menuAccess }));
+  const accessiblePages = SEARCHABLE_PAGES.filter(p => canRoleOpenPage(role, p.page, { menuAccess, employeeLinked: user?.employee_id != null }));
 
   const results = query.trim().length === 0
     ? accessiblePages.slice(0, 8)

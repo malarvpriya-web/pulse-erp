@@ -176,7 +176,8 @@ describe('ApplyLeave — smoke', () => {
     api.get.mockReturnValue(new Promise(() => {}));
     render(<ApplyLeave />);
     expect(screen.getByText('Apply for Leave')).toBeDefined();
-    expect(screen.getByText('Submit a leave request for manager approval')).toBeDefined();
+    // hr_manager is HR here: the subtitle says they may apply for an employee.
+    expect(screen.getByText(/Submit a leave request for yourself or, as HR, for an employee/)).toBeDefined();
   });
 
   it('shows "Submit Request" button', () => {
@@ -188,7 +189,7 @@ describe('ApplyLeave — smoke', () => {
   it('shows balance section label while data is loading', () => {
     api.get.mockReturnValue(new Promise(() => {}));
     render(<ApplyLeave />);
-    expect(screen.getByText('Leave Balances — click a type to select it')).toBeDefined();
+    expect(screen.getByText(/Leave balances .*click a type to select it/)).toBeDefined();
   });
 
   it('renders leave type balance cards after types load', async () => {
@@ -235,8 +236,64 @@ describe('ApplyLeave — smoke', () => {
     fillValidLeave();
     fireEvent.click(screen.getByText('Submit Request'));
     await waitFor(() =>
-      expect(screen.getByText('Leave application submitted successfully!')).toBeDefined()
+      expect(screen.getByText('Leave request sent')).toBeDefined()
     );
+    // …with the way to follow it up.
+    fireEvent.click(screen.getByText('View in My Leaves'));
+    expect(mockNavigate).toHaveBeenCalledWith('/MyLeaves');
+  });
+
+  // ── 2026-11-25 page audit ──────────────────────────────────────────────────
+  it('reads the balance of the year the leave starts in', async () => {
+    mockRoles = ['employee'];
+    stubApis();
+    render(<ApplyLeave />);
+    await waitFor(() => expect(screen.getAllByText('Sick Leave').length).toBeGreaterThan(0));
+    const nextYear = new Date().getFullYear() + 1;
+    fireEvent.change(dateInputFor('From Date'), { target: { value: `${nextYear}-01-05` } });
+    await waitFor(() => expect(api.get).toHaveBeenCalledWith('/leaves/balance/4', { params: { year: nextYear } }));
+    expect(screen.getByText(new RegExp(`Leave balances for ${nextYear}`))).toBeDefined();
+  });
+
+  it('a leave after the probation end date is not forced to Loss of Pay', async () => {
+    mockRoles = ['employee'];
+    stubApis();
+    const base = api.get.getMockImplementation();
+    const pad = (n) => String(n).padStart(2, '0');
+    const iso = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    const end = new Date(); end.setDate(end.getDate() + 3);
+    api.get.mockImplementation((url, cfg) => (url === '/leaves/probation-status'
+      ? Promise.resolve({ data: { in_probation: true, status_probation: false, probation_end: iso(end) } })
+      : base(url, cfg)));
+    render(<ApplyLeave />);
+    // Today is inside probation: LOP enforced.
+    await waitFor(() => expect(screen.getByText('LOP enforced')).toBeDefined());
+    // A date after the end date: paid leave again.
+    const later = new Date(end); later.setDate(later.getDate() + 10);
+    fireEvent.change(dateInputFor('From Date'), { target: { value: iso(later) } });
+    await waitFor(() => expect(screen.queryByText('LOP enforced')).toBeNull());
+  });
+
+  it('says who approves: the reporting manager, or HR when there is none', async () => {
+    mockRoles = ['employee'];
+    stubApis();
+    const base = api.get.getMockImplementation();
+    api.get.mockImplementation((url, cfg) => (url === '/leaves/probation-status'
+      ? Promise.resolve({ data: { approver: { id: 2, name: 'Meena Raj' } } })
+      : base(url, cfg)));
+    render(<ApplyLeave />);
+    await waitFor(() => expect(screen.getByText(/Goes to: Meena Raj \(manager\) → HR \(final\)/)).toBeDefined());
+  });
+
+  it('HR picks from current staff (calendar people), with office id', async () => {
+    stubApis();
+    const base = api.get.getMockImplementation();
+    api.get.mockImplementation((url, cfg) => (url === '/leaves/calendar/people'
+      ? Promise.resolve({ data: [{ id: 7, name: 'Ravi S', office_id: 'EMP007', department: 'Sales' }] })
+      : base(url, cfg)));
+    render(<ApplyLeave />);
+    await waitFor(() => expect(screen.getByText(/Ravi S \(EMP007\)/)).toBeDefined());
+    expect(api.get).not.toHaveBeenCalledWith('/employees');
   });
 
 });
@@ -497,6 +554,19 @@ describe('LeaveCalendar — smoke', () => {
     render(<LeaveCalendar />);
     await waitFor(() => expect(screen.getAllByText('Sick Leave').length).toBeGreaterThan(0));
     expect(screen.queryByText('Casual Leave')).toBeNull();
+  });
+
+  it('types are listed once (month summary = colour key), and a picked day links to Apply Leave', async () => {
+    const d = new Date();
+    const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    stubApis({ leaves: [{ ...PENDING_LEAVE, status: 'approved', start_date: day, end_date: day }] });
+    render(<LeaveCalendar />);
+    await waitFor(() => expect(screen.getByText(/leave by type/)).toBeDefined());
+    // Summary row + the "on leave today" badge — no third copy in a legend.
+    await waitFor(() => expect(screen.getAllByText('Sick Leave').length).toBe(2));
+    fireEvent.click(screen.getByLabelText(new RegExp(`^${d.getDate()} `)));
+    fireEvent.click(screen.getByText('Apply for leave from this day'));
+    expect(mockNavigate).toHaveBeenCalledWith(`/ApplyLeave?from=${day}`);
   });
 
   it('fetches calendar data for current month on mount', () => {

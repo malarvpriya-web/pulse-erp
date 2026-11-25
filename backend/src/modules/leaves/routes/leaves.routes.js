@@ -4,11 +4,11 @@ import { uploadFile } from '../../../services/StorageService.js';
 import pool from '../../../config/db.js';
 import leavesRepository from '../repositories/leaves.repository.js';
 import { openingAllocation } from '../services/leaveAccrual.service.js';
-import { requirePermission, allowRoles } from '../../../middlewares/auth.middleware.js';
+import { requirePermission, allowRoles, can } from '../../../middlewares/auth.middleware.js';
 import { validate } from '../../../services/ValidationEngineService.js';
 import { evaluateRules } from '../../../services/RuleEngineService.js';
 import { logAudit } from '../../../services/AuditService.js';
-import { authorizeManagerApproval, DENIED_MESSAGE } from '../../../shared/managerApprovalAuthz.js';
+import { authorizeManagerApproval, managerCanLogIn, DENIED_MESSAGE } from '../../../shared/managerApprovalAuthz.js';
 import { hasRole, rolesOf } from '../../../middlewares/auth.middleware.js';
 import { employeeOf, companyOf } from '../../../shared/scope.js';
 import { CLOSED_EXIT_STATUSES } from '../../hr/exitCase.js';
@@ -16,6 +16,22 @@ import { NOTICE_STATUSES, isCurrentSql } from '../../../shared/employeeStatus.js
 import { getWeekendDays, dayIsWeekend } from '../../../shared/weekend.js';
 
 const router = express.Router();
+
+/**
+ * Own leave works for everyone (owner, 2026-11-25). The routes behind My
+ * Leaves / Apply Leave pass for any login linked to an employee record, even
+ * when none of its roles holds a Leaves grant (sales_exec, store_keeper,
+ * finance_manager … have leaves view/add = false, so such a person could not
+ * see their balance, apply or cancel). Safe because every handler behind it
+ * already pins a non-HR caller to their OWN employee_id (apply, balance,
+ * probation-status, types for_employee, cancel/withdraw, history) — HR-ness
+ * comes from roles, never from this gate. An unlinked login still needs the
+ * grant, as before.
+ */
+const ownLeave = (action) => async (req, res, next) => {
+  if (req.user?.employee_id && !(await can(req, 'leaves', action))) return next();
+  return requirePermission('leaves', action)(req, res, next);
+};
 
 // Leave-type definitions and quota allocations are HR/admin-only. These routes
 // share the 'leaves.add' permission with self-service Apply Leave, so a role
@@ -280,11 +296,14 @@ async function resolveManagerEmployeeId(employee_id) {
   try {
     // Primary: direct FK reference (reporting_manager_id column if it exists)
     const { rows: fkRows } = await pool.query(
-      `SELECT reporting_manager_id AS id
-       FROM employees
-       WHERE id = $1
-         AND reporting_manager_id IS NOT NULL
-         AND EXISTS (SELECT 1 FROM employees m WHERE m.id = reporting_manager_id AND m.status IS DISTINCT FROM 'Left')
+      // e. qualified (2026-11-25): bare `reporting_manager_id` inside the
+      // subquery bound to m's own column (m.id = m.reporting_manager_id), so
+      // this never matched and every leave fell through to the name match.
+      `SELECT e.reporting_manager_id AS id
+       FROM employees e
+       WHERE e.id = $1
+         AND e.reporting_manager_id IS NOT NULL
+         AND EXISTS (SELECT 1 FROM employees m WHERE m.id = e.reporting_manager_id AND ${isCurrentSql('m.status')})
        LIMIT 1`,
       [employee_id]
     );
@@ -299,7 +318,7 @@ async function resolveManagerEmployeeId(employee_id) {
             = LOWER(TRIM(COALESCE(e.reporting_manager, '')))
        WHERE e.id = $1
          AND COALESCE(e.reporting_manager, '') <> ''
-         AND m.status IS DISTINCT FROM 'Left'
+         AND ${isCurrentSql('m.status')}
        LIMIT 1`,
       [employee_id]
     );
@@ -556,39 +575,42 @@ async function countAlternateLeaveApprovers(leave, level) {
   return r?.n ?? 0;
 }
 
-// ── Generic status update — HR/Admin only; guards against bypassing workflow ──
+// ── Generic status update (2026-11-25 go-live check) ──────────────────────────
+// PUT /applications/:id/status and PATCH|PUT /:id/approve|reject are older
+// one-button routes (Notification Center, Manager Dashboard). They used to set
+// the leave straight to approved/rejected for HR — skipping the manager and
+// department-head steps, the escalation rule and the LOP posting to payroll —
+// and refused managers outright. Now each decision is taken at the step the
+// leave is actually waiting on, by that step's own handler (same identity,
+// self-decision, permission and payroll rules as Leave Approvals). Cancel goes
+// through cancelLeave() (own leave only before it starts; LOP reversed).
 export async function handleStatusUpdate(req, res) {
-  const role = (req.user?.role || '').toLowerCase();
-  const { status } = req.body;
-  const raw = (status || '').toLowerCase();
+  const raw = String(req.body?.status || '').toLowerCase();
   const normalized = raw === 'approve' ? 'approved' : raw === 'reject' ? 'rejected' : raw;
-  if (!['approved', 'rejected', 'pending', 'cancelled'].includes(normalized)) {
-    return res.status(400).json({ error: 'Invalid status value' });
-  }
-  // Only admin/HR roles may use the generic status update; managers must use
-  // the typed /approve/manager or /reject/manager endpoints.
-  if (!isAdminOrHR(req) && normalized !== 'cancelled') {
-    return res.status(403).json({ error: 'Use the specific approve/reject endpoints for your role' });
+  if (!['approved', 'rejected', 'cancelled'].includes(normalized)) {
+    return res.status(400).json({ error: 'Status must be approved, rejected or cancelled' });
   }
   try {
-    const existing = await loadLeaveInCompany(req, req.params.id);
-    if (!existing) return res.status(404).json({ error: 'Leave application not found' });
-    // A non-HR caller reaches this only to cancel, and only their own leave —
-    // the same rule PUT /:id/cancel applies. It used to cancel ANY leave.
-    if (!isAdminOrHR(req) && String(existing.employee_id) !== String(req.user?.employee_id)) {
-      return res.status(403).json({ error: 'You can only cancel your own leave applications' });
+    if (normalized === 'cancelled') {
+      return await cancelLeave(req, res, { reason: req.body?.reason || req.body?.comments || '' });
     }
-    if (normalized !== 'cancelled' && await blockOwnLeaveDecision(req, res, existing, 'hr')) return;
-    const application = await leavesRepository.updateStatus(
-      req.params.id,
-      normalized,
-      req.user?.employee_id || null,
-      req.body.comments || req.body.reason || ''
-    );
-    if (normalized === 'approved' || normalized === 'rejected') {
-      notifyLeaveEvent(normalized, application, req.user, [application.employee_id]);
+    const leave = await loadLeaveInCompany(req, req.params.id);
+    if (!leave) return res.status(404).json({ error: 'Leave application not found' });
+    if (leave.status !== 'pending') {
+      return res.status(409).json({ error: `This leave is already ${leave.status}`, code: 'LEAVE_NOT_ACTIONABLE' });
     }
-    res.json({ success: true, data: application, ...application });
+    const { rows: [lt] } = await pool.query('SELECT l2_required FROM leave_types WHERE id = $1', [leave.leave_type_id]);
+    const step = leave.manager_status !== 'approved' ? 'l1'
+      : (lt?.l2_required && leave.l2_status !== 'approved') ? 'l2' : 'hr';
+    // L2 and HR are 'leaves.approve' steps (their own routes require it); L1 is the reporting line.
+    if (step !== 'l1' && !(await can(req, 'leaves', 'approve'))) {
+      return res.status(403).json({ error: DENIED_MESSAGE });
+    }
+    const sub = Object.create(req);
+    sub.body = { ...req.body, comments: req.body?.comments || req.body?.reason || '' };
+    const approve = normalized === 'approved';
+    const handler = { l1: approve ? approveL1 : rejectL1, l2: approve ? approveL2 : rejectL2, hr: approve ? approveHR : rejectHR }[step];
+    return await handler(sub, res);
   } catch (error) {
     res.status(statusForWorkflowError(error)).json({ error: error.message });
   }
@@ -598,7 +620,7 @@ export async function handleStatusUpdate(req, res) {
 // LEAVE TYPES
 // ─────────────────────────────────────────────────────────────────────────────
 
-router.get('/types', requirePermission('leaves', 'view'), async (req, res) => {
+router.get('/types', ownLeave('view'), async (req, res) => {
   try {
     const companyId = req.scope?.company_id ?? null;
 
@@ -691,7 +713,7 @@ export async function leaveSettingsOf(companyId, db = pool) {
   return { ...LEAVE_SETTING_DEFAULTS, ...(r?.settings || {}) };
 }
 
-router.get('/settings', requirePermission('leaves', 'view'), async (req, res) => {
+router.get('/settings', ownLeave('view'), async (req, res) => {
   try {
     const companyId = companyOf(req);
     const weekend = await getWeekendDays(companyId);
@@ -745,7 +767,7 @@ export async function openNoticePeriod(employeeId) {
   return open || null;
 }
 
-router.get('/probation-status', requirePermission('leaves', 'view'), async (req, res) => {
+router.get('/probation-status', ownLeave('view'), async (req, res) => {
   try {
     const role = (req.user?.role || '').toLowerCase();
     let empId = req.query.employee_id;
@@ -770,11 +792,26 @@ router.get('/probation-status', requirePermission('leaves', 'view'), async (req,
     const dateProbation = prob_end ? new Date(prob_end) >= new Date(new Date().toDateString()) : false;
     const inProbation = statusProbation || dateProbation;
     const notice = await openNoticePeriod(empId);
+    // Who decides the manager step (Apply Leave shows it, 2026-11-25): the
+    // reporting manager when they are a current employee with a login, else
+    // HR steps in (managerApprovalAuthz) — the screen says so up front.
+    const mgrId = await resolveManagerEmployeeId(empId);
+    let approver = null;
+    if (mgrId && await managerCanLogIn(mgrId)) {
+      const { rows: [m] } = await pool.query(
+        `SELECT id, office_id, COALESCE(NULLIF(TRIM(name), ''), TRIM(CONCAT(first_name, ' ', last_name))) AS name
+           FROM employees WHERE id = $1`, [mgrId]);
+      if (m) approver = { id: m.id, name: m.name, office_id: m.office_id };
+    }
     res.json({
       in_probation: inProbation,
+      // Status Probation = every leave is LOP. Only a stored end date: leave
+      // that STARTS after it is paid again (the rule /apply enforces).
+      status_probation: statusProbation,
       probation_end: prob_end ? String(prob_end).slice(0, 10) : null,
       in_notice: !!notice,
       last_working_date: notice?.last_working_date ?? null,
+      approver,
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -1013,7 +1050,7 @@ router.delete('/types/:id', requireLeaveAdmin, requirePermission('leaves', 'dele
 // ─────────────────────────────────────────────────────────────────────────────
 
 // GET /balance/:employee_id — role-scoped: employees can only see their own
-router.get('/balance/:employee_id', requirePermission('leaves', 'view'), async (req, res) => {
+router.get('/balance/:employee_id', ownLeave('view'), async (req, res) => {
   try {
     const empId = req.params.employee_id;
     if (!empId || empId === 'null' || empId === 'undefined' || isNaN(parseInt(empId, 10))) {
@@ -1377,7 +1414,7 @@ router.get('/applications/:id', requirePermission('leaves', 'view'), async (req,
 });
 
 // Approval history for a leave application
-router.get('/applications/:id/history', requirePermission('leaves', 'view'), async (req, res) => {
+router.get('/applications/:id/history', ownLeave('view'), async (req, res) => {
   try {
     // The trail names approvers and carries their comments: same visibility as
     // the application itself (it had none — any employee could walk ids).
@@ -1465,6 +1502,17 @@ async function handleApplyLeave(req, res) {
         });
       }
     }
+    // One request per year (2026-11-25): balances, accrual, carry forward and
+    // the encashment cap are all per calendar year, and a leave was charged
+    // wholly to its START year — 30 Dec–2 Jan took 4 days of the old year.
+    if (!normalizedPayload.half_day
+        && String(normalizedPayload.start_date || '').slice(0, 4) !== String(normalizedPayload.end_date || '').slice(0, 4)) {
+      const y = String(normalizedPayload.start_date).slice(0, 4);
+      return res.status(422).json({
+        error: `A leave can't run past 31 Dec — apply up to 31 Dec ${y}, then a second request from 1 Jan.`,
+        code: 'LEAVE_CROSSES_YEAR', module: 'leaves',
+      });
+    }
     {
       const { rows: [empCo] } = await pool.query('SELECT company_id FROM employees WHERE id = $1', [normalizedPayload.employee_id]);
       const count = await countLeaveDays({
@@ -1476,6 +1524,10 @@ async function handleApplyLeave(req, res) {
       });
       if (count.error) return res.status(400).json({ error: count.error, code: count.code, module: 'leaves' });
       if (normalizedPayload.half_day) normalizedPayload.end_date = normalizedPayload.start_date;
+      // Session is AM or PM (morning default); none on a full-day leave.
+      normalizedPayload.half_day_session = normalizedPayload.half_day
+        ? (String(normalizedPayload.half_day_session || '').toUpperCase() === 'PM' ? 'PM' : 'AM')
+        : null;
       normalizedPayload.number_of_days = count.workingDays;
       normalizedPayload.lop_days = count.clubbedDays;     // full-LOP requests are set below, once the type is known
       normalizedPayload.clubbing_flag = count.clubbedDays > 0;
@@ -1571,7 +1623,7 @@ async function handleApplyLeave(req, res) {
       `SELECT min_notice_days, requires_attachment, requires_medical_cert_days,
               allowed_in_probation, max_consecutive_days, sandwich_rule,
               gender_restriction, include_holidays, include_weekends,
-              is_lop_type, is_paid, leave_name
+              is_lop_type, is_paid, leave_name, COALESCE(allow_half_day, true) AS allow_half_day
        FROM leave_types WHERE id = $1`, [leave_type_id]
     );
     if (typeRows.length) {
@@ -1600,6 +1652,15 @@ async function handleApplyLeave(req, res) {
             code: 'INSUFFICIENT_NOTICE',
           });
         }
+      }
+
+      // Half day only where the type allows it (2026-11-25: the flag was
+      // shown on the form but never checked here).
+      if (normalizedPayload.half_day && !lt.allow_half_day) {
+        return res.status(422).json({
+          error: `${lt.leave_name} cannot be taken as a half day.`,
+          code: 'HALF_DAY_NOT_ALLOWED',
+        });
       }
 
       // Max consecutive days
@@ -1695,7 +1756,13 @@ async function handleApplyLeave(req, res) {
         AND status IN ('pending','approved')
         AND start_date <= $3::date
         AND end_date   >= $2::date
-    `, [employee_id, normalizedPayload.start_date, normalizedPayload.end_date]);
+        -- A morning half and an afternoon half on the same day do not clash
+        -- (2026-11-25: the second half was refused as an overlap).
+        AND NOT ($4::boolean AND COALESCE(half_day, false)
+                 AND UPPER(COALESCE(half_day_session, '')) IN ('AM', 'PM')
+                 AND UPPER(COALESCE(half_day_session, '')) <> UPPER(COALESCE($5::text, '')))
+    `, [employee_id, normalizedPayload.start_date, normalizedPayload.end_date,
+        !!normalizedPayload.half_day, normalizedPayload.half_day ? (normalizedPayload.half_day_session || null) : null]);
     if (overlapRows.length > 0) {
       const o = overlapRows[0];
       return res.status(409).json({
@@ -1731,7 +1798,7 @@ async function handleApplyLeave(req, res) {
   }
 }
 
-router.post('/apply', requirePermission('leaves', 'add'), handleApplyLeave);
+router.post('/apply', ownLeave('add'), handleApplyLeave);
 
 // ── POST /attachment — a leave's supporting document (2026-11-24) ────────────
 // Stored by StorageService (local disk / S3) and served only through
@@ -1743,7 +1810,7 @@ const attachmentUpload = multer({
   limits: { fileSize: 5 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => cb(null, /\.(pdf|jpe?g|png|docx?)$/i.test(file.originalname || '')),
 });
-router.post('/attachment', requirePermission('leaves', 'add'), (req, res) => {
+router.post('/attachment', ownLeave('add'), (req, res) => {
   attachmentUpload.single('file')(req, res, async (err) => {
     try {
       if (err) return res.status(400).json({ error: err.code === 'LIMIT_FILE_SIZE' ? 'The file must be under 5 MB.' : err.message });
@@ -1770,7 +1837,7 @@ router.post('/attachment', requirePermission('leaves', 'add'), (req, res) => {
 // too left every request whose manager holds only the `employee` role with
 // no possible approver (HR may step in only when there is no usable manager).
 // L1 reject and delegate follow the same rule.
-router.post('/approve/manager/:id', requirePermission('leaves', 'view'), async (req, res) => {
+async function approveL1(req, res) {
   try {
     const actorEmpId = req.user?.employee_id; // Always use authenticated user
     const { comments } = req.body;
@@ -1798,9 +1865,10 @@ router.post('/approve/manager/:id', requirePermission('leaves', 'view'), async (
   } catch (error) {
     res.status(statusForWorkflowError(error)).json({ error: error.message });
   }
-});
+}
+router.post('/approve/manager/:id', requirePermission('leaves', 'view'), approveL1);
 
-router.post('/reject/manager/:id', requirePermission('leaves', 'view'), async (req, res) => {
+async function rejectL1(req, res) {
   try {
     const actorEmpId = req.user?.employee_id;
     const { comments } = req.body;
@@ -1819,10 +1887,11 @@ router.post('/reject/manager/:id', requirePermission('leaves', 'view'), async (r
   } catch (error) {
     res.status(statusForWorkflowError(error)).json({ error: error.message });
   }
-});
+}
+router.post('/reject/manager/:id', requirePermission('leaves', 'view'), rejectL1);
 
 // L2 — Dept Head Approval
-router.post('/approve/l2/:id', requirePermission('leaves', 'approve'), async (req, res) => {
+async function approveL2(req, res) {
   try {
     const actorEmpId = req.user?.employee_id;
     const { comments } = req.body;
@@ -1845,9 +1914,10 @@ router.post('/approve/l2/:id', requirePermission('leaves', 'approve'), async (re
   } catch (error) {
     res.status(statusForWorkflowError(error)).json({ error: error.message });
   }
-});
+}
+router.post('/approve/l2/:id', requirePermission('leaves', 'approve'), approveL2);
 
-router.post('/reject/l2/:id', requirePermission('leaves', 'approve'), async (req, res) => {
+async function rejectL2(req, res) {
   try {
     const actorEmpId = req.user?.employee_id;
     const { comments } = req.body;
@@ -1867,10 +1937,11 @@ router.post('/reject/l2/:id', requirePermission('leaves', 'approve'), async (req
   } catch (error) {
     res.status(statusForWorkflowError(error)).json({ error: error.message });
   }
-});
+}
+router.post('/reject/l2/:id', requirePermission('leaves', 'approve'), rejectL2);
 
 // L3 — HR Final Approval
-router.post('/approve/hr/:id', requirePermission('leaves', 'approve'), async (req, res) => {
+async function approveHR(req, res) {
   try {
     const actorEmpId = req.user?.employee_id;
     const { comments } = req.body;
@@ -1892,9 +1963,10 @@ router.post('/approve/hr/:id', requirePermission('leaves', 'approve'), async (re
   } catch (error) {
     res.status(statusForWorkflowError(error)).json({ error: error.message });
   }
-});
+}
+router.post('/approve/hr/:id', requirePermission('leaves', 'approve'), approveHR);
 
-router.post('/reject/hr/:id', requirePermission('leaves', 'approve'), async (req, res) => {
+async function rejectHR(req, res) {
   try {
     const actorEmpId = req.user?.employee_id;
     const { comments } = req.body;
@@ -1914,7 +1986,8 @@ router.post('/reject/hr/:id', requirePermission('leaves', 'approve'), async (req
   } catch (error) {
     res.status(statusForWorkflowError(error)).json({ error: error.message });
   }
-});
+}
+router.post('/reject/hr/:id', requirePermission('leaves', 'approve'), rejectHR);
 
 // Bulk approve — HR/Admin only
 router.post('/bulk-approve', requirePermission('leaves', 'approve'), async (req, res) => {
@@ -1952,7 +2025,7 @@ router.post('/bulk-approve', requirePermission('leaves', 'approve'), async (req,
 });
 
 // Generic status update (admin/HR only — guarded)
-router.put('/applications/:id/status', requirePermission('leaves', 'approve'), handleStatusUpdate);
+router.put('/applications/:id/status', requirePermission('leaves', 'view'), handleStatusUpdate);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CALENDAR & ANALYTICS
@@ -2037,7 +2110,9 @@ router.get('/calendar/holidays', requirePermission('leaves', 'view'), async (req
   }
 });
 
-router.get('/analytics', requirePermission('leaves', 'view'), async (req, res) => {
+// Company-wide counts per type — HR/admin only (go-live check 2026-11-25: any
+// leaves:view holder, i.e. every employee, could read the whole company's).
+router.get('/analytics', requireLeaveAdmin, requirePermission('leaves', 'view'), async (req, res) => {
   try {
     const analytics = await leavesRepository.getLeaveAnalytics({ ...req.query, company_id: req.scope?.company_id ?? null });
     res.json(analytics);
@@ -2102,7 +2177,7 @@ router.get('/team', requirePermission('leaves', 'view'), async (req, res) => {
 });
 
 // GET /balance — current user's own balance (uses employee_id, not userId)
-router.get('/balance', requirePermission('leaves', 'view'), async (req, res) => {
+router.get('/balance', ownLeave('view'), async (req, res) => {
   try {
     const employeeId = req.user?.employee_id;
     if (!employeeId) return res.status(400).json({ error: 'Employee profile not linked to this user account' });
@@ -2113,18 +2188,12 @@ router.get('/balance', requirePermission('leaves', 'view'), async (req, res) => 
 });
 
 // Legacy approve/reject/cancel shims
-router.patch('/:id/approve', requirePermission('leaves', 'approve'), (req, res) =>
-  handleStatusUpdate({ ...req, body: { status: 'approved' } }, res)
-);
-router.put('/:id/approve', requirePermission('leaves', 'approve'), (req, res) =>
-  handleStatusUpdate({ ...req, body: { status: 'approved' } }, res)
-);
-router.patch('/:id/reject', requirePermission('leaves', 'approve'), (req, res) =>
-  handleStatusUpdate({ ...req, body: { status: 'rejected', ...req.body } }, res)
-);
-router.put('/:id/reject', requirePermission('leaves', 'approve'), (req, res) =>
-  handleStatusUpdate({ ...req, body: { status: 'rejected', ...req.body } }, res)
-);
+// Older one-button aliases — the same step-aware decision (handleStatusUpdate).
+const withStatus = (status) => (req, res) => { req.body = { ...(req.body || {}), status }; return handleStatusUpdate(req, res); };
+router.patch('/:id/approve', requirePermission('leaves', 'view'), withStatus('approved'));
+router.put('/:id/approve',   requirePermission('leaves', 'view'), withStatus('approved'));
+router.patch('/:id/reject',  requirePermission('leaves', 'view'), withStatus('rejected'));
+router.put('/:id/reject',    requirePermission('leaves', 'view'), withStatus('rejected'));
 
 /**
  * Cancel (or withdraw) a leave — the one rule both routes share (2026-11-24):
@@ -2170,7 +2239,7 @@ async function cancelLeave(req, res, { reason = '', withdraw = false } = {}) {
   });
 }
 
-router.put('/:id/cancel', requirePermission('leaves', 'view'), async (req, res) => {
+router.put('/:id/cancel', ownLeave('view'), async (req, res) => {
   try {
     await cancelLeave(req, res, { reason: req.body?.reason || '' });
   } catch (error) {
@@ -2179,7 +2248,7 @@ router.put('/:id/cancel', requirePermission('leaves', 'view'), async (req, res) 
 });
 
 // Withdraw — the same, with a reason always required and kept on the leave.
-router.post('/:id/withdraw', requirePermission('leaves', 'view'), async (req, res) => {
+router.post('/:id/withdraw', ownLeave('view'), async (req, res) => {
   try {
     const reason = req.body?.reason;
     if (!reason?.trim()) return res.status(400).json({ error: 'Withdrawal reason is required' });
@@ -2412,49 +2481,13 @@ router.put('/policies/:leave_type_id', requireLeaveAdmin, requirePermission('lea
   }
 });
 
-// Workflow engine integration — protected
-router.get('/:id/workflow', requirePermission('leaves', 'view'), async (req, res) => {
-  try {
-    const { getWorkflowStatus } = await import('../../../services/WorkflowService.js');
-    const status = await getWorkflowStatus('leaves', parseInt(req.params.id));
-    res.json(status || { status: 'no_workflow' });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Same reporting-manager/delegate/HR/admin identity gate the primary
-// /approve|reject/manager/:id routes use (shared/managerApprovalAuthz.js).
-// This is a second write path to the same leave_applications row via the
-// generic WorkflowService engine — advanceWorkflow() itself only checks
-// role, so without this gate anyone holding 'leaves.approve' could bypass
-// the hierarchy check entirely by calling this route directly instead of
-// the primary one (Automation Opportunity Audit §30.2).
-router.post('/:id/workflow/advance', requirePermission('leaves', 'approve'), async (req, res) => {
-  try {
-    const { getWorkflowStatus, advanceWorkflow } = await import('../../../services/WorkflowService.js');
-    const { action, comments } = req.body;
-    if (!['approve', 'reject'].includes(action))
-      return res.status(400).json({ error: 'action must be approve or reject' });
-    const leaveRow = await loadLeaveInCompany(req, req.params.id);
-    if (!leaveRow) return res.status(404).json({ error: 'Leave application not found' });
-    if (await blockOwnLeaveDecision(req, res, leaveRow, 'l1')) return;
-    const auth = await authorizeL1(req, leaveRow);
-    if (!auth.authorized) return res.status(403).json({ error: DENIED_MESSAGE });
-    const instance = await getWorkflowStatus('leaves', parseInt(req.params.id));
-    if (!instance || instance.status === 'no_workflow')
-      return res.status(404).json({ error: 'No active workflow for this leave' });
-    if (['approved', 'rejected', 'cancelled'].includes(instance.status))
-      return res.status(400).json({ error: `Workflow already ${instance.status}` });
-    const result = await advanceWorkflow(instance.id, action, req.user.userId, comments || '');
-    if (result.status === 'approved' || result.status === 'rejected') {
-      await leavesRepository.updateStatus(req.params.id, result.status, req.user?.employee_id || null, comments || '');
-    }
-    res.json(result);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+// Generic workflow-engine routes RETIRED (go-live check 2026-11-25). Leave is
+// decided only by the manager (L1) → dept head (L2) → HR routes. /advance
+// finalised the leave straight to 'approved' from L1 — skipping L2 and HR,
+// and never posting LOP to payroll. No screen called either route, and no
+// leave workflow instance exists.
+router.all(['/:id/workflow', '/:id/workflow/advance'], (req, res) =>
+  res.status(410).json({ error: 'Leave is approved in Leave Approvals (manager → dept head → HR)', code: 'LEAVE_WORKFLOW_RETIRED' }));
 
 export default router;
 
