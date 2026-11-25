@@ -7,10 +7,11 @@ import '../../crm/pages/Leads.css';
 import './LeaveSettings.css';
 import { PageHero, PageShell } from '@/components/pulse-ui';
 import SaturdayOffPicker from '../components/SaturdayOffPicker';
+import LeaveSettingsHistory from '../components/LeaveSettingsHistory';
 
 // Policy Rules tab removed 2026-11-23: it saved to leave_policies, which
 // nothing read. Every rule that is enforced lives on the leave type itself.
-const TABS = ['Leave Types', 'Allocations', 'Accrual & Carry Forward', 'Leave Rules'];
+const TABS = ['Leave Types', 'Allocations', 'Accrual & Carry Forward', 'Leave Rules', 'Change History'];
 
 // Only these roles may add/edit/delete leave configuration. Everyone else who
 // reaches this page (e.g. via a Page-Access "View" override) gets a read-only
@@ -18,6 +19,17 @@ const TABS = ['Leave Types', 'Allocations', 'Accrual & Carry Forward', 'Leave Ru
 // LEAVE_ADMIN_ROLES (leaves.routes.js / accrual.routes.js) so the UI never
 // shows a control the API will 403.
 const MANAGE_ROLES = new Set(['super_admin', 'admin', 'hr', 'hr_manager', 'hr_exec']);
+// Saturdays live on the attendance settings row, whose PUT allows only these
+// (attendance.authz.js ATTENDANCE_ADMIN — no hr_exec).
+const ATTENDANCE_ADMIN_ROLES = ['super_admin', 'admin', 'hr', 'hr_manager'];
+
+const ACCRUAL_LABEL = {
+  manual: 'Manual', monthly: 'Monthly', yearly: 'Yearly (January)',
+  joining_date: 'Yearly, from joining', quarterly: 'Quarterly (not automatic)',
+};
+const accrualLabel = (t) => t.accrual_type === 'worked'
+  ? `1 per ${Number(t.days_worked_per_leave_day || 20)} days worked`
+  : `${ACCRUAL_LABEL[t.accrual_type] || 'Manual'}${t.accrual_type === 'monthly' && Number(t.accrual_days_per_month) > 0 ? ` · ${Number(t.accrual_days_per_month)}/mo` : ''}`;
 
 const EMPTY_TYPE = {
   leave_name: '', default_days: '', description: '',
@@ -27,6 +39,16 @@ const EMPTY_TYPE = {
   accrual_type: 'manual', accrual_days_per_month: '', gender_restriction: '',
   is_paid: true, is_lop_type: false, l2_required: false, is_active: true,
   carry_forward_expiry_months: '', max_encash_days_per_year: '', days_worked_per_leave_day: 20,
+};
+
+// The API sends 0 for "not set" on these; the form shows them blank so
+// "blank = no limit" reads true.
+const BLANK_WHEN_ZERO = ['max_consecutive_days', 'requires_medical_cert_days', 'max_encash_days_per_year', 'min_notice_days'];
+const typeToForm = (t) => {
+  const f = { ...EMPTY_TYPE, ...t, default_days: t.default_days ?? t.annual_quota, gender_restriction: t.gender_restriction || '' };
+  BLANK_WHEN_ZERO.forEach(k => { if (!Number(f[k])) f[k] = ''; });
+  if (f.carry_forward_expiry_months == null) f.carry_forward_expiry_months = '';
+  return f;
 };
 
 const EMPTY_ALLOC = { employee_id: '', leave_type_id: '', allocated_days: '', year: new Date().getFullYear() };
@@ -71,6 +93,7 @@ function LeaveTypeModal({ mode, initial, onSave, onClose }) {
     const name = (form.leave_name || '').trim();
     if (!name || name.length < 2) { setErr('Leave name must be at least 2 characters'); return; }
     if (form.default_days === '' || form.default_days === null) { setErr('Default days is required'); return; }
+    if (form.is_lop_type && form.is_paid) { setErr('A Loss of Pay type cannot also be Paid — untick one of them'); return; }
     setErr(''); setSaving(true);
     try {
       await onSave(form);
@@ -182,7 +205,7 @@ function LeaveTypeModal({ mode, initial, onSave, onClose }) {
 }
 
 // ── Accrual & Carry Forward Tab ───────────────────────────────────────────────
-function AccrualTab({ showToast, canManage = true }) {
+function AccrualTab({ showToast, canManage = true, setPage }) {
   const [running, setRunning] = useState('');
   const [accrualForm, setAccrualForm]   = useState({ month: new Date().getMonth() + 1, year: new Date().getFullYear() });
   const [cfForm,      setCfForm]        = useState({ from_year: new Date().getFullYear() - 1 });
@@ -192,9 +215,13 @@ function AccrualTab({ showToast, canManage = true }) {
     try {
       const r = await api.post(`/leave-accrual/${action}`, payload);
       const d = r.data;
-      if (action === 'run') showToast(`Accrual complete — ${d.records_accrued} records updated for ${d.employees_processed} employees`, 'success');
-      if (action === 'carry-forward') showToast(`Carry forward complete — ${d.records_carried} records`, 'success');
-      if (action === 'expire') showToast(`Expiry complete — ${d.records_expired} records expired`, 'success');
+      // The server answers with only `message` when no type uses accrual /
+      // carry forward — the toast read "undefined records" (2026-11-25).
+      const skipped = Number(d.records_skipped) ? ` · ${d.records_skipped} already done earlier` : '';
+      if (d.message && d.records_accrued == null && d.records_carried == null) showToast(d.message, 'success');
+      else if (action === 'run') showToast(`Accrual for ${d.month}/${d.year}: ${d.records_accrued} balance(s) credited for ${d.employees_processed} employee(s)${skipped}`, 'success');
+      else if (action === 'carry-forward') showToast(`Carry forward ${d.from_year} → ${d.to_year}: ${d.records_carried} balance(s) carried${skipped}`, 'success');
+      else if (action === 'expire') showToast(d.records_expired ? `${d.records_expired} carried-forward balance(s) expired` : 'Nothing to expire', 'success');
     } catch (e) {
       showToast(e?.response?.data?.error || e.message || 'Failed', 'error');
     } finally { setRunning(''); }
@@ -232,7 +259,7 @@ function AccrualTab({ showToast, canManage = true }) {
             <input type="number" value={accrualForm.year} onChange={e => setAccrualForm(f=>({...f,year:e.target.value}))}
               style={{ padding:'7px 10px', border:'1px solid #e5e7eb', borderRadius:7, fontSize:13, width:90 }}/>
           </div>
-          <button disabled={running==='run'} onClick={() => run('run', accrualForm)}
+          <button disabled={!!running} onClick={() => run('run', accrualForm)}
             style={{ padding:'8px 20px', background:'#6366f1', color:'#fff', border:'none', borderRadius:8, fontWeight:600, fontSize:13, cursor:'pointer', opacity:running?0.6:1 }}>
             {running==='run' ? 'Running…' : 'Run Accrual'}
           </button>
@@ -257,13 +284,22 @@ function AccrualTab({ showToast, canManage = true }) {
           {running==='expire' ? 'Expiring…' : 'Run Expiry'}
         </button>
       )}
+      {setPage && (
+        <div style={{ fontSize:12, color:'#6b7280' }}>
+          What was credited, carried and set by HR, per employee:{' '}
+          <button type="button" onClick={() => setPage('LeaveReports')}
+            style={{ background:'none', border:'none', padding:0, color:'#6B3FDB', fontWeight:600, cursor:'pointer', fontSize:12 }}>
+            Leave Reports → Credit History / Carry Forward
+          </button>
+        </div>
+      )}
     </div>
   );
 }
 
 // ── Leave Rules Tab (owner, 2026-11-23) ───────────────────────────────────────
 // Company-wide rules: tax on leave encashment, and which Saturdays are off.
-function LeaveRulesTab({ showToast, canManage }) {
+function LeaveRulesTab({ showToast, canManage, canEditSaturdays }) {
   const [rules, setRules] = useState(null);          // GET /leaves/settings
   const [att, setAtt] = useState(null);              // GET /attendance/general-settings (working days)
   const [tds, setTds] = useState('');
@@ -318,9 +354,12 @@ function LeaveRulesTab({ showToast, canManage }) {
         </p>
         {!sat ? <div style={{ fontSize: 13, color: '#9ca3af' }}>Loading…</div> : (
           <>
-            <SaturdayOffPicker workingDays={sat.working_days} weeks={sat.saturday_off_weeks} disabled={!canManage}
+            <SaturdayOffPicker workingDays={sat.working_days} weeks={sat.saturday_off_weeks} disabled={!canEditSaturdays}
               onChange={v => setSat(s => ({ ...s, ...v }))} />
-            {canManage && (
+            {canManage && !canEditSaturdays && (
+              <div style={{ fontSize: 12, color: '#6b7280', marginTop: 8 }}>Only HR managers and admins can change the Saturdays.</div>
+            )}
+            {canEditSaturdays && (
               <button className="primary-btn" style={{ marginTop: 12 }} disabled={!satDirty || busy === 'sat'} onClick={saveSat}>
                 {busy === 'sat' ? 'Saving…' : 'Save Saturdays'}
               </button>
@@ -397,6 +436,7 @@ const LeaveSettings = ({ setPage }) => {
   const [allocForm,       setAllocForm]       = useState(EMPTY_ALLOC);
   const [pendingDeleteType, setPendingDeleteType] = useState(null);
   const [pendingBulkAlloc,  setPendingBulkAlloc]  = useState(false);
+  const [pendingDeleteAlloc, setPendingDeleteAlloc] = useState(null);
   const [allocErr,    setAllocErr]    = useState('');
   const [allocSaving, setAllocSaving] = useState(false);
   const [allocYear,   setAllocYear]   = useState(new Date().getFullYear());
@@ -453,11 +493,26 @@ const LeaveSettings = ({ setPage }) => {
     finally { setAllocSaving(false); }
   };
 
+  // Delete an allocation given by mistake (2026-11-25). The server refuses one
+  // that has leave, carry forward, encashment or an accrual credit on it.
+  const deleteAlloc = async () => {
+    const a = pendingDeleteAlloc;
+    setPendingDeleteAlloc(null);
+    if (!a) return;
+    try {
+      await api.delete(`/leaves/allocations/${a.id}`);
+      showToast(`Allocation removed — ${a.employee_name} · ${a.leave_name} ${a.year}`);
+      fetchAllocations();
+    } catch (e) { showToast(e?.response?.data?.error || 'Could not delete the allocation', 'error'); }
+  };
+
   const bulkAllocate = async () => {
     setPendingBulkAlloc(false);
     try {
       const r = await api.post('/leaves/bulk-allocate', { year: allocYear });
-      showToast(`Bulk allocation complete — ${r.data.records} records created`);
+      showToast(r.data.records
+        ? `Bulk allocation ${allocYear}: ${r.data.records} new balance(s) created${r.data.existing ? `, ${r.data.existing} already existed (unchanged)` : ''}`
+        : `Every active employee already has a ${allocYear} balance for every type — nothing changed`);
       fetchAllocations();
     } catch (e) { showToast(e?.response?.data?.error || 'Bulk allocation failed', 'error'); }
   };
@@ -486,7 +541,7 @@ const LeaveSettings = ({ setPage }) => {
                 <tr key={t.id} style={t.is_active === false ? { opacity: 0.55 } : undefined}>
                   <td style={{ fontWeight:600 }}>{t.leave_name}</td>
                   <td>{t.default_days}</td>
-                  <td style={{ fontSize:11, color:'#6b7280' }}>{t.accrual_type === 'worked' ? `1 per ${Number(t.days_worked_per_leave_day || 20)} days worked` : (t.accrual_type || 'manual')}{t.accrual_type === 'monthly' && t.accrual_days_per_month > 0 ? ` (${t.accrual_days_per_month}/mo)` : ''}</td>
+                  <td style={{ fontSize:11, color:'#6b7280' }}>{accrualLabel(t)}</td>
                   <td>{t.carry_forward_allowed ? <span style={{ color:'#059669' }}>✓ {t.max_carry_forward_days}d</span> : '—'}</td>
                   <td>{t.allow_half_day ? <span style={{ color:'#059669' }}>✓</span> : '—'}</td>
                   <td>{t.is_encashable ? <span style={{ color:'#6d28d9' }}>✓</span> : '—'}</td>
@@ -534,7 +589,7 @@ const LeaveSettings = ({ setPage }) => {
       <div className="leads-table-container">
         <table className="leads-table">
           <thead>
-            <tr><th>Employee</th><th>Leave Type</th><th>Allocated</th><th>Carried Fwd</th><th>Used</th><th>Pending</th><th>Encashed</th><th>Remaining</th><th>Year</th>{canManage && <th style={{width:80}}>Actions</th>}</tr>
+            <tr><th>Employee</th><th>Leave Type</th><th>Allocated</th><th>Carried Fwd</th><th>Used</th><th>Pending</th><th>Encashed</th><th>Remaining</th><th>Year</th>{canManage && <th style={{width:100}}>Actions</th>}</tr>
           </thead>
           <tbody>
             {shownAllocations.length === 0
@@ -548,13 +603,21 @@ const LeaveSettings = ({ setPage }) => {
                   <td>{Number(a.used_days)}</td>
                   <td>{Number(a.pending_days) || '—'}</td>
                   <td>{Number(a.encashed_days) || '—'}</td>
-                  <td style={{ color: Number(a.remaining_days) <= 0 ? '#ef4444' : '#10b981', fontWeight:600 }}>{Number(a.remaining_days)}</td>
+                  {/* Loss of Pay has no quota to run out of. */}
+                  {a.is_lop_type
+                    ? <td style={{ color:'#9ca3af' }} title="Loss of Pay has no balance">—</td>
+                    : <td style={{ color: Number(a.remaining_days) <= 0 ? '#ef4444' : '#10b981', fontWeight:600 }}>{Number(a.remaining_days)}</td>}
                   <td>{a.year}</td>
                   {canManage && (
                     <td>
-                      <button className="ls-btn-icon ls-btn-edit" onClick={() => { setAllocForm({employee_id:a.employee_id,leave_type_id:a.leave_type_id,allocated_days:a.allocated_days,year:a.year}); setAllocErr(''); setAllocModal(a); }}>
-                        <Pencil size={13}/>
-                      </button>
+                      <div className="ls-actions">
+                        <button className="ls-btn-icon ls-btn-edit" title="Edit allocation" onClick={() => { setAllocForm({employee_id:a.employee_id,leave_type_id:a.leave_type_id,allocated_days:a.allocated_days,year:a.year}); setAllocErr(''); setAllocModal(a); }}>
+                          <Pencil size={13}/>
+                        </button>
+                        <button className="ls-btn-icon ls-btn-del" title="Delete allocation" onClick={() => setPendingDeleteAlloc(a)}>
+                          <Trash2 size={13}/>
+                        </button>
+                      </div>
                     </td>
                   )}
                 </tr>
@@ -565,31 +628,32 @@ const LeaveSettings = ({ setPage }) => {
     </div>,
 
     // ── Tab 2: Accrual & Carry Forward ───────────────────────────────────────
-    <AccrualTab key="accrual" showToast={showToast} canManage={canManage} />,
+    <AccrualTab key="accrual" showToast={showToast} canManage={canManage} setPage={setPage} />,
 
     // ── Tab 3: Leave Rules ───────────────────────────────────────────────────
-    <LeaveRulesTab key="rules" showToast={showToast} canManage={canManage} />,
+    <LeaveRulesTab key="rules" showToast={showToast} canManage={canManage} canEditSaturdays={hasAnyRole(...ATTENDANCE_ADMIN_ROLES)} />,
+
+    // ── Tab 4: Change History (2026-11-25) ───────────────────────────────────
+    canManage
+      ? <LeaveSettingsHistory key="history" />
+      : <div key="history" style={{ padding:'40px 20px', textAlign:'center', color:'#6b7280', fontSize:14 }}>The change history is kept for HR.</div>,
   ];
 
   return (
+    // "Automation Rules" (→ Workflow Builder) removed from the header 2026-11-25:
+    // Workflow Builder's Leave rules never run (the workflow engine is
+    // dispatched from CRM only); escalation is set in Leave Rules here.
     <PageShell dock={
       <PageHero
         icon={SlidersHorizontal}
         eyebrow="Leave"
         title="Leave Settings"
-        actions={setPage && canManage && (
-          <div style={{ display:'flex', gap:10 }}>
-            <button className="plh-cta" onClick={() => setPage('WorkflowBuilder')}>
-              <Zap size={14}/> Automation Rules
-            </button>
-          </div>
-        )}
       />
     }>
       <ConfirmDialog
         open={!!pendingDeleteType}
         title="Delete Leave Type"
-        message={pendingDeleteType ? `Delete "${pendingDeleteType.leave_name}"? This cannot be undone.` : ''}
+        message={pendingDeleteType ? `Delete "${pendingDeleteType.leave_name}"? A type that has been used cannot be deleted — edit it and set Active to No instead.` : ''}
         confirmLabel="Delete"
         variant="danger"
         onConfirm={deleteType}
@@ -603,6 +667,15 @@ const LeaveSettings = ({ setPage }) => {
         variant="warning"
         onConfirm={bulkAllocate}
         onCancel={() => setPendingBulkAlloc(false)}
+      />
+      <ConfirmDialog
+        open={!!pendingDeleteAlloc}
+        title="Delete Allocation"
+        message={pendingDeleteAlloc ? `Delete ${pendingDeleteAlloc.employee_name}'s ${pendingDeleteAlloc.leave_name} ${pendingDeleteAlloc.year} allocation (${Number(pendingDeleteAlloc.allocated_days)} days)? An allocation with leave, carry forward, encashment or an accrual credit cannot be deleted — set its days instead.` : ''}
+        confirmLabel="Delete"
+        variant="danger"
+        onConfirm={deleteAlloc}
+        onCancel={() => setPendingDeleteAlloc(null)}
       />
       <Toast msg={toast?.msg} type={toast?.type} onClose={() => setToast(null)} />
 
@@ -625,7 +698,7 @@ const LeaveSettings = ({ setPage }) => {
       {typeModal !== null && (
         <LeaveTypeModal
           mode={typeModal === 'add' ? 'add' : 'edit'}
-          initial={typeModal === 'add' ? EMPTY_TYPE : { ...EMPTY_TYPE, ...typeModal, default_days: typeModal.default_days ?? typeModal.annual_quota }}
+          initial={typeModal === 'add' ? EMPTY_TYPE : typeToForm(typeModal)}
           onSave={saveType}
           onClose={() => setTypeModal(null)}
         />
@@ -641,7 +714,7 @@ const LeaveSettings = ({ setPage }) => {
             </div>
             <div className="ls-modal-body">
               {[
-                ['Employee', 'employee_id', employees.map(e => ({ value:e.id, label:`${e.first_name||''} ${e.last_name||''}`.trim() }))],
+                ['Employee', 'employee_id', employees.map(e => ({ value:e.id, label:`${`${e.first_name||''} ${e.last_name||''}`.trim()}${e.office_id ? ` · ${e.office_id}` : ''}` }))],
                 ['Leave Type', 'leave_type_id', activeTypes.map(t => ({ value:t.id, label:t.leave_name }))],
               ].map(([label, key, opts]) => (
                 <div key={key} className="ls-field">

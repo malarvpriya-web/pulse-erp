@@ -33,7 +33,7 @@
  * inventing a "reports" permission that drifts from it.
  *
  * A note on the people reports. Every report in this module is company-wide:
- * `/leave` returns every colleague's applications, `/attendance` returns the
+ * `/leave/summary` returns every colleague's balances, `/attendance` returns the
  * whole roster. They are therefore gated on `hr:view`, NOT on `leave:view` or
  * `attendance:view` — every employee holds those two, because they are what let
  * someone open their own leave balance and their own attendance. Gating a
@@ -73,17 +73,14 @@ export const REPORTS = Object.freeze([
     grain: 'summary',
     measures: ['recorded_days', 'present_days', 'absent_days', 'leave_days', 'non_working_days', 'total_hours'],
   },
-  {
-    id: 'leave', category: 'HR & People', label: 'Leave Applications',
-    desc: 'Every leave application with approval trail, employee and leave type.',
-    filters: ['start_date', 'end_date', 'department', 'status', 'employee_id'],
-    permission: ['hr', 'view'], grain: 'detail', measures: ['number_of_days'],
-  },
+  // 'Leave Applications' removed 2026-11-24 (owner): the same request-by-request
+  // list as Leaves → All Leaves, which has more filters, totals and each
+  // request's approval history. No saved report used it.
   {
     id: 'leave/summary', category: 'HR & People', label: 'Leave Balance Summary',
     desc: 'Allocated, used and remaining days per employee and leave type for a year.',
     filters: ['year', 'department'], permission: ['hr', 'view'], grain: 'summary',
-    measures: ['allocated_days', 'used_days', 'remaining_days', 'pending_count', 'rejected_count'],
+    measures: ['allocated_days', 'carried_forward_days', 'encashed_days', 'used_days', 'pending_days', 'remaining_days', 'pending_count', 'rejected_count'],
   },
   {
     id: 'leave/department', category: 'HR & People', label: 'Leave by Department',
@@ -93,7 +90,7 @@ export const REPORTS = Object.freeze([
   },
   {
     id: 'leave/credits', category: 'HR & People', label: 'Leave Credit History',
-    desc: 'Every leave credit — monthly, yearly, by days worked — with when it ran and who ran it.',
+    desc: 'Every leave credit — monthly, yearly, by days worked, carried forward or set by HR — with when it ran and who ran it.',
     filters: ['year', 'department'], permission: ['hr', 'view'], grain: 'detail', measures: ['days_accrued'],
   },
   {
@@ -105,7 +102,7 @@ export const REPORTS = Object.freeze([
     id: 'leave/approval-performance', category: 'HR & People', label: 'Approval Turnaround',
     desc: 'Approver response times and outcomes, from the leave approval history.',
     filters: ['start_date', 'end_date'], permission: ['hr', 'view'], grain: 'summary',
-    measures: ['total_actions', 'approved_count', 'rejected_count', 'avg_response_hours'],
+    measures: ['total_actions', 'approved_count', 'rejected_count', 'avg_response_hours', 'max_response_hours'],
   },
   {
     id: 'headcount', category: 'HR & People', label: 'Headcount by Department',

@@ -1,5 +1,6 @@
 import express from 'express';
 import { canManageRecruitmentSetup } from '../recruitment/requisitionAccess.js';
+import { normalizeRecruitmentSettings } from '../recruitment/recruitmentSettings.js';
 import pool from '../../config/db.js';
 import { companyOf } from '../../shared/scope.js';
 import { requirePermission, can } from '../../middlewares/auth.middleware.js';
@@ -630,6 +631,13 @@ router.post('/:module', settingsGate('edit'), async (req, res) => {
       }
       const errors = validatePayCycle(normalizePayrollSettings(toSave).settings);
       if (errors.length) return res.status(400).json({ success: false, message: errors.join(' '), errors });
+    }
+    // Recruitment: merged onto the stored blob (Probation writes keys into it
+    // too), dead keys dropped, numbers range-checked — recruitmentSettings.js.
+    if (module === 'recruitment') {
+      const { settings, errors } = normalizeRecruitmentSettings(req.body, oldSettings);
+      if (errors.length) return res.status(400).json({ success: false, message: errors.join(' '), errors });
+      toSave = settings;
     }
 
     await pool.query(

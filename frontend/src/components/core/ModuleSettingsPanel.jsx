@@ -24,6 +24,11 @@ export default function ModuleSettingsPanel({
   setPage,
   sections,
   embedded = false,
+  // Send only this panel's own fields on save (for a blob another screen also
+  // writes — Recruitment shares its blob with HR → Probation).
+  sendOnlyFields = false,
+  // Extra cards drawn under the sections, above the Save bar.
+  children,
 }) {
   const defaults = buildDefaults(sections);
 
@@ -85,11 +90,29 @@ export default function ModuleSettingsPanel({
     setTimeout(() => setToast(null), 3500);
   };
 
+  // Number fields with min/max: a value outside the range is refused here
+  // instead of being saved and quietly replaced by a default on the server.
+  const fieldErrors = {};
+  (sections || []).forEach(section => (section.fields || []).forEach(f => {
+    if (f.type !== 'number' || (f.min == null && f.max == null && !f.integer)) return;
+    const v = values[f.key];
+    const n = Number(v);
+    if (v === '' || v == null || !Number.isFinite(n)) fieldErrors[f.key] = 'Enter a number';
+    else if (f.integer && !Number.isInteger(n)) fieldErrors[f.key] = 'Whole number only';
+    else if (f.min != null && n < f.min) fieldErrors[f.key] = `At least ${f.min}`;
+    else if (f.max != null && n > f.max) fieldErrors[f.key] = `At most ${f.max}`;
+  }));
+  const invalid = Object.keys(fieldErrors).length > 0;
+
   const handleSave = async () => {
     if (loadError) return;
+    if (invalid) { flash('Fix the highlighted values first', 'error'); return; }
     setSaving(true);
     try {
-      await api.post(apiEndpoint, values);
+      const payload = sendOnlyFields
+        ? Object.fromEntries((sections || []).flatMap(sec => (sec.fields || []).map(f => [f.key, values[f.key]])))
+        : values;
+      await api.post(apiEndpoint, payload);
       setSaved({ ...values });
       setHasSaved(true);
       setTimeout(() => setHasSaved(false), 3000);
@@ -129,7 +152,7 @@ export default function ModuleSettingsPanel({
             aria-checked={on}
             style={{
               width: 44, height: 24, borderRadius: 12, border: 'none',
-              background: on ? '#7c3aed' : '#d1d5db',
+              background: on ? 'var(--color-primary, #6B3FDB)' : '#d1d5db',
               cursor: 'pointer', position: 'relative', transition: 'background 0.2s', flexShrink: 0,
             }}
           >
@@ -168,16 +191,30 @@ export default function ModuleSettingsPanel({
           />
         );
 
-      case 'number':
+      case 'number': {
+        const err = fieldErrors[field.key];
         return (
-          <input
-            type="number"
-            value={val ?? 0}
-            placeholder={field.placeholder || ''}
-            onChange={e => set(field.key, e.target.value === '' ? 0 : Number(e.target.value))}
-            style={{ ...base, width: 110 }}
-          />
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 3 }}>
+            <input
+              type="number"
+              value={val ?? ''}
+              min={field.min}
+              max={field.max}
+              step={field.integer ? 1 : undefined}
+              placeholder={field.placeholder || ''}
+              aria-label={field.label}
+              aria-invalid={err ? true : undefined}
+              // A ranged field keeps a blank as blank (refused above); others
+              // keep the old behaviour, blank = 0.
+              onChange={e => set(field.key, e.target.value === ''
+                ? (field.min != null || field.max != null || field.integer ? '' : 0)
+                : Number(e.target.value))}
+              style={{ ...base, width: 110, ...(err ? { border: '1px solid #dc2626' } : null) }}
+            />
+            {err && <span role="alert" style={{ fontSize: 11, color: '#dc2626' }}>{err}</span>}
+          </div>
         );
+      }
 
       default:
         return (
@@ -232,7 +269,10 @@ export default function ModuleSettingsPanel({
       )}
 
       {/* Sections */}
-      <div style={{ flex: 1, padding: embedded ? '16px 0 120px' : '24px 28px 120px', overflowY: 'auto' }}>
+      {/* The Save bar below is position:sticky and stays in the normal flow,
+          so it never covers the last card — no extra bottom padding (the old
+          120px drew an empty band above Save Changes). */}
+      <div style={{ flex: 1, padding: embedded ? '16px 0 20px' : '24px 28px 24px' }}>
         {loading ? (
           <div style={{ color: '#9ca3af', fontSize: 14, padding: 40, textAlign: 'center' }}>
             Loading settings…
@@ -298,6 +338,7 @@ export default function ModuleSettingsPanel({
                 ))}
               </div>
             ))}
+            {children}
           </div>
         )}
       </div>
@@ -306,13 +347,14 @@ export default function ModuleSettingsPanel({
       {!loading && !loadError && (
         <div style={{
           position: 'sticky', bottom: 0, background: '#fff',
-          borderTop: dirty ? '2px solid #8b5cf6' : '1px solid #f0f0f4',
-          padding: '13px 28px',
+          borderTop: dirty ? '2px solid var(--color-primary, #6B3FDB)' : '1px solid #f0f0f4',
+          padding: embedded ? '13px 16px' : '13px 28px',
+          borderRadius: embedded ? '10px 10px 0 0' : 0,
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
           boxShadow: '0 -2px 8px rgba(0,0,0,0.04)', zIndex: 10,
         }}>
           <span style={{ fontSize: 13, color: dirty ? '#6d28d9' : '#9ca3af' }}>
-            {dirty ? 'You have unsaved changes' : hasSaved ? '✓ All changes saved' : null}
+            {invalid ? 'Some values are out of range' : dirty ? 'You have unsaved changes' : hasSaved ? '✓ All changes saved' : null}
           </span>
           <div style={{ display: 'flex', gap: 10 }}>
             <button
@@ -329,12 +371,12 @@ export default function ModuleSettingsPanel({
             </button>
             <button
               onClick={handleSave}
-              disabled={saving || !!loadError}
+              disabled={saving || !!loadError || invalid}
               title={loadError ? 'Saved settings did not load — saving now would overwrite them with defaults' : undefined}
               style={{
                 padding: '8px 20px', borderRadius: 7, border: 'none',
-                background: '#7c3aed', color: '#fff', fontSize: 13, fontWeight: 600,
-                cursor: saving || loadError ? 'not-allowed' : 'pointer', opacity: saving ? 0.7 : loadError ? 0.45 : 1,
+                background: 'var(--color-primary, #6B3FDB)', color: '#fff', fontSize: 13, fontWeight: 600,
+                cursor: saving || loadError || invalid ? 'not-allowed' : 'pointer', opacity: saving ? 0.7 : loadError || invalid ? 0.45 : 1,
               }}
             >
               {saving ? 'Saving…' : 'Save Changes'}

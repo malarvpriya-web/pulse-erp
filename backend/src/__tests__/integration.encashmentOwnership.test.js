@@ -39,6 +39,7 @@ async function sweep(companyId) {
   await pool.query(`DELETE FROM leave_encashments WHERE employee_id IN ${emps} OR company_id = $1`, [companyId]);
   await pool.query(`DELETE FROM payroll_adjustments WHERE employee_id IN ${emps} OR company_id = $1`, [companyId]);
   await pool.query(`DELETE FROM payroll_runs WHERE employee_id IN ${emps}`, [companyId]);
+  await pool.query(`DELETE FROM leave_balances WHERE employee_id IN ${emps}`, [companyId]);
   await pool.query(`DELETE FROM employees WHERE company_id = $1`, [companyId]);
 }
 
@@ -50,6 +51,10 @@ beforeAll(async () => {
     `INSERT INTO employees (company_id, office_id, first_name, last_name, status, joining_date) VALUES ($1, 'EMP001', 'Enc', 'Test', 'Active', '2026-01-01') RETURNING id`, [co.companyId])).rows[0].id;
   empA = await emp(A); empB = await emp(B);
   leaveTypeId = (await pool.query('SELECT id FROM leave_types ORDER BY id LIMIT 1')).rows[0].id;   // FK reference only
+  // A balance to encash from: approval re-checks it (2026-11-24).
+  for (const e of [empA, empB]) {
+    await pool.query(`INSERT INTO leave_balances (employee_id, leave_type_id, year, allocated_days) VALUES ($1, $2, 2027, 30)`, [e, leaveTypeId]);
+  }
   const mk = async (e, co) => (await pool.query(
     `INSERT INTO leave_encashments (employee_id, leave_type_id, year, days_encashed, net_amount, encashment_month, encashment_year, status, company_id)
      VALUES ($1, $2, 2027, 1, 1000, 4, 2027, 'pending', $3) RETURNING id`, [e, leaveTypeId, co.companyId])).rows[0].id;
@@ -147,6 +152,96 @@ describe('who may decide a claim', () => {
       expect(ap.status, JSON.stringify(ap.body)).toBe(403);
       expect(ap.body.code).toBe('ENCASHMENT_SELF_DECISION');
       expect((await claim(id)).status).toBe('pending');
+    } finally {
+      await pool.query('UPDATE users SET employee_id = NULL WHERE id = $1', [hr.userId]);
+    }
+  });
+});
+
+// 2026-11-24 encashment page audit.
+describe('deciding a claim — balance, exit, roles, reason', () => {
+  const mkFor = async (e, days, month, reason = null) => (await pool.query(
+    `INSERT INTO leave_encashments (employee_id, leave_type_id, year, days_encashed, net_amount, encashment_month, encashment_year, status, company_id, reason)
+     VALUES ($1, $2, 2027, $3, 1000, $4, 2027, 'pending', $5, $6) RETURNING id`, [e, leaveTypeId, days, month, A.companyId, reason])).rows[0].id;
+  const newEmp = async (code, status, allocated) => {
+    const id = (await pool.query(
+      `INSERT INTO employees (company_id, office_id, first_name, last_name, status, joining_date) VALUES ($1, $2, 'Enc', 'Rule', $3, '2026-01-01') RETURNING id`,
+      [A.companyId, code, status])).rows[0].id;
+    await pool.query(`INSERT INTO leave_balances (employee_id, leave_type_id, year, allocated_days) VALUES ($1, $2, 2027, $3)`, [id, leaveTypeId, allocated]);
+    return id;
+  };
+
+  it('payroll_admin (no leaves:approve) may decide', async () => {
+    const id = await mkFor(empA, 1, 7);
+    const pa = await addUser(pool, A, { label: 'payadm', roleCode: 'payroll_admin' });
+    const r = await as(pa).post(`/approve/${id}`, { payout_month: 7, payout_year: 2027 });
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect((await claim(id)).status).toBe('approved');
+  });
+
+  it('approval re-checks the balance — days no longer there are refused', async () => {
+    const e = await newEmp('EMP091', 'Active', 1);
+    const id = await mkFor(e, 2, 8);
+    const hr = await addUser(pool, A, { label: 'balhr', roleCode: 'hr' });
+    const r = await as(hr).post(`/approve/${id}`, { payout_month: 8, payout_year: 2027 });
+    expect(r.status).toBe(422);
+    expect(r.body.code).toBe('INSUFFICIENT_BALANCE');
+    expect((await claim(id)).status).toBe('pending');
+    expect((await pool.query('SELECT COUNT(*)::int n FROM payroll_adjustments WHERE employee_id = $1', [e])).rows[0].n).toBe(0);
+  });
+
+  it('someone serving notice is paid in F&F — no claim, no approval', async () => {
+    const e = await newEmp('EMP092', 'Notice', 10);
+    const id = await mkFor(e, 1, 9);
+    const hr = await addUser(pool, A, { label: 'notihr', roleCode: 'hr' });
+    const ap = await as(hr).post(`/approve/${id}`, { payout_month: 9, payout_year: 2027 });
+    expect(ap.status).toBe(422);
+    expect(ap.body.code).toBe('ENCASHMENT_AT_EXIT');
+    const pay = await addUser(pool, A, { label: 'notipay', roleCode: 'payroll_admin' });
+    const cr = await as(pay).post('/', { employee_id: e, leave_type_id: leaveTypeId, year: 2027, days_encashed: 1 });
+    expect(cr.status).toBe(422);
+    expect(cr.body.code).toBe('ENCASHMENT_AT_EXIT');
+  });
+
+  it('cancelling keeps the claim\'s own reason and adds why', async () => {
+    const id = await mkFor(empA, 1, 10, 'Year-end');
+    const hr = await addUser(pool, A, { label: 'rsnhr', roleCode: 'hr' });
+    const r = await as(hr).post(`/reject/${id}`, { reason: 'Asked by mistake' });
+    expect(r.status).toBe(200);
+    const { rows: [row] } = await pool.query('SELECT status, reason FROM leave_encashments WHERE id = $1', [id]);
+    expect(row.status).toBe('cancelled');
+    expect(row.reason).toBe('Year-end · Cancelled: Asked by mistake');
+  });
+});
+
+// Owner decisions 2026-11-24.
+describe('owner decisions — who raises and who decides', () => {
+  const mk = async (month) => (await pool.query(
+    `INSERT INTO leave_encashments (employee_id, leave_type_id, year, days_encashed, net_amount, encashment_month, encashment_year, status, company_id)
+     VALUES ($1, $2, 2027, 1, 1000, $3, 2027, 'pending', $4) RETURNING id`, [empA, leaveTypeId, month, A.companyId])).rows[0].id;
+
+  it('hr_exec and finance_manager cannot approve or cancel', async () => {
+    const id = await mk(11);
+    for (const roleCode of ['hr_exec', 'finance_manager']) {
+      const u = await addUser(pool, A, { label: `nd${roleCode}`, roleCode });
+      const ap = await as(u).post(`/approve/${id}`, { payout_month: 11, payout_year: 2027 });
+      expect(ap.status, roleCode).toBe(403);
+      expect(ap.body.code, roleCode).toBe('ENCASHMENT_DECIDER_ONLY');
+      expect((await as(u).post(`/reject/${id}`, { reason: 'x' })).status, roleCode).toBe(403);
+    }
+    expect((await claim(id)).status).toBe('pending');
+  });
+
+  it('HR cannot raise a claim for themselves', async () => {
+    const hr = await addUser(pool, A, { label: 'selfraise', roleCode: 'hr' });
+    await pool.query('UPDATE users SET employee_id = $1 WHERE id = $2', [empA, hr.userId]);
+    const self = { token: () => jwt.sign({ userId: hr.userId, role: 'hr', company_id: A.companyId, employee_id: empA }, process.env.JWT_SECRET, { expiresIn: '1h' }) };
+    try {
+      const before = (await pool.query('SELECT COUNT(*)::int n FROM leave_encashments WHERE employee_id = $1', [empA])).rows[0].n;
+      const r = await as(self).post('/', { employee_id: empA, leave_type_id: leaveTypeId, year: 2027, days_encashed: 1 });
+      expect(r.status, JSON.stringify(r.body)).toBe(403);
+      expect(r.body.code).toBe('ENCASHMENT_SELF_CLAIM');
+      expect((await pool.query('SELECT COUNT(*)::int n FROM leave_encashments WHERE employee_id = $1', [empA])).rows[0].n).toBe(before);
     } finally {
       await pool.query('UPDATE users SET employee_id = NULL WHERE id = $1', [hr.userId]);
     }

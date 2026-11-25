@@ -134,6 +134,15 @@ export async function computeFnf(db, employeeId, { companyId, actorId = null, op
   if (earlier?.n) warnings.push({ code: 'EARLIER_RUNS_UNPAID', message: `${earlier.n} earlier payroll run(s) are still unpaid and are not included here. Pay or remove them separately.` });
   const { rows: [claims] } = await db.query(
     `SELECT COUNT(*)::int AS n FROM expense_claims WHERE employee_id = $1 AND LOWER(status) = 'approved' AND paid_at IS NULL`, [employeeId]);
+  // Leave encashment claims (encashment.routes.js). A pending one would pay
+  // the same days this settlement pays; an approved one not yet paid sits in a
+  // payroll month that may never be generated for a leaver.
+  const { rows: [enc] } = await db.query(
+    `SELECT COUNT(*) FILTER (WHERE status = 'pending')::int AS pending,
+            COUNT(*) FILTER (WHERE status = 'approved')::int AS unpaid
+       FROM leave_encashments WHERE employee_id = $1`, [employeeId]);
+  if (enc?.pending) warnings.push({ code: 'ENCASHMENT_CLAIMS_PENDING', message: `${enc.pending} leave encashment claim(s) are still pending. Cancel them on the Encashment page — this settlement pays the unused leave.` });
+  if (enc?.unpaid) warnings.push({ code: 'ENCASHMENT_CLAIMS_UNPAID', message: `${enc.unpaid} approved leave encashment(s) are not yet paid in payroll. Their days are already out of the balance here, so pay them in the final payroll month.` });
   if (claims?.n) warnings.push({ code: 'EXPENSE_CLAIMS_UNPAID', message: `${claims.n} approved expense claim(s) are unpaid. Pay them through the claims process; they are not part of this settlement.` });
   const { rows: [ytd] } = await db.query(
     `SELECT COALESCE(SUM(gross), 0) AS gross, COALESCE(SUM(tds), 0) AS tds FROM payroll_runs

@@ -2157,8 +2157,8 @@ router.get('/analytics/interview-to-hire-ratio', view, async (req, res) => {
 });
 
 // ==================== ONBOARDING ====================
-// Read-only view of recently-hired candidates and how far their onboarding has
-// actually got. Recruitment does NOT own onboarding — HR does, in
+// New joiners (recent hires + people added directly) and how far their onboarding
+// has got. Recruitment does NOT own onboarding — HR does, in
 // hr_onboarding_checklist_templates/_progress, initialised by hireCandidate() and
 // edited through /hr/onboarding/*. This endpoint only reports on that system so the
 // recruiter who filled the role can see whether the handover landed; every mutation
@@ -2175,45 +2175,65 @@ router.get('/onboarding', view, async (req, res) => {
     // GET /hr/onboarding/progress/:employee_id computes its denominator — progress
     // rows only exist for items someone has touched, so counting those instead
     // would report 3/3 complete for an employee with 3 done and 20 untouched.
+    // Owner 18 Nov 26: onboarding lives in ONE place (this page; the Employee
+    // Profile tab was removed), so the list is every new joiner — hired through
+    // Recruitment in the last 60 days, AND anyone added directly (Add Employee,
+    // intern conversion) whose record was created or who joined in that window.
+    // `key` is unique across both kinds; `source` tells them apart.
     const query = `
-      SELECT c.id, c.full_name AS name, c.email, c.phone,
-             COALESCE(e.designation, jo.job_title, jr.job_title) AS designation,
-             COALESCE(e.department, jo.department, jr.department) AS department,
-             TO_CHAR(c.hired_at::date, 'YYYY-MM-DD') AS hired_on,
-             -- The day they actually join (employee record, else the accepted
-             -- offer) — this used to show the hire date under "joining".
-             TO_CHAR(COALESCE(e.joining_date,
-               (SELECT o.joining_date FROM offer_letters o
-                 WHERE o.candidate_id = c.id AND o.offer_status = 'accepted' AND o.deleted_at IS NULL
-                 ORDER BY o.updated_at DESC NULLS LAST LIMIT 1)), 'YYYY-MM-DD') AS joining_date,
-             e.id AS employee_id, e.office_id AS employee_code,
-             COALESCE(tpl.total, 0)::int AS onboarding_total,
-             COALESCE(prog.done, 0)::int AS onboarding_done
-      FROM candidates c
-      LEFT JOIN job_openings jo ON c.applied_job_id = jo.id
-      LEFT JOIN job_requisitions jr ON jo.requisition_id = jr.id
-      -- The link Recruitment → Employees. NULL here means the hire never produced
-      -- an employee record, i.e. auto-creation failed and is sitting in
-      -- recruitment_employee_creation_log — worth surfacing, not hiding.
-      LEFT JOIN employees e
-             ON e.source_candidate_id = c.id AND e.deleted_at IS NULL
-      LEFT JOIN LATERAL (
-        SELECT COUNT(*) AS total
+      WITH tpl AS (
+        SELECT COUNT(*)::int AS total
           FROM hr_onboarding_checklist_templates t
-         WHERE t.is_active = true
-           AND (t.company_id IS NULL OR t.company_id = $1)
-      ) tpl ON TRUE
-      LEFT JOIN LATERAL (
-        SELECT COUNT(*) FILTER (WHERE p.done) AS done
-          FROM hr_onboarding_checklist_progress p
-         WHERE p.employee_id = e.id
-      ) prog ON TRUE
-      WHERE c.overall_status = 'hired'
-        AND c.hired_at >= NOW() - INTERVAL '60 days'
-        AND c.deleted_at IS NULL
-        AND ($1::int IS NULL OR c.company_id = $1)
-        AND ($2::text[] IS NULL OR COALESCE(e.department, jo.department, jr.department) = ANY($2::text[]))
-      ORDER BY c.hired_at DESC`;
+         WHERE t.is_active = true AND (t.company_id IS NULL OR t.company_id = $1)
+      ),
+      hires AS (
+        SELECT 'c' || c.id AS key, 'recruitment' AS source, c.id AS candidate_id,
+               c.full_name AS name, c.email, c.phone,
+               COALESCE(e.designation, jo.job_title, jr.job_title) AS designation,
+               COALESCE(e.department, jo.department, jr.department) AS department,
+               c.hired_at AS sort_at,
+               TO_CHAR(c.hired_at::date, 'YYYY-MM-DD') AS hired_on,
+               -- The day they actually join (employee record, else the accepted offer).
+               TO_CHAR(COALESCE(e.joining_date,
+                 (SELECT o.joining_date FROM offer_letters o
+                   WHERE o.candidate_id = c.id AND o.offer_status = 'accepted' AND o.deleted_at IS NULL
+                   ORDER BY o.updated_at DESC NULLS LAST LIMIT 1)), 'YYYY-MM-DD') AS joining_date,
+               -- NULL = the hire never produced an employee record (auto-creation
+               -- failed, see recruitment_employee_creation_log) — surfaced, not hidden.
+               e.id AS employee_id, e.office_id AS employee_code
+          FROM candidates c
+          LEFT JOIN job_openings jo ON c.applied_job_id = jo.id
+          LEFT JOIN job_requisitions jr ON jo.requisition_id = jr.id
+          LEFT JOIN employees e ON e.source_candidate_id = c.id AND e.deleted_at IS NULL
+         WHERE c.overall_status = 'hired'
+           AND c.hired_at >= NOW() - INTERVAL '60 days'
+           AND c.deleted_at IS NULL
+           AND ($1::int IS NULL OR c.company_id = $1)
+           AND ($2::text[] IS NULL OR COALESCE(e.department, jo.department, jr.department) = ANY($2::text[]))
+      ),
+      direct AS (
+        SELECT 'e' || e.id AS key, 'direct' AS source, NULL::int AS candidate_id,
+               e.name, COALESCE(e.company_email, e.personal_email) AS email, NULL::text AS phone,
+               e.designation, e.department,
+               e.created_at AS sort_at,
+               NULL::text AS hired_on,
+               TO_CHAR(e.joining_date, 'YYYY-MM-DD') AS joining_date,
+               e.id AS employee_id, e.office_id AS employee_code
+          FROM employees e
+         WHERE e.deleted_at IS NULL
+           AND e.source_candidate_id IS NULL
+           AND COALESCE(e.is_test, false) = false
+           AND e.exit_date IS NULL
+           AND COALESCE(LOWER(e.status), '') NOT IN ('exited', 'inactive', 'terminated', 'resigned', 'relieved')
+           AND (e.created_at >= NOW() - INTERVAL '60 days' OR e.joining_date >= CURRENT_DATE - 60)
+           AND ($1::int IS NULL OR e.company_id = $1)
+           AND ($2::text[] IS NULL OR e.department = ANY($2::text[]))
+      )
+      SELECT x.*, tpl.total AS onboarding_total,
+             COALESCE((SELECT COUNT(*) FILTER (WHERE p.done) FROM hr_onboarding_checklist_progress p
+                        WHERE p.employee_id = x.employee_id), 0)::int AS onboarding_done
+        FROM (SELECT * FROM hires UNION ALL SELECT * FROM direct) x CROSS JOIN tpl
+       ORDER BY x.sort_at DESC`;
     const result = await pool.query(query, params);
     // pct is derived here rather than in SQL so the divide-by-zero case (no templates
     // configured) stays explicit. COUNT() comes back as a bigint → JS string, hence

@@ -39,6 +39,7 @@ async function sweep(companyId) {
   await pool.query(`DELETE FROM leave_encashments WHERE employee_id IN ${emps}`, [companyId]);
   await pool.query(`DELETE FROM payroll_adjustments WHERE employee_id IN ${emps}`, [companyId]);
   await pool.query(`DELETE FROM payroll_runs WHERE employee_id IN ${emps}`, [companyId]);
+  await pool.query(`DELETE FROM leave_balances WHERE employee_id IN ${emps}`, [companyId]);
   await pool.query(`DELETE FROM employees WHERE company_id = $1`, [companyId]);
 }
 
@@ -50,6 +51,10 @@ beforeAll(async () => {
     [co.companyId]);
   empId = e.id;
   leaveTypeId = (await pool.query('SELECT id FROM leave_types ORDER BY id LIMIT 1')).rows[0].id;   // FK reference only
+  // A balance to encash from: approval re-checks it (2026-11-24).
+  for (const e of [empId]) {
+    await pool.query(`INSERT INTO leave_balances (employee_id, leave_type_id, year, allocated_days) VALUES ($1, $2, 2027, 30)`, [e, leaveTypeId]);
+  }
   // January 2027 approved; February 2027 a draft
   await pool.query(
     `INSERT INTO payroll_runs (employee_id, month, year, status, gross, net_pay, is_test)

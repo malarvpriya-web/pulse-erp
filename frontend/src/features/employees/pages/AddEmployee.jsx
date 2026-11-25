@@ -50,7 +50,7 @@ const FIELD_ORDER = [
 ];
 
 /**
- * The nine upload slots, in the order the Documents section shows them.
+ * The eleven upload slots, in the order the Documents section shows them.
  * `field` is the multipart name the API takes; `column` is where the stored
  * path lives on the employee row (only the photo's differ). Edit mode reads
  * `column` to show what is already on file, and names `field` in
@@ -66,6 +66,10 @@ const DOC_SLOTS = [
   { field: 'offer_letter_file',     column: 'offer_letter_file',     label: 'Offer Letter' },
   { field: 'passport_file',         column: 'passport_file',         label: 'Passport' },
   { field: 'driving_license_file',  column: 'driving_license_file',  label: 'Driving Licence' },
+  // Issued at onboarding (Recruitment → Offer & Onboarding → Onboarding →
+  // Joining letters) and stored here; HR may upload the signed copy over it.
+  { field: 'appointment_letter_file',     column: 'appointment_letter_file',     label: 'Appointment Letter' },
+  { field: 'confidentiality_letter_file', column: 'confidentiality_letter_file', label: 'Confidentiality Letter' },
 ];
 
 /** The red asterisk. aria-hidden — the control's own `required` carries the

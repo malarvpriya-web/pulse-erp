@@ -375,3 +375,21 @@ describe('Offer letter wording is editable (2026-11-18)', () => {
     expect(after.pdf.length).toBeGreaterThan(500);
   });
 });
+
+describe('onboarding list = every new joiner (owner 18 Nov 26: one place)', () => {
+  it('includes people added directly, tagged, and keys are unique', async () => {
+    const res = await request(api).get('/api/recruitment/onboarding');
+    expect(res.status).toBe(200);
+    const direct = res.body.find(r => r.key === `e${ids.employee}`);
+    expect(direct).toMatchObject({ source: 'direct', employee_id: ids.employee, candidate_id: null });
+    const keys = res.body.map(r => r.key);
+    expect(new Set(keys).size).toBe(keys.length);
+  });
+
+  it('a department head sees only their department’s direct joiners', async () => {
+    const res = await request(headApi).get('/api/recruitment/onboarding');
+    expect(res.status).toBe(200);
+    expect(res.body.some(r => r.key === `e${ids.headEmp}`)).toBe(true);   // Finance
+    expect(res.body.some(r => r.key === `e${ids.employee}`)).toBe(false); // no department
+  });
+});

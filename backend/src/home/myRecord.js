@@ -43,7 +43,9 @@ export async function getMyRecord(req) {
             (e.aadhaar_file IS NOT NULL AND e.aadhaar_file <> '') AS has_aadhaar_file,
             (e.cancelled_cheque_file IS NOT NULL AND e.cancelled_cheque_file <> '') AS has_cheque_file,
             (e.resume_file IS NOT NULL AND e.resume_file <> '') AS has_resume_file,
-            (e.offer_letter_file IS NOT NULL AND e.offer_letter_file <> '') AS has_offer_letter_file
+            (e.offer_letter_file IS NOT NULL AND e.offer_letter_file <> '') AS has_offer_letter_file,
+            (e.appointment_letter_file IS NOT NULL AND e.appointment_letter_file <> '') AS has_appointment_letter_file,
+            (e.confidentiality_letter_file IS NOT NULL AND e.confidentiality_letter_file <> '') AS has_confidentiality_letter_file
        FROM employees e
        LEFT JOIN employees m ON m.id = e.reporting_manager_id AND m.deleted_at IS NULL
       WHERE e.id = $1 AND e.deleted_at IS NULL AND ($2::int IS NULL OR e.company_id = $2::int)`,
@@ -103,6 +105,8 @@ export async function getMyRecord(req) {
         ['PAN card', e.has_pan_file ? 'On file' : null], ['Aadhaar card', e.has_aadhaar_file ? 'On file' : null],
         ['Cancelled cheque', e.has_cheque_file ? 'On file' : null], ['Resume', e.has_resume_file ? 'On file' : null],
         ['Offer letter', e.has_offer_letter_file ? 'On file' : null],
+        ['Appointment letter', e.has_appointment_letter_file ? 'On file' : null],
+        ['Confidentiality letter', e.has_confidentiality_letter_file ? 'On file' : null],
       ] },
     ].map(s => ({ ...s, fields: s.fields.map(([label, value, kind]) => ({ label, value: value ?? null, ...(kind ? { kind } : {}) })) })),
   };

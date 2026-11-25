@@ -296,6 +296,56 @@ describe('L1 by the reporting line (2026-11-24)', () => {
       await pool.query('UPDATE users SET is_active = true WHERE id = $1', [mgrUser]);
     }
   });
+
+  // 2026-11-25: the queue was built on the apply-time manager_id, so a
+  // delegate (and a manager who took over the team) never saw the leave.
+  it('a delegated leave reaches the delegate\'s queue; they can read its history and decide it', async () => {
+    const third = (await apply({ employee_id: report, leave_type_id: lineType, start_date: '2027-05-05', end_date: '2027-05-05', number_of_days: 1 })).body.id;
+    const delegateEmp = (await pool.query(
+      `INSERT INTO employees (company_id, office_id, first_name, last_name, status, joining_date, department)
+       VALUES ($1, 'EMP905', 'Line', 'Delegate', 'Active', '2025-01-01', 'Other') RETURNING id`, [A.companyId])).rows[0].id;
+    const { rows: [u] } = await pool.query(
+      `INSERT INTO users (name, email, password_hash, company_id, is_active, role, employee_id)
+       VALUES ($1, $2, 'not-a-real-hash', $3, true, 'employee', $4) RETURNING id`,
+      [`${A.code} delegate`, `${A.code.toLowerCase()}.delegate@test.invalid`, A.companyId, delegateEmp]);
+    const { rows: [role] } = await pool.query(`SELECT id FROM roles WHERE LOWER(code) = 'employee' LIMIT 1`);
+    await pool.query(`INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2)`, [u.id, role.id]);
+    const t = jwt.sign({ userId: u.id, role: 'employee', roles: ['employee'], company_id: A.companyId, employee_id: delegateEmp }, process.env.JWT_SECRET, { expiresIn: '1h' });
+    const asDel = (method, path, body) => request(app)[method](`/api/leaves${path}`).set('Authorization', `Bearer ${t}`).send(body || {});
+
+    const before = await asDel('get', '/applications?manager_status=pending&status=pending');
+    expect(before.body.map(l => l.id)).not.toContain(third);
+
+    expect((await asMgr('post', `/delegate/${third}`, { delegate_employee_id: delegateEmp })).status).toBe(200);
+    const after = await asDel('get', '/applications?manager_status=pending&status=pending');
+    const row = after.body.find(l => l.id === third);
+    expect(row, JSON.stringify(after.body)).toBeTruthy();
+    expect(row.delegate_name).toBe('Line Delegate');
+    expect(row.step_since).toBeTruthy();
+    // A manager_id in the query string does not widen what a non-HR caller sees.
+    const spoof = await asDel('get', `/applications?manager_status=pending&status=pending&manager_id=${mgr}`);
+    expect(spoof.body.every(l => l.id === third || l.delegate_approver_id === delegateEmp)).toBe(true);
+
+    expect((await asDel('get', `/applications/${third}/history`)).status).toBe(200);
+    expect((await asDel('post', `/approve/manager/${third}`, { comments: 'decided as delegate' })).status).toBe(200);
+  });
+
+  it('a new reporting manager sees the team\'s pending leave filed under the old one', async () => {
+    const fourth = (await apply({ employee_id: report, leave_type_id: lineType, start_date: '2027-05-06', end_date: '2027-05-06', number_of_days: 1 })).body.id;
+    const newMgr = (await pool.query(
+      `INSERT INTO employees (company_id, office_id, first_name, last_name, status, joining_date, department)
+       VALUES ($1, 'EMP906', 'Line', 'NewMgr', 'Active', '2025-01-01', 'Testing') RETURNING id`, [A.companyId])).rows[0].id;
+    await pool.query('UPDATE employees SET reporting_manager_id = $1 WHERE id = $2', [newMgr, report]);
+    try {
+      const t = jwt.sign({ userId: mgrUser, role: 'employee', roles: ['employee'], company_id: A.companyId, employee_id: newMgr }, process.env.JWT_SECRET, { expiresIn: '1h' });
+      const res = await request(app).get('/api/leaves/applications?manager_status=pending&status=pending').set('Authorization', `Bearer ${t}`);
+      expect(res.body.map(l => l.id)).toContain(fourth);
+      // and the old manager no longer does
+      expect((await asMgr('get', '/applications?manager_status=pending&status=pending')).body.map(l => l.id)).not.toContain(fourth);
+    } finally {
+      await pool.query('UPDATE employees SET reporting_manager_id = $1 WHERE id = $2', [mgr, report]);
+    }
+  });
 });
 
 describe('a manager login with no employee record (2026-11-24)', () => {
@@ -654,5 +704,70 @@ describe('back-dated leave and gender-restricted types (2026-11-24)', () => {
     expect(forHer.body.map(t => t.id)).toContain(typeF);
     const spoof = await asSelf('get', `/types?applicable=1&for_employee=${noticeEmp}`);
     expect(spoof.body.map(t => t.id)).not.toContain(typeF);
+  });
+});
+
+describe('Leave Settings (2026-11-25 audit)', () => {
+  it('Add saves Paid / Loss of Pay / Active / expiry; "No restriction" clears gender', async () => {
+    const add = await api('post', '/types', { leave_name: 'ZZ Unpaid New', default_days: 0, is_paid: false, is_lop_type: true, is_active: false, carry_forward_allowed: true, carry_forward_expiry_months: 3, gender_restriction: 'F' });
+    expect(add.status, JSON.stringify(add.body)).toBe(200);
+    const { rows: [t] } = await pool.query('SELECT * FROM leave_types WHERE id = $1', [add.body.id]);
+    expect([t.is_paid, t.is_lop_type, t.is_active, t.carry_forward_expiry_months, t.gender_restriction]).toEqual([false, true, false, 3, 'F']);
+    const put = await api('put', `/types/${t.id}`, { leave_name: t.leave_name, default_days: 0, is_paid: false, is_lop_type: true, gender_restriction: null });
+    expect(put.status, JSON.stringify(put.body)).toBe(200);
+    expect((await pool.query('SELECT gender_restriction FROM leave_types WHERE id = $1', [t.id])).rows[0].gender_restriction).toBeNull();
+  });
+
+  it('refuses negative numbers, Paid + Loss of Pay, and a rename onto another type (409, not 500)', async () => {
+    expect((await api('post', '/types', { leave_name: 'ZZ Neg', default_days: -2 })).status).toBe(400);
+    expect((await api('put', `/types/${T.plain}`, { leave_name: 'ZZ Plain', default_days: 10, is_paid: true, is_lop_type: true })).status).toBe(400);
+    expect((await api('put', `/types/${T.plain}`, { leave_name: 'ZZ Needs L2', default_days: 10 })).status).toBe(409);
+  });
+
+  it('allocate: own current employee + active type only, days 0–366, audited', async () => {
+    expect((await api('post', '/allocate', { employee_id: emp, leave_type_id: T.plain, allocated_days: -1, year: 2027 })).status).toBe(400);
+    expect((await api('post', '/allocate', { employee_id: 2147483000, leave_type_id: T.plain, allocated_days: 1, year: 2027 })).status).toBe(404);
+    const off = (await pool.query(`INSERT INTO leave_types (leave_name, leave_code, annual_quota, company_id, is_active) VALUES ('ZZ Alloc Off', 'ZZAOFF', 1, $1, false) RETURNING id`, [A.companyId])).rows[0].id;
+    expect((await api('post', '/allocate', { employee_id: emp, leave_type_id: off, allocated_days: 1, year: 2027 })).status).toBe(404);
+    const on = (await pool.query(`INSERT INTO leave_types (leave_name, leave_code, annual_quota, company_id, is_active) VALUES ('ZZ Alloc On', 'ZZAON', 5, $1, true) RETURNING id`, [A.companyId])).rows[0].id;
+    const ok = await api('post', '/allocate', { employee_id: emp, leave_type_id: on, allocated_days: 9, year: 2027 });
+    expect(ok.status, JSON.stringify(ok.body)).toBe(200);
+    expect(Number(ok.body.allocated_days)).toBe(9);
+  });
+
+  it('bulk allocate counts only balances it created', async () => {
+    const first = await api('post', '/bulk-allocate', { year: 2028 });
+    expect(first.status).toBe(200);
+    expect(first.body.records).toBeGreaterThan(0);
+    const again = await api('post', '/bulk-allocate', { year: 2028 });
+    expect(again.body.records).toBe(0);
+    expect(again.body.existing).toBe(first.body.records + first.body.existing);
+  });
+});
+
+describe('Leave Settings: delete allocation + change history (2026-11-25)', () => {
+  it('deletes an untouched allocation; refuses one with leave or an accrual credit', async () => {
+    const t = (await pool.query(`INSERT INTO leave_types (leave_name, leave_code, annual_quota, company_id, is_active) VALUES ('ZZ Del Alloc', 'ZZDELA', 4, $1, true) RETURNING id`, [A.companyId])).rows[0].id;
+    const free = (await pool.query(`INSERT INTO leave_balances (employee_id, leave_type_id, year, allocated_days) VALUES ($1,$2,2029,4) RETURNING id`, [emp, t])).rows[0].id;
+    const del = await api('delete', `/allocations/${free}`);
+    expect(del.status, JSON.stringify(del.body)).toBe(200);
+    expect((await pool.query('SELECT 1 FROM leave_balances WHERE id = $1', [free])).rowCount).toBe(0);
+
+    const used = (await pool.query(`INSERT INTO leave_balances (employee_id, leave_type_id, year, allocated_days) VALUES ($1,$2,2029,4) RETURNING id`, [emp, t])).rows[0].id;
+    await pool.query(`INSERT INTO leave_accrual_log (employee_id, leave_type_id, year, month, days_accrued, accrual_type, run_mode, company_id) VALUES ($1,$2,2029,1,1,'monthly','manual',$3)`, [emp, t, A.companyId]);
+    const refused = await api('delete', `/allocations/${used}`);
+    expect(refused.status).toBe(409);
+    expect(refused.body.code).toBe('ALLOCATION_IN_USE');
+    expect((await api('delete', '/allocations/2147483000')).status).toBe(404);
+  });
+
+  it('history lists the company\'s leave configuration changes, filterable by kind', async () => {
+    await new Promise(r => setTimeout(r, 300));   // logAudit writes after the response
+    const all = await api('get', '/settings/history');
+    expect(all.status, JSON.stringify(all.body)).toBe(200);
+    expect(all.body.some(r => r.record_type === 'leave_balance' && r.action === 'delete')).toBe(true);
+    const types = await api('get', '/settings/history?kind=types');
+    expect(types.body.length).toBeGreaterThan(0);
+    expect(types.body.every(r => r.record_type === 'leave_type')).toBe(true);
   });
 });

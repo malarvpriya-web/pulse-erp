@@ -24,7 +24,7 @@ const TYPE_CFG = {
   interview_rejected:     { label: 'Not progressing',        color: '#dc2626', bg: '#fef2f2',
     when: 'An interview outcome is "Not selected"', vars: ['candidate_name', 'rejection_reason'] },
   offer_sent:             { label: 'Offer sent',             color: '#16a34a', bg: '#f0fdf4',
-    when: 'An offer is approved (the offer letter PDF is attached)', vars: ['candidate_name', 'company_name', 'job_title', 'ctc', 'joining_date', 'offer_expiry_date'] },
+    when: 'An offer is approved. E-mail only — no letter is attached; letters are issued at onboarding', vars: ['candidate_name', 'company_name', 'job_title', 'ctc', 'joining_date', 'offer_expiry_date'] },
   hired_welcome:          { label: 'Welcome on joining',     color: '#6B3FDB', bg: '#faf5ff',
     when: 'The employee record is created for a hire', vars: ['candidate_name', 'job_title', 'joining_date', 'employee_id'] },
 };

@@ -417,13 +417,23 @@ function scopeToSelf(req, filters) {
 }
 
 /** Single-record counterpart of scopeToSelf(): own row, or one you approve. */
-function canSeeApplication(req, application) {
+async function canSeeApplication(req, application) {
   if (isAdminOrHR(req)) return true;
   const self = req.user?.employee_id ?? null;
   if (self == null) return false;
-  return Number(application.employee_id) === Number(self)
-      || Number(application.manager_id)  === Number(self)
-      || Number(application.hr_id)       === Number(self);
+  const is = v => v != null && Number(v) === Number(self);
+  // 2026-11-25: also everyone the queues show it to — the current reporting
+  // manager, the delegate, the L2 approver, and a department head of the
+  // applicant's department (the L2 queue). Before, their History button 404'd.
+  if (is(application.employee_id) || is(application.manager_id) || is(application.hr_id)
+      || is(application.delegate_approver_id) || is(application.l2_approver_id)
+      || is(application.reporting_manager_id)) return true;
+  if (!hasRole(req, ...L2_APPROVER_ROLES)) return false;
+  const { rows: [r] } = await pool.query(
+    `SELECT 1 FROM employees me JOIN employees ap ON ap.id = $2
+      WHERE me.id = $1 AND me.department IS NOT NULL AND me.department = ap.department`,
+    [self, application.employee_id]);
+  return !!r;
 }
 
 /**
@@ -440,7 +450,7 @@ function canSeeApplication(req, application) {
 async function loadLeaveInCompany(req, id) {
   if (!/^\d+$/.test(String(id))) return null;
   const { rows } = await pool.query(
-    `SELECT la.*, e.company_id AS employee_company_id,
+    `SELECT la.*, e.company_id AS employee_company_id, e.reporting_manager_id,
             COALESCE(e.name, CONCAT(e.first_name, ' ', COALESCE(e.last_name, ''))) AS employee_name
        FROM leave_applications la
        LEFT JOIN employees e ON e.id = la.employee_id
@@ -720,7 +730,7 @@ router.put('/settings', requireLeaveAdmin, requirePermission('leaves', 'edit'), 
 
 // Serving notice = an exit (HR → Exit Management) that is still open. Leave
 // taken while one is open is Loss of Pay only (same rule as probation).
-async function openNoticePeriod(employeeId) {
+export async function openNoticePeriod(employeeId) {
   if (!employeeId) return null;
   const { rows: [emp] } = await pool.query(
     `SELECT status, exit_date::text AS exit_date FROM employees WHERE id = $1`, [employeeId]);
@@ -771,6 +781,32 @@ router.get('/probation-status', requirePermission('leaves', 'view'), async (req,
   }
 });
 
+// Numbers on a leave type must be ≥ 0 (a negative Default Days or notice
+// was saved as-is before, 2026-11-25). Blank = not set.
+const TYPE_NUMBER_FIELDS = {
+  default_days: 'Default days', max_carry_forward_days: 'Max carry forward days',
+  requires_medical_cert_days: 'Medical certificate after (days)', min_notice_days: 'Min notice days',
+  max_consecutive_days: 'Max consecutive days', accrual_days_per_month: 'Days per month',
+  max_encash_days_per_year: 'Max encash days / year', carry_forward_expiry_months: 'Carried days expire after (months)',
+  days_worked_per_leave_day: 'Days worked per leave day',
+};
+function leaveTypeNumberError(body) {
+  for (const [k, label] of Object.entries(TYPE_NUMBER_FIELDS)) {
+    const v = body?.[k];
+    if (v === undefined || v === null || v === '') continue;
+    const n = Number(v);
+    if (!Number.isFinite(n) || n < 0) return `${label} must be a number of 0 or more`;
+  }
+  if (body?.default_days !== undefined && body.default_days !== '' && !Number.isInteger(Number(body.default_days))) {
+    return 'Default days must be a whole number (use Days per Month for part-days)';
+  }
+  if (body?.is_lop_type === true && body?.is_paid === true) return 'A Loss of Pay type cannot also be Paid';
+  if (body?.carry_forward_expiry_months != null && body.carry_forward_expiry_months !== '' && Number(body.carry_forward_expiry_months) > 12) {
+    return 'Carried days expire after must be 0–12 months';
+  }
+  return null;
+}
+
 router.post('/types', requireLeaveAdmin, requirePermission('leaves', 'add'), async (req, res) => {
   try {
     const {
@@ -780,9 +816,12 @@ router.post('/types', requireLeaveAdmin, requirePermission('leaves', 'add'), asy
       allow_negative_balance, min_notice_days, max_consecutive_days,
       accrual_type, accrual_days_per_month, gender_restriction, allowed_in_probation,
       l2_required, max_encash_days_per_year, sandwich_rule, days_worked_per_leave_day,
+      is_paid, is_lop_type, is_active, carry_forward_expiry_months,
     } = req.body;
     const trimmed = (leave_name || '').trim();
     if (!trimmed) return res.status(400).json({ error: 'leave_name is required' });
+    const numErr = leaveTypeNumberError(req.body);
+    if (numErr) return res.status(400).json({ error: numErr });
     if (trimmed.length < 2) return res.status(400).json({ error: 'Leave type name must be at least 2 characters' });
     if (!/[A-Za-z]/.test(trimmed)) return res.status(400).json({ error: 'Leave type name must contain at least one letter' });
     const companyId = req.scope?.company_id ?? null;
@@ -794,9 +833,10 @@ router.post('/types', requireLeaveAdmin, requirePermission('leaves', 'add'), asy
         allow_half_day, requires_attachment, requires_medical_cert_days,
         allow_negative_balance, min_notice_days, max_consecutive_days,
         accrual_type, accrual_days_per_month, gender_restriction, allowed_in_probation,
-        l2_required, max_encash_days_per_year, sandwich_rule, days_worked_per_leave_day
+        l2_required, max_encash_days_per_year, sandwich_rule, days_worked_per_leave_day,
+        is_paid, is_lop_type, is_active, carry_forward_expiry_months
       )
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
       ON CONFLICT DO NOTHING
       RETURNING id, leave_name, annual_quota AS default_days, description
     `, [
@@ -808,6 +848,11 @@ router.post('/types', requireLeaveAdmin, requirePermission('leaves', 'add'), asy
       gender_restriction || null, allowed_in_probation ?? true,
       l2_required ?? false, max_encash_days_per_year ? Number(max_encash_days_per_year) : null, sandwich_rule ?? false,
       Number(days_worked_per_leave_day) > 0 ? Number(days_worked_per_leave_day) : 20,
+      // Saved on Add too (2026-11-25): the form sent them, but only Edit wrote
+      // them — a new type ticked "unpaid" / "Loss of Pay" / inactive, or with a
+      // carry-forward expiry, was stored paid, active and never-expiring.
+      is_paid ?? true, is_lop_type ?? false, is_active ?? true,
+      carry_forward_expiry_months === '' || carry_forward_expiry_months == null ? null : Number(carry_forward_expiry_months),
     ]);
     if (!rows.length) return res.status(409).json({ error: 'A leave type with this name already exists' });
     logAudit({ userId: req.user?.userId, module: 'leaves', recordId: rows[0].id, recordType: 'leave_type', action: 'create', newData: rows[0], req });
@@ -884,6 +929,8 @@ router.put('/types/:id', requireLeaveAdmin, requirePermission('leaves', 'edit'),
       is_paid, is_lop_type, is_active, carry_forward_expiry_months, days_worked_per_leave_day,
     } = req.body;
     if (!leave_name?.trim()) return res.status(400).json({ error: 'leave_name is required' });
+    const numErr = leaveTypeNumberError(req.body);
+    if (numErr) return res.status(400).json({ error: numErr });
     // Own company's types only (a global seed type is not editable per tenant).
     const { rows: oldRows } = await pool.query(
       `SELECT * FROM leave_types WHERE id = $1 AND deleted_at IS NULL AND ($2::int IS NULL OR company_id = $2)`,
@@ -913,7 +960,9 @@ router.put('/types/:id', requireLeaveAdmin, requirePermission('leaves', 'edit'),
       max_consecutive_days != null ? Number(max_consecutive_days) : oldRows[0].max_consecutive_days,
       accrual_type || oldRows[0].accrual_type,
       accrual_days_per_month != null ? Number(accrual_days_per_month) : oldRows[0].accrual_days_per_month,
-      gender_restriction ?? oldRows[0].gender_restriction,
+      // Key sent = the form's choice; "No restriction" arrives as null/'' and
+      // must clear it (`?? old` kept the old Male/Female restriction).
+      'gender_restriction' in req.body ? (gender_restriction || null) : oldRows[0].gender_restriction,
       allowed_in_probation ?? oldRows[0].allowed_in_probation,
       l2_required ?? oldRows[0].l2_required ?? false,
       max_encash_days_per_year != null ? Number(max_encash_days_per_year) : oldRows[0].max_encash_days_per_year,
@@ -929,6 +978,7 @@ router.put('/types/:id', requireLeaveAdmin, requirePermission('leaves', 'edit'),
     logAudit({ userId: req.user?.userId, module: 'leaves', recordId: req.params.id, recordType: 'leave_type', action: 'update', oldData: oldRows[0], newData: req.body, req });
     res.json({ success: true });
   } catch (error) {
+    if (error.code === '23505') return res.status(409).json({ error: 'A leave type with this name already exists' });
     res.status(500).json({ error: error.message });
   }
 });
@@ -1018,19 +1068,21 @@ router.post('/bulk-allocate', requireLeaveAdmin, requirePermission('leaves', 'ad
       WHERE LOWER(COALESCE(status,'active')) NOT IN ('left','terminated','resigned','inactive','ex-employee','notice_period')
         AND ($1::integer IS NULL OR company_id = $1)
     `, [companyId]);
-    let count = 0;
+    // `records` = balances actually CREATED. It counted every employee × type,
+    // so a re-run said "35 records created" while creating none (2026-11-25).
+    let count = 0, existing = 0;
     for (const emp of employees) {
       for (const lt of leaveTypes) {
-        await pool.query(`
+        const r = await pool.query(`
           INSERT INTO leave_balances (employee_id, leave_type_id, year, allocated_days)
           VALUES ($1, $2, $3, $4)
           ON CONFLICT (employee_id, leave_type_id, year) DO NOTHING
         `, [emp.id, lt.id, allocYear, openingAllocation(lt, emp.joining_date, allocYear)]);
-        count++;
+        if (r.rowCount) count++; else existing++;
       }
     }
-    logAudit({ userId: req.user?.userId, module: 'leaves', recordId: null, recordType: 'leave_balance', action: 'bulk_allocate', newData: { year: allocYear, employees: employees.length, types: leaveTypes.length, records: count }, req });
-    res.json({ success: true, year: allocYear, records: count });
+    logAudit({ userId: req.user?.userId, module: 'leaves', recordId: null, recordType: 'leave_balance', action: 'bulk_allocate', newData: { year: allocYear, employees: employees.length, types: leaveTypes.length, records: count, existing }, req });
+    res.json({ success: true, year: allocYear, records: count, existing });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -1106,7 +1158,8 @@ router.get('/allocations', requirePermission('leaves', 'view'), async (req, res)
                             AND la.deleted_at IS NULL), 0) AS pending_days,
                TRIM(CONCAT(e.first_name, ' ', e.last_name)) AS employee_name,
                e.office_id AS employee_code, e.department,
-               lt.leave_name
+               lt.leave_name, COALESCE(lt.is_lop_type, false) AS is_lop_type,
+               COALESCE(lt.allow_negative_balance, false) AS allow_negative_balance
         FROM   leave_balances lb
         JOIN   employees  e  ON lb.employee_id   = e.id
         JOIN   leave_types lt ON lb.leave_type_id = lt.id
@@ -1133,15 +1186,121 @@ router.post('/allocate', requireLeaveAdmin, requirePermission('leaves', 'add'), 
     return res.status(400).json({ error: 'employee_id, leave_type_id, and allocated_days are required' });
   }
   const allocYear = Number(year) || new Date().getFullYear();
+  const days = Number(allocated_days);
+  if (allocated_days === '' || !Number.isFinite(days) || days < 0 || days > 366) {
+    return res.status(400).json({ error: 'Allocated days must be a number from 0 to 366' });
+  }
+  if (!(allocYear >= 2000 && allocYear <= 2100)) return res.status(400).json({ error: 'Enter a valid year' });
   try {
+    // Own company's current employee and an active type only (2026-11-25):
+    // any id was accepted — another company's employee, a deleted or
+    // switched-off type — and the change was not audited.
+    const cid = companyOf(req);
+    const { rows: [emp] } = await pool.query(
+      `SELECT id FROM employees WHERE id = $1 AND ($2::int IS NULL OR company_id = $2) AND ${isCurrentSql('status')}`,
+      [employee_id, cid]);
+    if (!emp) return res.status(404).json({ error: 'Employee not found (or has left)' });
+    const { rows: [lt] } = await pool.query(
+      `SELECT id FROM leave_types WHERE id = $1 AND deleted_at IS NULL AND is_active = true
+          AND (company_id IS NULL OR $2::int IS NULL OR company_id = $2)`, [leave_type_id, cid]);
+    if (!lt) return res.status(404).json({ error: 'Leave type not found or switched off' });
+    const { rows: [before] } = await pool.query(
+      `SELECT allocated_days FROM leave_balances WHERE employee_id = $1 AND leave_type_id = $2 AND year = $3`,
+      [employee_id, leave_type_id, allocYear]);
     const { rows } = await pool.query(`
       INSERT INTO leave_balances (employee_id, leave_type_id, year, allocated_days)
       VALUES ($1, $2, $3, $4)
       ON CONFLICT (employee_id, leave_type_id, year)
       DO UPDATE SET allocated_days = $4, updated_at = NOW()
       RETURNING id, employee_id, leave_type_id, year, allocated_days
-    `, [employee_id, leave_type_id, allocYear, Number(allocated_days)]);
+    `, [employee_id, leave_type_id, allocYear, days]);
+    // Saved without a change → nothing to record.
+    if (!before || Number(before.allocated_days) !== days) {
+      logAudit({ userId: req.user?.userId, module: 'leaves', recordId: rows[0].id, recordType: 'leave_balance',
+        action: before ? 'update' : 'create', oldData: before || null, newData: rows[0], req });
+    }
     res.json(rows[0]);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ── DELETE /allocations/:id — remove a balance given by mistake (2026-11-25) ──
+// Only a balance nothing has touched yet: no approved / pending leave on it
+// that year, nothing carried forward or encashed, no encashment claim, and no
+// credit from the accrual run (that credit's lock row would stop the run from
+// giving it again — set the days to 0 instead). Audited with the full row.
+router.delete('/allocations/:id', requireLeaveAdmin, requirePermission('leaves', 'delete'), async (req, res) => {
+  try {
+    const cid = companyOf(req);
+    const { rows: [b] } = await pool.query(`
+      SELECT lb.*, lt.leave_name, TRIM(CONCAT(e.first_name, ' ', e.last_name)) AS employee_name
+        FROM leave_balances lb
+        JOIN employees e ON e.id = lb.employee_id
+        JOIN leave_types lt ON lt.id = lb.leave_type_id
+       WHERE lb.id = $1 AND ($2::int IS NULL OR e.company_id = $2)`, [req.params.id, cid]);
+    if (!b) return res.status(404).json({ error: 'Allocation not found' });
+    const { rows: [use] } = await pool.query(`
+      SELECT (SELECT COUNT(*) FROM leave_applications
+               WHERE employee_id = $1 AND leave_type_id = $2 AND EXTRACT(YEAR FROM start_date) = $3
+                 AND status IN ('approved', 'pending') AND deleted_at IS NULL)::int AS apps,
+             (SELECT COUNT(*) FROM leave_encashments
+               WHERE employee_id = $1 AND leave_type_id = $2 AND status <> 'cancelled' AND status <> 'rejected')::int AS claims,
+             (SELECT COUNT(*) FROM leave_accrual_log
+               WHERE employee_id = $1 AND leave_type_id = $2 AND year = $3)::int AS credits`,
+      [b.employee_id, b.leave_type_id, b.year]);
+    const reasons = [];
+    if (use.apps) reasons.push(`${use.apps} approved/pending leave request(s)`);
+    if (Number(b.carried_forward_days)) reasons.push('carried-forward days');
+    if (Number(b.encashed_days) || use.claims) reasons.push('an encashment');
+    if (use.credits) reasons.push('days credited by the accrual run');
+    if (reasons.length) {
+      return res.status(409).json({
+        code: 'ALLOCATION_IN_USE',
+        error: `${b.employee_name} · ${b.leave_name} ${b.year} has ${reasons.join(', ')} — it cannot be deleted. Edit it and set the days instead.`,
+      });
+    }
+    await pool.query('DELETE FROM leave_balances WHERE id = $1', [b.id]);
+    logAudit({ userId: req.user?.userId, module: 'leaves', recordId: b.id, recordType: 'leave_balance', action: 'delete', oldData: b, req });
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ── GET /settings/history — who changed leave configuration (2026-11-25) ────
+// Leave types, allocations, leave rules and accrual / carry-forward / expiry
+// runs, from audit_logs, newest first. Own company only; HR / admin only.
+const HISTORY_KINDS = {
+  types:       `a.module_name = 'leaves' AND a.reference_type = 'leave_type'`,
+  allocations: `a.module_name = 'leaves' AND a.reference_type = 'leave_balance'`,
+  rules:       `a.module_name = 'leaves' AND a.reference_type = 'leave_settings'`,
+  runs:        `a.module_name = 'leave_accrual'`,
+};
+router.get('/settings/history', requireLeaveAdmin, requirePermission('leaves', 'view'), async (req, res) => {
+  try {
+    const cid = companyOf(req);
+    if (cid == null) return res.json([]);
+    const kind = HISTORY_KINDS[req.query.kind] ? [HISTORY_KINDS[req.query.kind]] : Object.values(HISTORY_KINDS);
+    const limit = Math.min(Math.max(Number(req.query.limit) || 200, 1), 500);
+    const { rows } = await pool.query(`
+      SELECT a.id, a.created_at, a.action_type AS action, a.reference_type AS record_type, a.reference_id AS record_id,
+             a.old_data_json AS old_data, a.new_data_json AS new_data,
+             COALESCE(NULLIF(TRIM(CONCAT(ue.first_name, ' ', ue.last_name)), ''), u.name, u.email, 'System') AS changed_by,
+             COALESCE(lt.leave_name, a.new_data_json->>'leave_name', a.old_data_json->>'leave_name') AS leave_name,
+             NULLIF(TRIM(CONCAT(be.first_name, ' ', be.last_name)), '') AS employee_name, be.office_id AS employee_code,
+             blt.leave_name AS balance_type, COALESCE(lb.year, (a.new_data_json->>'year')::int, (a.old_data_json->>'year')::int) AS year
+        FROM audit_logs a
+        LEFT JOIN users u      ON u.id = a.user_id
+        LEFT JOIN employees ue ON ue.id = u.employee_id
+        LEFT JOIN leave_types lt ON a.reference_type = 'leave_type' AND a.reference_id ~ '^[0-9]+$' AND lt.id = a.reference_id::int
+        LEFT JOIN leave_balances lb ON a.reference_type = 'leave_balance' AND a.reference_id ~ '^[0-9]+$' AND lb.id = a.reference_id::int
+        LEFT JOIN employees be ON be.id = COALESCE(lb.employee_id, (a.old_data_json->>'employee_id')::int, (a.new_data_json->>'employee_id')::int)
+        LEFT JOIN leave_types blt ON blt.id = COALESCE(lb.leave_type_id, (a.old_data_json->>'leave_type_id')::int, (a.new_data_json->>'leave_type_id')::int)
+       WHERE a.company_id = $1 AND (${kind.join(') OR (')})
+       ORDER BY a.created_at DESC, a.id DESC
+       LIMIT $2`, [cid, limit]);
+    res.json(rows);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -1158,10 +1317,14 @@ router.get('/applications', requirePermission('leaves', 'view'), async (req, res
 
     // For manager-queue requests: if no manager_id provided, resolve from JWT user_id.
     // This avoids frontend sending the wrong ID type (user.userId vs employee_id).
-    if (filters.manager_status && !isAdminOrHR(req) && !filters.manager_id) {
+    // 2026-11-25: by the CURRENT reporting line or the assigned delegate
+    // (l1_for) — the same people authorizeL1 lets decide — and never a
+    // manager_id the caller chose.
+    if (filters.manager_status && !isAdminOrHR(req)) {
+      delete filters.manager_id;
       const empId = req.user?.employee_id;
       if (empId) {
-        filters.manager_id = empId;
+        filters.l1_for = empId;
       } else {
         // Fallback: look up employee_id from users.id. employees has no
         // user_id column — this always returned zero rows before.
@@ -1172,7 +1335,7 @@ router.get('/applications', requirePermission('leaves', 'view'), async (req, res
         );
         // -1 when there is no employee: findApplications skips a falsy
         // manager_id, which handed an unlinked login every pending request.
-        filters.manager_id = rows[0]?.id ?? -1;
+        filters.l1_for = rows[0]?.id ?? -1;
       }
     }
 
@@ -1196,14 +1359,15 @@ router.get('/applications', requirePermission('leaves', 'view'), async (req, res
 
 router.get('/applications/:id', requirePermission('leaves', 'view'), async (req, res) => {
   try {
-    const application = (await loadLeaveInCompany(req, req.params.id))
-      && await leavesRepository.findById(req.params.id);
-    if (!application) return res.status(404).json({ error: 'Application not found' });
+    const found = await loadLeaveInCompany(req, req.params.id);
+    const application = found && { ...(await leavesRepository.findById(req.params.id)),
+      reporting_manager_id: found.reporting_manager_id };
+    if (!application?.id) return res.status(404).json({ error: 'Application not found' });
     // Same module-grant problem as the list route: 'leaves:view' admits every
     // employee, so without this an employee could read any colleague's leave —
     // and its reason — by walking the id. Own record, or one they are named on
     // as approver; otherwise it does not exist as far as this caller is concerned.
-    if (!canSeeApplication(req, application)) {
+    if (!(await canSeeApplication(req, application))) {
       return res.status(404).json({ error: 'Application not found' });
     }
     res.json(application);
@@ -1218,7 +1382,7 @@ router.get('/applications/:id/history', requirePermission('leaves', 'view'), asy
     // The trail names approvers and carries their comments: same visibility as
     // the application itself (it had none — any employee could walk ids).
     const application = await loadLeaveInCompany(req, req.params.id);
-    if (!application || !canSeeApplication(req, application)) {
+    if (!application || !(await canSeeApplication(req, application))) {
       return res.status(404).json({ error: 'Application not found' });
     }
     const { rows } = await pool.query(`
@@ -1365,7 +1529,12 @@ async function handleApplyLeave(req, res) {
     const { rows: balRows } = await pool.query(`
       SELECT
         COALESCE(lb.allocated_days, lt.annual_quota, 0) + COALESCE(lb.carried_forward_days, 0)
-          - COALESCE(lb.encashed_days, 0) AS allocated,
+          - COALESCE(lb.encashed_days, 0)
+          -- Days in an encashment claim still waiting for HR / payroll are
+          -- spoken for: taking them as leave too would pay them twice.
+          - COALESCE((SELECT SUM(x.days_encashed) FROM leave_encashments x
+                       WHERE x.employee_id = $1 AND x.leave_type_id = $2 AND x.year = $3
+                         AND x.status = 'pending'), 0) AS allocated,
         COALESCE((SELECT SUM(la1.number_of_days) FROM leave_applications la1
                    WHERE la1.employee_id = $1 AND la1.leave_type_id = $2 AND la1.status = 'approved'
                      AND EXTRACT(YEAR FROM la1.start_date) = $3 AND la1.deleted_at IS NULL), 0) AS used,
@@ -1918,7 +2087,9 @@ router.get('/team', requirePermission('leaves', 'view'), async (req, res) => {
     if (!isAdminOrHR(req)) {
       // -1, not null: findApplications skips a falsy manager_id, which would
       // hand an unlinked login the whole company's list.
-      filters.manager_id = req.user?.employee_id || -1;
+      // Reporting line (current) + leaves delegated to me, as the L1 queue.
+      delete filters.manager_id;
+      filters.l1_for = req.user?.employee_id || -1;
       // Security: employees and managers cannot pass arbitrary employee_id to see others
       if (!hasRole(req, 'manager', 'department_head', 'l2_approver')) {
         delete filters.employee_id;

@@ -476,6 +476,8 @@ export const addEmployee = async (data) => {
     passport_expiry,
     driving_license_file,
     driving_license_expiry,
+    appointment_letter_file,
+    confidentiality_letter_file,
     notice_period_days,
     basic_salary,
     special_allowance,
@@ -706,7 +708,8 @@ export const addEmployee = async (data) => {
         -- parameters, and adding a column in the middle silently shifts every
         -- $n after it onto the wrong column.
         zone_id, basic_salary, workforce_category_id, probation_months,
-        passport_file, passport_expiry, driving_license_file, driving_license_expiry
+        passport_file, passport_expiry, driving_license_file, driving_license_expiry,
+        appointment_letter_file, confidentiality_letter_file
       )
       VALUES (
         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
@@ -714,7 +717,7 @@ export const addEmployee = async (data) => {
         $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43,
         $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57,
         $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69, $70,
-        $71, $72, $73, $74
+        $71, $72, $73, $74, $75, $76
       )
       RETURNING *;
     `;
@@ -819,6 +822,9 @@ export const addEmployee = async (data) => {
       cleanText(passport_expiry) ? String(passport_expiry).slice(0, 10) : null,
       cleanText(driving_license_file) || null,
       cleanText(driving_license_expiry) ? String(driving_license_expiry).slice(0, 10) : null,
+      // $75–$76 — appointment / confidentiality letter (20261118000002).
+      cleanText(appointment_letter_file) || null,
+      cleanText(confidentiality_letter_file) || null,
     ];
 
     const result = await client.query(query, values);
@@ -954,6 +960,7 @@ const PII_DROP_FIELDS = [
   'pan_file', 'aadhaar_file', 'cancelled_cheque_file', 'bank_statement_file',
   'resume_file', 'offer_letter_file',
   'passport_file', 'passport_expiry', 'driving_license_file', 'driving_license_expiry',
+  'appointment_letter_file', 'confidentiality_letter_file',
   'notes',
 ];
 
@@ -1443,6 +1450,8 @@ const FILE_COLUMNS = {
   offer_letter_file: 'offer_letter_file',
   passport_file: 'passport_file',
   driving_license_file: 'driving_license_file',
+  appointment_letter_file: 'appointment_letter_file',
+  confidentiality_letter_file: 'confidentiality_letter_file',
 };
 
 /**

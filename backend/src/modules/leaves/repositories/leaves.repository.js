@@ -164,6 +164,11 @@ const leavesRepository = {
         COALESCE(m.name, CONCAT(m.first_name, ' ', m.last_name)) AS manager_name,
         COALESCE(h.name, CONCAT(h.first_name, ' ', h.last_name)) AS hr_name,
         COALESCE(l2.name, CONCAT(l2.first_name, ' ', l2.last_name)) AS l2_name,
+        NULLIF(TRIM(COALESCE(dl.name, CONCAT(dl.first_name, ' ', dl.last_name))), '') AS delegate_name,
+        -- When the request reached the step it waits at ("waiting N days").
+        CASE WHEN la.status <> 'pending' THEN NULL
+             WHEN la.manager_status = 'pending' THEN la.applied_at
+             ELSE COALESCE(la.l2_approved_at, la.manager_approved_at, la.applied_at) END AS step_since,
         -- Days of this (full-day) leave the person punched in on (2026-11-24).
         -- Attendance keeps the punch, so payroll pays the day as worked, but
         -- the leave still uses balance: HR sees it and cancels or corrects.
@@ -186,6 +191,7 @@ const leavesRepository = {
       LEFT JOIN employees m ON la.manager_id = m.id
       LEFT JOIN employees h ON la.hr_id = h.id
       LEFT JOIN employees l2 ON la.l2_approver_id = l2.id
+      LEFT JOIN employees dl ON la.delegate_approver_id = dl.id
       WHERE la.deleted_at IS NULL
         AND e.status IS DISTINCT FROM 'Left'${cidClause}
     `;
@@ -221,6 +227,16 @@ const leavesRepository = {
     if (filters.employee_id) {
       query += ` AND la.employee_id = $${paramCount}`;
       params.push(filters.employee_id);
+      paramCount++;
+    }
+    // The manager step's own queue (2026-11-25): whoever the server lets
+    // decide L1 — the CURRENT reporting manager, or the assigned delegate
+    // (authorizeManagerApproval). la.manager_id is a snapshot from apply
+    // time, so a delegate, or a manager who took over the team, never saw
+    // the leaves they were allowed to decide.
+    if (filters.l1_for) {
+      query += ` AND (e.reporting_manager_id = $${paramCount} OR la.delegate_approver_id = $${paramCount})`;
+      params.push(filters.l1_for);
       paramCount++;
     }
     if (filters.manager_id) {

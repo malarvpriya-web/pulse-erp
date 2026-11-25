@@ -19,6 +19,7 @@ export default function ScreeningQuestionsEditor() {
   const [drafts, setDrafts] = useState({});
   const [saving, setSaving] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -26,7 +27,12 @@ export default function ScreeningQuestionsEditor() {
       const res = await api.get('/recruitment/screening-questions', { params: { include_inactive: 1 } });
       setRows(Array.isArray(res.data) ? res.data : []);
       setDrafts({});
-    } catch { setRows([]); }
+      setLoadError('');
+    } catch (e) {
+      // Shown, not swallowed: an empty list would read as "no questions set".
+      setRows([]);
+      setLoadError(e?.response?.data?.error || 'The screening questions could not be loaded.');
+    }
     finally { setLoading(false); }
   }, []);
   useEffect(() => { load(); }, [load]);
@@ -45,14 +51,20 @@ export default function ScreeningQuestionsEditor() {
   const optionsText = (q) => (Array.isArray(q.options) ? q.options.map(o => (typeof o === 'string' ? o : o?.label ?? o?.value)).join('\n') : '');
 
   return (
-    <section style={{ background: '#fff', border: '1px solid #eef0f4', borderRadius: 12, padding: 18, marginTop: 20 }}>
+    <section style={{ background: '#fff', border: '1px solid #f0f0f4', borderRadius: 12, padding: 18 }}>
       <header style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
         <ClipboardCheck size={16} color="var(--color-primary, #6B3FDB)" />
         <h3 style={{ margin: 0, fontSize: 15 }}>Stage-1 screening questions</h3>
       </header>
       <p style={{ margin: '0 0 14px', fontSize: 12, color: '#6b7280' }}>
         Asked on the Screen page for every candidate. Reword them for your company or switch one off. Scoring is on the competency ratings, so it is not affected.
+        {' '}Each question saves on its own (its Save button or the In use tick), not with Save Changes.
       </p>
+      {loadError && (
+        <div role="alert" style={{ fontSize: 13, color: '#991b1b', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, padding: '10px 12px', marginBottom: 8 }}>
+          {loadError} <button type="button" className="pulse-btn-secondary" style={{ marginLeft: 8 }} onClick={load}>Retry</button>
+        </div>
+      )}
       {loading ? <p style={{ fontSize: 13, color: '#9ca3af' }}>Loading…</p> : rows.map(q => {
         const d = drafts[q.code] || {};
         const prompt = d.prompt ?? q.prompt;

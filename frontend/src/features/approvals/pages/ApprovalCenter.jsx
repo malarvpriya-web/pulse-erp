@@ -45,7 +45,7 @@ const TYPE_TONE = {
   leave: 'indigo', reg: 'amber', ot: 'violet', shift: 'cyan', exp: 'violet', pr: 'pink', ecn: 'sky',
   pay: 'green', travel: 'green', adv: 'green', requisition: 'cyan', offer: 'cyan', appr: 'grey',
   ieval: 'amber', ivfb: 'amber', prob: 'indigo', probd: 'indigo', gate: 'cyan', itdecl: 'violet', bank: 'amber',
-  fnf: 'green', stip: 'green',
+  fnf: 'green', stip: 'green', encash: 'green',
 };
 
 // Review queues (intern evaluation, probation review) are completed on their

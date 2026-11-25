@@ -4,7 +4,8 @@ import { requirePermission, can } from '../../../middlewares/auth.middleware.js'
 import { logAudit } from '../../../services/AuditService.js';
 import { hasRole } from '../../../middlewares/auth.middleware.js';
 import { employeeOf, companyOf } from '../../../shared/scope.js';
-import { leaveSettingsOf } from './leaves.routes.js';
+import { leaveSettingsOf, openNoticePeriod } from './leaves.routes.js';
+import { isExited } from '../../../shared/employeeStatus.js';
 
 // Ownership (PAYROLL_DATA_FLOW_AUDIT.md Part 10): a claim belongs to the company
 // of its EMPLOYEE. Every route needs a company context and acts only on claims
@@ -37,7 +38,9 @@ async function withoutMoney(req, rows, me) {
 // it is HR / payroll work — leaves:approve alone (held by every line manager
 // and department head) let a manager approve money for their team, and their
 // OWN claim. Never the claimant themself.
-export const ENCASHMENT_DECIDER_ROLES = ['super_admin', 'admin', 'hr', 'hr_manager', 'hr_exec', 'payroll_admin', 'finance_manager'];
+// Owner 2026-11-24: hr_exec is out (it cannot see salary amounts, so it would
+// approve money blind); finance_manager is out (no access to Leaves at all).
+export const ENCASHMENT_DECIDER_ROLES = ['super_admin', 'admin', 'hr', 'hr_manager', 'payroll_admin'];
 async function refuseDecider(req, claimEmployeeId) {
   if (!hasRole(req, ...ENCASHMENT_DECIDER_ROLES)) {
     return { status: 403, body: { code: 'ENCASHMENT_DECIDER_ONLY', error: 'Only HR or payroll can approve or cancel a leave encashment claim.' } };
@@ -47,6 +50,40 @@ async function refuseDecider(req, claimEmployeeId) {
     return { status: 403, body: { code: 'ENCASHMENT_SELF_DECISION', error: 'You cannot decide your own encashment claim — another HR or payroll person must.' } };
   }
   return null;
+}
+
+// Someone who is leaving is paid their leave in the Full & Final settlement
+// (settlementEngine leaveLines reads the same balance). A claim during notice
+// would pay the same days twice — or, when the payout month falls after the
+// last working day, never (no payroll is generated for that month).
+async function refuseAtExit(employeeId) {
+  const { rows: [emp] } = await pool.query('SELECT status FROM employees WHERE id = $1', [employeeId]);
+  if (emp && isExited(emp.status)) {
+    return { status: 422, body: { code: 'ENCASHMENT_AT_EXIT', error: 'This employee has left. Unused leave is paid in the Full & Final settlement, not by an encashment claim.' } };
+  }
+  if (await openNoticePeriod(employeeId)) {
+    return { status: 422, body: { code: 'ENCASHMENT_AT_EXIT', error: 'This employee is serving notice. Unused leave is paid in the Full & Final settlement, not by an encashment claim.' } };
+  }
+  return null;
+}
+
+// Days that can still be encashed from a balance: allocated + carried forward
+// − encashed (approved) − approved/pending leave − other pending claims.
+// The same figure is checked when a claim is made AND when it is approved —
+// leave taken in between would otherwise be paid out as well.
+async function availableDays(db, employeeId, leaveTypeId, year, exceptClaimId = null) {
+  const { rows: [bal] } = await db.query(`
+    SELECT COALESCE(lb.allocated_days, 0) + COALESCE(lb.carried_forward_days, 0) - COALESCE(lb.encashed_days, 0)
+           - COALESCE((SELECT SUM(number_of_days) FROM leave_applications la
+                        WHERE la.employee_id = $1 AND la.leave_type_id = $2 AND la.status IN ('approved','pending')
+                          AND EXTRACT(YEAR FROM la.start_date) = $3 AND la.deleted_at IS NULL), 0)
+           - COALESCE((SELECT SUM(days_encashed) FROM leave_encashments x
+                        WHERE x.employee_id = $1 AND x.leave_type_id = $2 AND x.year = $3 AND x.status = 'pending'
+                          AND ($4::int IS NULL OR x.id <> $4)), 0)
+           AS available
+      FROM leave_balances lb WHERE lb.employee_id = $1 AND lb.leave_type_id = $2 AND lb.year = $3`,
+    [employeeId, leaveTypeId, year, exceptClaimId]);
+  return Number(bal?.available || 0);
 }
 
 const router = express.Router();
@@ -129,7 +166,10 @@ router.get('/', requirePermission('leaves', 'view'), async (req, res) => {
 });
 
 // ── POST /leave-encashment — HR creates encashment request ────────────────────
-router.post('/', requirePermission('leaves', 'add'), async (req, res) => {
+// Gate is inside: a claim for oneself needs leaves:add; for anyone else it
+// needs payroll:edit (payroll_admin holds that but not leaves:add, and was
+// refused here before reaching the rule that lets it).
+router.post('/', async (req, res) => {
   try {
     const { employee_id, leave_type_id, year, days_encashed, encashment_month, encashment_year, reason } = req.body;
     if (!employee_id || !leave_type_id || !days_encashed) {
@@ -144,22 +184,25 @@ router.post('/', requirePermission('leaves', 'add'), async (req, res) => {
     if (sentMoney.length) {
       return res.status(400).json({ code: 'ENCASHMENT_AMOUNT_COMPUTED', error: `${sentMoney.join(', ')} cannot be supplied — the amounts are computed from the salary.` });
     }
-    // An employee claims for themself. A claim for anyone else — or a chosen
-    // TDS rate — is payroll work: payroll:edit (PC-01 closure decision 3).
+    // Owner 2026-11-24: employees do not raise encashment claims. HR / payroll
+    // (payroll:edit — PC-01 closure decision 3) raise them for an employee,
+    // never for themselves: another HR / payroll person raises that one.
     const me = await employeeOf(req, pool);
     const forSelf = me != null && Number(employee_id) === Number(me);
     const payroll = await can(req, 'payroll', 'edit');
-    if (!forSelf && !payroll) {
-      return res.status(403).json({ code: 'ENCASHMENT_FOR_OTHERS', error: 'You can create an encashment claim only for yourself. A claim for another employee needs payroll edit permission.' });
+    if (!payroll) {
+      return res.status(403).json({ code: 'ENCASHMENT_FOR_OTHERS', error: 'Leave encashment claims are raised by HR / payroll, not by employees.' });
     }
-    // PC-01 decision 3: tax on the claim is Payroll's business. (Since
-    // 2026-11-23 the tax is deducted in payroll at the employee's slab, so a
-    // rate sent by Payroll no longer changes the claim — but nobody else may
-    // send one.)
-    if (req.body.tds_rate !== undefined && !payroll) {
-      return res.status(403).json({ code: 'ENCASHMENT_TDS_RATE', error: 'Tax on an encashment is deducted by Payroll at the employee\'s slab. Leave the TDS rate out.' });
+    if (forSelf) {
+      return res.status(403).json({ code: 'ENCASHMENT_SELF_CLAIM', error: 'You cannot raise an encashment claim for yourself — another HR or payroll person must.' });
     }
+    // PC-01 decision 3: tax on the claim is Payroll's business — only a
+    // payroll:edit holder gets this far, so only they may send tds_rate.
     if (!(await employeeInCompany(pool, employee_id, companyId))) return res.status(404).json({ error: 'Employee not found' });
+    {
+      const atExit = await refuseAtExit(employee_id);
+      if (atExit) return res.status(atExit.status).json(atExit.body);
+    }
     const resolvedYear = Number(year) || new Date().getFullYear();
     const days = Number(days_encashed);
     if (!(days > 0) || days > 366) return res.status(400).json({ error: 'Enter the number of days to encash (more than 0).' });
@@ -188,25 +231,15 @@ router.post('/', requirePermission('leaves', 'add'), async (req, res) => {
     const tdsAmount = Number((grossAmount * tdsPct / 100).toFixed(2));
     const netAmount = Number((grossAmount - tdsAmount).toFixed(2));
 
-    // Days available: allocated + carried forward − approved leave − pending − already encashed.
-    const { rows: [bal] } = await pool.query(`
-      SELECT COALESCE(lb.allocated_days, 0) + COALESCE(lb.carried_forward_days, 0) - COALESCE(lb.encashed_days, 0)
-             - COALESCE((SELECT SUM(number_of_days) FROM leave_applications la
-                          WHERE la.employee_id = $1 AND la.leave_type_id = $2 AND la.status IN ('approved','pending')
-                            AND EXTRACT(YEAR FROM la.start_date) = $3 AND la.deleted_at IS NULL), 0)
-             - COALESCE((SELECT SUM(days_encashed) FROM leave_encashments x
-                          WHERE x.employee_id = $1 AND x.leave_type_id = $2 AND x.year = $3 AND x.status = 'pending'), 0)
-             AS available
-        FROM leave_balances lb WHERE lb.employee_id = $1 AND lb.leave_type_id = $2 AND lb.year = $3`,
-      [employee_id, leave_type_id, resolvedYear]);
-    const available = Number(bal?.available || 0);
+    const available = await availableDays(pool, employee_id, leave_type_id, resolvedYear);
     if (days > available) {
       return res.status(422).json({ code: 'INSUFFICIENT_BALANCE', error: `Only ${Math.max(available, 0)} day(s) can be encashed from this balance for ${resolvedYear}.` });
     }
 
     // Check leave type is encashable
     const { rows: ltRows } = await pool.query(
-      `SELECT is_encashable, max_encash_days_per_year FROM leave_types WHERE id = $1`, [leave_type_id]
+      `SELECT is_encashable, max_encash_days_per_year FROM leave_types
+        WHERE id = $1 AND is_active = true AND deleted_at IS NULL AND (company_id = $2 OR company_id IS NULL)`, [leave_type_id, companyId]
     );
     if (!ltRows.length) return res.status(404).json({ error: 'Leave type not found' });
     if (!ltRows[0].is_encashable) return res.status(422).json({ error: 'This leave type is not encashable' });
@@ -246,7 +279,10 @@ router.post('/', requirePermission('leaves', 'add'), async (req, res) => {
 });
 
 // ── POST /leave-encashment/approve/:id ───────────────────────────────────────
-router.post('/approve/:id', requirePermission('leaves', 'approve'), async (req, res) => {
+// No leaves:approve gate: refuseDecider below is the rule (HR / payroll roles,
+// never one's own claim). leaves:approve let every line manager through and
+// kept payroll_admin — a listed decider without it — out.
+router.post('/approve/:id', async (req, res) => {
   const cid = requireCompanyCtx(req, res);
   if (cid == null) return;
   const client = await pool.connect();
@@ -262,6 +298,15 @@ router.post('/approve/:id', requirePermission('leaves', 'approve'), async (req, 
     if (refused) { await client.query('ROLLBACK'); return res.status(refused.status).json(refused.body); }
 
     const e = enc[0];
+    {
+      const atExit = await refuseAtExit(e.employee_id);
+      if (atExit) { await client.query('ROLLBACK'); return res.status(atExit.status).json(atExit.body); }
+      const available = await availableDays(client, e.employee_id, e.leave_type_id, e.year, e.id);
+      if (Number(e.days_encashed) > available) {
+        await client.query('ROLLBACK');
+        return res.status(422).json({ code: 'INSUFFICIENT_BALANCE', error: `Only ${Math.max(available, 0)} day(s) are left in this balance now (leave was taken or applied for after the claim was made). Cancel this claim and make a new one.` });
+      }
+    }
 
     // 1. Approve the encashment record
     await client.query(`
@@ -338,14 +383,13 @@ router.post('/approve/:id', requirePermission('leaves', 'approve'), async (req, 
 });
 
 // ── POST /leave-encashment/reject/:id ────────────────────────────────────────
-router.post('/reject/:id', requirePermission('leaves', 'approve'), async (req, res) => {
+router.post('/reject/:id', async (req, res) => {
   const cid = requireCompanyCtx(req, res);
   if (cid == null) return;
   try {
     const { reason } = req.body;
     if (!reason?.trim()) return res.status(400).json({ error: 'Rejection reason is required' });
-    // Cancelling is HR / payroll's call, as approving is. The claimant cannot
-    // hit this route at all (employees hold no leaves:approve).
+    // Cancelling is HR / payroll's call, as approving is (refuseDecider).
     {
       const { rows: [c] } = await pool.query(
         `SELECT le.employee_id FROM leave_encashments le JOIN employees e ON e.id = le.employee_id
@@ -361,7 +405,9 @@ router.post('/reject/:id', requirePermission('leaves', 'approve'), async (req, r
       -- every rejection fail with a 500. The rejection reason is kept in the reason column.
       UPDATE leave_encashments
       SET status = 'cancelled', approved_by = $1, approved_at = NOW(),
-          reason = $2, updated_at = NOW()
+          -- Keep why the claim was made; add why it was cancelled (it used
+          -- to overwrite the claim's own reason).
+          reason = CONCAT_WS(' · Cancelled: ', NULLIF(TRIM(reason), ''), $2::text), updated_at = NOW()
       WHERE id = $3 AND status = 'pending'
         AND employee_id IN (SELECT id FROM employees WHERE company_id = $4)
       RETURNING id, employee_id
@@ -391,6 +437,12 @@ router.get('/eligible/:employee_id', requirePermission('leaves', 'view'), async 
   if (cid == null) return;
   try {
     if (!(await employeeInCompany(pool, req.params.employee_id, cid))) return res.status(404).json({ error: 'Employee not found' });
+    // Encashable balances are for those who raise or decide claims.
+    {
+      if (!hasRole(req, ...ENCASHMENT_DECIDER_ROLES) && !(await can(req, 'payroll', 'edit'))) {
+        return res.status(404).json({ error: 'Employee not found' });
+      }
+    }
     const year = Number(req.query.year) || new Date().getFullYear();
     // Balance = allocated + carried forward − approved/pending leave − encashed
     // (approved) − encashment claims still pending. No yearly cap set = no cap

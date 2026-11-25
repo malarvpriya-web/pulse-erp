@@ -72,7 +72,10 @@ export function buildProbationLetterPdf({
         doc.moveDown(0.7);
       }
 
-      // Signature
+      // Signature — kept together: if the block (about 110pt) would not fit
+      // above the bottom margin, it starts a new page, instead of the title
+      // landing alone on page 2 (seen on the appointment letter, 18 Nov 26).
+      if (doc.y + 110 > doc.page.height - doc.page.margins.bottom) doc.addPage();
       doc.moveDown(1.5);
       doc.font('Helvetica').fontSize(11).text(`For ${safe(companyName, ' ')}`, LEFT, doc.y);
       doc.moveDown(3);

@@ -162,7 +162,6 @@ function parseFilters(report, req, res) {
    the test that asserts a failing query surfaces as 5xx rather than 200 []. */
 const RUNNERS = {
   'attendance':                  'getAttendanceReport',
-  'leave':                       'getLeaveReport',
   'leave/summary':               'getLeaveSummaryReport',
   'leave/liability':             'getLeaveLiabilityReport',
   'leave/lop':                   'getLOPReport',

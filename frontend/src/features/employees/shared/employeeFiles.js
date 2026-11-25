@@ -32,6 +32,11 @@ export const EMPLOYEE_DOC_FIELDS = [
   { key: 'bank_statement_file',   label: 'Bank Statement',   icon: '📊' },
   { key: 'resume_file',           label: 'Resume',           icon: '📄' },
   { key: 'offer_letter_file',     label: 'Offer Letter',     icon: '📋' },
+  { key: 'passport_file',         label: 'Passport',         icon: '🛂' },
+  { key: 'driving_license_file',  label: 'Driving Licence',  icon: '🚗' },
+  // Joining letters issued at onboarding (migration 20261118000002).
+  { key: 'appointment_letter_file',     label: 'Appointment Letter',     icon: '📋' },
+  { key: 'confidentiality_letter_file', label: 'Confidentiality Letter', icon: '🔒' },
 ];
 
 /**

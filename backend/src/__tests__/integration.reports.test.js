@@ -285,6 +285,65 @@ describe('KPI reconciliation', () => {
     expect(res.body.total).toBe(n);
   });
 
+  it('Loss of Pay leave crossing a month end is charged to each month, as payroll does', async () => {
+    const { getWeekendDays, dayIsWeekend } = await import('../shared/weekend.js');
+    const { rows: [emp] } = await pool.query(
+      `INSERT INTO employees (office_id, first_name, last_name, department, status, company_id, joining_date)
+       VALUES (${FIXTURE_CODE_SQL}, 'ZZTEST', $1, 'ZZTEST_LOP', 'Active', 1, '2030-01-01') RETURNING id`,
+      [`lop_${TAG}`]
+    );
+    createdEmployees.push(emp.id);
+    const { rows: [lt] } = await pool.query(
+      `SELECT id FROM leave_types WHERE company_id = 1 AND deleted_at IS NULL
+          AND NOT COALESCE(is_lop_type, false) AND COALESCE(is_paid, true) ORDER BY id LIMIT 1`);
+    // Unpaid (is_lop) Fri 29 Nov – Tue 3 Dec 2030, and a paid Fri 6 – Mon 9 Dec
+    // whose weekend in the middle is clubbed (lop_days 2).
+    const { rows: apps } = await pool.query(
+      `INSERT INTO leave_applications (employee_id, leave_type_id, start_date, end_date, number_of_days,
+                                       status, manager_status, hr_status, is_lop, lop_days, company_id)
+       VALUES ($1, $2, '2030-11-29', '2030-12-03', 3, 'approved', 'approved', 'approved', true, 0, 1),
+              ($1, $2, '2030-12-06', '2030-12-09', 2, 'approved', 'approved', 'approved', false, 2, 1)
+       RETURNING id`, [emp.id, lt.id]);
+    try {
+      // Expected from the same calendar rules payroll uses.
+      const weekend = await getWeekendDays(1);
+      const { rows: hol } = await pool.query(
+        `SELECT date::text AS d FROM holidays WHERE date BETWEEN '2030-11-29' AND '2030-12-09'
+            AND (company_id = 1 OR company_id IS NULL) AND zone_id IS NULL`);
+      const hs = new Set(hol.map(h => h.d.slice(0, 10)));
+      const working = d => !dayIsWeekend(d, weekend) && !hs.has(d);
+      const range = (f, t) => { const o = []; for (let d = new Date(`${f}T00:00:00Z`); d.toISOString().slice(0, 10) <= t; d.setUTCDate(d.getUTCDate() + 1)) o.push(d.toISOString().slice(0, 10)); return o; };
+      const unpaid = range('2030-11-29', '2030-12-03').filter(working);
+      const paid = range('2030-12-06', '2030-12-09');
+      const fw = paid.find(working), lw = [...paid].reverse().find(working);
+      const clubbed = paid.filter(d => d > fw && d < lw && !working(d)).length;
+      const nov = unpaid.filter(d => d < '2030-12-01').length;
+      const dec = unpaid.length - nov + Math.min(clubbed, 2);
+
+      const res = await request(app).get('/api/reports/leave/lop?year=2030').set('Authorization', admin());
+      expect(res.status).toBe(200);
+      const mine = res.body.rows.filter(r => r.employee_id === emp.id);
+      const byMonth = Object.fromEntries(mine.map(r => [r.month, Number(r.leave_lop_days)]));
+      expect(byMonth[11]).toBe(nov);   // the defect: November used to carry all 3 days
+      expect(byMonth[12]).toBe(dec);
+    } finally {
+      await pool.query(`DELETE FROM leave_applications WHERE id = ANY($1::int[])`, [apps.map(a => a.id)]);
+    }
+  });
+
+  it('approval turnaround lists decisions only — never the applicant cancelling', async () => {
+    const res = await request(app)
+      .get('/api/reports/leave/approval-performance?start_date=2000-01-01&end_date=2099-12-31')
+      .set('Authorization', admin());
+    expect(res.status).toBe(200);
+    for (const r of res.body.rows) expect(Number(r.approval_level)).toBeGreaterThan(0);
+  });
+
+  it('the Leave Applications list is gone from the catalog (it duplicated All Leaves)', async () => {
+    const res = await request(app).get('/api/reports/leave').set('Authorization', admin());
+    expect(res.status).toBe(404);
+  });
+
   it('headcount excludes an exited employee from active but still counts the record', async () => {
     // employees.name is GENERATED from first_name/last_name — insert the parts.
     const { rows: [emp] } = await pool.query(

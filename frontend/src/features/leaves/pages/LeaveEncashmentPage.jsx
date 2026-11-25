@@ -3,14 +3,21 @@
  *
  * 2026-11-23 (Leaves review): an approved claim now reaches the employee. On
  * approval it is added as a one-time earning to the payout month's payroll
- * (Payroll → Generate picks it up) and income tax is deducted there at the
- * employee's slab — the flat "10% TDS" shown here before was never deducted
- * anywhere and nothing was paid. The claim turns "Paid" by itself once that
+ * (Payroll → Generate picks it up) and the flat encashment TDS (Leave Settings
+ * → Leave Rules) is deducted there — the "10% TDS" shown here before was never
+ * deducted anywhere and nothing was paid. The claim turns "Paid" by itself once that
  * month's payroll is approved. Cancel asks for the reason (it sent a fixed
  * "Rejected by HR").
+ *
+ * 2026-11-24: pending claims are listed in the Approval Center, which opens
+ * this page with ?status=pending&claim=<id> (row highlighted). Employee
+ * search + CSV export. Server refuses claims for someone serving notice or
+ * gone (ENCASHMENT_AT_EXIT — F&F pays the leave) and re-checks the balance
+ * when a claim is approved.
  */
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Plus, CheckCircle, XCircle, RefreshCw, IndianRupee, Info, Landmark } from 'lucide-react';
+import { Plus, CheckCircle, XCircle, RefreshCw, IndianRupee, Info, Landmark, Download, Search } from 'lucide-react';
+import { downloadCsv } from '@/features/leaves/components/leaveShared';
 import api from '@/services/api/client';
 import { useAuth } from '@/context/AuthContext';
 import { useToast } from '@/context/ToastContext';
@@ -204,7 +211,9 @@ export default function LeaveEncashmentPage() {
   // Approving writes a payroll earning: HR / payroll only, never your own
   // claim (server: ENCASHMENT_DECIDER_ROLES). leaves:approve is held by every
   // line manager, so it is not enough.
-  const canDecide = hasAnyRole('super_admin', 'admin', 'hr', 'hr_manager', 'hr_exec', 'payroll_admin', 'finance_manager');
+  // Owner 2026-11-24: hr_exec (cannot see amounts) and finance_manager (no
+  // Leaves access) are not deciders. Employees do not raise claims at all.
+  const canDecide = hasAnyRole('super_admin', 'admin', 'hr', 'hr_manager', 'payroll_admin');
   const ownEmployeeId = user?.employee_id ?? null;
   const isOwn = r => ownEmployeeId != null && String(r.employee_id) === String(ownEmployeeId);
 
@@ -217,8 +226,12 @@ export default function LeaveEncashmentPage() {
   const [approveFor, setApproveFor] = useState(null);
   const [tdsPct, setTdsPct] = useState(null);
   useEffect(() => { api.get('/leaves/settings').then(r => setTdsPct(r.data?.encashment_tds_pct ?? null)).catch(() => {}); }, []);
+  // ?status=pending&claim=<id> — the Approval Center opens a claim here.
+  const urlParams = new URLSearchParams(typeof window !== 'undefined' ? window.location.search : '');
+  const focusId = urlParams.get('claim');
   const [fYear, setFYear] = useState(YEAR);
-  const [fStatus, setFStatus] = useState('');
+  const [fStatus, setFStatus] = useState(['pending', 'approved', 'paid', 'cancelled'].includes(urlParams.get('status')) ? urlParams.get('status') : '');
+  const [search, setSearch] = useState('');
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
 
@@ -261,8 +274,20 @@ export default function LeaveEncashmentPage() {
     finally { if (mounted.current) setActing(null); }
   };
 
+  const q = search.trim().toLowerCase();
+  const shown = q ? records.filter(r => [r.employee_name, r.employee_code, r.department, r.leave_name].some(v => String(v || '').toLowerCase().includes(q))) : records;
   const amountsWithheld = records.some(r => !('gross_amount' in r));
-  const totals = records.reduce((acc, r) => {
+  const exportCsv = () => downloadCsv(`leave-encashment-${fYear}.csv`, [
+    { label: 'Employee', key: 'employee_name' }, { label: 'Code', key: 'employee_code' }, { label: 'Department', key: 'department' },
+    { label: 'Leave type', key: 'leave_name' }, { label: 'Balance year', key: 'year' }, { label: 'Days', value: r => Number(r.days_encashed) },
+    ...(amountsWithheld ? [] : [
+      { label: 'Rate/day', key: 'rate_per_day' }, { label: 'Gross', key: 'gross_amount' }, { label: 'TDS', key: 'tds_amount' }, { label: 'Net', key: 'net_amount' },
+    ]),
+    { label: 'Paid with', value: r => { const pm = r.payroll_month || r.encashment_month; return pm ? `${MONTHS[pm - 1]} ${r.payroll_year || r.encashment_year}` : ''; } },
+    { label: 'Status', key: 'status' }, { label: 'Decided by', value: r => String(r.approved_by_name || '').trim() },
+    { label: 'Reason', key: 'reason' },
+  ], shown);
+  const totals = shown.reduce((acc, r) => {
     if (r.status === 'approved' || r.status === 'paid') { acc.days += Number(r.days_encashed || 0); acc.amount += Number(r.gross_amount || 0); }
     if (r.status === 'paid') acc.paid += Number(r.gross_amount || 0);
     if (r.status === 'pending') acc.pending++;
@@ -275,13 +300,14 @@ export default function LeaveEncashmentPage() {
         subtitle="Pay unused encashable leave through payroll"
         actions={<>
           <button className="plh-cta plh-cta--ghost" onClick={load}><RefreshCw size={13} /> Refresh</button>
-          <button className="plh-cta" onClick={() => setShowModal(true)}><Plus size={14} /> New Encashment</button>
+          <button className="plh-cta plh-cta--ghost" onClick={exportCsv} disabled={!shown.length}><Download size={13} /> Export</button>
+          {claimsForOthers && <button className="plh-cta" onClick={() => setShowModal(true)}><Plus size={14} /> New Encashment</button>}
         </>}
       />
     }>
-      {showModal && (
+      {showModal && claimsForOthers && (
         <CreateModal year={fYear} tdsPct={tdsPct} onSave={createClaim} onClose={() => setShowModal(false)}
-          employees={claimsForOthers ? employees : employees.filter(e => ownEmployeeId != null && String(e.id) === String(ownEmployeeId))} />
+          employees={employees.filter(e => !(ownEmployeeId != null && String(e.id) === String(ownEmployeeId)))} />
       )}
       {cancelFor && <ReasonDialog claim={cancelFor} onConfirm={cancel} onClose={() => setCancelFor(null)} />}
       {approveFor && <ApproveDialog claim={approveFor} onConfirm={approve} onClose={() => setApproveFor(null)} />}
@@ -312,15 +338,20 @@ export default function LeaveEncashmentPage() {
             {l}
           </button>
         ))}
+        <div style={{ position: 'relative', marginLeft: 'auto' }}>
+          <Search size={13} style={{ position: 'absolute', left: 9, top: 9, color: '#9ca3af' }} />
+          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search employee, code, department…" aria-label="Search claims"
+            style={{ padding: '7px 12px 7px 28px', border: '1px solid #e5e7eb', borderRadius: 8, fontSize: 13, width: 240 }} />
+        </div>
       </div>
 
       <div style={{ background: '#fff', borderRadius: 12, border: '1px solid #e5e7eb', overflow: 'auto' }}>
         {loading ? (
           <div style={{ padding: 48, textAlign: 'center', color: '#9ca3af' }}>Loading…</div>
-        ) : records.length === 0 ? (
+        ) : shown.length === 0 ? (
           <div style={{ padding: 48, textAlign: 'center', color: '#9ca3af' }}>
             <IndianRupee size={36} color="#d1d5db" style={{ display: 'block', margin: '0 auto 12px' }} />
-            <p style={{ margin: 0 }}>No encashment claims for {fYear}</p>
+            <p style={{ margin: 0 }}>{q ? 'No claims match the search' : `No encashment claims for ${fYear}`}</p>
           </div>
         ) : (
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
@@ -332,12 +363,13 @@ export default function LeaveEncashmentPage() {
               </tr>
             </thead>
             <tbody>
-              {records.map((r, i) => {
+              {shown.map((r, i) => {
                 const s = sc(r.status);
                 const pm = r.payroll_month || r.encashment_month;
                 const py = r.payroll_year || r.encashment_year;
                 return (
-                  <tr key={r.id} style={{ borderBottom: '1px solid #f9fafb', background: i % 2 === 0 ? '#fff' : '#fafafa' }}>
+                  <tr key={r.id} ref={String(r.id) === String(focusId) ? (el => el?.scrollIntoView({ block: 'center' })) : undefined}
+                    style={{ borderBottom: '1px solid #f9fafb', background: String(r.id) === String(focusId) ? '#fef9c3' : i % 2 === 0 ? '#fff' : '#fafafa' }}>
                     <td style={{ padding: '10px 12px' }}>
                       <div style={{ fontWeight: 600 }}>{r.employee_name || '—'}</div>
                       <div style={{ fontSize: 11, color: '#9ca3af' }}>{[r.employee_code, r.department].filter(Boolean).join(' · ')}</div>

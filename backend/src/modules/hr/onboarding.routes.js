@@ -3,6 +3,7 @@ import express from 'express';
 import pool from '../../config/db.js';
 import { logAudit } from '../../services/AuditService.js';
 import { initOnboardingChecklist } from './onboarding.service.js';
+import { LETTER_TYPES, buildJoiningLetter, issueJoiningLetter, listJoiningLetters } from '../recruitment/joiningLetters.js';
 import { employeeOf } from '../../shared/scope.js';
 import { rolesOf } from '../../middlewares/auth.middleware.js';
 import {
@@ -411,6 +412,54 @@ router.get('/pending', async (req, res) => {
       pct: r.total > 0 ? Math.round((r.done_count / r.total) * 100) : 0,
     })));
   } catch (err) { res.status(500).json({ message: err.message }); }
+});
+
+/* ─── Joining letters (owner 18 Nov 26, recruitment/joiningLetters.js) ───────
+ * Offer, appointment and confidentiality letters are issued here at
+ * onboarding — the offer e-mail no longer carries a letter — and filed on the
+ * employee record (Upload Documents). HR only: the letters carry the salary.
+ *   GET  /onboarding/letters/:employee_id               what is on file
+ *   GET  /onboarding/letters/:employee_id/:type/preview  PDF, nothing stored
+ *   POST /onboarding/letters/:employee_id/:type          issue + file it
+ */
+function letterGuard(req, res) {
+  if (!isHrRecordUser(req)) { res.status(403).json({ message: 'Only HR can issue joining letters', code: 'HR_ONLY' }); return null; }
+  const empId = parseEmployeeId(req.params.employee_id);
+  if (!empId) { res.status(400).json({ message: 'Invalid employee_id' }); return null; }
+  const scope = readScope(req);
+  if (scope.refused) { res.status(403).json({ message: 'Your account has no company assignment' }); return null; }
+  if (req.params.type && !LETTER_TYPES[req.params.type]) { res.status(400).json({ message: 'Unknown letter type' }); return null; }
+  return { empId, companyId: scope.companyId };
+}
+const letterError = (res, err) => res.status(err.status || 500).json({ message: err.message, ...(err.code ? { code: err.code } : {}) });
+const userIdOf = (req) => req.user?.userId ?? req.user?.id ?? null;
+
+router.get('/letters/:employee_id', async (req, res) => {
+  const g = letterGuard(req, res); if (!g) return;
+  try {
+    const out = await listJoiningLetters(pool, { companyId: g.companyId, employeeId: g.empId });
+    if (!out) return res.status(404).json({ message: 'Employee not found' });
+    res.json(out);
+  } catch (err) { letterError(res, err); }
+});
+
+router.get('/letters/:employee_id/:type/preview', async (req, res) => {
+  const g = letterGuard(req, res); if (!g) return;
+  try {
+    const { pdf, filename } = await buildJoiningLetter(pool, { companyId: g.companyId, employeeId: g.empId, type: req.params.type, signatoryUserId: userIdOf(req) });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+    res.send(pdf);
+  } catch (err) { letterError(res, err); }
+});
+
+router.post('/letters/:employee_id/:type', async (req, res) => {
+  const g = letterGuard(req, res); if (!g) return;
+  try {
+    const out = await issueJoiningLetter(pool, { companyId: g.companyId, employeeId: g.empId, type: req.params.type, userId: userIdOf(req) });
+    logAudit({ userId: userIdOf(req), module: 'onboarding', recordId: g.empId, recordType: 'joining_letter', action: `issue_${out.type}_letter`, newData: out, req });
+    res.status(201).json(out);
+  } catch (err) { letterError(res, err); }
 });
 
 export default router;

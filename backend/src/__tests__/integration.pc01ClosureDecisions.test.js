@@ -249,15 +249,16 @@ describe('decision 3 — leave encashment claims and their amounts', () => {
     expect(await count(E.SELF)).toBe(0);
   });
 
-  it('only Payroll sets the TDS rate', async () => {
-    const res = await claim(U.employee, { employee_id: E.SELF, tds_rate: 0 });
+  // Owner 2026-11-24: employees do not raise claims, not even their own.
+  it('an employee cannot raise their own claim; nothing is written', async () => {
+    const res = await claim(U.employee, { employee_id: E.SELF });
     expect(res.status).toBe(403);
-    expect(res.body.code).toBe('ENCASHMENT_TDS_RATE');
+    expect(res.body.code).toBe('ENCASHMENT_FOR_OTHERS');
     expect(await count(E.SELF)).toBe(0);
   });
 
-  it('an employee claims for themself and sees their own amounts', async () => {
-    const res = await claim(U.employee, { employee_id: E.SELF });
+  it('HR (payroll:edit) raises the claim for the employee; amounts from the salary', async () => {
+    const res = await claim(U.hr, { employee_id: E.SELF });
     expect(res.status, JSON.stringify(res.body)).toBe(201);
     expect(Number(res.body.rate_per_day)).toBe(1000);      // 26,000 / 26
     expect(Number(res.body.gross_amount)).toBe(2000);

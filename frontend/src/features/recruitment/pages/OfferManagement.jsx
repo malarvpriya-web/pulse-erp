@@ -14,7 +14,7 @@ import EmailSetupWarning from '../shared/components/EmailSetupWarning';
  * Offer Management (Recruitment → Offer & Onboarding → Offer Management).
  *
  * Life of an offer: draft → submitted for approval → approved = sent to the
- * candidate (Approval Center; the letter PDF goes with the e-mail) → the
+ * candidate (Approval Center; e-mail only — letters are issued at onboarding) → the
  * candidate's answer is recorded here: accepted (hires them and creates the
  * employee) or declined (with the reason). Withdrawing needs a reason too.
  * A sent offer past its valid-until date shows as expired; it can be extended,
@@ -431,6 +431,8 @@ export default function OfferManagement({ embedded = false, setPage }) {
         Once an offer is sent, only its valid-until date can change; to change the terms, withdraw it and make a new offer.
         An expired offer can still be accepted, after a confirmation. An accepted offer cannot be withdrawn; if the person
         does not join, that is handled in Exit Management.
+        The candidate gets the offer by e-mail only. The offer letter, appointment letter and confidentiality letter are
+        issued at onboarding and saved with the employee's documents.
       </p>
 
       <div style={{ background: '#fff', borderRadius: 12, border: '1px solid #f0f0f4', overflow: 'auto' }}>
@@ -489,8 +491,8 @@ export default function OfferManagement({ embedded = false, setPage }) {
                           <button type="button" disabled={busy === `s${o.id}`} onClick={() => submitForApproval(o)} title="The approver sends it to the candidate"
                             style={actBtn('#ede9fe', '#5b21b6')}><Send size={11} /> Submit for approval</button>
                         </>)}
-                        <button type="button" onClick={() => openOfferLetter(o).catch(() => showToast('Could not open the letter', 'error'))} title="Offer letter PDF"
-                          style={actBtn('#f3f4f6', '#374151')}><Download size={11} /> Letter</button>
+                        <button type="button" onClick={() => openOfferLetter(o).catch(() => showToast('Could not open the letter', 'error'))} title="Preview the offer letter. It is not sent with the e-mail — HR issues it at onboarding."
+                          style={actBtn('#f3f4f6', '#374151')}><Download size={11} /> Preview letter</button>
                         {o.offer_status === 'pending_approval' && approver && (<>
                           <button type="button" disabled={busy === `a${o.id}`} onClick={() => approveOffer(o)} style={actBtn('#d1fae5', '#065f46')}><CheckCircle size={11} /> Approve &amp; send</button>
                           <button type="button" onClick={() => setReason({ kind: 'sendback', offer: o })} style={actBtn('#fef3c7', '#92400e')}><XCircle size={11} /> Send back</button>

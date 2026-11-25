@@ -29,6 +29,7 @@ import { assertCanDecideAmount, assertNotSelfApproval } from '../procurement/pro
 import { isCurrentSql } from '../../shared/employeeStatus.js';
 import { canApproveRequisition, canApproveOffer } from '../recruitment/requisitionAccess.js';
 import { fnfSettlementSuspended } from '../../shared/hrContainment.js';
+import { ENCASHMENT_DECIDER_ROLES } from '../leaves/routes/encashment.routes.js';
 import { GP_APPROVER_JOIN, APPROVER_LABEL, approverDecision } from '../../shared/gatePassApprover.js';
 
 // Overdue threshold when a request type has no configured SLA. 48h is the
@@ -1345,9 +1346,33 @@ const internStipend = {
   actions: () => ({ open: { page: 'InternStipends' } }),
 };
 
+// Leave encashment claims waiting for HR / payroll (encashment.routes.js —
+// ENCASHMENT_DECIDER_ROLES, never the claimant). Decided on the Encashment
+// page, which picks the payout month; the row only opens it. The amount is
+// salary data, so the row carries days, not rupees. Leaves review 2026-11-24.
+const encashment = {
+  type: 'encash', label: 'Leave Encashment', page: 'LeaveEncashment',
+  pending(companyId) {
+    return q(`
+      SELECT 'encash:' || le.id AS id, le.id::text AS source_id,
+             CONCAT('Encash ', COALESCE(lt.leave_name, 'leave'), ' · ', le.days_encashed::float8, 'd (', le.year, ')') AS request_title,
+             le.reason AS description, le.days_encashed AS amount, 'days' AS amount_unit,
+             e.id AS requester_emp_id, ${name('e')} AS requested_by, e.company_email AS requester_email,
+             e.department, le.created_at AS request_date, e.company_id, 'Medium' AS priority
+        FROM leave_encashments le
+        JOIN employees e ON e.id = le.employee_id
+        LEFT JOIN leave_types lt ON lt.id = le.leave_type_id
+       WHERE le.status = 'pending' ${cf(companyId, 'e.company_id')}`, cp(companyId));
+  },
+  stage: () => 'HR / payroll',
+  canAct: (ctx, r) => holds(ctx, ...ENCASHMENT_DECIDER_ROLES)
+    && !(ctx.employeeId != null && String(ctx.employeeId) === String(r.requester_emp_id)),
+  actions: (r) => ({ open: { page: 'LeaveEncashment', params: { status: 'pending', claim: r.source_id } } }),
+};
+
 export const SOURCES = [leave, regularization, overtime, shiftChange, expense, purchase, ecn, payment, travel, advance, requisition, offer,
   internEval, interviewFeedback, probationReview, probationDecision, gatePass, visitorEntry, itDeclaration, bankChangeSrc, correction, timesheet,
-  fnfSettlement, internStipend];
+  fnfSettlement, internStipend, encashment];
 export const SOURCE_BY_TYPE = Object.fromEntries(SOURCES.map(s => [s.type, s]));
 
 /** Types whose decision belongs to a module endpoint, never to /approvals. */

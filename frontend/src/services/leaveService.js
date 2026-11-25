@@ -178,31 +178,6 @@ export const getCompOffBalance = async (employeeId) => {
   return null;
 };
 
-// ── Leave Encashment ─────────────────────────────────────────────────────────
-
-export const getEncashments = async (params = {}) => {
-  const [res] = await Promise.allSettled([api.get('/leave-encashment', { params })]);
-  if (res.status === 'fulfilled') {
-    const d = res.value.data;
-    return Array.isArray(d) ? d : [];
-  }
-  return [];
-};
-
-export const createEncashment = async (data) => {
-  const res = await api.post('/leave-encashment', data);
-  return res.data;
-};
-
-export const getEligibleEncashment = async (employeeId, year) => {
-  const [res] = await Promise.allSettled([api.get(`/leave-encashment/eligible/${employeeId}`, { params: { year } })]);
-  if (res.status === 'fulfilled') {
-    const d = res.value.data;
-    return Array.isArray(d) ? d : [];
-  }
-  return [];
-};
-
 // ── Accrual ───────────────────────────────────────────────────────────────────
 
 export const runAccrual = async (month, year) => {

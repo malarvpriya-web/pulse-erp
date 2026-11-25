@@ -605,6 +605,8 @@ const employeeUpload = (req, res, next) => {
     { name: 'offer_letter_file',     maxCount: 1 },
     { name: 'passport_file',         maxCount: 1 },
     { name: 'driving_license_file',  maxCount: 1 },
+    { name: 'appointment_letter_file',     maxCount: 1 },
+    { name: 'confidentiality_letter_file', maxCount: 1 },
   ])(req, res, next);
 };
 app.use("/api/employees", verifyToken, employeeUpload);
@@ -1195,9 +1197,9 @@ startCandidateRecontactCron();
     startKpiDigestCron();
     startDepartmentDigestCron();
     startDeviceSyncCron();
+    startAttendanceReminderCrons();
     startAnomalyDetectionCron();
     startQuotationExpiryCron();
-    startAttendanceReminderCrons();
     startCrmFollowupCron();
     startTenderDeadlineCron();
     startCampaignLifecycleCron();
