@@ -1789,20 +1789,80 @@ router.put('/applications/:id/status', requirePermission('leaves', 'approve'), h
 // CALENDAR & ANALYTICS
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Who the Leave Calendar shows (2026-11-25), the same lines the rest of this
+// router draws: leave admins the whole company; a department head / L2
+// approver their department + direct reports; a manager their direct reports
+// (current reporting line, as the L1 queue); anyone else only themself.
+// Before, every manager and department head saw the whole company's leave.
+// null = company-wide; { kind: 'none' } = a login with no employee record.
+export async function calendarScopeOf(req, db = pool) {
+  if (hasRole(req, ...LEAVE_ADMIN_ROLES)) return null;
+  const me = await employeeOf(req, db);
+  if (me == null) return { kind: 'none' };
+  if (hasRole(req, 'department_head', 'l2_approver')) return { kind: 'department', me };
+  if (hasRole(req, 'manager')) return { kind: 'manager', me };
+  return { kind: 'self', me };
+}
+
+const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
+
 router.get('/calendar', requirePermission('leaves', 'view'), async (req, res) => {
   try {
-    const filters = { ...req.query, company_id: req.scope?.company_id ?? null };
-    // Company-wide "who is on leave" (names + leave type, e.g. sick leave) is
-    // for the people who plan cover: leave admins and managers. Anyone else
-    // gets only their own approved leave (2026-11-11). Same role set as the
-    // manager/admin checks further down this router.
-    if (!hasRole(req, ...LEAVE_ADMIN_ROLES, 'manager', 'department_head', 'hr_manager')) {
-      const me = await employeeOf(req, pool);
-      if (me == null) return res.json([]);
-      filters.employee_id = me;
+    const { start_date, end_date, employee_id, department, include_pending } = req.query;
+    if ((start_date && !ISO_DAY.test(start_date)) || (end_date && !ISO_DAY.test(end_date))) {
+      return res.status(400).json({ error: 'start_date and end_date must be YYYY-MM-DD.', code: 'BAD_DATE' });
     }
-    const calendar = await leavesRepository.getLeaveCalendar(filters);
-    res.json(calendar);
+    if (employee_id != null && employee_id !== '' && !/^\d+$/.test(String(employee_id))) {
+      return res.status(400).json({ error: 'employee_id must be a number.', code: 'BAD_EMPLOYEE' });
+    }
+    const scope = await calendarScopeOf(req);
+    if (scope?.kind === 'none') return res.json([]);
+    // Only the known filters — a caller's employee_id / department narrows
+    // inside the scope above, never widens it.
+    const filters = {
+      start_date, end_date, include_pending, department: department || undefined,
+      employee_id: employee_id ? Number(employee_id) : undefined,
+      company_id: req.scope?.company_id ?? null, scope,
+    };
+    res.json(await leavesRepository.getLeaveCalendar(filters));
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /calendar/people — the current staff the calendar's filters may pick,
+// in the same scope as /calendar (the full /employees list showed everyone,
+// including people who have left).
+router.get('/calendar/people', requirePermission('leaves', 'view'), async (req, res) => {
+  try {
+    const scope = await calendarScopeOf(req);
+    if (scope?.kind === 'none') return res.json([]);
+    res.json(await leavesRepository.getLeaveCalendarPeople({
+      company_id: req.scope?.company_id ?? null, scope, currentSql: isCurrentSql('e.status'),
+    }));
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /calendar/holidays?year=2027[&employee_id=] — the days off of the people
+// the calendar shows: company-wide holidays + every zone they sit in (or one
+// employee's zone). An employee_id outside the caller's scope returns [].
+router.get('/calendar/holidays', requirePermission('leaves', 'view'), async (req, res) => {
+  try {
+    const { year, employee_id } = req.query;
+    if (!/^\d{4}$/.test(String(year || ''))) {
+      return res.status(400).json({ error: 'year must be YYYY.', code: 'BAD_YEAR' });
+    }
+    if (employee_id != null && employee_id !== '' && !/^\d+$/.test(String(employee_id))) {
+      return res.status(400).json({ error: 'employee_id must be a number.', code: 'BAD_EMPLOYEE' });
+    }
+    const scope = await calendarScopeOf(req);
+    if (scope?.kind === 'none') return res.json([]);
+    res.json(await leavesRepository.getLeaveCalendarHolidays({
+      company_id: req.scope?.company_id ?? null, scope, year,
+      employee_id: employee_id ? Number(employee_id) : null, currentSql: isCurrentSql('e.status'),
+    }));
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -1959,28 +2019,18 @@ router.post('/:id/withdraw', requirePermission('leaves', 'view'), async (req, re
 });
 
 // ── GET /on-leave-today — employees on approved leave right now ───────────────
+// 2026-11-25: in the Leave Calendar's scope (calendarScopeOf). It used to list
+// the whole company's names + leave types to anyone with leaves:view, and
+// ignored the Manager Dashboard's ?department. "Today" is the business date —
+// toISOString() was UTC, i.e. yesterday until 05:30 IST.
 router.get('/on-leave-today', requirePermission('leaves', 'view'), async (req, res) => {
   try {
     const companyId = req.scope?.company_id ?? null;
-    const today = new Date().toISOString().slice(0, 10);
-    const { rows } = await pool.query(`
-      SELECT DISTINCT
-        la.id AS leave_id,
-        la.employee_id,
-        COALESCE(e.name, CONCAT(e.first_name,' ',e.last_name)) AS employee_name,
-        e.department, e.designation,
-        lt.leave_name,
-        la.start_date, la.end_date, la.number_of_days
-      FROM leave_applications la
-      JOIN employees e  ON la.employee_id = e.id
-      JOIN leave_types lt ON la.leave_type_id = lt.id
-      WHERE la.status = 'approved'
-        AND la.deleted_at IS NULL
-        AND la.start_date <= $1::date
-        AND la.end_date   >= $1::date
-        AND ($2::integer IS NULL OR e.company_id = $2)
-      ORDER BY e.department, employee_name
-    `, [today, companyId]);
+    const { rows: [{ today }] } = await pool.query(`SELECT CURRENT_DATE::text AS today`);
+    const scope = await calendarScopeOf(req);
+    const rows = scope?.kind === 'none' ? []
+      : await leavesRepository.getOnLeaveToday({
+        company_id: companyId, scope, department: req.query.department || null });
     res.json({ date: today, count: rows.length, employees: rows });
   } catch (err) {
     res.status(500).json({ error: err.message });

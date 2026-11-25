@@ -521,6 +521,67 @@ describe('LeaveCalendar — smoke', () => {
     expect(screen.getByText(`${MONTHS[nextIdx]} ${nextYear}`)).toBeDefined();
   });
 
+  // 2026-11-25 audit
+  const todayISO = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+
+  it('filters come from /leaves/calendar/people (current staff in scope), not /employees', async () => {
+    stubApis();
+    api.get.mockImplementation((url) => {
+      if (url === '/leaves/calendar/people') return Promise.resolve({ data: [
+        { id: 7, name: 'Asha Rao', office_id: 'EMP007', department: 'Sales' },
+        { id: 8, name: 'Ravi Iyer', office_id: 'EMP008', department: 'Ops' },
+      ] });
+      return Promise.resolve({ data: [] });
+    });
+    render(<LeaveCalendar />);
+    await waitFor(() => expect(screen.getByText('Asha Rao (EMP007)')).toBeDefined());
+    expect(api.get).not.toHaveBeenCalledWith('/employees');
+    // A department narrows the employee list instead of clearing the pick.
+    fireEvent.change(screen.getByLabelText('Department'), { target: { value: 'Sales' } });
+    expect(screen.queryByText('Ravi Iyer (EMP008)')).toBeNull();
+    expect(screen.getByText('Asha Rao (EMP007)')).toBeDefined();
+  });
+
+  it('a picked day closes when the month changes; Today comes back', async () => {
+    stubApis();
+    render(<LeaveCalendar />);
+    await waitFor(() => expect(screen.getAllByRole('button', { name: /on leave$/ }).length).toBeGreaterThan(27));
+    fireEvent.click(screen.getAllByRole('button', { name: /^1 / })[0]);
+    expect(screen.getByLabelText('Close day')).toBeDefined();
+    fireEvent.click(screen.getByLabelText('Next month'));
+    expect(screen.queryByLabelText('Close day')).toBeNull();
+    const today = screen.getByText('Today');
+    expect(today.disabled).toBe(false);
+    fireEvent.click(today);
+    const now = new Date();
+    const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+    expect(screen.getByText(`${MONTHS[now.getMonth()]} ${now.getFullYear()}`)).toBeDefined();
+    expect(screen.getByText('Today').disabled).toBe(true);
+  });
+
+  it('on leave today: name opens the approval history; half day and days shown', async () => {
+    const day = todayISO();
+    stubApis({ leaves: [{ ...PENDING_LEAVE, id: 55, status: 'approved', start_date: day, end_date: day, number_of_days: 0.5, half_day: true, half_day_session: 'am' }] });
+    render(<LeaveCalendar />);
+    await waitFor(() => expect(screen.getAllByText('Priya Nair').length).toBeGreaterThan(0));
+    expect(screen.getAllByText(/0\.5 days · ½ day \(AM\)/).length).toBeGreaterThan(0);
+    fireEvent.click(screen.getAllByTitle('Open the approval history')[0]);
+    await waitFor(() => expect(screen.getByText('Approval history')).toBeDefined());
+    expect(api.get).toHaveBeenCalledWith('/leaves/applications/55/history');
+  });
+
+  it('month summary counts days, keeps pending apart, and colours a switched-off type', async () => {
+    const day = todayISO();
+    stubApis({ types: [], leaves: [
+      { ...PENDING_LEAVE, id: 1, employee_id: 1, leave_type_id: 9, leave_name: 'Old Type', status: 'approved', start_date: day, end_date: day, number_of_days: 1 },
+      { ...PENDING_LEAVE, id: 2, employee_id: 2, leave_type_id: 9, leave_name: 'Old Type', status: 'pending',  start_date: day, end_date: day, number_of_days: 1 },
+    ] });
+    render(<LeaveCalendar />);
+    await waitFor(() => expect(screen.getAllByText('Old Type').length).toBeGreaterThan(0));
+    expect(screen.getByText('1 d')).toBeDefined();
+    expect(screen.getByText('+1 pending')).toBeDefined();
+  });
+
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -63,3 +63,17 @@
 .lc-summary-row  { display: flex; align-items: center; gap: 7px; padding: 5px 0; font-size: 12px; }
 .lc-summary-type { flex: 1; color: #374151; }
 .lc-summary-cnt  { font-weight: 700; color: #111827; background: #f3f4f6; border-radius: 20px; padding: 1px 8px; font-size: 11px; }
+
+/* 2026-11-25 audit additions */
+.lc-today-btn { margin-left: 8px; background: #fff; border: 1px solid #e5e7eb; border-radius: 7px; height: 30px; padding: 0 12px; font-size: 12px; font-weight: 600; color: #6B3FDB; cursor: pointer; }
+.lc-today-btn:hover:not(:disabled) { background: #F2EFFE; }
+.lc-today-btn:disabled { color: #9ca3af; cursor: default; }
+.lc-nav .lc-month-lbl { flex: 1; text-align: center; }
+.lc-cell:focus-visible { outline: 2px solid #6B3FDB; outline-offset: 1px; }
+.lc-hol-chip { font-size: 9px; background: #ede9fe; color: #5b21b6; border-radius: 3px; padding: 1px 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lc-hol-row  { font-size: 11px; color: #5b21b6; background: #ede9fe; border-radius: 5px; padding: 4px 8px; margin-bottom: 4px; }
+.lc-side-link { width: 100%; background: none; border: none; border-bottom: 1px solid #f9fafb; cursor: pointer; font: inherit; text-align: left; border-radius: 6px; }
+.lc-side-link:hover { background: #f9fafb; }
+.lc-side-dates { font-size: 10px; color: #6b7280; margin-top: 2px; }
+.lc-summary-pend { font-size: 10px; color: #b45309; font-weight: 600; }
+.lc-side-note { font-size: 10px; color: #9ca3af; margin: 8px 0 0; }

@@ -21,6 +21,25 @@ async function withTransaction(fn) {
   }
 }
 
+/**
+ * Leave Calendar visibility as SQL on `employees e` (2026-11-25). `scope`
+ * comes from calendarScopeOf() in leaves.routes.js:
+ *   null → no restriction (leave admins: the whole company)
+ *   { kind: 'self' | 'manager' | 'department', me }
+ * Pushes its one parameter onto `params` and returns " AND (...)" or "".
+ */
+export function scopeClause(scope, params) {
+  if (!scope || !scope.kind) return '';
+  params.push(scope.me ?? -1);
+  const me = `$${params.length}`;
+  if (scope.kind === 'manager') return ` AND (e.id = ${me} OR e.reporting_manager_id = ${me})`;
+  if (scope.kind === 'department') {
+    return ` AND (e.id = ${me} OR e.reporting_manager_id = ${me}
+              OR e.department = (SELECT department FROM employees WHERE id = ${me} AND department IS NOT NULL))`;
+  }
+  return ` AND e.id = ${me}`;   // 'self', and anything unknown
+}
+
 const leavesRepository = {
   async getLeaveTypes(company_id = null) {
     const result = await pool.query(
@@ -529,10 +548,17 @@ const leavesRepository = {
       paramCount++;
     }
 
+    // Who the caller may see (calendarScopeOf in leaves.routes.js).
+    cidClause += scopeClause(filters.scope, params);
+    paramCount = params.length + 1;
+
+    // Only what the calendar draws (2026-11-25). `la.*` also sent the reason,
+    // the attachment URL and every approver's comments to each viewer.
     let query = `
-      SELECT la.*,
-        COALESCE(e.name, CONCAT(e.first_name, ' ', e.last_name)) AS employee_name,
-        e.department,
+      SELECT la.id, la.employee_id, la.leave_type_id, la.start_date, la.end_date,
+        la.number_of_days, la.half_day, la.half_day_session, la.status,
+        COALESCE(NULLIF(TRIM(e.name), ''), TRIM(CONCAT(e.first_name, ' ', e.last_name))) AS employee_name,
+        e.department, e.zone_id,
         lt.leave_name, lt.leave_name AS leave_type
       FROM leave_applications la
       JOIN employees e  ON la.employee_id = e.id
@@ -560,9 +586,68 @@ const leavesRepository = {
       paramCount++;
     }
 
-    query += ` ORDER BY la.start_date`;
+    query += ` ORDER BY la.start_date, employee_name`;
     const result = await pool.query(query, params);
     return result.rows;
+  },
+
+  /** The current staff the Leave Calendar filters may name — same scope as getLeaveCalendar. */
+  async getLeaveCalendarPeople({ company_id = null, scope = null, currentSql }) {
+    const params = [company_id];
+    const where = `($1::int IS NULL OR e.company_id = $1) AND ${currentSql}${scopeClause(scope, params)}`;
+    const { rows } = await pool.query(
+      `SELECT e.id, e.office_id, e.department, e.zone_id,
+              COALESCE(NULLIF(TRIM(e.name), ''), TRIM(CONCAT(e.first_name, ' ', e.last_name))) AS name
+         FROM employees e
+        WHERE ${where}
+        ORDER BY name`, params);
+    return rows;
+  },
+
+  /**
+   * Holidays for the Leave Calendar (2026-11-25): the company-wide ones plus
+   * those of every zone the caller's people sit in, or of one employee's
+   * zone. GET /holidays gives a non-HR viewer only THEIR zone, so a manager
+   * with a team in another zone saw the wrong days off.
+   */
+  async getLeaveCalendarHolidays({ company_id = null, scope = null, year, employee_id = null, currentSql }) {
+    const params = [company_id, Number(year)];
+    let empWhere = `($1::int IS NULL OR e.company_id = $1) AND ${currentSql}${scopeClause(scope, params)}`;
+    if (employee_id != null) { params.push(Number(employee_id)); empWhere += ` AND e.id = $${params.length}`; }
+    const { rows } = await pool.query(
+      `WITH people AS (SELECT e.zone_id FROM employees e WHERE ${empWhere})
+       SELECT h.id, h.name, h.date, h.type, h.zone_id, mz.name AS zone_name
+         FROM holidays h
+         LEFT JOIN master_zones mz ON mz.id = h.zone_id
+        WHERE ($1::int IS NULL OR h.company_id = $1 OR h.company_id IS NULL)
+          AND EXTRACT(year FROM h.date) = $2
+          AND EXISTS (SELECT 1 FROM people)
+          AND (h.zone_id IS NULL OR h.zone_id IN (SELECT zone_id FROM people WHERE zone_id IS NOT NULL))
+        ORDER BY h.date`, params);
+    return rows;
+  },
+
+  /** Who is on approved leave on the business "today", within the caller's scope. */
+  async getOnLeaveToday({ company_id = null, scope = null, department = null }) {
+    const params = [company_id];
+    let where = `($1::int IS NULL OR e.company_id = $1)${scopeClause(scope, params)}`;
+    if (department) { params.push(department); where += ` AND e.department = $${params.length}`; }
+    // CURRENT_DATE is the business date (timezone.js pins the session zone);
+    // toISOString() was UTC, i.e. yesterday until 05:30 IST.
+    const { rows } = await pool.query(
+      `SELECT DISTINCT
+              la.id AS leave_id, la.employee_id,
+              COALESCE(NULLIF(TRIM(e.name), ''), TRIM(CONCAT(e.first_name, ' ', e.last_name))) AS employee_name,
+              e.department, e.designation, lt.leave_name,
+              la.start_date, la.end_date, la.number_of_days, la.half_day, la.half_day_session
+         FROM leave_applications la
+         JOIN employees e  ON la.employee_id = e.id
+         JOIN leave_types lt ON la.leave_type_id = lt.id
+        WHERE la.status = 'approved' AND la.deleted_at IS NULL
+          AND la.start_date <= CURRENT_DATE AND la.end_date >= CURRENT_DATE
+          AND ${where}
+        ORDER BY e.department, employee_name`, params);
+    return rows;
   },
 
   async getLeaveAnalytics(filters = {}) {
