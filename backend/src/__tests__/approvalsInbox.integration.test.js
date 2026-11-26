@@ -105,7 +105,7 @@ async function login(key, role, cid, employeeId) {
 
 const raiseTravel = async (key, destination) => {
   const res = await api(key, 'post', '/travel/requests', {
-    destination, purpose: 'Customer visit', from_date: '2026-11-20', to_date: '2026-11-21', budget: 12500.5, mode: 'Train',
+    destination, purpose: 'Customer visit', travel_type: 'Customer Meeting', from_date: '2026-11-20', to_date: '2026-11-21', budget: 12500.5, mode: 'Train',
   });
   expect(res.status).toBe(201);
   return res.body.id;

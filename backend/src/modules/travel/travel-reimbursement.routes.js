@@ -28,7 +28,7 @@
  */
 import express from 'express';
 import pool from '../shared/db.js';
-import { can } from '../../middlewares/auth.middleware.js';
+import { can, rolesOf } from '../../middlewares/auth.middleware.js';
 import { logAudit } from '../../services/AuditService.js';
 import { notifyWorkflowEvent } from '../../services/WorkflowNotificationService.js';
 import { companyOf } from '../../shared/scope.js';
@@ -36,6 +36,9 @@ import { resolveRange, dimension } from '../../shared/dashboardFilters.js';
 import { authorizeManagerApproval, DENIED_MESSAGE } from '../../shared/managerApprovalAuthz.js';
 import { captureBefore } from '../../middlewares/captureBefore.js';
 import { validateStatutoryProfile } from '../payroll/payrollEligibility.js';
+import { policyRuleFor, policyLimitFor, MANDATORY_REPORT_TYPES, todayLocal } from './travelAccess.js';
+import { postClaimPayment, TravelGlError } from './travelGl.service.js';
+import { resolveLinks, travelClosureBlockers } from './travel.routes.js';
 
 const router = express.Router();
 const uid = req => req.user?.userId ?? req.user?.id ?? null;
@@ -213,12 +216,20 @@ router.get('/claims', async (req, res) => {
       SELECT ec.*,
              CONCAT(e.first_name,' ',e.last_name) AS employee_full_name,
              e.designation, e.department AS emp_department,
-             CONCAT(m.first_name,' ',m.last_name) AS manager_name,
-             CONCAT(a.first_name,' ',a.last_name) AS accounts_name
+             COALESCE(tr.request_number, CASE WHEN tr.id IS NOT NULL THEN 'TR-' || LPAD(tr.id::text,3,'0') END) AS trip_number,
+             tr.destination AS trip_destination, tr.travel_type,
+             -- manager_approved_by / accounts_verified_by hold the deciding
+             -- LOGIN (users.id); joining them straight to employees.id named
+             -- whoever's employee number happened to match.
+             COALESCE(NULLIF(TRIM(CONCAT(me.first_name,' ',me.last_name)), ''), mu.name) AS manager_name,
+             COALESCE(NULLIF(TRIM(CONCAT(ae.first_name,' ',ae.last_name)), ''), au.name) AS accounts_name
       FROM expense_claims ec
       LEFT JOIN employees e ON e.id = ec.employee_id
-      LEFT JOIN employees m ON m.id = ec.manager_approved_by
-      LEFT JOIN employees a ON a.id = ec.accounts_verified_by
+      LEFT JOIN travel_requests tr ON tr.id = ec.travel_request_id
+      LEFT JOIN users mu ON mu.id = ec.manager_approved_by
+      LEFT JOIN employees me ON me.id = mu.employee_id
+      LEFT JOIN users au ON au.id = ec.accounts_verified_by
+      LEFT JOIN employees ae ON ae.id = au.employee_id
       WHERE ${conditions.join(' AND ')}
       ORDER BY ec.created_at DESC
       LIMIT ${lim}
@@ -247,20 +258,59 @@ router.get('/claims/:id', async (req, res) => {
   } catch { res.status(500).json({ error: 'Could not load the claim' }); }
 });
 
-// ── POST /reimbursement/claims ─────────────────────────────────────────────────
-// Filed for the caller only: employee_id / employee_name / department come from
-// the caller's employee record, never the body. (The form sent a free-text
-// "Your name" and an empty employee_id, so a claim filed by any role but
-// 'employee' was stored with NO employee.) Always created as 'Draft'.
-router.post('/claims', async (req, res) => {
-  const b = req.body || {};
+// ── Claim body → stored values (shared by create and edit) ────────────────────
+// The trip, customer, project and opportunity are LINKS (ids from pickers) —
+// they were free text, so no paid claim ever reached a project's cost ledger.
+// A trip must be the claimant's own and approved; its customer / project are
+// used when the claim names none. The policy limit, over-policy flag and cost
+// type are worked out here on create AND on every edit (an edit used to keep
+// the flags of the first save).
+async function prepareClaim(client, req, b, emp, actorId, companyId) {
+  const bad = (status, m) => { const e = new Error(m); e.status = status; throw e; };
   const amount = Number(b.amount);
   const gst = b.gst_amount == null || b.gst_amount === '' ? 0 : Number(b.gst_amount);
-  if (!(amount > 0)) return res.status(400).json({ error: 'amount must be greater than 0' });
-  if (!(gst >= 0)) return res.status(400).json({ error: 'gst_amount cannot be negative' });
-  if (!b.expense_type || !String(b.expense_type).trim()) return res.status(400).json({ error: 'expense_type is required' });
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(b.expense_date || ''))) return res.status(400).json({ error: 'expense_date (YYYY-MM-DD) is required' });
+  if (!(amount > 0)) bad(400, 'amount must be greater than 0');
+  if (!(gst >= 0)) bad(400, 'gst_amount cannot be negative');
+  if (!b.expense_type || !String(b.expense_type).trim()) bad(400, 'expense_type is required');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(b.expense_date || ''))) bad(400, 'expense_date (YYYY-MM-DD) is required');
+  if (String(b.expense_date) > todayLocal()) bad(400, 'The expense date cannot be in the future');
 
+  let tr = null;
+  if (b.travel_request_id) {
+    if (!isId(b.travel_request_id)) bad(400, 'Invalid travel request id');
+    ({ rows: [tr] } = await client.query(
+      `SELECT id, travel_type, employee_id, created_by, company_id, status, from_date, to_date,
+              customer_id, project_id, opportunity_id, site_name, po_number
+         FROM travel_requests WHERE id=$1`, [Number(b.travel_request_id)]));
+    const mine = tr && (tr.company_id == null || tr.company_id === companyId) &&
+      (Number(tr.employee_id) === Number(emp.id) || Number(tr.created_by) === Number(actorId));
+    if (!mine) bad(404, 'Travel request not found');
+    if (tr.status !== 'Approved') bad(409, `Claims are filed only against an approved trip — this one is ${tr.status}`);
+  }
+  const links = await resolveLinks(client, companyId, {
+    customer_id: b.customer_id || tr?.customer_id, project_id: b.project_id || tr?.project_id,
+    opportunity_id: b.opportunity_id || tr?.opportunity_id,
+  });
+
+  const rule = await policyRuleFor(client, companyId, emp, b.expense_date);
+  const policyLimit = policyLimitFor(rule, String(b.expense_type));
+  const policyCompliant = !(policyLimit && amount > policyLimit);
+  const total = Math.round((amount + gst) * 100) / 100;
+  return {
+    tr, amount, gst, total, policyLimit, policyCompliant,
+    costType: tr ? (COST_TYPE_MAP[tr.travel_type] ?? null) : null,
+    borneBy: b.borne_by === 'personal' ? 'personal' : 'company',
+    ...links,
+    site_name: b.site_name || tr?.site_name || null,
+    po_number: b.po_number || tr?.po_number || null,
+  };
+}
+
+// ── POST /reimbursement/claims ─────────────────────────────────────────────────
+// Filed for the caller only: employee_id / employee_name / department come from
+// the caller's employee record, never the body. Always created as 'Draft'.
+router.post('/claims', async (req, res) => {
+  const b = req.body || {};
   const companyId = cid(req);
   if (companyId == null) return res.status(400).json({ error: 'Company context required' });
   const empId = await ownEmployeeId(req);
@@ -269,9 +319,6 @@ router.post('/claims', async (req, res) => {
     return res.status(403).json({ error: 'You can only file a claim for yourself' });
   }
   const actorId = uid(req);
-  const total = Math.round((amount + gst) * 100) / 100;
-  const borneBy = b.borne_by === 'personal' ? 'personal' : 'company';
-
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -279,41 +326,15 @@ router.post('/claims', async (req, res) => {
       `SELECT id, first_name, last_name, department, grade, designation, company_id
          FROM employees WHERE id = $1 AND deleted_at IS NULL`, [empId]);
     if (!emp || emp.company_id !== companyId) { await client.query('ROLLBACK'); return res.status(403).json({ error: NOT_LINKED }); }
-
-    // A linked trip must be the claimant's own, in this company.
-    let costType = null;
-    if (b.travel_request_id) {
-      if (!isId(b.travel_request_id)) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'Invalid travel request id' }); }
-      const { rows: [tr] } = await client.query(
-        `SELECT travel_type, employee_id, created_by, company_id FROM travel_requests WHERE id=$1`, [Number(b.travel_request_id)]);
-      const mine = tr && (tr.company_id == null || tr.company_id === companyId) &&
-        (Number(tr.employee_id) === Number(empId) || Number(tr.created_by) === Number(actorId));
-      if (!mine) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Travel request not found' }); }
-      costType = COST_TYPE_MAP[tr.travel_type] ?? null;
-    }
+    const c = await prepareClaim(client, req, b, emp, actorId, companyId);
 
     const dup = await findDuplicate(client, {
       employeeId: empId, companyId, billNumber: b.bill_number ? String(b.bill_number) : null,
-      expenseDate: b.expense_date, expenseType: String(b.expense_type), total,
+      expenseDate: b.expense_date, expenseType: String(b.expense_type), total: c.total,
     });
     if (dup) {
       await client.query('ROLLBACK');
       return res.status(409).json({ code: 'DUPLICATE_CLAIM', error: `This looks like claim ${dup.claim_number} (${dup.status}) filed again — same bill number, or same date, type and amount.` });
-    }
-
-    // Policy check: the limit for this expense type on the claimant's grade.
-    let policyLimit = null;
-    let policyCompliant = true;
-    const { rows: [rule] } = await client.query(`
-      SELECT * FROM travel_policy_rules
-       WHERE is_active=TRUE AND company_id=$1 AND (grade=$2 OR role=$3 OR department=$4)
-       ORDER BY id LIMIT 1`, [companyId, emp.grade || '', emp.designation || '', emp.department || '']);
-    if (rule) {
-      if (b.expense_type === 'Accommodation') policyLimit = rule.hotel_limit_per_day;
-      else if (b.expense_type === 'Food') policyLimit = rule.meal_limit_per_day;
-      else if (b.expense_type === 'Travel') policyLimit = rule.local_conveyance_limit;
-      else policyLimit = rule.miscellaneous_limit;
-      if (policyLimit && policyLimit > 0 && amount > Number(policyLimit)) policyCompliant = false;
     }
 
     const claimNumber = await nextClaimNumber(client);
@@ -330,72 +351,109 @@ router.post('/claims', async (req, res) => {
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$15,$16,$17,
               $18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,'Draft',$32,$33)
       RETURNING *
-    `, [claimNumber, b.travel_request_id || null, empId,
+    `, [claimNumber, c.tr?.id ?? null, empId,
         `${emp.first_name || ''} ${emp.last_name || ''}`.trim(), emp.department || null,
-        b.customer_id || null, b.customer_name || null, b.project_id || null, b.project_number || null,
-        b.site_id || null, b.site_name || null, b.opportunity_id || null, b.po_number || null, b.cost_centre_id || null,
+        c.customer_id, c.customer_name, c.project_id, c.project_number,
+        null, c.site_name, c.opportunity_id, c.po_number, b.cost_centre_id || null,
         b.expense_date, String(b.expense_type), b.expense_category || null,
-        amount, gst, total,
+        c.amount, c.gst, c.total,
         b.remarks ?? null, b.bill_number || null, b.bill_attachment || null, b.google_drive_link || null, b.vendor_name || null,
-        policyLimit, !!b.over_policy || !policyCompliant, b.over_policy_reason || null, policyCompliant,
-        costType, borneBy, companyId, actorId]);
+        c.policyLimit, !c.policyCompliant, b.over_policy_reason || null, c.policyCompliant,
+        c.costType, c.borneBy, companyId, actorId]);
     await client.query('COMMIT');
 
     logAudit({ userId: actorId, module: 'reimbursement', recordId: claim.id,
       recordType: 'expense_claim', action: 'create', newData: claim, req });
     res.status(201).json(claim);
-  } catch {
+  } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
+    if (err?.status) return res.status(err.status).json({ error: err.message });
     res.status(500).json({ error: 'Could not save the claim' });
   } finally { client.release(); }
 });
 
 // ── PUT /reimbursement/claims/:id ─────────────────────────────────────────────
-// The claimant edits their own Draft. Nobody else edits a claim's content.
+// The claimant edits their own Draft — or a REJECTED claim, which goes back to
+// Draft so it can be corrected and submitted again (a rejected claim used to be
+// a dead end). Nobody else edits a claim's content.
 router.put('/claims/:id', captureBefore('expense_claims'), async (req, res) => {
   const b = req.body || {};
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     const claim = await loadClaim(req, req.params.id, client, { lock: true });
-    if (!claim || !(await isClaimant(req, claim))) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Claim not found or not editable' }); }
-    if (claim.status !== 'Draft') { await client.query('ROLLBACK'); return res.status(409).json({ error: `This claim is ${claim.status} and can no longer be edited` }); }
-    const amount = b.amount == null || b.amount === '' ? Number(claim.amount) : Number(b.amount);
-    const gst = b.gst_amount == null || b.gst_amount === '' ? Number(claim.gst_amount || 0) : Number(b.gst_amount);
-    if (!(amount > 0) || !(gst >= 0)) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'amount must be greater than 0' }); }
-    const expenseDate = b.expense_date || claim.expense_date?.toISOString?.().slice(0, 10) || claim.expense_date;
-    const expenseType = b.expense_type || claim.expense_type;
-    const total = Math.round((amount + gst) * 100) / 100;
+    if (!claim || !(await isClaimant(req, claim))) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Claim not found or not editable' });
+    }
+    if (claim.status !== 'Draft' && !REJECTED.includes(claim.status)) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: `This claim is ${claim.status} and can no longer be edited` });
+    }
+    const { rows: [emp] } = await client.query(
+      `SELECT id, department, grade, designation FROM employees WHERE id = $1`, [claim.employee_id]);
+    const merged = { ...claim, expense_date: String(claim.expense_date || '').slice(0, 10), ...b };
+    const c = await prepareClaim(client, req, merged, emp, uid(req), claim.company_id);
     const dup = await findDuplicate(client, {
       employeeId: claim.employee_id, companyId: claim.company_id,
-      billNumber: b.bill_number ?? claim.bill_number, expenseDate, expenseType, total, excludeId: claim.id,
+      billNumber: merged.bill_number || null, expenseDate: merged.expense_date,
+      expenseType: String(merged.expense_type), total: c.total, excludeId: claim.id,
     });
-    if (dup) { await client.query('ROLLBACK'); return res.status(409).json({ code: 'DUPLICATE_CLAIM', error: `This would duplicate claim ${dup.claim_number} (${dup.status}).` }); }
+    if (dup) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ code: 'DUPLICATE_CLAIM', error: `This would duplicate claim ${dup.claim_number} (${dup.status}).` });
+    }
 
     const { rows: [updated] } = await client.query(`
       UPDATE expense_claims SET
-        expense_date=$1, claim_date=$1, expense_type=$2, expense_category=COALESCE($3, expense_category),
-        amount=$4, gst_amount=$5, total_amount=$6,
-        remarks=COALESCE($7, remarks), bill_number=COALESCE($8, bill_number), bill_attachment=COALESCE($9, bill_attachment),
-        google_drive_link=COALESCE($10, google_drive_link), vendor_name=COALESCE($11, vendor_name),
-        customer_name=COALESCE($12, customer_name), project_number=COALESCE($13, project_number), site_name=COALESCE($14, site_name),
-        -- Omitting borne_by leaves the stored value alone rather than
-        -- silently resetting an edited claim back to 'company'.
-        borne_by=COALESCE($15, borne_by),
+        travel_request_id=$1, expense_date=$2, claim_date=$2, expense_type=$3, expense_category=$4,
+        amount=$5, gst_amount=$6, total_amount=$7, remarks=$8, bill_number=$9, bill_attachment=$10,
+        google_drive_link=$11, vendor_name=$12, customer_id=$13, customer_name=$14, project_id=$15,
+        project_number=$16, opportunity_id=$17, site_name=$18, po_number=$19, borne_by=$20,
+        policy_limit=$21, over_policy=$22, over_policy_reason=$23, policy_compliant=$24, cost_type=$25,
+        status='Draft', submitted_at=NULL,
+        manager_approved_by=NULL, manager_approved_at=NULL, manager_remarks=NULL,
+        accounts_verified_by=NULL, accounts_verified_at=NULL, accounts_remarks=NULL,
+        mgmt_approved_by=NULL, mgmt_approved_at=NULL, mgmt_remarks=NULL,
+        gst_verified=FALSE, bill_match_verified=FALSE, duplicate_checked=FALSE,
         updated_at=NOW()
-      WHERE id=$16 AND status='Draft' RETURNING *
-    `, [expenseDate, expenseType, b.expense_category ?? null,
-        amount, gst, total,
-        b.remarks ?? null, b.bill_number ?? null, b.bill_attachment ?? null, b.google_drive_link ?? null, b.vendor_name ?? null,
-        b.customer_name ?? null, b.project_number ?? null, b.site_name ?? null,
-        b.borne_by === 'personal' ? 'personal' : b.borne_by === 'company' ? 'company' : null,
-        claim.id]);
+      WHERE id=$26 AND status=$27 RETURNING *
+    `, [c.tr?.id ?? null, merged.expense_date, String(merged.expense_type), merged.expense_category || null,
+        c.amount, c.gst, c.total, merged.remarks ?? null, merged.bill_number || null, merged.bill_attachment || null,
+        merged.google_drive_link || null, merged.vendor_name || null, c.customer_id, c.customer_name, c.project_id,
+        c.project_number, c.opportunity_id, c.site_name, c.po_number, c.borneBy,
+        c.policyLimit, !c.policyCompliant, merged.over_policy_reason || null, c.policyCompliant, c.costType,
+        claim.id, claim.status]);
+    if (!updated) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'This claim was acted on by someone else — reload it' });
+    }
+    // A corrected rejection starts a fresh approval trail.
+    if (REJECTED.includes(claim.status)) await client.query(`DELETE FROM expense_claim_approvals WHERE claim_id = $1`, [claim.id]);
     await client.query('COMMIT');
+    logAudit({ userId: uid(req), module: 'reimbursement', recordId: claim.id, recordType: 'expense_claim',
+      action: REJECTED.includes(claim.status) ? 'reopen' : 'update', oldData: claim, newData: updated, req });
     res.json(updated);
-  } catch {
+  } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
+    if (err?.status) return res.status(err.status).json({ error: err.message });
     res.status(500).json({ error: 'Could not update the claim' });
   } finally { client.release(); }
+});
+
+// ── DELETE /reimbursement/claims/:id ──────────────────────────────────────────
+// The claimant discards their own Draft (soft delete).
+router.delete('/claims/:id', async (req, res) => {
+  try {
+    const claim = await loadClaim(req, req.params.id);
+    if (!claim || !(await isClaimant(req, claim))) return res.status(404).json({ error: 'Claim not found' });
+    const { rows: [gone] } = await pool.query(
+      `UPDATE expense_claims SET deleted_at = NOW(), updated_at = NOW()
+        WHERE id = $1 AND status = 'Draft' AND deleted_at IS NULL RETURNING id`, [claim.id]);
+    if (!gone) return res.status(409).json({ error: `Only a draft can be deleted — this claim is ${claim.status}` });
+    logAudit({ userId: uid(req), module: 'reimbursement', recordId: claim.id, recordType: 'expense_claim', action: 'delete', oldData: claim, req });
+    res.json({ message: 'Draft deleted' });
+  } catch { res.status(500).json({ error: 'Could not delete the claim' }); }
 });
 
 // ── POST /reimbursement/claims/:id/submit ─────────────────────────────────────
@@ -404,13 +462,24 @@ router.post('/claims/:id/submit', async (req, res) => {
     const actorId = uid(req);
     const claim = await loadClaim(req, req.params.id);
     if (!claim || !(await isClaimant(req, claim))) return res.status(404).json({ error: 'Claim not found' });
+    if (claim.over_policy && !String(claim.over_policy_reason || '').trim()) {
+      return res.status(422).json({ code: 'OVER_POLICY_REASON', error: `This claim is over your policy limit of ₹${Number(claim.policy_limit || 0).toLocaleString('en-IN')} — edit it and give a reason before submitting.` });
+    }
+    // Visit-type trips need their visit report submitted before the spend is claimed.
+    if (claim.travel_request_id) {
+      const { rows: [tr] } = await pool.query(
+        `SELECT tr.travel_type, EXISTS (SELECT 1 FROM visit_reports vr WHERE vr.travel_request_id = tr.id
+                  AND vr.status IN ('Submitted','Completed')) AS has_report
+           FROM travel_requests tr WHERE tr.id = $1`, [claim.travel_request_id]);
+      if (tr && MANDATORY_REPORT_TYPES.has(tr.travel_type) && !tr.has_report) {
+        return res.status(422).json({ code: 'VISIT_REPORT_REQUIRED', error: `A ${tr.travel_type} needs its visit report submitted first (Travel Desk → Visit Reports).` });
+      }
+    }
     const submitted = await transition(pool, claim.id, 'Draft', { status: 'Submitted', submitted_at: new Date() });
     if (!submitted) return res.status(409).json({ error: `This claim is ${claim.status} — only a draft can be submitted` });
     await openLevel(pool, claim.id, 1, 'Reporting Manager');
 
-    // recipientIds are employees.id — resolved to the claimant's login. This
-    // used to pass the employee id as a USER id, notifying whichever login
-    // happened to share the number.
+    // recipientIds are employees.id — resolved to the claimant's login.
     notifyWorkflowEvent('submitted', { module: 'ExpenseClaim', recordId: claim.id, recipientIds: [claim.employee_id] });
     logAudit({ userId: actorId, module: 'reimbursement', recordId: claim.id,
       recordType: 'expense_claim', action: 'submit', newData: { status: 'Submitted' }, req });
@@ -432,8 +501,13 @@ function reviewStep({ level, levelName, from, approved, rejected, nextLevel, byC
       const allowed = await authorize(req, claim);
       if (allowed !== true) return res.status(403).json({ error: allowed || 'You do not have permission for this step' });
       if (claim.status !== from) return res.status(409).json({ error: `This claim is ${claim.status} — this step needs ${from}` });
+      // Accounts verification is the accountant's own check — it used to be
+      // sent as "all three verified" by the button itself.
+      if (action === 'accounts' && status === 'Approved' && !(req.body.bill_match_verified === true && req.body.duplicate_checked === true)) {
+        return res.status(400).json({ error: 'Tick "bill matches the claim" and "checked for duplicates" before verifying' });
+      }
 
-      const newStatus = status === 'Approved' ? approved : rejected;
+      const newStatus = status === 'Approved' ? (typeof approved === 'function' ? approved(claim) : approved) : rejected;
       const client = await pool.connect();
       let moved;
       try {
@@ -447,7 +521,7 @@ function reviewStep({ level, levelName, from, approved, rejected, nextLevel, byC
         moved = await transition(client, claim.id, from, set);
         if (moved) {
           await recordLevel(client, claim.id, level, levelName, { status, approverId: actorId, remarks });
-          if (status === 'Approved' && nextLevel) await openLevel(client, claim.id, nextLevel.level, nextLevel.name);
+          if (status === 'Approved' && nextLevel && newStatus !== 'Closed') await openLevel(client, claim.id, nextLevel.level, nextLevel.name);
         }
         await client.query('COMMIT');
       } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
@@ -477,6 +551,7 @@ router.put('/claims/:id/manager-approve', reviewStep({
     const auth = await authorizeManagerApproval({
       actorEmployeeId: await ownEmployeeId(req),
       actorRole: req.user?.role,
+      actorRoles: rolesOf(req),
       requesterEmployeeId: claim.employee_id,
       delegateApproverId: claim.delegate_approver_id,
     });
@@ -497,6 +572,7 @@ router.post('/claims/:id/delegate', async (req, res) => {
     const auth = await authorizeManagerApproval({
       actorEmployeeId: await ownEmployeeId(req),
       actorRole: req.user?.role,
+      actorRoles: rolesOf(req),
       requesterEmployeeId: claim.employee_id,
       delegateApproverId: claim.delegate_approver_id,
     });
@@ -531,7 +607,9 @@ router.put('/claims/:id/accounts-verify', reviewStep({
 // ── PUT /reimbursement/claims/:id/mgmt-approve ────────────────────────────────
 router.put('/claims/:id/mgmt-approve', reviewStep({
   level: 3, levelName: 'Management Approval', from: 'Accounts Verified',
-  approved: 'Mgmt Approved', rejected: 'Mgmt Rejected',
+  // A personal-borne line is never paid, so once approved it is finished —
+  // it used to wait at 'Mgmt Approved' forever and block project closure.
+  approved: (claim) => (claim.borne_by === 'personal' ? 'Closed' : 'Mgmt Approved'), rejected: 'Mgmt Rejected',
   nextLevel: { level: 4, name: 'Finance Payment' },
   byCol: 'mgmt_approved_by', atCol: 'mgmt_approved_at', remarksCol: 'mgmt_remarks', action: 'mgmt',
   authorize: async (req) => (await can(req, 'expense_claims', 'approve')) || 'Management approval needs the expense-claims approval permission',
@@ -612,6 +690,12 @@ router.put('/claims/:id/pay', async (req, res) => {
     if (!paid) { await client.query('ROLLBACK'); return res.status(409).json({ error: 'This claim was acted on by someone else — reload it' }); }
     await recordLevel(client, claim.id, 4, 'Finance Payment', { status: 'Paid', approverId: actorId, remarks: null });
 
+    // Post it to the books in the same transaction (travelGl.service.js) — a
+    // paid claim used to leave no journal entry at all. Refused until Finance
+    // has chosen the travel ledger accounts.
+    const je = await postClaimPayment(client, claim, { date: payment_date, userId: actorId, advanceAdjusted, netPayable });
+    await client.query(`UPDATE expense_claims SET journal_entry_id = $1 WHERE id = $2`, [je.id, claim.id]);
+
     // Post to project cost transactions (Part 8) — once per claim.
     if (claim.project_id || claim.customer_id) {
       await client.query(`
@@ -639,8 +723,11 @@ router.put('/claims/:id/pay', async (req, res) => {
       advance_adjusted: advanceAdjusted,
       net_payable: netPayable,
     });
-  } catch {
+  } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
+    if (err instanceof TravelGlError) return res.status(err.status).json({ code: err.code, error: err.message, problems: err.problems });
+    // Ledger guards (closed period, locked date, inactive account) carry a 4xx.
+    if (err?.status && err.status < 500) return res.status(err.status).json({ code: err.code, error: err.message });
     res.status(500).json({ error: 'Could not record the payment' });
   } finally { client.release(); }
 });
@@ -750,6 +837,23 @@ router.get('/pending-for-approval', async (req, res) => {
            OR ec.status = ANY($3) )
       ORDER BY ec.submitted_at ASC
     `, [companyId, eid, statuses]);
+    // Level 1 also falls to HR / admin when the claimant has no active
+    // reporting manager (managerApprovalAuthz) — those claims were decidable
+    // but never listed, so nobody saw them waiting.
+    const seen = new Set(rows.map(r => r.id));
+    const canOverride = rolesOf(req).some(r => ['admin', 'super_admin', 'hr', 'hr_manager', 'hr_exec'].includes(r));
+    const { rows: orphans } = !canOverride ? { rows: [] } : await pool.query(`
+      SELECT ec.*, CONCAT(e.first_name,' ',e.last_name) AS employee_full_name, e.designation, e.department AS emp_department
+        FROM expense_claims ec LEFT JOIN employees e ON e.id = ec.employee_id
+       WHERE ec.company_id = $1 AND ec.deleted_at IS NULL AND ec.status = 'Submitted'
+         AND ec.employee_id IS DISTINCT FROM $2
+         AND (e.reporting_manager_id IS NULL OR e.reporting_manager_id IS DISTINCT FROM $2)`, [companyId, eid]);
+    for (const c of orphans) {
+      if (seen.has(c.id)) continue;
+      const a = await authorizeManagerApproval({ actorEmployeeId: eid === -1 ? null : eid, actorRole: req.user?.role, actorRoles: rolesOf(req),
+        requesterEmployeeId: c.employee_id, delegateApproverId: c.delegate_approver_id });
+      if (a.authorized) rows.push(c);
+    }
     res.json(rows);
   } catch { res.status(500).json({ error: 'Could not load pending claims' }); }
 });
@@ -773,31 +877,13 @@ router.get('/over-policy', async (req, res) => {
 });
 
 // ── GET /reimbursement/closure-check ──────────────────────────────────────────
+// Same rule as GET /travel/closure-check and the project / opportunity close
+// routes (travel.routes.js travelClosureBlockers).
 router.get('/closure-check', async (req, res) => {
   try {
-    const { project_id, opportunity_id } = req.query;
-    const companyId = cid(req);
-    const conditions = [];
-    const params = [companyId];
-    let idx = 2;
-    if (project_id) { conditions.push(`project_id=$${idx++}`); params.push(project_id); }
-    if (opportunity_id) { conditions.push(`opportunity_id=$${idx++}`); params.push(opportunity_id); }
-
-    if (!conditions.length || companyId == null) return res.json({ canClose: true, blocking: [] });
-    const where = conditions.join(' OR ');
-
-    const pending = await pool.query(
-      `SELECT COUNT(*) FROM expense_claims
-       WHERE company_id = $1 AND deleted_at IS NULL AND (${where})
-         AND status NOT IN ('Paid','Closed','Manager Rejected','Accounts Rejected','Mgmt Rejected')`,
-      params);
-
-    const count = parseInt(pending.rows[0].count);
-    res.json({
-      canClose: count === 0,
-      blocking: count > 0 ? [{ type: 'expense_claims', count }] : [],
-    });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+    const blocking = await travelClosureBlockers(cid(req), req.query);
+    res.json({ canClose: blocking.length === 0, blocking });
+  } catch { res.status(500).json({ error: 'Could not check travel blockers' }); }
 });
 
 // ── GET /reimbursement/project-cost-summary ────────────────────────────────────

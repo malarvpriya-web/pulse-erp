@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   ArrowLeft, Building2, Phone, Globe, MapPin, Users, TrendingUp, Mail,
   Edit2, Plus, ChevronRight, Target, Activity, FileText, X, Contact,
-  Package, LayoutDashboard, UserCog, Network,
+  Package, LayoutDashboard, UserCog, Network, Plane,
 } from 'lucide-react';
 import api from '@/services/api/client';
 import './AccountDetail.css';
@@ -63,6 +63,9 @@ const TABS = [
   { key: 'team',          label: 'Account Team',   icon: UserCog },
   { key: 'hierarchy',     label: 'Hierarchy',      icon: Network },
   { key: 'activity',      label: 'Activity',       icon: Activity },
+  // Trips and visit reports linked to this customer (Travel Desk, 26 Nov 26) —
+  // GET /travel/customer-360 existed but no screen showed it.
+  { key: 'travel',        label: 'Visits & Travel', icon: Plane },
 ];
 
 // ── Products-bought panel ─────────────────────────────────────────────────────
@@ -413,6 +416,55 @@ const ROLE_TONE = {
   executive_sponsor: { bg: '#fef3c7', color: '#92400e' },
 };
 const roleTone = r => ROLE_TONE[r] || { bg: '#f3f4f6', color: '#4b5563' };
+
+/** Visit reports, trips and paid travel cost linked to this customer. */
+function TravelPanel({ accountId }) {
+  const [d, setD] = useState(null);
+  const [err, setErr] = useState('');
+  useEffect(() => {
+    let live = true;
+    api.get(`/travel/customer-360/${accountId}`)
+      .then(r => { if (live) setD(r.data); })
+      .catch(e => { if (live) setErr(e?.response?.data?.error || 'Could not load travel for this customer'); });
+    return () => { live = false; };
+  }, [accountId]);
+  if (err) return <div className="ad-empty"><p>{err}</p></div>;
+  if (!d) return <div className="ad-empty"><p>Loading…</p></div>;
+  const cell = { padding: '8px 12px', fontSize: 13, borderBottom: '1px solid #f3f4f6', textAlign: 'left' };
+  return (
+    <div>
+      <div className="ad-panel-hd">
+        <span className="ad-panel-count">
+          {d.visits.length} visit report{d.visits.length !== 1 ? 's' : ''} · {d.travel_requests.length} trip{d.travel_requests.length !== 1 ? 's' : ''} · travel cost paid {fmtRs(d.total_travel_cost)}
+        </span>
+      </div>
+      {d.visits.length === 0 && d.travel_requests.length === 0 ? (
+        <div className="ad-empty"><Plane size={36} color="#d1d5db" /><p>No trips or visit reports linked to this customer yet</p></div>
+      ) : (
+        <>
+          {d.visits.length > 0 && (
+            <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: 18 }}>
+              <thead><tr>{['Report', 'Visit', 'Date', 'Visited by', 'Outcome', 'Status'].map(h => <th key={h} style={{ ...cell, fontWeight: 600, fontSize: 12 }}>{h}</th>)}</tr></thead>
+              <tbody>{d.visits.map(v => (
+                <tr key={v.id}><td style={cell}>{v.report_number}</td><td style={cell}>{v.visit_type}<div style={{ fontSize: 11, color: '#6b7280' }}>{v.purpose}</div></td>
+                  <td style={cell}>{fmtDate(v.visit_date)}</td><td style={cell}>{v.visited_by_name}</td><td style={cell}>{v.outcome || '—'}</td><td style={cell}>{v.status}</td></tr>))}
+              </tbody>
+            </table>
+          )}
+          {d.travel_requests.length > 0 && (
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead><tr>{['Trip', 'Type', 'Destination', 'Dates', 'Traveller', 'Estimate', 'Status'].map(h => <th key={h} style={{ ...cell, fontWeight: 600, fontSize: 12 }}>{h}</th>)}</tr></thead>
+              <tbody>{d.travel_requests.map(t => (
+                <tr key={t.id}><td style={cell}>{t.request_number}</td><td style={cell}>{t.travel_type || '—'}</td><td style={cell}>{t.destination}</td>
+                  <td style={cell}>{fmtDate(t.from_date)} → {fmtDate(t.to_date)}</td><td style={cell}>{t.employee_name}</td><td style={cell}>{fmtRs(t.budget)}</td><td style={cell}>{t.status}</td></tr>))}
+              </tbody>
+            </table>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
 
 function TeamPanel({ accountId, showToast }) {
   const [rows,      setRows]      = useState([]);
@@ -934,6 +986,7 @@ export default function AccountDetail() {
 
         {/* ── Account Team ── */}
         {tab === 'team' && <TeamPanel accountId={accountId} showToast={showToast} />}
+        {tab === 'travel' && <TravelPanel accountId={accountId} />}
 
         {/* ── Hierarchy ── */}
         {tab === 'hierarchy' && (

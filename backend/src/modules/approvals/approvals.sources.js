@@ -722,7 +722,8 @@ const travel = {
   },
 };
 
-const ADV_STAGE = { 'Pending Finance': 'L1 — Finance review', 'Pending Manager': 'L2 — Reporting manager' };
+// Reporting manager FIRST, then Finance (owner, 26 Nov 26).
+const ADV_STAGE = { 'Pending Manager': 'L1 — Reporting manager', 'Pending Finance': 'L2 — Finance review' };
 const advance = {
   type: 'adv', label: 'Travel Advance', page: 'TravelAdvances', myPage: 'TravelAdvances',
   // travel_advances.employee_id holds a users.id (travel.routes.js) — resolve
@@ -743,7 +744,10 @@ const advance = {
   },
   stage: (r) => ADV_STAGE[r.raw_status],
   canAct(ctx, r) {
-    if (r.raw_status === 'Pending Finance') return holds(ctx, 'admin', 'super_admin', 'finance');
+    if (r.raw_status === 'Pending Finance') {
+      return holds(ctx, 'admin', 'super_admin', 'finance', 'finance_manager', 'accounts_exec')
+        && String(r.requester_emp_id ?? '') !== String(ctx.employeeId ?? '');
+    }
     return managerApproves(ctx, r.requester_emp_id, r.delegate_emp_id);
   },
   actions(r) {
@@ -761,15 +765,15 @@ const advance = {
              CONCAT('Travel advance · ', COALESCE(a.purpose, '#' || a.id)) AS request_title,
              a.amount, 'INR' AS amount_unit, a.created_at AS request_date, a.status AS raw_status,
              COALESCE(a.manager_comments, a.finance_comments) AS comments,
-             CASE a.status WHEN 'Pending Finance' THEN 'Finance'
-                           WHEN 'Pending Manager' THEN 'Reporting manager' END AS current_approver,
+             CASE a.status WHEN 'Pending Manager' THEN 'Reporting manager'
+                           WHEN 'Pending Finance' THEN 'Finance' END AS current_approver,
              COALESCE(a.manager_at, a.finance_at) AS decided_at
         FROM travel_advances a
        WHERE a.employee_id = $1`, [ctx.userId]);
   },
   myActions(r) {
     // Native resubmit after a finance rejection (PUT /travel/advances/:id/resubmit).
-    return r.raw_status === 'Finance Rejected' ? { resubmitPage: 'TravelAdvances' } : {};
+    return ['Finance Rejected', 'Rejected'].includes(r.raw_status) ? { resubmitPage: 'TravelAdvances' } : {};
   },
   decided(ctx) {
     return q(`

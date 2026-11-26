@@ -65,6 +65,11 @@ async function sweep(companyId) {
   await pool.query(`DELETE FROM expense_claims WHERE company_id = $1`, [companyId]);
   await pool.query(`UPDATE employees SET reporting_manager_id = NULL WHERE company_id = $1`, [companyId]);
   await pool.query(`DELETE FROM employees WHERE company_id = $1`, [companyId]);
+  // Claim payments post journal entries (travelGl.service.js, 26 Nov 26).
+  await pool.query(`DELETE FROM journal_lines WHERE entry_id IN (SELECT id FROM journal_entries WHERE company_id = $1)`, [companyId]);
+  await pool.query(`DELETE FROM journal_entries WHERE company_id = $1`, [companyId]);
+  await pool.query(`DELETE FROM company_settings WHERE company_id = $1 AND module = 'travel_gl_mapping'`, [companyId]);
+  await pool.query(`DELETE FROM projects WHERE company_id = $1`, [companyId]);
 }
 async function addEmployee(company, code, extra = {}) {
   const { rows: [r] } = await pool.query(
@@ -89,7 +94,8 @@ async function toMgmtApproved(id, claimantUser = claimant) {
   // the reporting manager where there is one; otherwise the HR/admin fallback (§203)
   const approver = claimantUser === claimant || claimantUser === peer ? mgr : mgmt;
   expect((await call(approver, 'put', `/api/reimbursement/claims/${id}/manager-approve`).send({ status: 'Approved' })).status).toBe(200);
-  expect((await call(accounts, 'put', `/api/reimbursement/claims/${id}/accounts-verify`).send({ status: 'Approved', gst_verified: true })).status).toBe(200);
+  // The accountant ticks the bill and duplicate checks themselves (26 Nov 26).
+  expect((await call(accounts, 'put', `/api/reimbursement/claims/${id}/accounts-verify`).send({ status: 'Approved', gst_verified: true, bill_match_verified: true, duplicate_checked: true })).status).toBe(200);
   expect((await call(mgmt, 'put', `/api/reimbursement/claims/${id}/mgmt-approve`).send({ status: 'Approved' })).status).toBe(200);
 }
 
@@ -103,6 +109,19 @@ beforeAll(async () => {
   E.F = await addEmployee(co, 'EMP013');
   E.G = await addEmployee(co, 'EMP014');
   E.O = await addEmployee(other, 'EMP010');
+  // Claims link to REAL projects now (the id is checked inside the company),
+  // and paying posts to the ledger accounts Finance mapped for the company.
+  for (const k of ['PRJ1', 'PRJ2']) {
+    const { rows: [p] } = await pool.query(
+      `INSERT INTO projects (project_code, project_name, company_id) VALUES ($1, $1, $2) RETURNING id`,
+      [`${PREFIX}-${k}-${process.pid}`, co.companyId]);
+    E[k] = p.id;
+  }
+  await pool.query(
+    `INSERT INTO company_settings (company_id, module, settings, updated_at) VALUES ($1, 'travel_gl_mapping', $2::jsonb, NOW())
+     ON CONFLICT (company_id, module) DO UPDATE SET settings = EXCLUDED.settings`,
+    [co.companyId, JSON.stringify({ travel_expense_account_code: '5026', advance_receivable_account_code: '1013',
+      payment_account_code: '1002', approved_by: 1, approved_at: new Date().toISOString() })]);
   claimant = await addUser(pool, co, { label: 'claimant', roleCode: 'employee' }); await link(claimant, E.A);
   peer = await addUser(pool, co, { label: 'peer', roleCode: 'employee' }); await link(peer, E.P);
   mgr = await addUser(pool, co, { label: 'mgr', roleCode: 'manager' }); await link(mgr, E.M);
@@ -183,7 +202,7 @@ describe('who reads a claim', () => {
 
 describe('the approval chain', () => {
   let id;
-  beforeAll(async () => { id = (await fileClaim(claimant, { project_id: 999001 })).body.id; });
+  beforeAll(async () => { id = (await fileClaim(claimant, { project_id: E.PRJ1 })).body.id; });
 
   it('only the claimant submits, once', async () => {
     expect((await call(peer, 'post', `/api/reimbursement/claims/${id}/submit`)).status).toBe(404);
@@ -207,7 +226,9 @@ describe('the approval chain', () => {
   it('level 2: expense_claims:edit (accounts) — the manager cannot verify', async () => {
     expect((await call(mgr, 'put', `/api/reimbursement/claims/${id}/accounts-verify`).send({ status: 'Approved' })).status).toBe(403);
     expect((await call(otherFin, 'put', `/api/reimbursement/claims/${id}/accounts-verify`).send({ status: 'Approved' })).status).toBe(404);
-    expect((await call(accounts, 'put', `/api/reimbursement/claims/${id}/accounts-verify`).send({ status: 'Approved', bill_match_verified: true })).status).toBe(200);
+    // The accountant must tick BOTH checks themselves (26 Nov 26).
+    expect((await call(accounts, 'put', `/api/reimbursement/claims/${id}/accounts-verify`).send({ status: 'Approved', bill_match_verified: true })).status).toBe(400);
+    expect((await call(accounts, 'put', `/api/reimbursement/claims/${id}/accounts-verify`).send({ status: 'Approved', bill_match_verified: true, duplicate_checked: true })).status).toBe(200);
   });
 
   it('level 3: expense_claims:approve (management) — accounts cannot approve it', async () => {
@@ -235,6 +256,12 @@ describe('the approval chain', () => {
     expect(again.status).toBe(409);
     expect((await claimRow(id)).payment_ref).toBe('R1');
     expect(await costRows(id)).toBe(1);
+    // posted to the books, balanced, once
+    const je = (await claimRow(id)).journal_entry_id;
+    expect(je).toBeTruthy();
+    const { rows: [t] } = await pool.query('SELECT status, total_debit, total_credit FROM journal_entries WHERE id = $1', [je]);
+    expect(t.status).toBe('posted');
+    expect(Number(t.total_debit)).toBe(Number(t.total_credit));
     expect(notify.calls.some(c => c.event === 'paid' && c.ctx.recordId === id)).toBe(true);
   });
 });
@@ -257,7 +284,7 @@ describe('nobody acts on their own claim', () => {
 
 describe('races and duplicates downstream', () => {
   it('two simultaneous payments: exactly one succeeds, one cost row, one payment', async () => {
-    const id = (await fileClaim(peer, { project_id: 999002 })).body.id;
+    const id = (await fileClaim(peer, { project_id: E.PRJ2 })).body.id;
     await toMgmtApproved(id, peer);
     const body = { payment_ref: 'RACE', payment_date: TODAY, payment_mode: 'NEFT' };
     const [a, b] = await Promise.all([

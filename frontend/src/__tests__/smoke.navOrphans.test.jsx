@@ -75,7 +75,6 @@ import SerialTracking       from '../features/inventory/pages/SerialTracking';
 import EngineeringDev       from '../features/engineering/pages/EngineeringDev';
 import TallyIntegration     from '../features/admin/pages/TallyIntegration';
 import ApprovalCenter       from '../features/approvals/pages/ApprovalCenter';  // also serves the MyRequests page key
-import TravelExpenses       from '../features/travel/pages/TravelExpenses';
 import ProjectProfitability from '../features/projects/pages/ProjectProfitability';
 // The personal dashboard that predates the role-aware Home. Surfaced at
 // HR > My Dashboard; previously reachable only via global search.
@@ -105,7 +104,6 @@ const PAGES = [
   ['EngineeringDev',        EngineeringDev],
   ['TallyIntegration',      TallyIntegration],
   ['ApprovalCenter',        ApprovalCenter],
-  ['TravelExpenses',        TravelExpenses],
   ['ProjectProfitability',  ProjectProfitability],
   ['EmployeeDashboard',     EmployeeDashboard],
   ['PunchImport',           PunchImport],

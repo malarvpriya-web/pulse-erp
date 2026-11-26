@@ -86,9 +86,15 @@ router.get('/summary/:project_id', requirePermission('projects', 'view'), async 
         SELECT COALESCE(SUM(hours * COALESCE(billing_rate,0)),0) AS labour_cost
         FROM timesheets WHERE project_id=$1 AND status='Approved'
       `, [pid]).catch(() => ({ rows: [{ labour_cost: 0 }] })),
+      // ACTUAL travel spend (26 Nov 26): paid company-borne expense claims on
+      // the project plus confirmed travel-desk bookings for its trips. This
+      // used to sum the ESTIMATED budget typed on approved trips — and no trip
+      // carried a project_id, so it was always 0.
       pool.query(`
-        SELECT COALESCE(SUM(budget),0) AS travel_cost
-        FROM travel_requests WHERE project_id=$1 AND status='Approved'
+        SELECT COALESCE((SELECT SUM(total_amount) FROM expense_claims
+                          WHERE project_id=$1 AND status='Paid' AND borne_by='company' AND deleted_at IS NULL), 0)
+             + COALESCE((SELECT SUM(tb.amount) FROM travel_bookings tb JOIN travel_requests tr ON tr.id = tb.travel_request_id
+                          WHERE tr.project_id=$1 AND tb.status='Confirmed'), 0) AS travel_cost
       `, [pid]).catch(() => ({ rows: [{ travel_cost: 0 }] })),
       // Three defects in one line, all of which INFLATED a project's cost:
       //

@@ -665,14 +665,20 @@ export const ROUTES = {
   TravelCalendar:         { component: lazy(() => import('@/features/travel/pages/TravelCalendar')) },
   TravelBookings:         { component: lazy(() => import('@/features/travel/pages/TravelBookings')) },
   TravelAdvances:         { component: lazy(() => import('@/features/travel/pages/TravelAdvances')) },
-  TravelExpenses:         { component: lazy(() => import('@/features/travel/pages/TravelExpenses')) },
   TravelApprovals:        { component: lazy(() => import('@/features/travel/pages/TravelApprovals')) },
   TravelAnalytics:        { component: lazy(() => import('@/features/travel/pages/TravelAnalytics')) },
-  TravelEntry:            { component: lazy(() => import('@/features/travel/pages/TravelEntry')) },
   TravelPayment:          { component: lazy(() => import('@/features/travel/pages/TravelPayment')) },
   TravelAudit:            { component: lazy(() => import('@/features/travel/pages/TravelAudit')) },
-  ExpenseReview:          { component: lazy(() => import('@/features/travel/pages/ExpenseReview')) },
-  CustomerVisits:         { component: lazy(() => import('@/features/travel/pages/CustomerVisits')) },
+  // Merged away 26 Nov 26 (Travel Desk audit, owner: "merge"). Old links land
+  // where the work now lives:
+  //   Trip Expenses  → Expense Claims (one claim system, one table)
+  //   Expense Review → Travel Approvals (it approved TRIPS, a duplicate)
+  //   Travel Entry   → Travel Requests (a read-only copy of the same list)
+  //   Customer Visits→ Visit Reports (one visit register)
+  TravelExpenses:         { component: () => <Navigate to="/TravelExpenseCenter?tab=claims" replace /> },
+  ExpenseReview:          { component: () => <Navigate to="/TravelApprovals" replace /> },
+  TravelEntry:            { component: () => <Navigate to="/MyTravel?tab=requests" replace /> },
+  CustomerVisits:         { component: () => <Navigate to="/TravelVisits" replace /> },
   ExpenseClaims:          { component: lazy(() => import('@/features/travel/pages/ExpenseClaims')) },
   TravelPolicyEngine:     { component: lazy(() => import('@/features/travel/pages/TravelPolicyEngine')) },
   VisitReports:           { component: lazy(() => import('@/features/travel/pages/VisitReports')) },
@@ -1522,9 +1528,9 @@ export const NAV_ITEMS = [
     { name: 'Manager',                   separator: true },
     { name: 'Travel Approvals',          page: 'TravelApprovals' },
     { name: 'Employee',                  separator: true },
-    { name: 'My Travel',                 page: 'MyTravel' },   // Entry·Requests·Bookings·Advances·Calendar
-    { name: 'Expenses',                  page: 'TravelExpenseCenter' },   // Claims·Trip expenses·Review·Payment
-    { name: 'Visit Reports',             page: 'TravelVisits' },   // Reports·Customer visits
+    { name: 'My Travel',                 page: 'MyTravel' },   // Requests·Bookings·Advances·Calendar
+    { name: 'Expenses',                  page: 'TravelExpenseCenter' },   // Claims·Payment
+    { name: 'Visit Reports',             page: 'TravelVisits' },   // Customer Visits merged in (26 Nov 26)
 
     // ── Consolidated into the hubs above (2026-09-16 IA pass) ──────────
     // These rows are NOT drawn in the sidebar — Sidebar.jsx skips any entry
@@ -1533,16 +1539,12 @@ export const NAV_ITEMS = [
     // which makes canRoleAccessPageBySection wave it through for every
     // role. Keeping them preserves the section gate exactly, and TabHub
     // re-checks each tab with canRoleOpenPage() before drawing it.
-    { name: 'TravelEntry',               page: 'TravelEntry', inHub: 'MyTravel' },
     { name: 'TravelRequests',            page: 'TravelRequests', inHub: 'MyTravel' },
     { name: 'ExpenseClaims',             page: 'ExpenseClaims', inHub: 'TravelExpenseCenter' },
-    { name: 'TravelExpenses',            page: 'TravelExpenses', inHub: 'TravelExpenseCenter' },
     { name: 'TravelAdvances',            page: 'TravelAdvances', inHub: 'MyTravel' },
     { name: 'TravelBookings',            page: 'TravelBookings', inHub: 'MyTravel' },
     { name: 'VisitReports',              page: 'VisitReports', inHub: 'TravelVisits' },
-    { name: 'CustomerVisits',            page: 'CustomerVisits', inHub: 'TravelVisits' },
     { name: 'TravelCalendar',            page: 'TravelCalendar', inHub: 'MyTravel' },
-    { name: 'ExpenseReview',             page: 'ExpenseReview', inHub: 'TravelExpenseCenter' },
     { name: 'TravelPayment',             page: 'TravelPayment', inHub: 'TravelExpenseCenter' },
     { name: 'TravelAudit',               page: 'TravelAudit', inHub: 'TravelInsights' },
     { name: 'TravelCommandCenter',       page: 'TravelCommandCenter', inHub: 'TravelInsights' },

@@ -120,8 +120,13 @@ export async function computeFnf(db, employeeId, { companyId, actorId = null, op
   // travel_advances.employee_id stores users.id for most rows (see computeClearanceBlockers).
   // Only money actually handed over is recoverable.
   const { rows: [adv] } = await db.query(
+    // 'Partially Settled' still owes the rest. Matched on the traveller's login or
+    // the advance's trip — `employee_id = $1` compared an employees.id with a
+    // users.id and could pick up someone else's advance.
     `SELECT COALESCE(SUM(amount - COALESCE(settled_amount, 0)), 0) AS outstanding FROM travel_advances
-      WHERE status = 'Disbursed' AND (employee_id IN (SELECT id FROM users WHERE employee_id = $1) OR employee_id = $1)`, [employeeId]);
+      WHERE status IN ('Disbursed', 'Partially Settled')
+        AND (employee_id IN (SELECT id FROM users WHERE employee_id = $1)
+             OR travel_request_id IN (SELECT id FROM travel_requests WHERE employee_id = $1))`, [employeeId]);
   const { rows: [bonus] } = await db.query(
     `SELECT COALESCE(SUM(bonus), 0) AS paid FROM payroll_runs
       WHERE employee_id = $1 AND LOWER(status) IN ('approved', 'paid', 'processed')
@@ -133,7 +138,11 @@ export async function computeFnf(db, employeeId, { companyId, actorId = null, op
       WHERE employee_id = $1 AND LOWER(status) = 'pending' AND make_date(year, month, 1) < make_date($2::int, $3::int, 1)`, [employeeId, year, month]);
   if (earlier?.n) warnings.push({ code: 'EARLIER_RUNS_UNPAID', message: `${earlier.n} earlier payroll run(s) are still unpaid and are not included here. Pay or remove them separately.` });
   const { rows: [claims] } = await db.query(
-    `SELECT COUNT(*)::int AS n FROM expense_claims WHERE employee_id = $1 AND LOWER(status) = 'approved' AND paid_at IS NULL`, [employeeId]);
+    // Claims still in the workflow (it never writes 'approved', so this warning
+    // could not fire). Company-borne only — a personal line is never paid.
+    `SELECT COUNT(*)::int AS n FROM expense_claims
+      WHERE employee_id = $1 AND deleted_at IS NULL AND borne_by = 'company'
+        AND status IN ('Submitted', 'Manager Approved', 'Accounts Verified', 'Mgmt Approved')`, [employeeId]);
   // Leave encashment claims (encashment.routes.js). A pending one would pay
   // the same days this settlement pays; an approved one not yet paid sits in a
   // payroll month that may never be generated for a leaver.
@@ -143,7 +152,7 @@ export async function computeFnf(db, employeeId, { companyId, actorId = null, op
        FROM leave_encashments WHERE employee_id = $1`, [employeeId]);
   if (enc?.pending) warnings.push({ code: 'ENCASHMENT_CLAIMS_PENDING', message: `${enc.pending} leave encashment claim(s) are still pending. Cancel them on the Encashment page — this settlement pays the unused leave.` });
   if (enc?.unpaid) warnings.push({ code: 'ENCASHMENT_CLAIMS_UNPAID', message: `${enc.unpaid} approved leave encashment(s) are not yet paid in payroll. Their days are already out of the balance here, so pay them in the final payroll month.` });
-  if (claims?.n) warnings.push({ code: 'EXPENSE_CLAIMS_UNPAID', message: `${claims.n} approved expense claim(s) are unpaid. Pay them through the claims process; they are not part of this settlement.` });
+  if (claims?.n) warnings.push({ code: 'EXPENSE_CLAIMS_UNPAID', message: `${claims.n} expense claim(s) are still being approved or are unpaid. Finish and pay them through the claims process; they are not part of this settlement.` });
   const { rows: [ytd] } = await db.query(
     `SELECT COALESCE(SUM(gross), 0) AS gross, COALESCE(SUM(tds), 0) AS tds FROM payroll_runs
       WHERE employee_id = $1 AND LOWER(status) IN ('approved', 'paid', 'processed')
@@ -393,7 +402,9 @@ export async function paySettlement(client, { exitId, employeeId, companyId, use
   if (s.lines.some((x) => x.code === 'TRAVEL_ADVANCE' && Number(x.amount) > 0)) {
     await client.query(
       `UPDATE travel_advances SET settled_amount = amount, status = 'Settled', updated_at = NOW()
-        WHERE status = 'Disbursed' AND (employee_id IN (SELECT id FROM users WHERE employee_id = $1) OR employee_id = $1)`, [employeeId]);
+        WHERE status IN ('Disbursed', 'Partially Settled')
+          AND (employee_id IN (SELECT id FROM users WHERE employee_id = $1)
+               OR travel_request_id IN (SELECT id FROM travel_requests WHERE employee_id = $1))`, [employeeId]);
   }
   const tds = s.lines.filter((x) => ['SETTLEMENT_TDS', 'FINAL_TDS'].includes(x.code)).reduce((sum, x) => sum + Number(x.amount), 0);
   if (tds > 0) {

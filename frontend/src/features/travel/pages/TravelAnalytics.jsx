@@ -53,7 +53,8 @@ export default function TravelAnalytics() {
   const periodLabel = stats.period_label || 'Selected period';
   const kpis = [
     { label:`Trips · ${periodLabel}`,  value: stats.trips_this_month  || 0,             icon: Plane,       color:'#6366f1' },
-    { label:`Spend · ${periodLabel}`,  value: fmt(stats.spend_this_month  || 0),        icon: IndianRupee,  color:'#10b981', isText:true },
+    { label:`Actual spend · ${periodLabel}`, value: fmt(stats.actual || 0),           icon: IndianRupee,  color:'#10b981', isText:true },
+    { label:'Estimated (approved trips)', value: fmt(stats.estimated || 0),            icon: IndianRupee,  color:'#9ca3af', isText:true },
     { label:'Avg Trip Cost',           value: fmt(stats.avg_cost_per_trip || 0),        icon: TrendingUp,  color:'#7c5cf0', isText:true },
     { label:'Active Travelers',        value: stats.active_travelers  || 0,             icon: Users,       color:'#8b5cf6' },
   ];
@@ -105,7 +106,8 @@ export default function TravelAnalytics() {
                 <XAxis dataKey="month" tick={{ fontSize:11 }}/>
                 <YAxis tickFormatter={v => fmt(v)} tick={{ fontSize:11 }}/>
                 <Tooltip formatter={v=>[fmt(v),'Spend']}/>
-                <Line type="monotone" dataKey="total_spend" stroke="#6B3FDB" strokeWidth={2} dot={{ r:3 }} name="Spend"/>
+                <Line type="monotone" dataKey="actual" stroke="#6B3FDB" strokeWidth={2} dot={{ r:3 }} name="Actual"/>
+                <Line type="monotone" dataKey="estimated" stroke="#c4b5fd" strokeWidth={2} strokeDasharray="4 3" dot={false} name="Estimated"/>
               </LineChart>
             </ResponsiveContainer>
           )}
@@ -135,7 +137,7 @@ export default function TravelAnalytics() {
           <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
             <thead>
               <tr style={{ background:'#f9fafb' }}>
-                {['Employee','Department','Trips','Total Spend','Avg Per Trip'].map(h => (
+                {['Employee','Department','Trips','Actual spend','Estimated','Avg Per Trip'].map(h => (
                   <th key={h} style={{ padding:'10px 16px', textAlign:'left', fontWeight:600, color:'#374151', borderBottom:'1px solid #f0f0f4' }}>{h}</th>
                 ))}
               </tr>
@@ -147,6 +149,7 @@ export default function TravelAnalytics() {
                   <td style={{ padding:'10px 16px', color:'#6b7280' }}>{t.department || '—'}</td>
                   <td style={{ padding:'10px 16px', color:'#374151' }}>{t.trip_count || 0}</td>
                   <td style={{ padding:'10px 16px', fontWeight:600, color:'#1f2937' }}>{fmt(t.total_spend || 0)}</td>
+                  <td style={{ padding:'10px 16px', color:'#6b7280' }}>{fmt(t.estimated || 0)}</td>
                   <td style={{ padding:'10px 16px', color:'#374151' }}>{fmt(t.avg_spend || 0)}</td>
                 </tr>
               ))}

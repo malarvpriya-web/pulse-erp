@@ -63,7 +63,7 @@ router.get('/income-statement', requirePermission('finance', 'view'), async (req
       // Operating expenses (bills + expenses) — excludes COGS-type entries
       q1(`SELECT
             COALESCE((SELECT SUM(total_amount) FROM bills    WHERE DATE(bill_date)   BETWEEN $1 AND $2 AND status NOT IN ('draft','rejected') AND company_id = $3), 0) AS bills_total,
-            COALESCE((SELECT SUM(amount)       FROM expense_claims WHERE DATE(created_at)  BETWEEN $1 AND $2 AND status NOT IN ('draft','rejected') AND company_id = $3), 0) AS expense_total
+            COALESCE((SELECT SUM(amount) FROM expense_claims WHERE COALESCE(expense_date, claim_date, DATE(created_at)) BETWEEN $1 AND $2 AND status IN ('Mgmt Approved','Paid') AND borne_by = 'company' AND deleted_at IS NULL AND company_id = $3), 0) AS expense_total
           `, [fyStart, fyEnd, cid]),
 
       // COGS from GL — debit movements on accounts with sub_type = 'cogs' (account 5001)
@@ -213,7 +213,8 @@ router.get('/cash-flow', requirePermission('finance', 'view'), async (req, res) 
     const [receiptsRow, paymentsRow, expRow, assetRow] = await Promise.all([
       q1(`SELECT COALESCE(SUM(amount),0) AS total FROM receipts  WHERE DATE(receipt_date) BETWEEN $1 AND $2 AND company_id = $3`, [fyStart, fyEnd, cid]),
       q1(`SELECT COALESCE(SUM(amount),0) AS total FROM payments  WHERE DATE(payment_date) BETWEEN $1 AND $2 AND company_id = $3`, [fyStart, fyEnd, cid]),
-      q1(`SELECT COALESCE(SUM(amount),0) AS total FROM expense_claims  WHERE DATE(created_at)   BETWEEN $1 AND $2 AND status = 'approved' AND company_id = $3`, [fyStart, fyEnd, cid]),
+      q1(`SELECT COALESCE((SELECT SUM(COALESCE(net_payable, total_amount)) FROM expense_claims WHERE payment_date BETWEEN $1 AND $2 AND status = 'Paid' AND deleted_at IS NULL AND company_id = $3), 0)
+           + COALESCE((SELECT SUM(amount) FROM travel_advances WHERE payment_date BETWEEN $1 AND $2 AND status IN ('Disbursed','Partially Settled','Settled') AND company_id = $3), 0) AS total`, [fyStart, fyEnd, cid]),
       // fixed_assets has no `cost` column — it is `purchase_cost`. This read 500'd
       // on both /cash-flow and /export/cash-flow from the day the failQuery hardening
       // above stopped swallowing errors, which is exactly what that hardening is for:
@@ -392,7 +393,7 @@ router.get('/breakeven-analysis', requirePermission('finance', 'view'), async (r
       q1(`SELECT
             COALESCE(SUM(amount),0) AS total_exp
           FROM expense_claims
-          WHERE DATE(created_at) BETWEEN $1 AND $2 AND status = 'approved' AND company_id = $3`, [fyStart, fyEnd, cid]),
+          WHERE COALESCE(expense_date, claim_date, DATE(created_at)) BETWEEN $1 AND $2 AND status IN ('Mgmt Approved','Paid') AND borne_by = 'company' AND deleted_at IS NULL AND company_id = $3`, [fyStart, fyEnd, cid]),
       q1(`SELECT COALESCE(SUM(jl.debit - jl.credit), 0) AS cogs
           FROM journal_lines jl
           JOIN journal_entries je ON je.id = jl.entry_id
@@ -477,7 +478,7 @@ router.get('/ratios', requirePermission('finance', 'view'), async (req, res) => 
 
     const [revRow, expRow, cogsRow] = await Promise.all([
       q1(`SELECT COALESCE(SUM(CASE WHEN status NOT IN ('draft','cancelled') THEN total_amount ELSE 0 END),0) AS revenue FROM invoices WHERE DATE(invoice_date) BETWEEN $1 AND $2 AND company_id = $3`, [fyStart, fyEnd, cid]),
-      q1(`SELECT COALESCE(SUM(amount),0) AS expenses FROM expense_claims WHERE DATE(created_at) BETWEEN $1 AND $2 AND status='approved' AND company_id = $3`, [fyStart, fyEnd, cid]),
+      q1(`SELECT COALESCE((SELECT SUM(amount) FROM expense_claims WHERE COALESCE(expense_date, claim_date, DATE(created_at)) BETWEEN $1 AND $2 AND status IN ('Mgmt Approved','Paid') AND borne_by = 'company' AND deleted_at IS NULL AND company_id = $3), 0) AS expenses`, [fyStart, fyEnd, cid]),
 
       // COGS from the posted GL — the SAME query GET /income-statement uses, so
       // the two endpoints cannot disagree. This used to be `revenue * 0.50`,
@@ -660,7 +661,7 @@ router.get('/export/income-statement', requirePermission('finance', 'view'), asy
                  COALESCE(SUM(CASE WHEN status IN ('paid','partially_paid') THEN total_amount ELSE 0 END),0) AS collected
           FROM invoices WHERE DATE(invoice_date) BETWEEN $1 AND $2 AND company_id = $3`, [fyStart, fyEnd, cid]),
       q1(`SELECT COALESCE((SELECT SUM(total_amount) FROM bills    WHERE DATE(bill_date)  BETWEEN $1 AND $2 AND status NOT IN ('draft','rejected') AND company_id = $3), 0) AS bills_total,
-                 COALESCE((SELECT SUM(amount)       FROM expense_claims WHERE DATE(created_at) BETWEEN $1 AND $2 AND status NOT IN ('draft','rejected') AND company_id = $3), 0) AS expense_total
+                 COALESCE((SELECT SUM(amount) FROM expense_claims WHERE COALESCE(expense_date, claim_date, DATE(created_at)) BETWEEN $1 AND $2 AND status IN ('Mgmt Approved','Paid') AND borne_by = 'company' AND deleted_at IS NULL AND company_id = $3), 0) AS expense_total
           `, [fyStart, fyEnd, cid]),
       q1(`SELECT COALESCE(SUM(jl.debit - jl.credit), 0) AS cogs
           FROM journal_lines jl
@@ -725,7 +726,8 @@ router.get('/export/cash-flow', requirePermission('finance', 'view'), async (req
     const [receiptsRow, paymentsRow, expRow, assetRow] = await Promise.all([
       q1(`SELECT COALESCE(SUM(amount),0) AS total FROM receipts  WHERE DATE(receipt_date) BETWEEN $1 AND $2 AND company_id = $3`, [fyStart, fyEnd, cid]),
       q1(`SELECT COALESCE(SUM(amount),0) AS total FROM payments  WHERE DATE(payment_date) BETWEEN $1 AND $2 AND company_id = $3`, [fyStart, fyEnd, cid]),
-      q1(`SELECT COALESCE(SUM(amount),0) AS total FROM expense_claims  WHERE DATE(created_at)   BETWEEN $1 AND $2 AND status = 'approved' AND company_id = $3`, [fyStart, fyEnd, cid]),
+      q1(`SELECT COALESCE((SELECT SUM(COALESCE(net_payable, total_amount)) FROM expense_claims WHERE payment_date BETWEEN $1 AND $2 AND status = 'Paid' AND deleted_at IS NULL AND company_id = $3), 0)
+           + COALESCE((SELECT SUM(amount) FROM travel_advances WHERE payment_date BETWEEN $1 AND $2 AND status IN ('Disbursed','Partially Settled','Settled') AND company_id = $3), 0) AS total`, [fyStart, fyEnd, cid]),
       // fixed_assets has no `cost` column — it is `purchase_cost`. This read 500'd
       // on both /cash-flow and /export/cash-flow from the day the failQuery hardening
       // above stopped swallowing errors, which is exactly what that hardening is for:

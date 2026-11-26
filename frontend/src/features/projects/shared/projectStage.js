@@ -56,6 +56,8 @@ const BLOCKER_LABELS = {
   open_tasks: 'open task(s)',
   unbilled_milestones: 'unbilled billing milestone(s)',
   pending_timesheets: 'pending timesheet(s)',
+  pending_travel: 'trip(s) waiting for approval',
+  open_expense_claims: 'expense claim(s) not yet paid',
 };
 export const blockerText = (b) => `${b.count} ${BLOCKER_LABELS[b.type] || b.type.replace(/_/g, ' ')}`;
 

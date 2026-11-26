@@ -2,13 +2,14 @@ import { useState, useEffect, useCallback } from 'react';
 import api from '@/services/api/client';
 import { BarChart2, Download, Search, RefreshCw, BarChart3 } from 'lucide-react';
 import { fmt } from './travelUtils';
+import { localDay, fmtDate } from '@/utils/dateFormatter';
 import { PageHero, PageShell } from '@/components/pulse-ui';
 
 const REPORT_TYPES = [
   { key: 'by-employee',    label: 'By Employee',   endpoint: '/travel/analytics/by-employee' },
   { key: 'by-department',  label: 'By Department', endpoint: '/travel/analytics/department' },
   { key: 'by-project',     label: 'By Project',    endpoint: '/travel/analytics/by-project' },
-  { key: 'by-customer',    label: 'By Customer',   endpoint: null },
+  { key: 'by-customer',    label: 'By Customer',   endpoint: '/travel/analytics/by-customer' },
   { key: 'by-travel-type', label: 'By Travel Type',endpoint: '/travel/reports/by-travel-type' },
   { key: 'expense-claims', label: 'Expense Claims', endpoint: '/reimbursement/claims' },
 ];
@@ -20,29 +21,34 @@ const COLUMNS = {
     { key: 'designation',   label: 'Designation' },
     { key: 'department',    label: 'Department' },
     { key: 'trip_count',    label: 'Trips' },
-    { key: 'total_spend',   label: 'Total Spend', money: true },
+    { key: 'total_spend',   label: 'Actual spend', money: true },
+    { key: 'estimated',     label: 'Estimated', money: true },
     { key: 'avg_spend',     label: 'Avg/Trip', money: true },
   ],
   'by-department': [
     { key: 'department',   label: 'Department' },
     { key: 'trip_count',   label: 'Trips' },
-    { key: 'total_spend',  label: 'Total Spend', money: true },
+    { key: 'total_spend',  label: 'Actual spend', money: true },
+    { key: 'estimated',    label: 'Estimated', money: true },
   ],
   'by-project': [
     { key: 'project_number', label: 'Project #' },
     { key: 'customer_name',  label: 'Customer' },
     { key: 'trip_count',     label: 'Trips' },
-    { key: 'total_spend',    label: 'Total Spend', money: true },
+    { key: 'total_spend',    label: 'Actual spend', money: true },
+    { key: 'estimated',      label: 'Estimated', money: true },
   ],
   'by-customer': [
     { key: 'customer_name', label: 'Customer' },
     { key: 'trip_count',    label: 'Trips' },
-    { key: 'total_spend',   label: 'Total Spend', money: true },
+    { key: 'total_spend',   label: 'Actual spend', money: true },
+    { key: 'estimated',     label: 'Estimated', money: true },
   ],
   'by-travel-type': [
     { key: 'travel_type',   label: 'Travel Type' },
     { key: 'trip_count',    label: 'Trips' },
-    { key: 'total_budget',  label: 'Total Budget', money: true },
+    { key: 'total_spend',   label: 'Actual spend', money: true },
+    { key: 'total_budget',  label: 'Estimated', money: true },
   ],
   'expense-claims': [
     { key: 'claim_number',     label: 'Claim #' },
@@ -73,20 +79,9 @@ function downloadCSV(data, columns, filename) {
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
   const url  = URL.createObjectURL(blob);
   const a    = document.createElement('a');
-  a.href = url; a.download = `${filename}_${new Date().toISOString().slice(0,10)}.csv`;
+  a.href = url; a.download = `${filename}_${localDay()}.csv`;
   a.click(); URL.revokeObjectURL(url);
 }
-
-const CUSTOMER_REPORT_DATA = (requests) => {
-  const map = {};
-  requests.forEach(r => {
-    if (!r.customer_name) return;
-    if (!map[r.customer_name]) map[r.customer_name] = { customer_name: r.customer_name, trip_count: 0, total_spend: 0 };
-    map[r.customer_name].trip_count++;
-    map[r.customer_name].total_spend += Number(r.budget || 0);
-  });
-  return Object.values(map).sort((a, b) => b.total_spend - a.total_spend);
-};
 
 export default function TravelReports() {
   const [reportType, setReportType] = useState('by-employee');
@@ -95,7 +90,6 @@ export default function TravelReports() {
   const [search,  setSearch]  = useState('');
   const [fromDate, setFromDate] = useState('');
   const [toDate,   setToDate]   = useState('');
-  const [allRequests, setAllRequests] = useState([]);
 
   const reportConfig = REPORT_TYPES.find(r => r.key === reportType);
   const columns = COLUMNS[reportType] || [];
@@ -104,16 +98,13 @@ export default function TravelReports() {
     setLoading(true);
     setData([]);
     try {
-      if (reportType === 'by-customer') {
-        const r = await api.get('/travel/requests', { params: { limit: 500 } });
-        const reqs = Array.isArray(r.data) ? r.data : [];
-        setAllRequests(reqs);
-        setData(CUSTOMER_REPORT_DATA(reqs));
-      } else if (reportConfig?.endpoint) {
-        const params = {};
-        if (fromDate) params.from_date = fromDate;
-        if (toDate)   params.to_date   = toDate;
-        if (reportType === 'expense-claims') params.limit = 500;
+      if (reportConfig?.endpoint) {
+        // The spend reports read ?from / ?to (shared dashboardFilters) and fall
+        // back to the last 6 months without them — so "no dates" now means all
+        // time. The claims list reads from_date / to_date.
+        const params = reportType === 'expense-claims'
+          ? { limit: 1000, ...(fromDate ? { from_date: fromDate } : {}), ...(toDate ? { to_date: toDate } : {}) }
+          : (fromDate || toDate ? { ...(fromDate ? { from: fromDate } : {}), ...(toDate ? { to: toDate } : {}) } : { period: 'all' });
         const r = await api.get(reportConfig.endpoint, { params });
         setData(Array.isArray(r.data) ? r.data : []);
       }
@@ -223,7 +214,7 @@ export default function TravelReports() {
                   {columns.map(c => {
                     let val = row[c.key];
                     if (c.money) val = fmt(val || 0);
-                    if (c.date) val = val?.slice(0,10) || '—';
+                    if (c.date) val = fmtDate(val);
                     if (val === null || val === undefined || val === '') val = '—';
                     return (
                       <td key={c.key} style={{ padding: '9px 14px', color: '#374151', textAlign: c.money ? 'right' : 'left', fontWeight: c.money ? 500 : 400 }}>

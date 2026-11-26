@@ -51,18 +51,18 @@ beforeEach(() => { cleanup(); document.body.innerHTML = ''; });
 
 describe('hub tabs respect the same gates the sidebar rows did', () => {
   it('gives an employee their own expense claims but not the finance queues', () => {
-    // EMPLOYEE_SELF_SERVICE_PAGES lists ExpenseClaims and TravelExpenses;
-    // ExpenseReview and TravelPayment are excluded as finance-only.
+    // EMPLOYEE_SELF_SERVICE_PAGES lists ExpenseClaims; TravelPayment is
+    // finance-only. (Trip Expenses and Expense Review were merged away 26 Nov 26.)
     expect(tabsFor('employee', TRAVEL_EXPENSE_TABS))
-      .toEqual(['Expense Claims', 'Trip Expenses']);
+      .toEqual(['Expense Claims']);
   });
 
   it('gives an admin the full expense hub', () => {
     expect(tabsFor('admin', TRAVEL_EXPENSE_TABS))
-      .toEqual(['Expense Claims', 'Trip Expenses', 'Expense Review', 'Payment']);
+      .toEqual(['Expense Claims', 'Payment']);
   });
 
-  it('gives an employee visit reports but not the customer-visit register', () => {
+  it('gives an employee visit reports (customer visits merged in)', () => {
     expect(tabsFor('employee', TRAVEL_VISIT_TABS)).toEqual(['Visit Reports']);
   });
 

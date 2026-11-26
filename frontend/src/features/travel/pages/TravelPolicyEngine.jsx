@@ -23,7 +23,7 @@ const EMPTY = {
   travel_daily_allowance: '', flight_eligible: false,
   train_class: 'Sleeper', local_conveyance_limit: '',
   miscellaneous_limit: '', max_advance_amount: '',
-  effective_from: '', effective_to: '',
+  effective_from: '', effective_to: '', is_active: true,
 };
 
 const inp = { width: '100%', padding: '9px 12px', border: '1px solid #e5e7eb', borderRadius: 8, fontSize: 13, outline: 'none', boxSizing: 'border-box', background: '#fff' };
@@ -61,6 +61,10 @@ export default function TravelPolicyEngine() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+  // How many employees the active rules actually reach (grade / designation /
+  // department must match) — the rules looked configured while matching nobody.
+  const [coverage, setCoverage] = useState(null);
+  useEffect(() => { api.get('/travel-policy/coverage').then(r => setCoverage(r.data)).catch(() => setCoverage(null)); }, [rules]);
   const fld = (key, val) => setForm(p => ({ ...p, [key]: val }));
 
   const openAdd = () => { setEditing(null); setForm(EMPTY); setShowForm(true); };
@@ -79,6 +83,7 @@ export default function TravelPolicyEngine() {
       max_advance_amount: rule.max_advance_amount || '',
       effective_from: rule.effective_from?.slice(0,10) || '',
       effective_to: rule.effective_to?.slice(0,10) || '',
+      is_active: rule.is_active !== false,
     });
     setShowForm(true);
   };
@@ -145,6 +150,14 @@ export default function TravelPolicyEngine() {
         onConfirm={handleDelete}
         onCancel={() => setPendingHandleDelete(null)}
       />
+
+      {coverage && coverage.employees > 0 && coverage.covered < coverage.employees && (
+        <div role="status" style={{ background: coverage.covered === 0 ? '#fef2f2' : '#fffbeb', border: `1px solid ${coverage.covered === 0 ? '#fecaca' : '#fde68a'}`, borderRadius: 12, padding: '12px 16px', marginBottom: 16, fontSize: 13, color: '#374151' }}>
+          <b>{coverage.covered} of {coverage.employees} active employees</b> are covered by a travel policy.
+          {coverage.with_grade < coverage.employees && <> {coverage.employees - coverage.with_grade} have no grade on their employee record, so grade rules cannot match them — HR sets grades on the employee record.</>}
+          {' '}Employees with no matching rule are not checked against any limit.
+        </div>
+      )}
 
       {/* KPI summary */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 14, marginBottom: 20 }}>
@@ -386,7 +399,14 @@ export default function TravelPolicyEngine() {
               </div>
               <div>
                 <label style={lbl}>Effective To</label>
-                <input type="date" value={form.effective_to} onChange={e => fld('effective_to', e.target.value)} style={inp} />
+                <input type="date" value={form.effective_to} min={form.effective_from || undefined} onChange={e => fld('effective_to', e.target.value)} style={inp} />
+              </div>
+              <div>
+                <label style={lbl}>Status</label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, paddingTop: 8 }}>
+                  <input type="checkbox" checked={form.is_active !== false} onChange={e => fld('is_active', e.target.checked)} style={{ accentColor: '#6B3FDB' }} />
+                  Active — applied to claims, advances and flights
+                </label>
               </div>
             </div>
 

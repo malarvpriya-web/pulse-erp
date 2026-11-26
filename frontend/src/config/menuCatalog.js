@@ -111,16 +111,15 @@ export const EMPLOYEE_SELF_SERVICE_PAGES = new Set([
   // Service Desk ('KnowledgeBase' intentionally excluded — admin-only page)
   'MyTickets',
   // Travel Desk ('TravelPayment'/'TravelAudit' intentionally excluded — finance-only)
+  // (Bookings are read-only for an employee — the travel desk books, 26 Nov 26.)
   'TravelRequests', 'ExpenseClaims', 'VisitReports', 'TravelCalendar',
-  'TravelAdvances', 'TravelBookings', 'TravelEntry',
+  'TravelAdvances', 'TravelBookings',
   // The three hubs those pages moved into (2026-09-16 IA pass). Each hub drops
-  // the tabs an employee may not open — TravelExpenseCenter shows Claims and
-  // Trip Expenses but never Expense Review or Payment, and TravelVisits shows
-  // Visit Reports but not Customer Visits — because TabHub filters every tab
-  // through canRoleOpenPage, which resolves against this set.
+  // the tabs an employee may not open — TravelExpenseCenter shows Claims but
+  // never Payment — because TabHub filters every tab through canRoleOpenPage,
+  // which resolves against this set. Travel Entry, Trip Expenses, Expense
+  // Review and Customer Visits were merged away on 26 Nov 26.
   'MyTravel', 'TravelExpenseCenter', 'TravelVisits',
-  // Trip expense register, self-service alongside ExpenseClaims.
-  'TravelExpenses',
   // Attendance — My Attendance only (2026-11-11, owner's instruction).
   //   QR Attendance was removed altogether on 2026-11-18 (§278). ShiftCalendar:
   //   no real shifts were set up then; re-add it if the company starts rotating
@@ -446,10 +445,13 @@ export const ROLE_SECTION_ALLOWLIST = {
   // permission; they work employee records through HR → Employee Directory.
   // 'e-Signatures' (F17 pass): permission-less, see the manager comment
   // above; hr_manager owns offer-letter/onboarding-document signing.
+  // 'Travel Desk' (26 Nov 26): same as 'hr' — HR decides a trip, advance or
+  // claim when the employee has no active reporting manager.
   hr_manager: [
     'Home', 'Approvals', 'HR', 'Learning Center', 'Recruitment',
     'Attendance', 'Leaves', 'Timesheets', 'Performance', 'Reports',
     'Notifications', 'Org Chart', 'QR Codes', 'e-Signatures', 'Employee Directory',
+    'Travel Desk',
   ],
   // 'Approvals' REMOVED (2026-07-30, same F16 reasoning as project_manager/
   // sales_manager/service_manager below): hr_exec is not in approvals.authz.js's
@@ -498,13 +500,17 @@ export const ROLE_SECTION_ALLOWLIST = {
   // Center's read path shows as "unassigned" 403s on click for a non-approver
   // role, surfaced to the user as a misleading generic "Failed to approve —
   // try again" toast. See hr_exec's comment above for the full mechanism.
+  // 'Travel Desk' (26 Nov 26): these are the people who verify and pay expense
+  // claims (expense_claims:edit / expense_payments:approve) and pay out travel
+  // advances (ADVANCE_FINANCE_ROLES in travelAccess.js) — without the section
+  // they could not open Expenses → Payment or Advances at all.
   finance_manager: [
     'Home', 'Approvals', 'Finance', 'Reports', 'Leaves', 'Attendance',
-    'Timesheets', 'Notifications', 'Org Chart', 'QR Codes',
+    'Timesheets', 'Notifications', 'Org Chart', 'QR Codes', 'Travel Desk',
   ],
   accounts_exec: [
     'Home', 'Finance', 'Reports', 'Leaves', 'Attendance', 'Timesheets',
-    'Notifications', 'Org Chart', 'QR Codes',
+    'Notifications', 'Org Chart', 'QR Codes', 'Travel Desk',
   ],
   // Phase-42 project-delivery seat (20260529000001_phase42_security_roles.js
   // grants projects/timesheets/reports/documents/master/analytics;

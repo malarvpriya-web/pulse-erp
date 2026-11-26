@@ -51,7 +51,7 @@ export default function TabHub({
   setPage,
   ...rest
 }) {
-  const { role, menuAccess, hasPermission } = useAuth();
+  const { role, menuAccess, hasPermission, hasAnyRole } = useAuth();
 
   // Two gates, mirroring exactly what Layout.jsx applies at the route:
   //   1. canRoleOpenPage — Page-Access override, the employee/hr/finance/
@@ -64,12 +64,16 @@ export default function TabHub({
   // mirror of the bug where the HUB carried a module its children did not and
   // locked out an employee who could open all four pages individually.
   const visible = useMemo(() => tabs.filter(t => {
+    // 3. an optional per-tab rule (`show: ({ hasAnyRole, hasPermission }) => bool`)
+    //    for a tab only some roles can USE — e.g. Payment for Finance — so it is
+    //    not drawn for people whose every action on it would be refused.
+    if (typeof t.show === 'function' && !t.show({ hasAnyRole, hasPermission })) return false;
     if (!t.page) return true;
     if (!canRoleOpenPage(role, t.page, { menuAccess })) return false;
     const mod = ROUTES[t.page]?.module;
     if (!mod || role === 'super_admin' || role === 'admin') return true;
     return hasPermission(mod, 'view');
-  }), [tabs, role, menuAccess, hasPermission]);
+  }), [tabs, role, menuAccess, hasPermission, hasAnyRole]);
 
   const [sp, setSp] = useSearchParams();
   const urlTab = sp.get('tab');

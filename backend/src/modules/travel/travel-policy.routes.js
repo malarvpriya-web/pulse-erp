@@ -11,6 +11,7 @@ import { allowRoles } from '../../middlewares/auth.middleware.js';
 import { logAudit } from '../../services/AuditService.js';
 import { companyOf } from '../../shared/scope.js';
 import { captureBefore } from '../../middlewares/captureBefore.js';
+import { policyRuleFor, policyLimitFor, ownEmployeeId, seesAllTravel } from './travelAccess.js';
 
 const router = express.Router();
 const uid = req => req.user?.userId ?? req.user?.id ?? null;
@@ -36,11 +37,35 @@ router.get('/', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ── GET /travel-policy/coverage ───────────────────────────────────────────────
+// How many active employees a rule actually reaches. Rules are keyed on grade /
+// designation / department; on 26 Nov 26 every employee's grade was empty, so
+// the six grade rules matched nobody and no claim was ever checked — this lets
+// the screen say so instead of looking configured.
+router.get('/coverage', async (req, res) => {
+  try {
+    const { rows: [r] } = await pool.query(`
+      SELECT COUNT(*)::int AS employees,
+             COUNT(*) FILTER (WHERE NULLIF(TRIM(e.grade), '') IS NOT NULL)::int AS with_grade,
+             COUNT(*) FILTER (WHERE EXISTS (
+               SELECT 1 FROM travel_policy_rules p
+                WHERE p.is_active AND p.company_id = e.company_id
+                  AND ((p.rule_type = 'grade' AND p.grade = e.grade) OR (p.rule_type = 'role' AND p.role = e.designation)
+                    OR (p.rule_type = 'department' AND p.department = e.department))
+                  AND (p.effective_from IS NULL OR p.effective_from <= CURRENT_DATE)
+                  AND (p.effective_to IS NULL OR p.effective_to >= CURRENT_DATE)))::int AS covered
+        FROM employees e
+       WHERE e.deleted_at IS NULL AND LOWER(e.status) IN ('active','probation','notice')
+         AND ($1::int IS NULL OR e.company_id = $1)`, [cid(req)]);
+    res.json(r);
+  } catch { res.status(500).json({ error: 'Could not work out policy coverage' }); }
+});
+
 // ── GET /travel-policy/:id ────────────────────────────────────────────────────
 router.get('/:id', async (req, res) => {
   try {
     const { rows: [rule] } = await pool.query(
-      `SELECT * FROM travel_policy_rules WHERE id=$1`, [req.params.id]);
+      `SELECT * FROM travel_policy_rules WHERE id=$1 AND ($2::int IS NULL OR company_id = $2)`, [Number(req.params.id) || 0, cid(req)]);
     if (!rule) return res.status(404).json({ error: 'Policy rule not found' });
     res.json(rule);
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -59,6 +84,8 @@ router.post('/', allowRoles('admin', 'super_admin', 'hr'), async (req, res) => {
     } = req.body;
 
     if (!rule_name) return res.status(400).json({ error: 'rule_name is required' });
+    if (!['grade', 'role', 'department'].includes(rule_type)) return res.status(400).json({ error: 'rule_type must be grade, role or department' });
+    if (!req.body[rule_type]) return res.status(400).json({ error: `Choose the ${rule_type} this rule applies to` });
 
     const actorId = uid(req);
     const companyId = cid(req);
@@ -88,17 +115,37 @@ router.post('/', allowRoles('admin', 'super_admin', 'hr'), async (req, res) => {
 });
 
 // ── PUT /travel-policy/:id ────────────────────────────────────────────────────
+// Partial edit inside the caller's company: a field left out keeps its value
+// (it used to be blanked to 0 / NULL / 'Sleeper'), and another company's rule
+// reads as missing.
+const POLICY_COLS = ['rule_name', 'rule_type', 'grade', 'role', 'department',
+  'hotel_limit_per_day', 'meal_limit_per_day', 'travel_daily_allowance', 'flight_eligible', 'train_class',
+  'local_conveyance_limit', 'miscellaneous_limit', 'max_advance_amount', 'effective_from', 'effective_to', 'is_active'];
+const MONEY = new Set(['hotel_limit_per_day', 'meal_limit_per_day', 'travel_daily_allowance',
+  'local_conveyance_limit', 'miscellaneous_limit', 'max_advance_amount']);
+
 router.put('/:id', allowRoles('admin', 'super_admin', 'hr'), captureBefore('travel_policy_rules'), async (req, res) => {
   try {
-    const {
-      rule_name, rule_type, grade, role, department,
-      hotel_limit_per_day, meal_limit_per_day, travel_daily_allowance,
-      flight_eligible, train_class, local_conveyance_limit,
-      miscellaneous_limit, max_advance_amount,
-      effective_from, effective_to, is_active,
-    } = req.body;
-
-    const actorId = uid(req);
+    const { rows: [old] } = await pool.query(
+      `SELECT * FROM travel_policy_rules WHERE id = $1 AND ($2::int IS NULL OR company_id = $2)`, [Number(req.params.id) || 0, cid(req)]);
+    if (!old) return res.status(404).json({ error: 'Policy rule not found' });
+    const b = req.body || {};
+    const next = { ...old };
+    for (const c of POLICY_COLS) {
+      if (b[c] === undefined) continue;
+      if (MONEY.has(c)) {
+        const n = b[c] === '' || b[c] == null ? 0 : Number(b[c]);
+        if (!(n >= 0)) return res.status(400).json({ error: `${c.replace(/_/g, ' ')} cannot be negative` });
+        next[c] = n;
+      } else if (c === 'flight_eligible' || c === 'is_active') next[c] = !!b[c];
+      else next[c] = b[c] === '' ? null : b[c];
+    }
+    if (!String(next.rule_name || '').trim()) return res.status(400).json({ error: 'rule_name is required' });
+    if (!['grade', 'role', 'department'].includes(next.rule_type)) return res.status(400).json({ error: 'rule_type must be grade, role or department' });
+    if (!next[next.rule_type]) return res.status(400).json({ error: `Choose the ${next.rule_type} this rule applies to` });
+    if (next.effective_from && next.effective_to && String(next.effective_to) < String(next.effective_from)) {
+      return res.status(400).json({ error: 'Effective-to cannot be before effective-from' });
+    }
     const { rows: [updated] } = await pool.query(`
       UPDATE travel_policy_rules SET
         rule_name=$1, rule_type=$2, grade=$3, role=$4, department=$5,
@@ -107,70 +154,55 @@ router.put('/:id', allowRoles('admin', 'super_admin', 'hr'), captureBefore('trav
         miscellaneous_limit=$12, max_advance_amount=$13,
         effective_from=$14, effective_to=$15, is_active=$16, updated_at=NOW()
       WHERE id=$17 RETURNING *
-    `, [rule_name, rule_type, grade||null, role||null, department||null,
-        Number(hotel_limit_per_day)||0, Number(meal_limit_per_day)||0,
-        Number(travel_daily_allowance)||0,
-        flight_eligible||false, train_class||'Sleeper',
-        Number(local_conveyance_limit)||0, Number(miscellaneous_limit)||0,
-        Number(max_advance_amount)||0,
-        effective_from||null, effective_to||null,
-        is_active !== undefined ? is_active : true,
-        req.params.id]);
-
-    if (!updated) return res.status(404).json({ error: 'Policy rule not found' });
-    logAudit({ userId: actorId, module: 'travel_policy', recordId: updated.id,
-      recordType: 'travel_policy_rule', action: 'update', newData: updated });
+    `, [...POLICY_COLS.map(c => next[c]), old.id]);
+    logAudit({ userId: uid(req), module: 'travel_policy', recordId: updated.id,
+      recordType: 'travel_policy_rule', action: 'update', oldData: old, newData: updated, req });
     res.json(updated);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { res.status(500).json({ error: 'Could not save the rule' }); }
 });
 
 // ── DELETE /travel-policy/:id ─────────────────────────────────────────────────
-router.delete('/:id', allowRoles('admin', 'super_admin'), captureBefore('travel_policy_rules'), async (req, res) => {
+// HR may delete too — the screen offered HR the button while the route refused.
+router.delete('/:id', allowRoles('admin', 'super_admin', 'hr'), captureBefore('travel_policy_rules'), async (req, res) => {
   try {
-    await pool.query(`DELETE FROM travel_policy_rules WHERE id=$1`, [req.params.id]);
+    const { rows: [gone] } = await pool.query(
+      `DELETE FROM travel_policy_rules WHERE id=$1 AND ($2::int IS NULL OR company_id = $2) RETURNING *`,
+      [Number(req.params.id) || 0, cid(req)]);
+    if (!gone) return res.status(404).json({ error: 'Policy rule not found' });
+    logAudit({ userId: uid(req), module: 'travel_policy', recordId: gone.id,
+      recordType: 'travel_policy_rule', action: 'delete', oldData: gone, req });
     res.json({ message: 'Policy rule deleted' });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { res.status(500).json({ error: 'Could not delete the rule' }); }
 });
 
 // ── POST /travel-policy/check ─────────────────────────────────────────────────
-// Check if a specific expense is within policy for the given employee
+// The limit an expense is held to. Uses the SAME rule choice as the claim save
+// (travelAccess.policyRuleFor) — they used to pick rules in different orders.
+// Anyone may check their own; the HR / Finance desks may check anyone's.
 router.post('/check', async (req, res) => {
   try {
-    const { employee_id, expense_type, amount } = req.body;
-    const companyId = cid(req);
-    if (!employee_id) return res.json({ within_policy: true, policy_limit: null });
-
+    const { expense_type, amount, expense_date } = req.body || {};
+    const own = await ownEmployeeId(req);
+    const empId = seesAllTravel(req) && req.body?.employee_id ? Number(req.body.employee_id) : own;
+    if (!empId) return res.json({ within_policy: true, policy_limit: null, rule: null });
     const { rows: [emp] } = await pool.query(
-      `SELECT grade, designation, department FROM employees WHERE id=$1`, [employee_id]);
-    if (!emp) return res.json({ within_policy: true, policy_limit: null });
-
-    const { rows: [rule] } = await pool.query(`
-      SELECT * FROM travel_policy_rules
-      WHERE is_active=TRUE AND company_id=$1
-        AND (grade=$2 OR role=$3 OR department=$4)
-      ORDER BY
-        CASE rule_type WHEN 'grade' THEN 1 WHEN 'role' THEN 2 ELSE 3 END
-      LIMIT 1
-    `, [companyId, emp.grade||'', emp.designation||'', emp.department||'']);
-
-    if (!rule) return res.json({ within_policy: true, policy_limit: null, rule: null });
-
-    let limit = null;
-    if (expense_type === 'Accommodation') limit = parseFloat(rule.hotel_limit_per_day);
-    else if (expense_type === 'Food') limit = parseFloat(rule.meal_limit_per_day);
-    else if (expense_type === 'Travel') limit = parseFloat(rule.local_conveyance_limit);
-    else limit = parseFloat(rule.miscellaneous_limit);
-
-    const withinPolicy = !limit || limit === 0 || Number(amount) <= limit;
+      `SELECT grade, designation, department FROM employees WHERE id=$1 AND ($2::int IS NULL OR company_id = $2)`, [empId, cid(req)]);
+    const rule = await policyRuleFor(pool, cid(req), emp, /^\d{4}-\d{2}-\d{2}$/.test(String(expense_date || '')) ? expense_date : null);
+    if (!rule) {
+      return res.json({ within_policy: true, policy_limit: null, rule: null,
+        no_rule_reason: emp?.grade ? 'No active travel policy matches your grade, designation or department' : 'Your grade is not set on your employee record, so no travel policy applies' });
+    }
+    const limit = policyLimitFor(rule, expense_type);
     res.json({
-      within_policy: withinPolicy,
+      within_policy: !limit || Number(amount) <= limit,
       policy_limit: limit,
       flight_eligible: rule.flight_eligible,
       train_class: rule.train_class,
-      daily_allowance: parseFloat(rule.travel_daily_allowance),
-      rule,
+      daily_allowance: Number(rule.travel_daily_allowance || 0),
+      max_advance_amount: Number(rule.max_advance_amount || 0),
+      rule: { id: rule.id, rule_name: rule.rule_name, rule_type: rule.rule_type },
     });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { res.status(500).json({ error: 'Could not check the policy' }); }
 });
 
 // ── GET /travel-policy/summary/grades ─────────────────────────────────────────

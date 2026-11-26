@@ -3,12 +3,13 @@ import * as XLSX from 'xlsx';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
 import { useAuth } from '@/context/AuthContext';
-import { fmtDate } from '@/utils/dateFormatter';
+import { fmtDate, localDay } from '@/utils/dateFormatter';
 import {
   Banknote, Search, Download, X, FileText, Wallet, CheckCircle2,
   ReceiptIndianRupee,
 } from 'lucide-react';
-import { STATUS_COLOR, fmt } from './travelUtils';
+import { fmt } from './travelUtils';
+import { StatusBadge } from '../components/travelUi';
 import { PageHero, PageShell } from '@/components/pulse-ui';
 
 /**
@@ -37,7 +38,7 @@ export default function TravelPayment() {
   const [search, setSearch]   = useState('');
   const [payFor, setPayFor]   = useState(null);
   const [saving, setSaving]   = useState(false);
-  const [form, setForm] = useState({ payment_ref:'', payment_date:new Date().toISOString().slice(0,10), payment_mode:'NEFT' });
+  const [form, setForm] = useState({ payment_ref:'', payment_date:localDay(), payment_mode:'NEFT' });
 
   const [draft,   setDraft]   = useState({ status: PAYABLE_STATUS });
   const [applied, setApplied] = useState({ status: PAYABLE_STATUS });
@@ -106,7 +107,7 @@ export default function TravelPayment() {
     && !(user?.employee_id != null && String(c.employee_id) === String(user.employee_id));
 
   const openPay = (c) => {
-    setForm({ payment_ref:'', payment_date:new Date().toISOString().slice(0,10), payment_mode:'NEFT' });
+    setForm({ payment_ref:'', payment_date:localDay(), payment_mode:'NEFT' });
     setPayFor(c);
   };
 
@@ -146,7 +147,7 @@ export default function TravelPayment() {
     const ws = XLSX.utils.json_to_sheet(rowsOut);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Payments');
-    XLSX.writeFile(wb, `travel_payments_${new Date().toISOString().slice(0, 10)}.xlsx`);
+    XLSX.writeFile(wb, `travel_payments_${localDay()}.xlsx`);
   };
 
   const COLS = ['Claim','Name','Expense date','Status','Category','Ref','Amount','GST','Total','Adv Adjusted','Payable','Paid on','Paid Ref','Actions'];
@@ -203,7 +204,6 @@ export default function TravelPayment() {
                       </td>
                     </tr>
                   ) : pageRows.map((c, i) => {
-                    const sc = STATUS_COLOR[c.status] || STATUS_COLOR.Pending;
                     const { adjusted, net } = previewAdjustment(c);
                     return (
                       <tr key={c.id||i} style={{ borderBottom:'1px solid #f9fafb', background:i%2===0?'#fff':'#fafafa' }}>
@@ -211,7 +211,7 @@ export default function TravelPayment() {
                         <td style={td}>{c.employee_full_name || c.employee_name || '—'}</td>
                         <td style={td}>{fmtDate(c.expense_date)}</td>
                         <td style={td}>
-                          <span style={{ background:sc.bg, color:sc.color, padding:'3px 10px', borderRadius:20, fontSize:11, fontWeight:600 }}>{c.status||'—'}</span>
+                          <StatusBadge status={c.status} />
                         </td>
                         <td style={td}>{c.expense_category || c.category || '—'}</td>
                         <td style={td}>{c.project_number || '—'}</td>
@@ -300,7 +300,7 @@ export default function TravelPayment() {
               </div>
               <div>
                 <label style={{ display:'block', fontSize:12, fontWeight:600, color:'#374151', marginBottom:4 }}>Payment Date</label>
-                <input type="date" value={form.payment_date} onChange={e => setForm(p => ({ ...p, payment_date:e.target.value }))} style={inputStyle}/>
+                <input type="date" value={form.payment_date} max={localDay()} onChange={e => setForm(p => ({ ...p, payment_date:e.target.value }))} style={inputStyle}/>
               </div>
               <div>
                 <label style={{ display:'block', fontSize:12, fontWeight:600, color:'#374151', marginBottom:4 }}>Payment Mode</label>

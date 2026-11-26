@@ -78,7 +78,9 @@ export default function TravelCommandCenter() {
   const maxByProj = Math.max(...(data.by_project?.map(r => Number(r.total_spend)) || [0]));
   const maxByCust = Math.max(...(data.by_customer?.map(r => Number(r.total_spend)) || [0]));
 
-  const totalSpend = (data.trend || []).reduce((s, r) => s + Number(r.spend || 0), 0);
+  // ACTUAL = paid company-borne claims + confirmed bookings; ESTIMATED = budget of approved trips.
+  const totalSpend = (data.trend || []).reduce((s, r) => s + Number(r.actual || 0), 0);
+  const totalEst   = (data.trend || []).reduce((s, r) => s + Number(r.estimated || 0), 0);
   const totalTrips = (data.trend || []).reduce((s, r) => s + Number(r.trips || 0), 0);
   const maxSpend   = Math.max(...(data.trend?.map(r => Number(r.spend)) || [0]));
 
@@ -95,10 +97,10 @@ export default function TravelCommandCenter() {
       {/* KPI banner */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 14, marginBottom: 24 }}>
         {[
-          { label: 'Total Travel Spend', value: fmt(totalSpend), icon: TrendingUp, color: '#6B3FDB' },
+          { label: 'Actual spend · 12 months', value: fmt(totalSpend), icon: TrendingUp, color: '#6B3FDB' },
+          { label: 'Estimated (approved trips)', value: fmt(totalEst), icon: TrendingUp, color: '#9ca3af' },
           { label: 'Total Trips',         value: totalTrips,      icon: Briefcase,  color: '#6366f1' },
-          { label: 'Top Travellers',       value: data.by_employee?.length || 0, icon: Users, color: '#10b981' },
-          { label: 'Projects with Travel', value: data.by_project?.filter(r => r.project_number !== 'Unlinked').length || 0, icon: BarChart2, color: '#7c5cf0' },
+          { label: 'Projects with Travel', value: data.by_project?.filter(r => r.project_number !== 'Not linked').length || 0, icon: BarChart2, color: '#7c5cf0' },
         ].map(k => (
           <div key={k.label} style={{ background: '#fff', borderRadius: 12, padding: 20, border: '1px solid #f0f0f4', boxShadow: '0 1px 3px rgba(0,0,0,.06)' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
@@ -169,7 +171,7 @@ export default function TravelCommandCenter() {
 
         <Section title="Travel Cost by Project" icon={Briefcase} color="#6B3FDB">
           <RankTable
-            rows={data.by_project?.filter(r => r.project_number !== 'Unlinked') || []}
+            rows={data.by_project?.filter(r => r.project_number !== 'Not linked') || []}
             keyCol="project_number"
             amountCol="total_spend"
             countCol="trips"
@@ -179,7 +181,7 @@ export default function TravelCommandCenter() {
 
         <Section title="Travel Cost by Customer" icon={Users} color="#7c5cf0">
           <RankTable
-            rows={data.by_customer?.filter(r => r.customer_name !== 'Unlinked') || []}
+            rows={data.by_customer?.filter(r => r.customer_name !== 'Not linked') || []}
             keyCol="customer_name"
             amountCol="total_spend"
             countCol="trips"
@@ -198,7 +200,7 @@ export default function TravelCommandCenter() {
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
               <thead>
                 <tr style={{ background: '#f9fafb' }}>
-                  {['#', 'Employee', 'Designation', 'Department', 'Trips', 'Total Spend', 'Avg / Trip'].map(h => (
+                  {['#', 'Employee', 'Designation', 'Department', 'Trips', 'Actual spend', 'Estimated', 'Avg / Trip'].map(h => (
                     <th key={h} style={{ padding: '10px 16px', textAlign: h === '#' ? 'center' : 'left', fontWeight: 600, color: '#374151', borderBottom: '1px solid #f0f0f4', whiteSpace: 'nowrap', fontSize: 11 }}>{h}</th>
                   ))}
                 </tr>
@@ -212,6 +214,7 @@ export default function TravelCommandCenter() {
                     <td style={{ padding: '10px 16px', color: '#6b7280' }}>{r.department}</td>
                     <td style={{ padding: '10px 16px', color: '#374151', fontWeight: 500 }}>{r.trip_count}</td>
                     <td style={{ padding: '10px 16px', fontWeight: 700, color: '#6B3FDB' }}>{fmt(r.total_spend)}</td>
+                    <td style={{ padding: '10px 16px', color: '#6b7280' }}>{fmt(r.estimated || 0)}</td>
                     <td style={{ padding: '10px 16px', color: '#6b7280' }}>{fmt(r.avg_spend || 0)}</td>
                   </tr>
                 ))}

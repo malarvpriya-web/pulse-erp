@@ -9,14 +9,9 @@ import { STATUS_COLOR, fmt } from './travelUtils';
 import useDashboardFilters from '@/hooks/useDashboardFilters';
 import { DashboardFilterBar, PageHero, PageShell } from '@/components/pulse-ui';
 import '@/components/dashboard/dashkit.css';
+import { fmtDate } from '@/utils/dateFormatter';
 
-const fmtDate = (d) => {
-  if (!d) return '—';
-  const s = String(d);
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s.split('-').reverse().join('/');
-  const dt = new Date(d);
-  return isNaN(dt.getTime()) ? '—' : dt.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' });
-};
+// Dates in the app-wide DD Mon YY standard (utils/dateFormatter).
 
 function KPICard({ label, value, icon: Icon, color, isText, index = 0 }) {
   return (
@@ -94,7 +89,7 @@ function EmployeeDashboard({ setPage, params }) {
               return (
                 <div key={r.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 14px', borderBottom: '1px solid #f9fafb' }}>
                   <div>
-                    <div style={{ fontSize: 13, fontWeight: 500, color: '#1f2937' }}>TR-{String(r.id).padStart(3,'0')}</div>
+                    <div style={{ fontSize: 13, fontWeight: 500, color: '#1f2937' }}>{r.request_number}{r.destination ? ` · ${r.destination}` : ''}</div>
                     <div style={{ fontSize: 11, color: '#9ca3af' }}>{fmtDate(r.start)} · {fmt(r.total || 0)}</div>
                   </div>
                   <span style={{ background: sc.bg, color: sc.color, padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 600 }}>{r.status}</span>
@@ -117,7 +112,7 @@ function EmployeeDashboard({ setPage, params }) {
               <div key={c.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 14px', borderBottom: '1px solid #f9fafb' }}>
                 <div>
                   <div style={{ fontSize: 13, fontWeight: 500, color: '#1f2937' }}>{c.claim_number}</div>
-                  <div style={{ fontSize: 11, color: '#9ca3af' }}>{c.expense_type} · {c.expense_date?.slice(0,10)}</div>
+                  <div style={{ fontSize: 11, color: '#9ca3af' }}>{c.expense_type} · {fmtDate(c.expense_date)}</div>
                 </div>
                 <div style={{ textAlign: 'right' }}>
                   <div style={{ fontSize: 13, fontWeight: 600, color: '#6B3FDB' }}>{fmt(c.total_amount || 0)}</div>
@@ -212,7 +207,6 @@ function ManagerDashboard({ setPage, params }) {
       // unfiltered so a narrow period can't hide items awaiting action.
       api.get('/reimbursement/pending-for-approval'),
       api.get('/reimbursement/over-policy'),
-      api.get('/travel/analytics/department'),
     ]).then(([st, pnd, op]) => {
       setStats(st.status === 'fulfilled' ? (st.value?.data || {}) : {});
       setPending(pnd.status === 'fulfilled' ? (pnd.value?.data || []) : []);
@@ -223,7 +217,7 @@ function ManagerDashboard({ setPage, params }) {
   return (
     <div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 10, marginBottom: 12 }}>
-        <KPICard index={0} label="Pending My Approval" value={stats.manager_pending || 0}   icon={Clock}       color="#7c5cf0" />
+        <KPICard index={0} label="Waiting for me" value={pending.filter(c => c.status === 'Submitted').length}   icon={Clock}       color="#7c5cf0" />
         <KPICard index={1} label="Accounts Pending"    value={stats.accounts_pending || 0}  icon={Receipt}     color="#6366f1" />
         <KPICard index={2} label="Over Policy Claims"  value={overPolicy.length}            icon={AlertCircle} color="#ef4444" />
         <KPICard index={3} label={`Paid · ${stats.period_label || 'Period'}`} value={fmt(stats.monthly_paid || 0)} icon={CreditCard}  color="#10b981" isText />
@@ -250,9 +244,9 @@ function ManagerDashboard({ setPage, params }) {
               ) : pending.slice(0, 8).map((c, i) => (
                 <tr key={c.id} style={{ borderBottom: '1px solid #f9fafb', background: i % 2 === 0 ? '#fff' : '#fafafa' }}>
                   <td style={{ padding: '9px 14px', fontWeight: 600, color: '#6B3FDB' }}>{c.claim_number}</td>
-                  <td style={{ padding: '9px 14px', fontWeight: 500 }}>{c.employee_name}</td>
+                  <td style={{ padding: '9px 14px', fontWeight: 500 }}>{c.employee_full_name || c.employee_name}</td>
                   <td style={{ padding: '9px 14px', color: '#6b7280' }}>{c.expense_type}</td>
-                  <td style={{ padding: '9px 14px', color: '#6b7280', whiteSpace: 'nowrap' }}>{c.expense_date?.slice(0,10)}</td>
+                  <td style={{ padding: '9px 14px', color: '#6b7280', whiteSpace: 'nowrap' }}>{fmtDate(c.expense_date)}</td>
                   <td style={{ padding: '9px 14px', fontWeight: 600, color: '#374151' }}>{fmt(c.total_amount || 0)}</td>
                   <td style={{ padding: '9px 14px', color: '#6b7280' }}>{c.customer_name || '—'}</td>
                   <td style={{ padding: '9px 14px' }}>
@@ -306,7 +300,7 @@ function AccountsDashboard({ setPage, params }) {
     <div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 10, marginBottom: 12 }}>
         <KPICard index={0} label="Pending Verification" value={stats.accounts_pending || 0}    icon={Receipt}     color="#6366f1" />
-        <KPICard index={1} label="Pending Payment"       value={0}                               icon={CreditCard}  color="#6B3FDB" />
+        <KPICard index={1} label="Pending Payment"       value={pending.filter(c => c.status === 'Mgmt Approved').length}                               icon={CreditCard}  color="#6B3FDB" />
         <KPICard index={2} label={`Reimbursed · ${stats.period_label || 'Period'}`} value={fmt(stats.monthly_paid || 0)}   icon={CheckCircle} color="#10b981" isText />
         <KPICard index={3} label="GST Recoverable"       value={fmt(stats.gst_recoverable || 0)}icon={TrendingUp}  color="#7c5cf0" isText />
       </div>
@@ -327,12 +321,12 @@ function AccountsDashboard({ setPage, params }) {
             <tbody>
               {pending.length === 0 ? (
                 <tr><td colSpan={10} style={{ padding: 24, textAlign: 'center', color: '#9ca3af' }}>No claims pending verification</td></tr>
-              ) : pending.slice(0, 10).map((c, i) => (
+              ) : pending.filter(c => c.status === 'Manager Approved').slice(0, 10).map((c, i) => (
                 <tr key={c.id} style={{ borderBottom: '1px solid #f9fafb', background: i % 2 === 0 ? '#fff' : '#fafafa' }}>
                   <td style={{ padding: '9px 14px', fontWeight: 600, color: '#6B3FDB' }}>{c.claim_number}</td>
-                  <td style={{ padding: '9px 14px', fontWeight: 500 }}>{c.employee_name}</td>
+                  <td style={{ padding: '9px 14px', fontWeight: 500 }}>{c.employee_full_name || c.employee_name}</td>
                   <td style={{ padding: '9px 14px', color: '#6b7280' }}>{c.expense_category}</td>
-                  <td style={{ padding: '9px 14px', color: '#6b7280', whiteSpace: 'nowrap' }}>{c.expense_date?.slice(0,10)}</td>
+                  <td style={{ padding: '9px 14px', color: '#6b7280', whiteSpace: 'nowrap' }}>{fmtDate(c.expense_date)}</td>
                   <td style={{ padding: '9px 14px' }}>{fmt(c.amount)}</td>
                   <td style={{ padding: '9px 14px', color: '#7c5cf0' }}>{fmt(c.gst_amount || 0)}</td>
                   <td style={{ padding: '9px 14px', fontWeight: 600, color: '#10b981' }}>{fmt(c.total_amount || 0)}</td>
@@ -363,11 +357,11 @@ export default function TravelDashboard({ setPage }) {
   // set. These pick which dashboard tab you land on, so gating on it alone
   // dropped a secondary-role manager onto the employee view. See AuthContext.
   const isAdmin    = hasAnyRole('admin', 'super_admin');
-  const isManager  = hasAnyRole('manager', 'hr');
-  const isFinance  = hasAnyRole('finance');
+  const isManager  = hasAnyRole('manager', 'department_head', 'hr', 'hr_manager');
+  const isFinance  = hasAnyRole('finance', 'finance_manager', 'accounts_exec');
 
   const [activeTab, setActiveTab] = useState(
-    isAdmin ? 'ceo' : isManager ? 'manager' : isFinance ? 'accounts' : 'employee'
+    isManager || isAdmin ? 'manager' : isFinance ? 'accounts' : 'employee'
   );
 
   // One filter state for all three role tabs — switching tabs keeps the window.
@@ -391,7 +385,8 @@ export default function TravelDashboard({ setPage }) {
     { key: 'employee', label: 'My Dashboard',          show: true },
     { key: 'manager',  label: 'Manager Dashboard',     show: isManager || isAdmin },
     { key: 'accounts', label: 'Accounts Dashboard',    show: isFinance || isAdmin },
-    { key: 'ceo',      label: 'Command Center',        show: isAdmin },
+    // The CEO Command Center lives in Insights & Policy; this tab only linked
+    // to it (removed as a duplicate, 26 Nov 26).
   ].filter(t => t.show);
 
   return (
@@ -407,8 +402,7 @@ export default function TravelDashboard({ setPage }) {
       />
     }>
 
-      {/* Filters — the Command Center tab has its own page-level controls */}
-      {activeTab !== 'ceo' && (
+      {(
         <DashboardFilterBar
           filters={filters}
           dimensions={[{
@@ -438,17 +432,6 @@ export default function TravelDashboard({ setPage }) {
       {activeTab === 'employee' && <EmployeeDashboard setPage={setPage} params={params} />}
       {activeTab === 'manager'  && <ManagerDashboard  setPage={setPage} params={params} />}
       {activeTab === 'accounts' && <AccountsDashboard setPage={setPage} params={params} />}
-      {activeTab === 'ceo' && (
-        <div>
-          <RecentTravelRequests setPage={setPage} />
-          <div style={{ textAlign: 'center', marginTop: 20 }}>
-            <button onClick={() => setPage?.('TravelCommandCenter')}
-              style={{ padding: '10px 24px', background: '#6B3FDB', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 14, fontWeight: 600 }}>
-              Open CEO Travel Command Center →
-            </button>
-          </div>
-        </div>
-      )}
     </PageShell>
   );
 }

@@ -126,11 +126,12 @@ async function computeClearanceBlockers(employeeId) {
       // plus a direct employees.id fallback for any legacy row.
       `SELECT COALESCE(SUM(amount - COALESCE(settled_amount,0)), 0) AS outstanding
        FROM travel_advances
-       WHERE status NOT IN ('Settled','Rejected','Cancelled')
+       -- Only money actually handed over is owed back; an advance still being
+       -- approved is withdrawn, not recovered.
+       WHERE status IN ('Disbursed','Partially Settled')
          AND (
            employee_id IN (SELECT id FROM users WHERE employee_id = $1)
-           OR created_by IN (SELECT id FROM users WHERE employee_id = $1)
-           OR employee_id = $1
+           OR travel_request_id IN (SELECT id FROM travel_requests WHERE employee_id = $1)
          )`,
       [employeeId]
     ),

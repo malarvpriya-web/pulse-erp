@@ -276,7 +276,7 @@ describe('Leave — delegation and cancellation', () => {
 // ── Travel ───────────────────────────────────────────────────────────────────
 const raiseTravel = async (dest) => {
   const r = await api('req', 'post', '/travel/requests', {
-    destination: dest, purpose: 'Zz', from_date: '2026-12-01', to_date: '2026-12-02', budget: 4500.5, mode: 'Train',
+    destination: dest, purpose: 'Zz', travel_type: 'Sales Visit', from_date: '2026-12-01', to_date: '2026-12-02', budget: 4500.5, mode: 'Train',
   });
   expect(r.status).toBe(201);
   return r.body.id;
@@ -293,17 +293,20 @@ describe('Travel — status route', () => {
     expect(await travelStatus(id)).toBe('Pending');
   });
 
-  it('the reporting manager approves (lower-case status as ManagerDashboard sends); a booking stub is created once', async () => {
+  // 26 Nov 26: no "pending_booking" stub rows any more — the travel desk works
+  // from GET /travel/bookings/queue and books against the approved trip.
+  it('the reporting manager approves (lower-case status as ManagerDashboard sends); no booking stub is written', async () => {
     expect((await api('mgr', 'put', `/travel/requests/${id}/status`, { status: 'approved' })).status).toBe(200);
     expect(await travelStatus(id)).toBe('Approved');
     const { rows } = await pool.query('SELECT COUNT(*)::int n FROM travel_bookings WHERE travel_request_id = $1', [id]);
-    expect(rows[0].n).toBe(1);
+    expect(rows[0].n).toBe(0);
   });
 
   it('an approved request cannot be re-decided or reopened', async () => {
-    expect((await api('mgr', 'put', `/travel/requests/${id}/status`, { status: 'Rejected' })).status).toBe(409);
+    expect((await api('mgr', 'put', `/travel/requests/${id}/status`, { status: 'Rejected', comments: 'late' })).status).toBe(409);
     expect((await api('mgr', 'put', `/travel/requests/${id}/status`, { status: 'Approved' })).status).toBe(409);
-    expect((await api('hr', 'put', `/travel/requests/${id}/status`, { status: 'Pending' })).status).toBe(409);
+    // 'Pending' is not a decision at all.
+    expect((await api('hr', 'put', `/travel/requests/${id}/status`, { status: 'Pending' })).status).toBe(400);
     expect(await travelStatus(id)).toBe('Approved');
   });
 
@@ -332,11 +335,12 @@ describe('Travel — status route', () => {
     expect((await api('other', 'put', `/travel/requests/${id3}/status`, { status: 'Approved' })).status).toBe(200);
   });
 
-  it('level-approve, finance-post and the approval trail are company-scoped; the configured 72h SLA is unchanged', async () => {
+  it('the retired level-approve / finance-post / approval-trail routes answer 410; another company cannot read the trip; the configured 72h SLA is unchanged', async () => {
     const id4 = await raiseTravel('Delhi');
-    expect((await api('mgrB', 'put', `/travel/requests/${id4}/level-approve`, { status: 'Approved' })).status).toBe(404);
-    expect((await api('finB', 'put', `/travel/requests/${id}/finance-post`, { payment_ref: 'X' })).status).toBe(404);
-    expect((await api('mgrB', 'get', `/travel/requests/${id4}/approvals`)).body).toEqual([]);
+    expect((await api('mgrB', 'put', `/travel/requests/${id4}/level-approve`, { status: 'Approved' })).status).toBe(410);
+    expect((await api('finB', 'put', `/travel/requests/${id}/finance-post`, { payment_ref: 'X' })).status).toBe(410);
+    expect((await api('mgrB', 'get', `/travel/requests/${id4}/approvals`)).status).toBe(410);
+    expect((await api('mgrB', 'get', `/travel/requests/${id4}`)).status).toBe(404);
     const sla = await one(`SELECT ws.sla_hours FROM workflow_steps ws JOIN workflows w ON w.id = ws.workflow_id
                             WHERE w.module = 'travel' AND ws.sla_hours IS NOT NULL LIMIT 1`);
     expect(Number(sla.sla_hours)).toBe(72);

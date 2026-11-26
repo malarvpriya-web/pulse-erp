@@ -118,7 +118,8 @@ const SEARCHABLE_PAGES = [
   { page: 'TravelDashboard',     label: 'Travel Dashboard',           category: 'Travel' },
   { page: 'TravelRequests',      label: 'Travel Requests',            category: 'Travel' },
   { page: 'TravelBookings',      label: 'Travel Bookings',            category: 'Travel' },
-  { page: 'TravelExpenses',      label: 'Travel Expenses',            category: 'Travel' },
+  { page: 'TravelExpenseCenter', label: 'Travel Expenses',            category: 'Travel' },
+  { page: 'TravelVisits',        label: 'Visit Reports',              category: 'Travel' },
   { page: 'TravelApprovals',     label: 'Travel Approvals',           category: 'Travel' },
   { page: 'TravelAnalytics',     label: 'Travel Analytics',           category: 'Travel' },
   // Service Desk

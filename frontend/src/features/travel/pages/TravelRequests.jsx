@@ -1,345 +1,260 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
+import { Plus, Search, Plane } from 'lucide-react';
 import api from '@/services/api/client';
-import { Plus, X, Search, ChevronDown, CheckCircle, Clock, AlertCircle, Plane } from 'lucide-react';
-import { STATUS_COLOR, fmt } from './travelUtils';
 import { PageHero, PageShell } from '@/components/pulse-ui';
 import VocabSelect from '@/components/core/VocabSelect';
 import { useAuth } from '@/context/AuthContext';
+import { useToast } from '@/context/ToastContext';
+import { fmtDate, localDay } from '@/utils/dateFormatter';
+import { fmt } from './travelUtils';
+import {
+  Dialog, Field, Facts, StatusBadge, ReasonDialog, LookupSelect, ErrorBox,
+  inputStyle, sectionStyle, grid2, th, td, btn, apiError,
+} from '../components/travelUi';
 
-const fmtDate = (d) => { if (!d) return '—'; const s = String(d); if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s.split('-').reverse().join('/'); const dt = new Date(d); return isNaN(dt.getTime()) ? '—' : dt.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }); };
-
-// Was a thirteen-item array here, near-duplicated by VISIT_TYPES in
-// VisitReports (13, overlapping but not equal) and CustomerVisits (7, different
-// again). Now the travel-type master.
-
-const TRAVEL_MODES = ['Flight','Train','Bus','Car','Cab','Two-Wheeler','Other'];
-const EMPTY_FORM = {
-  destination:'', purpose:'', travel_type:'Sales Visit', from_date:'', to_date:'',
-  budget:'', mode:'Flight', hotel_required:false, advance_required:false, notes:'',
-  customer_name:'', project_number:'', site_name:'', opportunity_ref:'', po_number:'',
-  service_ticket_id:'', employee_name:'', department:'',
+/**
+ * Travel Requests — raise a trip, edit it while it waits, cancel it with a
+ * reason, and see what happened to it (26 Nov 26 rebuild).
+ *
+ *  - Customer, project, opportunity and service ticket are pickers over the
+ *    real records; they were free text, so no trip ever linked to anything.
+ *  - Travel type is saved (it was dropped on save — every trip had none).
+ *  - One approval step: the reporting manager (Travel Approvals). The detail
+ *    used to draw a 3-level workflow the real approval never used.
+ *  - The travel desk (admin) can raise a trip for an employee, chosen from
+ *    the employee list rather than a typed name.
+ */
+const TRAVEL_MODES = ['Flight', 'Train', 'Bus', 'Car', 'Cab', 'Two-Wheeler', 'Other'];
+const STATUSES = ['All', 'Pending', 'Approved', 'Rejected', 'Cancelled'];
+const EMPTY = {
+  employee_id: '', travel_type: '', destination: '', purpose: '', from_date: '', to_date: '',
+  budget: '', mode: 'Train', hotel_required: false, advance_required: false, notes: '',
+  customer_id: '', project_id: '', opportunity_id: '', service_ticket_id: '', site_name: '', po_number: '',
 };
+const toForm = (r) => Object.fromEntries(Object.keys(EMPTY).map(k => [k, r?.[k] == null ? EMPTY[k] : (k.endsWith('_date') ? String(r[k]).slice(0, 10) : r[k])]));
 
 export default function TravelRequests() {
-  const [requests, setRequests] = useState([]);
-  const [loading,  setLoading]  = useState(true);
-  const [showForm, setShowForm] = useState(false);
-  const [form,     setForm]     = useState(EMPTY_FORM);
-  const [saving,   setSaving]   = useState(false);
-  const [search,   setSearch]   = useState('');
-  const [statusFilter, setStatusFilter] = useState('All');
-  const [error,    setError]    = useState('');
-  const [selected, setSelected] = useState(null); // detail view
-  const [deptList, setDeptList] = useState([]);
-  // An employee raises a request only for themselves; the server records their
-  // own name and department, so the form shows no typed name or empty list.
-  const { isEmployeeOnly } = useAuth();
+  const toast = useToast();
+  const { hasAnyRole } = useAuth();
+  const isDesk = hasAnyRole('admin', 'super_admin');
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [loadErr, setLoadErr] = useState('');
+  const [search, setSearch] = useState('');
+  const [status, setStatus] = useState('All');
+  const [mineOnly, setMineOnly] = useState(false);
+  const [form, setForm] = useState(null);      // { ...fields, id? }
+  const [saving, setSaving] = useState(false);
+  const [formErr, setFormErr] = useState('');
+  const [detail, setDetail] = useState(null);
+  const [cancelFor, setCancelFor] = useState(null);
 
-  const load = () => {
-    setLoading(true);
-    api.get('/travel/requests', { params: { limit: 200 } })
-      .then(r => setRequests(Array.isArray(r.data) ? r.data : []))
-      .catch(() => setRequests([]))
+  const load = useCallback(() => {
+    setLoading(true); setLoadErr('');
+    api.get('/travel/requests', { params: { limit: 500, mine: mineOnly ? 1 : undefined } })
+      .then(r => setRows(Array.isArray(r.data) ? r.data : []))
+      .catch(e => { setRows([]); setLoadErr(apiError(e, 'Could not load trips')); })
       .finally(() => setLoading(false));
+  }, [mineOnly]);
+  useEffect(() => { load(); }, [load]);
+
+  const openDetail = async (id) => {
+    try { setDetail((await api.get(`/travel/requests/${id}`)).data); }
+    catch (e) { toast.error(apiError(e, 'Could not open the trip')); }
   };
-  useEffect(() => {
-    load();
-    if (isEmployeeOnly) return;
-    api.get('/admin/config/departments')
-      .then(r => setDeptList(Array.isArray(r.data) ? r.data.map(d => d.name || d) : []))
-      .catch(() => setDeptList([]));
-  }, [isEmployeeOnly]);
 
-  const filtered = requests.filter(r => {
-    const matchStatus = statusFilter === 'All' || r.status === statusFilter;
-    const matchSearch = !search || [r.destination, r.purpose, r.employee_name, r.customer_name, r.project_number, r.po_number].some(v => (v||'').toLowerCase().includes(search.toLowerCase()));
-    return matchStatus && matchSearch;
-  });
-
-  const fld = (key, val) => setForm(p => ({...p, [key]: val}));
-
-  const handleSubmit = async () => {
-    if (!form.destination || !form.purpose || !form.from_date || !form.to_date) {
-      setError('Destination, Purpose, From Date and To Date are required.'); return;
+  const fld = (k, v) => setForm(p => ({ ...p, [k]: v }));
+  const save = async () => {
+    const f = form;
+    if (!f.travel_type || !f.destination.trim() || !f.purpose.trim() || !f.from_date || !f.to_date) {
+      setFormErr('Travel type, destination, purpose and both dates are required.'); return;
     }
-    setSaving(true); setError('');
+    if (f.to_date < f.from_date) { setFormErr('The end date cannot be before the start date.'); return; }
+    if (f.budget !== '' && Number(f.budget) < 0) { setFormErr('Estimated cost cannot be negative.'); return; }
+    setSaving(true); setFormErr('');
     try {
-      await api.post('/travel/requests/v2', {
-        ...form,
-        budget: Number(form.budget) || 0,
-      });
-      setShowForm(false); setForm(EMPTY_FORM); load();
-    } catch (e) {
-      setError(e?.response?.data?.error || 'Failed to submit request.');
-    } finally { setSaving(false); }
+      const body = { ...f, budget: f.budget === '' ? 0 : Number(f.budget) };
+      if (f.id) await api.put(`/travel/requests/${f.id}`, body);
+      else await api.post('/travel/requests', body);
+      toast.success(f.id ? 'Trip updated' : 'Trip submitted for approval');
+      setForm(null); load();
+      if (f.id && detail?.id === f.id) openDetail(f.id);
+    } catch (e) { setFormErr(apiError(e, 'Could not save the trip')); }
+    finally { setSaving(false); }
   };
 
-  const approvalLabel = (level) => {
-    if (!level || level === 0) return { label: 'Awaiting RM', color: '#7c5cf0' };
-    if (level === 1) return { label: 'Awaiting Dept Head', color: '#7c5cf0' };
-    if (level === 2) return { label: 'Awaiting Management', color: '#7c5cf0' };
-    return { label: 'Fully Approved', color: '#10b981' };
+  const cancelTrip = async (reason) => {
+    await api.post(`/travel/requests/${cancelFor.id}/cancel`, { reason });
+    toast.success('Trip cancelled');
+    setCancelFor(null); setDetail(null); load();
   };
 
-  const inputStyle = { width:'100%', padding:'9px 12px', border:'1px solid #e5e7eb', borderRadius:8, fontSize:13, outline:'none', boxSizing:'border-box' };
-  const labelStyle = { display:'block', fontSize:12, fontWeight:600, color:'#374151', marginBottom:5 };
+  const q = search.trim().toLowerCase();
+  const filtered = rows.filter(r => (status === 'All' || r.status === status) &&
+    (!q || [r.request_number, r.destination, r.purpose, r.employee_name, r.customer_name, r.project_number, r.po_number, r.travel_type]
+      .some(v => String(v || '').toLowerCase().includes(q))));
 
   return (
     <PageShell dock={
-      <PageHero
-        icon={Plane}
-        eyebrow="Travel"
-        title="Travel Requests"
-        actions={<button className="plh-cta" onClick={() => setShowForm(true)}>
-          <Plus size={15}/> New Request
-        </button>}
-      />
+      <PageHero icon={Plane} eyebrow="Travel" title="Travel Requests"
+        subtitle="Raise a trip; your reporting manager approves it in Travel Approvals"
+        actions={<button className="plh-cta" onClick={() => { setFormErr(''); setForm({ ...EMPTY }); }}><Plus size={15} /> New Request</button>} />
     }>
-
-      {/* Filters */}
-      <div style={{ display:'flex', gap:12, marginBottom:20, flexWrap:'wrap' }}>
-        <div style={{ position:'relative', flex:1, minWidth:200 }}>
-          <Search size={14} style={{ position:'absolute', left:10, top:'50%', transform:'translateY(-50%)', color:'#9ca3af' }}/>
-          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search destination, customer, PO, project..."
-            style={{ width:'100%', paddingLeft:32, paddingRight:12, paddingTop:8, paddingBottom:8, border:'1px solid #e5e7eb', borderRadius:8, fontSize:13, outline:'none', boxSizing:'border-box' }}/>
+      <div style={{ display: 'flex', gap: 10, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
+        <div style={{ position: 'relative', flex: 1, minWidth: 220 }}>
+          <Search size={14} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: '#9ca3af' }} />
+          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search trip #, destination, customer, project, PO…"
+            aria-label="Search trips" style={{ ...inputStyle, paddingLeft: 32 }} />
         </div>
-        {['All','Pending','Approved','Rejected','Completed'].map(s => (
-          <button key={s} onClick={() => setStatusFilter(s)}
-            style={{ padding:'7px 14px', borderRadius:8, border:'1px solid', fontSize:12, fontWeight:500, cursor:'pointer',
-              borderColor: statusFilter===s ? '#6B3FDB' : '#e5e7eb',
-              background:  statusFilter===s ? '#6B3FDB' : '#fff',
-              color:       statusFilter===s ? '#fff'    : '#374151' }}>
-            {s}
-          </button>
+        {STATUSES.map(s => (
+          <button key={s} onClick={() => setStatus(s)}
+            style={{ ...btn(), padding: '7px 14px', fontSize: 12, ...(status === s ? { background: '#6B3FDB', color: '#fff', borderColor: '#6B3FDB' } : {}) }}>{s}</button>
         ))}
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#374151' }}>
+          <input type="checkbox" checked={mineOnly} onChange={e => setMineOnly(e.target.checked)} style={{ accentColor: '#6B3FDB' }} /> Only my trips
+        </label>
       </div>
 
-      {/* Table */}
-      <div style={{ background:'#fff', borderRadius:12, border:'1px solid #f0f0f4', overflow:'hidden' }}>
-        {loading ? (
-          <div style={{ padding:40, textAlign:'center', color:'#9ca3af' }}>Loading...</div>
-        ) : filtered.length === 0 ? (
-          <div style={{ padding:40, textAlign:'center', color:'#9ca3af' }}>No requests found.</div>
-        ) : (
-          <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
-            <thead>
-              <tr style={{ background:'#f9fafb' }}>
-                {['#','Employee','Type','Destination','Customer / Project','Purpose','Dates','Budget','Status'].map(h => (
-                  <th key={h} style={{ padding:'10px 16px', textAlign:'left', fontWeight:600, color:'#374151', borderBottom:'1px solid #f0f0f4', whiteSpace:'nowrap' }}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((r, i) => {
-                const sc = STATUS_COLOR[r.status] || { bg:'#f3f4f6', color:'#374151' };
-                const al = approvalLabel(r.approval_level);
-                return (
-                  <tr key={r.id} onClick={() => setSelected(r)} style={{ borderBottom:'1px solid #f9fafb', background:i%2===0?'#fff':'#fafafa', cursor:'pointer' }}>
-                    <td style={{ padding:'10px 16px', fontWeight:600, color:'#6B3FDB' }}>TR-{String(r?.id ?? '').padStart(3,'0')}</td>
-                    <td style={{ padding:'10px 16px', fontWeight:500, color:'#1f2937' }}>{r?.employee_name ?? '—'}</td>
-                    <td style={{ padding:'10px 16px' }}>
-                      {r?.travel_type
-                        ? <span style={{ background:'#f5f3ff', color:'#6B3FDB', padding:'2px 7px', borderRadius:8, fontSize:11, fontWeight:600, whiteSpace:'nowrap' }}>{r.travel_type}</span>
-                        : <span style={{ color:'#d1d5db', fontSize:12 }}>—</span>}
-                    </td>
-                    <td style={{ padding:'10px 16px', color:'#1f2937' }}>{r?.destination ?? '—'}</td>
-                    <td style={{ padding:'10px 16px', color:'#6b7280', maxWidth:160 }}>
-                      {r?.customer_name ? <div style={{ fontWeight:500, color:'#374151' }}>{r.customer_name}</div> : null}
-                      {r?.project_number ? <div style={{ fontSize:11 }}>{r.project_number}</div> : null}
-                      {r?.po_number ? <div style={{ fontSize:11, color:'#9ca3af' }}>PO: {r.po_number}</div> : null}
-                    </td>
-                    <td style={{ padding:'10px 16px', color:'#6b7280', maxWidth:140, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{r?.purpose ?? '—'}</td>
-                    <td style={{ padding:'10px 16px', color:'#374151', whiteSpace:'nowrap' }}>
-                      {fmtDate(r?.from_date)} → {fmtDate(r?.to_date)}
-                    </td>
-                    <td style={{ padding:'10px 16px', color:'#374151' }}>{fmt(r?.budget ?? 0)}</td>
-                    <td style={{ padding:'10px 16px' }}>
-                      <span style={{ background:sc.bg, color:sc.color, padding:'3px 10px', borderRadius:20, fontSize:11, fontWeight:600 }}>{r?.status ?? 'pending'}</span>
-                      {r?.status === 'Pending' && (
-                        <div style={{ fontSize:10, color:al.color, marginTop:3 }}>{al.label}</div>
-                      )}
-                    </td>
+      <ErrorBox>{loadErr}</ErrorBox>
+      <div style={{ background: '#fff', borderRadius: 12, border: '1px solid #f0f0f4', overflowX: 'auto' }}>
+        {loading ? <div style={{ padding: 40, textAlign: 'center', color: '#9ca3af' }}>Loading…</div>
+          : filtered.length === 0 ? <div style={{ padding: 40, textAlign: 'center', color: '#9ca3af' }}>No trips found.</div>
+          : (
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+              <thead><tr style={{ background: '#f9fafb' }}>
+                {['Trip #', 'Employee', 'Type', 'Destination', 'Customer / Project', 'Dates', 'Estimate', 'Status'].map(h => <th key={h} style={th}>{h}</th>)}
+              </tr></thead>
+              <tbody>
+                {filtered.map(r => (
+                  <tr key={r.id} onClick={() => openDetail(r.id)} style={{ borderBottom: '1px solid #f3f4f6', cursor: 'pointer' }}>
+                    <td style={{ ...td, fontWeight: 600, color: '#6B3FDB', whiteSpace: 'nowrap' }}>{r.request_number}</td>
+                    <td style={td}><div style={{ fontWeight: 500 }}>{r.employee_name || '—'}</div><div style={{ fontSize: 11, color: '#9ca3af' }}>{r.department}</div></td>
+                    <td style={td}>{r.travel_type || '—'}</td>
+                    <td style={td}>{r.destination}</td>
+                    <td style={td}>{r.customer_name && <div>{r.customer_name}</div>}{r.project_number && <div style={{ fontSize: 11, color: '#6b7280' }}>{r.project_number}</div>}{!r.customer_name && !r.project_number && '—'}</td>
+                    <td style={{ ...td, whiteSpace: 'nowrap' }}>{fmtDate(r.from_date)} → {fmtDate(r.to_date)}</td>
+                    <td style={td}>{fmt(r.budget)}</td>
+                    <td style={td}><StatusBadge status={r.status} />
+                      {r.status === 'Pending' && <div style={{ fontSize: 10, color: '#6b7280', marginTop: 3 }}>{r.delegate_name ? `With ${r.delegate_name}` : 'With reporting manager'}</div>}</td>
                   </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        )}
+                ))}
+              </tbody>
+            </table>
+          )}
       </div>
 
-      {/* Detail modal */}
-      {selected && (
-        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.5)', zIndex:1000, display:'flex', alignItems:'center', justifyContent:'center' }}
-             onClick={e => { if (e.target === e.currentTarget) setSelected(null); }}>
-          <div style={{ background:'#fff', borderRadius:16, padding:32, width:620, maxHeight:'90vh', overflowY:'auto', boxShadow:'0 20px 60px rgba(0,0,0,.2)' }}>
-            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20 }}>
-              <h2 style={{ fontSize:18, fontWeight:700, color:'#1f2937', margin:0 }}>TR-{String(selected.id).padStart(3,'0')}</h2>
-              <button onClick={() => setSelected(null)} style={{ background:'none', border:'none', cursor:'pointer', color:'#9ca3af' }}><X size={20}/></button>
-            </div>
-            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, fontSize:13 }}>
-              {[
-                ['Employee', selected?.employee_name ?? '—'],
-                ['Department', selected?.department],
-                ['Travel Type', selected?.travel_type],
-                ['Destination', selected?.destination ?? '—'],
-                ['Purpose', selected?.purpose ?? '—'],
-                ['Travel Date', fmtDate(selected?.from_date)],
-                ['Return Date', fmtDate(selected?.to_date)],
-                ['Budget', fmt(selected?.budget ?? 0)],
-                ['Mode', selected?.mode ?? 'Not specified'],
-                ['Customer', selected?.customer_name],
-                ['Project #', selected?.project_number],
-                ['Site', selected?.site_name],
-                ['Opportunity Ref', selected?.opportunity_ref],
-                ['PO Number', selected?.po_number],
-                ['Hotel Required', selected?.hotel_required ? 'Yes' : 'No'],
-                ['Advance Required', selected?.advance_required ? 'Yes' : 'No'],
-                ['Finance Posted', selected?.finance_posted ? 'Yes' : 'No'],
-              ].filter(([, v]) => v).map(([label, value]) => (
-                <div key={label}>
-                  <div style={{ fontSize:11, color:'#9ca3af', fontWeight:600, textTransform:'uppercase', marginBottom:2 }}>{label}</div>
-                  <div style={{ fontWeight:500, color:'#1f2937' }}>{value}</div>
-                </div>
-              ))}
-            </div>
-            {selected.notes && (
-              <div style={{ marginTop:16, padding:12, background:'#f9fafb', borderRadius:8, fontSize:13, color:'#374151' }}>
-                <div style={{ fontSize:11, color:'#9ca3af', fontWeight:600, marginBottom:4 }}>NOTES</div>
-                {selected.notes}
-              </div>
-            )}
-            {/* Approval levels */}
-            <div style={{ marginTop:20 }}>
-              <div style={{ fontSize:12, fontWeight:700, color:'#374151', marginBottom:10 }}>APPROVAL WORKFLOW</div>
-              {['Reporting Manager','Department Head','Management'].map((lvl, i) => {
-                const done = (selected.approval_level || 0) > i;
-                const active = (selected.approval_level || 0) === i && selected.status === 'Pending';
-                return (
-                  <div key={lvl} style={{ display:'flex', alignItems:'center', gap:10, marginBottom:8 }}>
-                    <div style={{
-                      width:24, height:24, borderRadius:'50%', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0,
-                      background: done ? '#10b981' : active ? '#7c5cf0' : '#e5e7eb',
-                    }}>
-                      {done ? <CheckCircle size={14} color="#fff"/> : active ? <Clock size={14} color="#fff"/> : <span style={{ fontSize:11, color:'#9ca3af' }}>{i+1}</span>}
-                    </div>
-                    <span style={{ fontSize:13, color: done ? '#10b981' : active ? '#7c5cf0' : '#9ca3af', fontWeight: active ? 600 : 400 }}>{lvl}</span>
-                  </div>
-                );
-              })}
-            </div>
+      {detail && (
+        <Dialog title={`${detail.request_number} — ${detail.destination}`} subtitle={`${detail.employee_name || ''}${detail.department ? ' · ' + detail.department : ''}`}
+          onClose={() => setDetail(null)} width={720}
+          footer={<>
+            {detail.can_cancel && <button style={btn('danger')} onClick={() => setCancelFor(detail)}>Cancel trip</button>}
+            {detail.can_edit && <button style={btn()} onClick={() => { setFormErr(''); setForm({ ...toForm(detail), id: detail.id }); }}>Edit</button>}
+            <button style={btn('primary')} onClick={() => setDetail(null)}>Close</button>
+          </>}>
+          <div style={{ marginBottom: 14 }}><StatusBadge status={detail.status} /></div>
+          <Facts items={[
+            ['Travel type', detail.travel_type], ['Dates', `${fmtDate(detail.from_date)} → ${fmtDate(detail.to_date)}`],
+            ['Mode', detail.mode], ['Estimated cost', fmt(detail.budget)], ['Purpose', detail.purpose],
+            ['Customer', detail.customer_name], ['Project', detail.project_number], ['Opportunity', detail.opportunity_ref],
+            ['Service ticket', detail.service_ticket_number], ['Site', detail.site_name], ['PO number', detail.po_number],
+            ['Hotel needed', detail.hotel_required ? 'Yes' : 'No'], ['Advance needed', detail.advance_required ? 'Yes' : 'No'],
+          ]} />
+          {detail.notes && <div style={{ marginTop: 14, padding: 12, background: '#f9fafb', borderRadius: 8, fontSize: 13 }}>{detail.notes}</div>}
+
+          <div style={{ ...sectionStyle, marginTop: 20 }}>Decision</div>
+          <div style={{ fontSize: 13, color: '#374151' }}>
+            {detail.status === 'Pending' && (detail.delegate_name ? `Waiting for ${detail.delegate_name} (delegated)` : 'Waiting for the reporting manager')}
+            {['Approved', 'Rejected'].includes(detail.status) && <>{detail.status} by {detail.decided_by_name || '—'}{detail.decided_at && ` on ${fmtDate(detail.decided_at)}`}{detail.decision_comments && <> — “{detail.decision_comments}”</>}</>}
+            {detail.status === 'Cancelled' && <>Cancelled{detail.cancelled_at && ` on ${fmtDate(detail.cancelled_at)}`} — “{detail.cancel_reason}”</>}
           </div>
-        </div>
+
+          {(detail.advances?.length || detail.bookings?.length || detail.claims?.length || detail.visit_report) ? (
+            <>
+              <div style={{ ...sectionStyle, marginTop: 20 }}>Linked records</div>
+              <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, color: '#374151', lineHeight: 1.8 }}>
+                {detail.bookings?.map(b => <li key={`b${b.id}`}>Booking — {b.booking_type} {b.airline_train || ''} {b.booking_ref ? `(${b.booking_ref})` : ''} · {fmt(b.amount)} · {b.status}</li>)}
+                {detail.advances?.map(a => <li key={`a${a.id}`}>Advance — {fmt(a.amount)} · {a.status}</li>)}
+                {detail.claims?.map(c => <li key={`c${c.id}`}>Claim {c.claim_number} — {c.expense_type} · {fmt(c.total_amount)} · {c.status}{c.borne_by === 'personal' ? ' · personal' : ''}</li>)}
+                {detail.visit_report && <li>Visit report {detail.visit_report.report_number} · {detail.visit_report.status}</li>}
+              </ul>
+            </>
+          ) : null}
+        </Dialog>
       )}
 
-      {/* New Request Modal */}
-      {showForm && (
-        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.5)', zIndex:1000, display:'flex', alignItems:'center', justifyContent:'center' }}>
-          <div style={{ background:'#fff', borderRadius:16, padding:32, width:680, maxHeight:'92vh', overflowY:'auto', boxShadow:'0 20px 60px rgba(0,0,0,.2)' }}>
-            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:24 }}>
-              <h2 style={{ fontSize:18, fontWeight:700, color:'#1f2937', margin:0 }}>New Travel Request</h2>
-              <button onClick={() => { setShowForm(false); setError(''); }} style={{ background:'none', border:'none', cursor:'pointer', color:'#9ca3af' }}><X size={20}/></button>
-            </div>
-            {error && <div style={{ background:'#fee2e2', color:'#991b1b', padding:'10px 14px', borderRadius:8, marginBottom:16, fontSize:13 }}>{error}</div>}
+      {cancelFor && <ReasonDialog title={`Cancel ${cancelFor.request_number}?`} label="Why is this trip cancelled?" confirmLabel="Cancel trip"
+        onCancel={() => setCancelFor(null)} onConfirm={cancelTrip} />}
 
-            {/* Section: Employee */}
-            {!isEmployeeOnly && (<>
-            <div style={{ fontSize:12, fontWeight:700, color:'#6B3FDB', textTransform:'uppercase', letterSpacing:'0.5px', marginBottom:12 }}>Employee Details</div>
-            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16, marginBottom:20 }}>
-              <div>
-                <label style={labelStyle}>Employee Name</label>
-                <input value={form.employee_name} onChange={e => fld('employee_name', e.target.value)} placeholder="Your name" style={inputStyle}/>
-              </div>
-              <div>
-                <label style={labelStyle}>Department</label>
-                <select value={form.department} onChange={e => fld('department', e.target.value)} style={inputStyle}>
-                  <option value="">-- Select Department --</option>
-                  {deptList.map(d => <option key={d} value={d}>{d}</option>)}
-                </select>
-              </div>
+      {form && (
+        <Dialog title={form.id ? 'Edit travel request' : 'New travel request'} width={720} onClose={() => setForm(null)}
+          footer={<>
+            <button style={btn()} onClick={() => setForm(null)} disabled={saving}>Cancel</button>
+            <button style={btn('primary')} onClick={save} disabled={saving}>{saving ? 'Saving…' : form.id ? 'Save changes' : 'Submit request'}</button>
+          </>}>
+          <ErrorBox>{formErr}</ErrorBox>
+          {isDesk && !form.id && (<>
+            <div style={sectionStyle}>Traveller</div>
+            <div style={grid2}>
+              <Field label="Employee" hint="Leave empty to raise the trip for yourself. Name and department come from the employee record.">
+                <LookupSelect kind="employees" value={form.employee_id} onChange={v => fld('employee_id', v)} placeholder="— Myself —" ariaLabel="Employee" />
+              </Field>
             </div>
-            </>)}
+          </>)}
 
-            {/* Section: Commercial Linkage */}
-            <div style={{ fontSize:12, fontWeight:700, color:'#6B3FDB', textTransform:'uppercase', letterSpacing:'0.5px', marginBottom:12 }}>Commercial Linkage</div>
-            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16, marginBottom:20 }}>
-              {[
-                { label:'Customer', key:'customer_name', placeholder:'Customer name' },
-                { label:'Project Number', key:'project_number', placeholder:'e.g. PRJ-2026-0001' },
-                { label:'Site Name', key:'site_name', placeholder:'Site / location' },
-                { label:'Opportunity Ref', key:'opportunity_ref', placeholder:'Opportunity reference' },
-                { label:'PO Number', key:'po_number', placeholder:'Purchase order number' },
-              ].map(f => (
-                <div key={f.key}>
-                  <label style={labelStyle}>{f.label}</label>
-                  <input value={form[f.key]} onChange={e => fld(f.key, e.target.value)} placeholder={f.placeholder} style={inputStyle}/>
-                </div>
-              ))}
-            </div>
-
-            {/* Section: Travel Details */}
-            <div style={{ fontSize:12, fontWeight:700, color:'#6B3FDB', textTransform:'uppercase', letterSpacing:'0.5px', marginBottom:12 }}>Travel Details</div>
-            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16 }}>
-              <div>
-                <label style={labelStyle}>Travel Type *</label>
-                <VocabSelect vocab="travel-types" value={form.travel_type}
-                  onChange={v => fld('travel_type', v)} selectStyle={inputStyle} />
-              </div>
-              <div>
-                <label style={labelStyle}>Service Ticket ID</label>
-                <input value={form.service_ticket_id} onChange={e => fld('service_ticket_id', e.target.value)} placeholder="ST-2026-001 (if applicable)" style={inputStyle}/>
-              </div>
-              <div style={{ gridColumn:'1/-1' }}>
-                <label style={labelStyle}>Destination *</label>
-                <input value={form.destination} onChange={e => fld('destination', e.target.value)} placeholder="e.g. Mumbai, Chennai — Customer Factory" style={inputStyle}/>
-              </div>
-              <div style={{ gridColumn:'1/-1' }}>
-                <label style={labelStyle}>Purpose / Objective *</label>
-                <input value={form.purpose} onChange={e => fld('purpose', e.target.value)} placeholder="Describe what you'll accomplish on this trip..." style={inputStyle}/>
-              </div>
-              <div>
-                <label style={labelStyle}>Start Date *</label>
-                <input type="date" value={form.from_date} onChange={e => fld('from_date', e.target.value)} style={inputStyle}/>
-              </div>
-              <div>
-                <label style={labelStyle}>End Date *</label>
-                <input type="date" value={form.to_date} onChange={e => fld('to_date', e.target.value)} style={inputStyle}/>
-              </div>
-              <div>
-                <label style={labelStyle}>Estimated Cost (₹)</label>
-                <input type="number" value={form.budget} onChange={e => fld('budget', e.target.value)} placeholder="0" style={inputStyle}/>
-              </div>
-              <div>
-                <label style={labelStyle}>Travel Mode</label>
-                <select value={form.mode} onChange={e => fld('mode', e.target.value)} style={inputStyle}>
-                  {TRAVEL_MODES.map(m => <option key={m}>{m}</option>)}
-                </select>
-              </div>
-              <div style={{ display:'flex', flexDirection:'column', justifyContent:'flex-end', gap:10 }}>
-                {[['hotel_required','Hotel Required'],['advance_required','Advance Required']].map(([key,lbl]) => (
-                  <label key={key} style={{ display:'flex', alignItems:'center', gap:8, fontSize:13, color:'#374151', cursor:'pointer' }}>
-                    <input type="checkbox" checked={form[key]} onChange={e => fld(key, e.target.checked)} style={{ accentColor:'#6B3FDB', width:14, height:14 }}/>
-                    {lbl}
+          <div style={sectionStyle}>Trip</div>
+          <div style={grid2}>
+            <Field label="Travel type" required>
+              <VocabSelect vocab="travel-types" value={form.travel_type} onChange={v => fld('travel_type', v)} selectStyle={inputStyle} />
+            </Field>
+            <Field label="Travel mode">
+              <select value={form.mode} onChange={e => fld('mode', e.target.value)} style={inputStyle} aria-label="Travel mode">
+                {TRAVEL_MODES.map(m => <option key={m}>{m}</option>)}
+              </select>
+            </Field>
+            <Field label="Destination" required full>
+              <input value={form.destination} onChange={e => fld('destination', e.target.value)} placeholder="City — customer / site" style={inputStyle} aria-label="Destination" />
+            </Field>
+            <Field label="Purpose" required full>
+              <input value={form.purpose} onChange={e => fld('purpose', e.target.value)} placeholder="What will this trip achieve?" style={inputStyle} aria-label="Purpose" />
+            </Field>
+            <Field label="Start date" required>
+              <input type="date" value={form.from_date} onChange={e => fld('from_date', e.target.value)} style={inputStyle} aria-label="Start date" />
+            </Field>
+            <Field label="End date" required>
+              <input type="date" value={form.to_date} min={form.from_date || undefined} onChange={e => fld('to_date', e.target.value)} style={inputStyle} aria-label="End date" />
+            </Field>
+            <Field label="Estimated cost (₹)" hint="Advances on this trip cannot exceed it">
+              <input type="number" min="0" value={form.budget} onChange={e => fld('budget', e.target.value)} placeholder="0" style={inputStyle} aria-label="Estimated cost" />
+            </Field>
+            <Field label="Needs">
+              <div style={{ display: 'flex', gap: 16, paddingTop: 8 }}>
+                {[['hotel_required', 'Hotel'], ['advance_required', 'Cash advance']].map(([k, l]) => (
+                  <label key={k} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
+                    <input type="checkbox" checked={!!form[k]} onChange={e => fld(k, e.target.checked)} style={{ accentColor: '#6B3FDB' }} /> {l}
                   </label>
                 ))}
               </div>
-              <div style={{ gridColumn:'1/-1' }}>
-                <label style={labelStyle}>Notes</label>
-                <textarea value={form.notes} onChange={e => fld('notes', e.target.value)} rows={3}
-                  placeholder="Itinerary, special requirements..."
-                  style={{ ...inputStyle, resize:'vertical' }}/>
-              </div>
-            </div>
-
-            <div style={{ display:'flex', gap:12, justifyContent:'flex-end', marginTop:24 }}>
-              <button onClick={() => { setShowForm(false); setError(''); }}
-                style={{ padding:'9px 20px', border:'1px solid #e5e7eb', borderRadius:8, background:'#fff', cursor:'pointer', fontSize:13, color:'#374151' }}>Cancel</button>
-              <button onClick={handleSubmit} disabled={saving}
-                style={{ padding:'9px 20px', background:'#6B3FDB', color:'#fff', border:'none', borderRadius:8, cursor:'pointer', fontSize:13, fontWeight:600, opacity:saving?0.6:1 }}>
-                {saving ? 'Submitting...' : 'Submit Request'}
-              </button>
-            </div>
+            </Field>
           </div>
-        </div>
+
+          <div style={sectionStyle}>Linked to</div>
+          <div style={grid2}>
+            <Field label="Customer"><LookupSelect kind="customers" value={form.customer_id} onChange={v => fld('customer_id', v)} ariaLabel="Customer" /></Field>
+            <Field label="Project" hint="Its spend posts to this project's cost"><LookupSelect kind="projects" value={form.project_id} onChange={v => fld('project_id', v)} ariaLabel="Project" /></Field>
+            <Field label="Opportunity"><LookupSelect kind="opportunities" value={form.opportunity_id} onChange={v => fld('opportunity_id', v)} ariaLabel="Opportunity" /></Field>
+            <Field label="Service ticket"><LookupSelect kind="tickets" value={form.service_ticket_id} onChange={v => fld('service_ticket_id', v)} ariaLabel="Service ticket" /></Field>
+            <Field label="Site"><input value={form.site_name} onChange={e => fld('site_name', e.target.value)} placeholder="Site / plant" style={inputStyle} aria-label="Site" /></Field>
+            <Field label="Customer PO number"><input value={form.po_number} onChange={e => fld('po_number', e.target.value)} style={inputStyle} aria-label="PO number" /></Field>
+            <Field label="Notes" full>
+              <textarea rows={3} value={form.notes} onChange={e => fld('notes', e.target.value)} placeholder="Itinerary, special needs…" style={{ ...inputStyle, resize: 'vertical' }} aria-label="Notes" />
+            </Field>
+          </div>
+          {!form.id && form.from_date && form.from_date < localDay() && (
+            <div style={{ fontSize: 12, color: '#92400e', background: '#fef3c7', padding: '8px 12px', borderRadius: 8 }}>
+              This trip starts in the past — your manager will see it as a trip already taken.
+            </div>
+          )}
+        </Dialog>
       )}
     </PageShell>
   );

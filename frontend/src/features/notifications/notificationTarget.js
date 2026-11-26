@@ -144,9 +144,12 @@ const MODULE_PAGE = {
   timesheets:      { approve: 'TimesheetApprovals', self: 'MyTimesheet' },
   travel:          { approve: 'TravelApprovals', self: 'MyTravel' },
   traveladvance:   { approve: 'TravelApprovals', self: 'TravelAdvances' },
-  expenseclaim:    { approve: 'ExpenseReview', self: 'ExpenseClaims' },
-  reimbursement:   { approve: 'ExpenseReview', self: 'ExpenseClaims' },
-  exp:             { approve: 'ExpenseReview', self: 'ExpenseClaims' },
+  // Claims are decided on the Expense Claims page itself (Expense Review was a
+  // duplicate of Travel Approvals and is gone — 26 Nov 26).
+  expenseclaim:    { approve: 'ExpenseClaims', self: 'ExpenseClaims' },
+  reimbursement:   { approve: 'ExpenseClaims', self: 'ExpenseClaims' },
+  exp:             { approve: 'ExpenseClaims', self: 'ExpenseClaims' },
+  visitreport:     { approve: 'VisitReports', self: 'VisitReports' },
   reg:             { approve: 'RegularizationApprovals', self: 'AttendanceDashboard' },
   ot:              { approve: 'OvertimeApprovals', self: 'AttendanceDashboard' },
   shift:           { approve: 'ShiftChangeApprovals', self: 'ShiftCalendar' },

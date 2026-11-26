@@ -1,6 +1,7 @@
 import express from 'express';
 import pool from '../shared/db.js';
-import { allowRoles } from '../../middlewares/auth.middleware.js';
+import { allowRoles, hasRole } from '../../middlewares/auth.middleware.js';
+import { getTravelGlMapping, setTravelGlMapping, TravelGlError } from './travelGl.service.js';
 import { companyOf } from '../../shared/scope.js';
 
 const router = express.Router();
@@ -19,7 +20,9 @@ const router = express.Router();
  * one failing table degrades that section to empty rather than 500-ing the page.
  */
 
-const AUDIT_ROLES = ['admin', 'super_admin', 'finance', 'manager'];
+const AUDIT_ROLES = ['admin', 'super_admin', 'finance', 'finance_manager', 'accounts_exec', 'manager'];
+// Choosing the ledger accounts is a Finance decision.
+const GL_MAPPING_ROLES = ['admin', 'super_admin', 'finance', 'finance_manager'];
 
 const safeRows = async (label, sql, params = []) => {
   try { const r = await pool.query(sql, params); return r.rows; }
@@ -44,13 +47,16 @@ router.get('/', allowRoles(...AUDIT_ROLES), async (req, res) => {
     totals, unposted, gstUnverified, unsettledAdvances, unlinkedClaims, missingCostLedger,
   ] = await Promise.all([
     safeRows('totals', `
+      -- PAID claims only (26 Nov 26): drafts, claims still in approval and
+      -- personal lines were summed as "spend", and "posted 0 / 3" compared
+      -- postings against claims nobody had paid yet.
       SELECT COALESCE(SUM(ec.total_amount), 0) AS total_spend,
              COALESCE(SUM(ec.gst_amount), 0)   AS total_gst,
              COALESCE(SUM(ec.gst_amount) FILTER (WHERE ec.gst_verified), 0) AS gst_recoverable,
              COUNT(*)                          AS claim_count,
              COUNT(ec.journal_entry_id)        AS posted_count
         FROM expense_claims ec
-       WHERE ec.deleted_at IS NULL ${ecScope} ${ecYear}`),
+       WHERE ec.deleted_at IS NULL AND ec.status = 'Paid' ${ecScope} ${ecYear}`),
 
     // Paid to the employee but never posted to the books.
     safeRows('unposted', `
@@ -116,6 +122,8 @@ router.get('/', allowRoles(...AUDIT_ROLES), async (req, res) => {
         FROM expense_claims ec
        WHERE ec.deleted_at IS NULL
          AND (LOWER(ec.status) = 'paid' OR ec.paid_at IS NOT NULL)
+         -- Only claims linked to a project or customer post to the cost ledger.
+         AND (ec.project_id IS NOT NULL OR ec.customer_id IS NOT NULL)
          AND NOT EXISTS (
            SELECT 1 FROM travel_cost_transactions tct
             WHERE tct.source_type = 'expense_claim' AND tct.source_id = ec.id
@@ -163,6 +171,29 @@ router.get('/years', allowRoles(...AUDIT_ROLES), async (req, res) => {
         FROM travel_advances WHERE 1=1 ${scope}
     ) y WHERE year IS NOT NULL ORDER BY year DESC`);
   res.json(rows.map(r => r.year));
+});
+
+// ── Travel ledger accounts (travelGl.service.js) ──────────────────────────────
+router.get('/gl-mapping', allowRoles(...AUDIT_ROLES), async (req, res) => {
+  try {
+    const m = await getTravelGlMapping(companyOf(req));
+    const { rows: chart_accounts } = await pool.query(
+      `SELECT code, name, account_type FROM chart_of_accounts
+        WHERE deleted_at IS NULL AND is_active = TRUE AND account_type IN ('Expense','Asset')
+          AND (company_id = $1 OR company_id IS NULL) ORDER BY code`, [companyOf(req)]);
+    // `accounts` is the mapping's resolved accounts; the pickable list is
+    // `chart_accounts` (they shared one key and the list overwrote the mapping).
+    res.json({ ...m, can_edit: hasRole(req, ...GL_MAPPING_ROLES), chart_accounts });
+  } catch { res.status(500).json({ error: 'Could not load the travel ledger accounts' }); }
+});
+router.put('/gl-mapping', allowRoles(...GL_MAPPING_ROLES), async (req, res) => {
+  try {
+    const m = await setTravelGlMapping(companyOf(req), req.body, req.user?.userId ?? req.user?.id);
+    res.json(m);
+  } catch (err) {
+    if (err instanceof TravelGlError) return res.status(err.status).json({ code: err.code, error: err.message, problems: err.problems });
+    res.status(500).json({ error: 'Could not save the travel ledger accounts' });
+  }
 });
 
 export default router;

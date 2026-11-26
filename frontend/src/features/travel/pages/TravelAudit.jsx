@@ -2,10 +2,11 @@ import { useState, useEffect, useCallback } from 'react';
 import * as XLSX from 'xlsx';
 import api from '@/services/api/client';
 import { useToast } from '@/context/ToastContext';
-import { fmtDate } from '@/utils/dateFormatter';
+import { fmtDate, localDay } from '@/utils/dateFormatter';
 import { ShieldCheck, Download, AlertTriangle, CheckCircle2 } from 'lucide-react';
 import { fmt } from './travelUtils';
 import { PageHero, PageShell } from '@/components/pulse-ui';
+import LedgerAccounts from '../components/TravelLedgerAccounts';
 
 /**
  * Travel Audit — reconciles travel spend against Finance rather than restating
@@ -31,7 +32,7 @@ const TABS = [
   { key:'unlinked_claims',     label:'Unlinked claims',
     hint:'Expense claims with no travel request behind them — spend nobody authorised as travel.' },
   { key:'missing_cost_ledger', label:'Missing cost ledger',
-    hint:'Paid claims the travel cost ledger never recorded. Only claims carrying a project or customer get posted, so anything else silently skips it.' },
+    hint:'Paid claims linked to a project or customer that the project cost ledger never recorded.' },
 ];
 
 const COLUMNS = {
@@ -131,7 +132,7 @@ export default function TravelAudit() {
       sheets++;
     }
     if (!sheets) { toast.error('Nothing to export — everything reconciles'); return; }
-    XLSX.writeFile(wb, `travel_audit_${new Date().toISOString().slice(0, 10)}.xlsx`);
+    XLSX.writeFile(wb, `travel_audit_${localDay()}.xlsx`);
   };
 
   return (
@@ -143,6 +144,7 @@ export default function TravelAudit() {
         subtitle="Travel spend reconciled against Finance — claims, journal entries and the travel cost ledger."
       />
     }>
+      <LedgerAccounts />
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20, gap:16, flexWrap:'wrap' }}>
         <div>
 
@@ -176,10 +178,10 @@ export default function TravelAudit() {
       {!loading && !error && data && (
         <>
           <div style={{ display:'flex', gap:12, marginBottom:16, flexWrap:'wrap' }}>
-            <Kpi label="Total travel spend" value={fmt(s.total_spend)} sub={`${s.claim_count ?? 0} claims`} />
-            <Kpi label="Posted to Finance" value={`${s.posted_count ?? 0} / ${s.claim_count ?? 0}`}
-                 tone={(s.claim_count ?? 0) > 0 && s.posted_count === s.claim_count ? 'good' : 'warn'}
-                 sub={s.unposted_amount ? `${fmt(s.unposted_amount)} unposted` : 'all posted'} />
+            <Kpi label="Claims paid" value={fmt(s.total_spend)} sub={`${s.claim_count ?? 0} paid claim${s.claim_count === 1 ? '' : 's'}`} />
+            <Kpi label="Posted to the books" value={`${s.posted_count ?? 0} / ${s.claim_count ?? 0}`}
+                 tone={(s.claim_count ?? 0) === 0 || s.posted_count === s.claim_count ? 'good' : 'warn'}
+                 sub={(s.claim_count ?? 0) === 0 ? 'nothing paid yet' : s.unposted_amount ? `${fmt(s.unposted_amount)} not posted` : 'all posted'} />
             <Kpi label="GST recoverable" value={fmt(s.gst_recoverable)} tone="good"
                  sub={`of ${fmt(s.total_gst)} claimed`} />
             <Kpi label="GST at risk" value={fmt(s.gst_at_risk)} tone={s.gst_at_risk ? 'bad' : 'good'}
